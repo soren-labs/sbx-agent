@@ -62,10 +62,11 @@ test("UI two turns then closed is read-only without 500", async ({ page }) => {
 
   await page.getByTestId("composer").fill(TURN2);
   await page.getByTestId("send").click();
-  await expect(page.getByTestId("user-message")).toContainText("Fix hello.py", { timeout: 30_000 });
+  await expect(page.getByTestId("user-message").nth(1)).toContainText("Fix hello.py", {
+    timeout: 30_000,
+  });
   await waitTurnFinished(page);
   await expect(page.getByTestId("user-message")).toHaveCount(2);
-  await expect(page.getByTestId("user-message").nth(1)).toContainText("Fix hello.py");
   await expect
     .poll(async () => page.getByTestId("agent-message").count())
     .toBeGreaterThanOrEqual(3);
