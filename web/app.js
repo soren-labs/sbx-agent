@@ -37,6 +37,7 @@ const state = {
   stopSse: null,
   createTitle: "",
   createModel: MODELS[0],
+  chromeStatus: null,
 };
 
 function hashId() {
@@ -97,6 +98,7 @@ async function loadAndSelect(id, { resetTimeline = true } = {}) {
     state.stopSse = null;
   }
   state.selectedId = id;
+  state.chromeStatus = null;
   setHash(id);
   if (resetTimeline) {
     state.timeline = [];
@@ -372,16 +374,23 @@ function render() {
     [...document.querySelectorAll("#chat-log details[open]")].map((n) => n.dataset.key),
   );
   const stickToBottom = shouldStick();
+  const sess = selectedSession();
+  state.chromeStatus = sess ? sess.status : null;
   app.replaceChildren(shell());
   restoreOpen(openKeys);
   if (stickToBottom) scrollLog();
 }
 
 function renderChrome() {
+  const sess = selectedSession();
+  if (sess && sess.status !== state.chromeStatus) {
+    state.chromeStatus = sess.status;
+    render();
+    return;
+  }
   const badge = document.querySelector("[data-testid=sse-status]");
   if (badge) badge.textContent = sseLabel();
   const status = document.querySelector("[data-testid=session-status]");
-  const sess = selectedSession();
   if (status && sess) {
     status.dataset.status = sess.status;
     status.textContent = statusLabel(sess.status);
@@ -396,6 +405,12 @@ function renderChrome() {
 function renderListOnly() {
   const nav = document.querySelector("[data-testid=session-list]");
   if (!nav) return;
+  if (!state.sessions.length) {
+    nav.replaceChildren(
+      el("p", { className: "muted empty", "data-testid": "empty-sessions", text: "还没有会话" }),
+    );
+    return;
+  }
   nav.replaceChildren(...state.sessions.map(sessionItem));
 }
 
@@ -464,7 +479,9 @@ function sidebar() {
     el(
       "nav",
       { className: "session-list", "data-testid": "session-list", "aria-label": "会话列表" },
-      state.sessions.length ? state.sessions.map(sessionItem) : [el("p", { className: "muted empty", text: "还没有会话" })],
+      state.sessions.length
+        ? state.sessions.map(sessionItem)
+        : [el("p", { className: "muted empty", "data-testid": "empty-sessions", text: "还没有会话" })],
     ),
   ]);
 }
@@ -602,7 +619,8 @@ function banner() {
 
 function hints(sess) {
   const nodes = [];
-  if (sess && sess.status === "creating") {
+  const creating = state.creating || (sess && sess.status === "creating");
+  if (creating) {
     nodes.push(
       el("div", {
         className: "hint",
