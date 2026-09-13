@@ -1,0 +1,4 @@
+{
+  "install": "uv sync && (cd web && npm ci && npx playwright install --with-deps chromium) && npm i -g @openai/codex@0.153.0",
+  "terminals": []
+}
