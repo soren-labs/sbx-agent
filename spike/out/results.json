@@ -1,0 +1,185 @@
+{
+  "0.params": {
+    "model": "gpt-5.6-luna",
+    "codex": "0.153.0",
+    "modal": "1.5.5",
+    "auth_mode": "chatgpt",
+    "auth_last_refresh": "2026-09-05T09:33:36.295376649Z"
+  },
+  "0.image_build_or_check_s": 1.3,
+  "1.cold_start": {
+    "sandbox_id": "sb-4vIneioLA04QxDQs3IJMHG",
+    "create_s": 0.8,
+    "codex_version_exec_s": 2.72,
+    "total_s": 3.52,
+    "codex_version": "codex-cli 0.153.0",
+    "rc": 0
+  },
+  "1.env": [
+    "v22.23.2",
+    "root",
+    "1",
+    "4096 MB",
+    "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"",
+    "NAME=\"Debian GNU/Linux\""
+  ],
+  "2.turn1": {
+    "rc": 0,
+    "duration_s": 12.0,
+    "first_event_s": 1.4,
+    "thread_id": "01a09a36-b4fb-7f90-b96e-42adeefa05e0",
+    "usage": {
+      "input_tokens": 25996,
+      "cached_input_tokens": 22016,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 325,
+      "reasoning_output_tokens": 238
+    },
+    "n_events": 6,
+    "bad_lines": 0,
+    "bad_samples": [],
+    "event_types": [
+      "item.completed",
+      "item.started",
+      "thread.started",
+      "turn.completed",
+      "turn.started"
+    ],
+    "item_types": [
+      "agent_message",
+      "file_change"
+    ],
+    "last_message": "DONE"
+  },
+  "2.turn1_fs": "alpha\nbeta\ngamma\n---\nReading additional input from stdin...\n",
+  "2.auth_verdict": "PASS: subscription auth.json works inside Sandbox",
+  "3.turn2_resume": {
+    "rc": 0,
+    "duration_s": 13.7,
+    "first_event_s": 1.2,
+    "thread_id": "01a09a36-b4fb-7f90-b96e-42adeefa05e0",
+    "usage": {
+      "input_tokens": 40604,
+      "cached_input_tokens": 36096,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 255,
+      "reasoning_output_tokens": 61
+    },
+    "n_events": 10,
+    "bad_lines": 0,
+    "bad_samples": [],
+    "event_types": [
+      "item.completed",
+      "item.started",
+      "thread.started",
+      "turn.completed",
+      "turn.started"
+    ],
+    "item_types": [
+      "agent_message",
+      "command_execution",
+      "file_change"
+    ],
+    "last_message": "4"
+  },
+  "3.turn2_fs": "alpha\nbeta\ngamma\ndelta\n---\n4\n---\n2026\n/work/.codex/sessions/2026/09/13/rollout-2026-09-13T10-01-11-01a09a36-b4fb-7f90-b96e-42adeefa05e0.jsonl\n",
+  "3.resume_verdict": "PASS: same thread_id, context + filesystem carried over",
+  "3.turn3_resume": {
+    "rc": 0,
+    "duration_s": 6.8,
+    "first_event_s": 1.5,
+    "thread_id": "01a09a36-b4fb-7f90-b96e-42adeefa05e0",
+    "usage": {
+      "input_tokens": 27686,
+      "cached_input_tokens": 26112,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 96,
+      "reasoning_output_tokens": 24
+    },
+    "n_events": 6,
+    "bad_lines": 0,
+    "bad_samples": [],
+    "event_types": [
+      "item.completed",
+      "item.started",
+      "thread.started",
+      "turn.completed",
+      "turn.started"
+    ],
+    "item_types": [
+      "agent_message",
+      "command_execution"
+    ],
+    "last_message": "alpha,beta,gamma,delta"
+  },
+  "2.auth_last_refresh_after_turns": {
+    "injected": "2026-09-05T09:33:36.295376649Z",
+    "in_sandbox": "2026-09-05T09:33:36.295376649Z"
+  },
+  "6.stdin_open_pipe": {
+    "duration_s": 27.0,
+    "timed_out_after_25s": true,
+    "verdict": "codex waits for stdin EOF when stdin is a pipe -> runner MUST redirect </dev/null or write_eof",
+    "tail": "RC=124\n"
+  },
+  "2b.concurrency_2": {
+    "results": [
+      {
+        "sandbox_id": "sb-5l9FQbwNuv5wYnVYsrN407",
+        "create_s": 0.81,
+        "rc": 0,
+        "duration_s": 13.2,
+        "usage": {
+          "input_tokens": 25967,
+          "cached_input_tokens": 22016,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 323,
+          "reasoning_output_tokens": 242
+        },
+        "fs": [
+          "sandbox 1",
+          "2026-09-05T09:33:36.295376649Z"
+        ],
+        "err": null
+      },
+      {
+        "sandbox_id": "sb-GsbZd6dUKmYe4ppDbg85SC",
+        "create_s": 0.86,
+        "rc": 0,
+        "duration_s": 9.2,
+        "usage": {
+          "input_tokens": 25739,
+          "cached_input_tokens": 22016,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 123,
+          "reasoning_output_tokens": 41
+        },
+        "fs": [
+          "sandbox 22026-09-05T09:33:36.295376649Z"
+        ],
+        "err": null
+      }
+    ],
+    "verdict": "PASS: both turns succeeded with shared auth.json"
+  },
+  "4.idle_timeout": {
+    "idle_timeout_s": 90,
+    "reclaimed_after_s": 96.2,
+    "returncode": 0,
+    "verdict": "PASS: Sandbox ended by itself"
+  },
+  "5.tail_stream": {
+    "window_s": 600.0,
+    "lines_received_at_s": [
+      1.4,
+      602.7
+    ],
+    "tail_still_running": true,
+    "verdict": "PASS: line after silent window arrived"
+  },
+  "9.main_sandbox_summary": [
+    "24",
+    "24M"
+  ],
+  "9.leftovers_terminated": []
+}
