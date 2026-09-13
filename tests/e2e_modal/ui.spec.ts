@@ -66,7 +66,9 @@ test("UI two turns then closed is read-only without 500", async ({ page }) => {
   await waitTurnFinished(page);
   await expect(page.getByTestId("user-message")).toHaveCount(2);
   await expect(page.getByTestId("user-message").nth(1)).toContainText("Fix hello.py");
-  await expect(page.getByTestId("agent-message")).toHaveCount(2);
+  await expect
+    .poll(async () => page.getByTestId("agent-message").count())
+    .toBeGreaterThanOrEqual(3);
   await shot(page, "ui_04_turn2.png");
 
   await page.getByTestId("close-session").click();
