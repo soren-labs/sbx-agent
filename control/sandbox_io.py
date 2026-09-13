@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,11 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
         "CODEX_HOME": str(handle.root / ".codex"),
         "PYTHONUNBUFFERED": "1",
     }
+    # Modal ``exec(..., env=)`` replaces the process env and can hide a named
+    # Secret. Forward the control-plane copy when present so Codex still auth'd.
+    auth_json = os.environ.get("CODEX_AUTH_JSON")
+    if auth_json:
+        env["CODEX_AUTH_JSON"] = auth_json
     if extra:
         env.update(extra)
     return env

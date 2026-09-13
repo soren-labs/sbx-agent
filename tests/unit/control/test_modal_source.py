@@ -44,6 +44,11 @@ def test_modal_backend_source_matches_p0() -> None:
     assert "sb.poll()" in src or ".poll()" in src
     assert "Sandbox.list" in src
     assert "tags=" in src
+    assert "secrets=" in src
+    assert "ConflictError" in src
+    assert "NotFoundError" in src
+    assert "_codex_secrets" in src
+    assert "from_name" in src
 
 
 def test_modal_app_source_has_decorators() -> None:
@@ -53,6 +58,13 @@ def test_modal_app_source_has_decorators() -> None:
     assert 'modal.Cron("*/5 * * * *")' in src
     assert "sbx-basic-auth" in src or "BASIC_SECRET_NAME" in src
     assert "from control.app import create_app" in src
+    assert "CONTROL_IMAGE" in src
+    assert "image=CONTROL_IMAGE" in src
+    assert src.count("image=CONTROL_IMAGE") >= 2
+    assert "debian_slim" in src
+    assert "pip_install" in src
+    for pkg in ("fastapi", "httpx", "pydantic", "uvicorn", "anyio", "starlette"):
+        assert pkg in src
 
 
 def test_control_app_import_does_not_load_modal(monkeypatch) -> None:

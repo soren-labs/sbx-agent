@@ -52,6 +52,50 @@ def test_public_cost_uses_sandbox_seconds() -> None:
     backend.terminate(handle)
 
 
+def test_public_terminal_without_ended_at_uses_updated_at() -> None:
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    now = datetime(2026, 9, 13, 12, 0, 30, tzinfo=UTC)
+    plane = ControlPlane(
+        backend,
+        store,
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parents[3] / "tests" / "fakes" / "stub_runner.py"),
+        ],
+        clock=lambda: now,
+    )
+    created = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
+    updated = datetime(2026, 9, 13, 12, 0, 12, tzinfo=UTC)
+    from control.store import SessionRecord, empty_usage
+
+    rec = SessionRecord(
+        id="s",
+        title="t",
+        status="closed",
+        created_at=created,
+        updated_at=updated,
+        model="gpt-5.6-luna",
+        turns=0,
+        usage=empty_usage(),
+        messages=[],
+        owner="sbx",
+        ended_at=None,
+        last_activity_at=updated,
+    )
+    for status in ("closed", "timed_out", "lost"):
+        rec.status = status
+        rec.ended_at = None
+        public = plane.public(rec)
+        assert public["sandbox_seconds"] == 12.0
+        assert public["status"] == status
+    rec.status = "closed"
+    rec.ended_at = None
+    rec.updated_at = created
+    public = plane.public(rec)
+    assert public["sandbox_seconds"] == 0.0
+
+
 def test_format_sse_uses_line_number_and_type() -> None:
     frame = format_sse(3, {"type": "sbx.turn_started", "n": 1})
     assert frame.startswith("id: 3\n")

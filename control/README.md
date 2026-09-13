@@ -8,8 +8,9 @@
 | --- | --- |
 | `backend.py` | **冻结** `SandboxBackend` / `LocalProcessBackend` / `ModalBackend` 骨架 |
 | `backends/modal.py` | 生产 `ModalBackend`（P0 签名；测试不实例化、不调用） |
-| `app.py` | 纯 FastAPI。测试只导入这里 |
-| `modal_app.py` | `@modal.asgi_app()` + `@modal.concurrent(max_inputs=20)` + reaper `Cron("*/5 * * * *")` |
+| `app.py` | 纯 FastAPI。测试只导入这里。本地 `python -m control.app`（uvicorn），**不是** deploy |
+| `deploy.py` | `deploy()`：`python -m modal deploy -m control.modal_app`。`make deploy` / WP1-A `invoke_control_deploy` 入口 |
+| `modal_app.py` | `@modal.asgi_app()` + `@modal.concurrent(max_inputs=20)` + reaper `Cron("*/5 * * * *")`；`CONTROL_IMAGE` 带 FastAPI 栈 |
 | `store.py` | `SessionStore` / `InMemoryStore` / `ModalDictStore` |
 | `reaper.py` | 纯函数 `reap(store, backend, now)` |
 | `service.py` | 状态机 `creating → idle ⇄ running → closed \| timed_out \| lost` |
@@ -21,7 +22,13 @@ SBX_BACKEND=local SBX_RUNNER_CMD="python tests/fakes/stub_runner.py" \
   uv run python -m control.app
 ```
 
-默认 HTTP Basic 为本地假口令 `sbx` / `sbx`（不是生产凭证）。生产从 Modal Secret `sbx-basic-auth`（`SBX_BASIC_USER` / `SBX_BASIC_PASS`）读取。Codex 凭证来自 Secret `sbx-codex-auth`（键 `CODEX_AUTH_JSON`）。
+默认 HTTP Basic 为本地假口令 `sbx` / `sbx`（不是生产凭证）。生产从 Modal Secret `sbx-basic-auth`（`SBX_BASIC_USER` / `SBX_BASIC_PASS`）读取。Codex 凭证来自 Secret `sbx-codex-auth`（键 `CODEX_AUTH_JSON`），或进程环境里的 `CODEX_AUTH_JSON`（`Secret.from_dict`）。
+
+Modal 部署：
+
+```bash
+uv run python -c "from control.deploy import deploy; deploy()"
+```
 
 ## 环境变量
 

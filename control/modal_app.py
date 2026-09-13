@@ -17,13 +17,22 @@ from control.reaper import reap
 
 app = modal.App(os.environ.get("SBX_MODAL_APP_NAME", MODAL_APP_NAME))
 
+CONTROL_IMAGE = modal.Image.debian_slim(python_version="3.12").pip_install(
+    "fastapi",
+    "httpx",
+    "pydantic",
+    "uvicorn",
+    "anyio",
+    "starlette",
+)
+
 _secrets = [
     modal.Secret.from_name(CODEX_SECRET_NAME),
     modal.Secret.from_name(BASIC_SECRET_NAME),
 ]
 
 
-@app.function(secrets=_secrets)
+@app.function(image=CONTROL_IMAGE, secrets=_secrets)
 @modal.concurrent(max_inputs=20)
 @modal.asgi_app()
 def fastapi_app():
@@ -31,7 +40,7 @@ def fastapi_app():
     return create_app()
 
 
-@app.function(schedule=modal.Cron("*/5 * * * *"), secrets=_secrets)
+@app.function(image=CONTROL_IMAGE, schedule=modal.Cron("*/5 * * * *"), secrets=_secrets)
 def reap_cron() -> None:
     os.environ.setdefault("SBX_BACKEND", "modal")
     web = create_app()
