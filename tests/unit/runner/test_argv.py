@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from runtime.runner.codex import build_codex_argv, child_env
 
 
@@ -35,9 +34,7 @@ def test_first_turn_argv_matches_p0_and_contract(
     assert "resume" not in argv
 
 
-def test_resume_argv_thread_id_then_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resume_argv_thread_id_then_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODEX_BIN", "codex")
     argv = build_codex_argv(
         work=tmp_path,
@@ -54,9 +51,7 @@ def test_resume_argv_thread_id_then_prompt(
     assert "-m" not in argv
 
 
-def test_child_env_drops_codex_auth_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_child_env_drops_codex_auth_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODEX_AUTH_JSON", '{"tokens":{"access_token":"REDACTED"}}')
     monkeypatch.setenv("SBX_PROVIDER_API_KEY", "SENTINEL")
     env = child_env(tmp_path, tmp_path / ".codex")

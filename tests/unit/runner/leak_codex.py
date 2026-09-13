@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import sys
 
 print(
     json.dumps({"type": "thread.started", "thread_id": "01a09a36-b4fb-7f90-b96e-42adeefa05e0"}),

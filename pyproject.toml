@@ -37,6 +37,10 @@ pythonpath = ["."]
 line-length = 100
 target-version = "py312"
 src = ["control", "runtime", "tests"]
+# spike/ is orchestrator-only (AGENTS.md: not a CI dependency). P0 left
+# spike.py unlinted; without this, `make lint` fails on every PR (SOR-44).
+extend-exclude = ["spike"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

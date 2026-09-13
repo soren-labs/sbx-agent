@@ -63,9 +63,7 @@ def test_init_auth_json_copies_work_auth_when_env_missing(
     assert dest["tokens"]["access_token"] == "REDACTED"
 
 
-def test_init_auth_json_placeholder_without_source(
-    work: Path, runner_env: dict[str, str]
-) -> None:
+def test_init_auth_json_placeholder_without_source(work: Path, runner_env: dict[str, str]) -> None:
     runner_env.pop("CODEX_AUTH_JSON", None)
     init_runner(runner_env)
     dest = json.loads((work / ".codex" / "auth.json").read_text(encoding="utf-8"))

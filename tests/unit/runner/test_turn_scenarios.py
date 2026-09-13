@@ -31,7 +31,8 @@ def _turn(
         env,
         timeout=timeout,
     )
-    turn = load_json(work / "turns" / f"{n}.json") if (work / "turns" / f"{n}.json").is_file() else {}
+    turn_path = work / "turns" / f"{n}.json"
+    turn = load_json(turn_path) if turn_path.is_file() else {}
     return result.returncode, turn, parsed_events(work)
 
 
