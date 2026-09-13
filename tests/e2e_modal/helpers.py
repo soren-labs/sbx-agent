@@ -57,6 +57,7 @@ All tests must pass.
 When finished, reply with the exact line: TURN2_TESTS_PASSED
 """
 
+
 def artifacts_dir() -> Path:
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     return ARTIFACTS
