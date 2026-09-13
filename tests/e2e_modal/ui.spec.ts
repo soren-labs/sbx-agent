@@ -17,7 +17,19 @@ function shot(page: Page, name: string) {
 }
 
 async function waitIdle(page: Page, timeout = 420_000) {
-  await expect(page.getByTestId("session-status")).toHaveText("空闲", { timeout });
+  await expect(page.getByTestId("session-status")).toHaveAttribute("data-status", "idle", {
+    timeout,
+  });
+}
+
+async function waitTurnFinished(page: Page, timeout = 420_000) {
+  // Do not treat the pre-send idle badge as completion; wait for running first.
+  await expect(page.getByTestId("session-status")).toHaveAttribute("data-status", "running", {
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId("session-status")).toHaveAttribute("data-status", "idle", {
+    timeout,
+  });
 }
 
 test("UI two turns then closed is read-only without 500", async ({ page }) => {
@@ -43,22 +55,25 @@ test("UI two turns then closed is read-only without 500", async ({ page }) => {
   await expect(page.getByTestId("user-message")).toContainText("INTENTIONAL BUG", {
     timeout: 30_000,
   });
-  await waitIdle(page);
+  await waitTurnFinished(page);
   await expect(page.getByTestId("user-message")).toHaveCount(1);
   await expect(page.getByTestId("agent-message").first()).toBeVisible();
   await shot(page, "ui_03_turn1.png");
 
   await page.getByTestId("composer").fill(TURN2);
   await page.getByTestId("send").click();
-  await expect(page.getByTestId("user-message")).toHaveCount(2, { timeout: 30_000 });
-  await waitIdle(page);
-  await expect(page.getByTestId("agent-message")).toHaveCount(2, { timeout: 60_000 });
+  await expect(page.getByTestId("user-message")).toContainText("Fix hello.py", { timeout: 30_000 });
+  await waitTurnFinished(page);
+  await expect(page.getByTestId("user-message")).toHaveCount(2);
+  await expect(page.getByTestId("user-message").nth(1)).toContainText("Fix hello.py");
+  await expect(page.getByTestId("agent-message")).toHaveCount(2);
   await shot(page, "ui_04_turn2.png");
 
   await page.getByTestId("close-session").click();
   await expect(page.getByTestId("readonly-banner")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("composer")).toBeDisabled();
   await expect(page.getByTestId("session-status")).toHaveText("已关闭");
+  await expect(page.getByTestId("user-message")).toHaveCount(2);
   await expect(page.getByTestId("error-banner")).toHaveCount(0);
   await shot(page, "ui_05_closed_readonly.png");
 
