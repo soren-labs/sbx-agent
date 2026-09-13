@@ -38,12 +38,14 @@ x-canonical:
     - item.updated
     - item.completed
     - turn.completed
+    - turn.failed
     - error
   item_types:
     - agent_message
     - command_execution
     - file_change
     - reasoning
+    - error
   runner_events:
     - sbx.turn_started
     - sbx.turn_finished
@@ -52,6 +54,9 @@ x-canonical:
     - input_tokens
     - cached_input_tokens
     - output_tokens
+  usage_fields_optional:
+    - cache_write_input_tokens
+    - reasoning_output_tokens
   http_paths:
     - POST /api/sessions
     - GET /api/sessions
@@ -251,6 +256,12 @@ components:
           type: integer
           minimum: 0
         output_tokens:
+          type: integer
+          minimum: 0
+        cache_write_input_tokens:
+          type: integer
+          minimum: 0
+        reasoning_output_tokens:
           type: integer
           minimum: 0
     Message:

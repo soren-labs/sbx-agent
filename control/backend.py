@@ -48,7 +48,12 @@ class SandboxPoll:
 
 @runtime_checkable
 class Process(Protocol):
-    """A process started by ``exec``. ``stdout`` yields lines without trailing newlines."""
+    """A process started by ``exec``.
+
+    ``stdout`` yields complete lines without trailing newlines. Implementations
+    MUST split on ``\\n`` before yielding: a single OS read / Modal chunk can
+    contain multiple JSONL lines (default ``sb.exec`` ``bufsize=-1``).
+    """
 
     stdout: Iterator[str]
 
@@ -71,7 +76,12 @@ class SandboxBackend(Protocol):
         argv: list[str],
         env: Mapping[str, str] | None = None,
     ) -> Process:
-        """Start ``argv`` in the sandbox. Returns a streaming ``Process``."""
+        """Start ``argv`` in the sandbox.
+
+        Child stdin is ``/dev/null`` (already closed). Codex hangs until EOF if
+        stdin is an open pipe. Returns a streaming ``Process`` whose ``stdout``
+        is line-oriented.
+        """
 
     def terminate(self, handle: SandboxHandle) -> None:
         """Kill all child processes for this handle and delete the sandbox root."""
@@ -150,6 +160,7 @@ class LocalProcessBackend:
         argv: list[str],
         env: Mapping[str, str] | None = None,
     ) -> Process:
+        """Start ``argv``. Child stdin is ``/dev/null`` (already closed)."""
         rec = self._require(handle)
         merged = dict(os.environ)
         if env:
@@ -159,6 +170,7 @@ class LocalProcessBackend:
             argv,
             cwd=handle.root,
             env=merged,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -233,7 +245,12 @@ class ModalBackend:
     ) -> Process:
         """Exec a command in an existing sandbox.
 
-        Modal SDK: ``Sandbox.from_id(handle.id)`` then ``sb.exec(...)``.
+        Modal SDK: ``Sandbox.from_id(handle.id)`` then
+        ``sb.exec(..., bufsize=1)``. ``bufsize=1`` is required — default
+        ``bufsize=-1`` yields chunks that can contain multiple JSONL lines
+        (P0 run1 dropped events). Close stdin with ``p.stdin.write_eof()``
+        (or invoke the command with ``</dev/null``); Codex hangs until EOF
+        if stdin is an open pipe.
         """
         raise NotImplementedError("ModalBackend.exec -> sb.exec / Sandbox.from_id")
 

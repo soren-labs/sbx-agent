@@ -27,7 +27,7 @@
 | `tests/integration/**` | WP2-F / `SOR-40` | 无云集成（真 runner + LocalProcessBackend + fake_codex） |
 | `tests/e2e_modal/**` | WP2-H / `SOR-42` | 编排者在 WSL 跑真实 Modal e2e |
 | `tests/fakes/` `tests/fixtures/` | WP0 提供；后续包只扩展不重写契约语义 | `fake_codex.py` / `stub_runner.py` / `mock_api.py` / 事件样本 |
-| `spike/` | P0 / `SOR-28`（WSL） | 不进生产路径、不作为 CI 依赖 |
+| `spike/` | **编排者** | P0 / `SOR-28`；由编排者分支提供，不进生产路径、不作为 CI 依赖 |
 | `.github/workflows/` `.cursor/environment.json` | WP0 骨架 | 后续包可追加 CI job，测试仍不得依赖云凭证 |
 
 **后续工作包 Agent：不要改冻结路径。** 假件只扩展场景，不改事件名 / 退出码 / 路径语义。
