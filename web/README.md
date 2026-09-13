@@ -19,3 +19,11 @@ python -m tests.fakes.mock_api --port 8787
 `sbx` / `sbx` 只用于本地 mock，不是生产凭证。SSE 按 EventSource 语义消费（`id` / `event` / `data` / `retry`、断线自动重连并带 `Last-Event-ID`）。原生 `EventSource` 无法设置 `Authorization`，且 Chromium 会丢掉 URL 里的 `user:pass`，因此客户端用 `fetch` 读 `text/event-stream`。
 
 Playwright：`make test-e2e`（配置在 `playwright.config.ts`，用例在 `../tests/e2e/`）。
+
+- `mock-api`（:8787）：对 `mock_api` 的冒烟（WP1-D）。
+- `local-control`（:8788）：对真控制面 + `LocalProcessBackend` + `fake_codex`（WP2-G）。本地启动：
+
+```bash
+SBX_BACKEND=local CODEX_BIN=tests/e2e/scenario_codex.py \
+  .venv/bin/python tests/e2e/serve_local.py --port 8788
+```

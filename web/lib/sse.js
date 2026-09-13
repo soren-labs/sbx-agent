@@ -49,82 +49,107 @@ function sleep(ms, signal) {
   });
 }
 
+function mergeAbort(a, b) {
+  const out = new AbortController();
+  const forward = () => out.abort();
+  if (a.aborted || b.aborted) {
+    out.abort();
+    return out.signal;
+  }
+  a.addEventListener("abort", forward, { once: true });
+  b.addEventListener("abort", forward, { once: true });
+  return out.signal;
+}
+
 export function subscribeSessionEvents(sessionId, { onEvent, onOpen, onError } = {}) {
   const abort = new AbortController();
   let lastId = "";
   let retryMs = 300;
   let stopped = false;
+  let connAbort = null;
+
+  const dropConn = () => {
+    if (connAbort && !connAbort.signal.aborted) connAbort.abort();
+  };
 
   const run = async () => {
-    while (!stopped) {
-      try {
-        const headers = {
-          Accept: "text/event-stream",
-          ...authHeader(),
-        };
-        if (lastId) headers["Last-Event-ID"] = lastId;
-        const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/events`), {
-          headers,
-          signal: abort.signal,
-          cache: "no-store",
-        });
-        if (!res.ok) {
-          onError?.(res.status, 2);
-          await sleep(retryMs, abort.signal);
-          continue;
-        }
-        if (!res.body) {
-          onError?.("empty-body", 2);
-          await sleep(retryMs, abort.signal);
-          continue;
-        }
-        onOpen?.();
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        while (!stopped) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          buf = buf.replace(/\r\n/g, "\n");
-          let sep;
-          while ((sep = buf.indexOf("\n\n")) !== -1) {
-            const raw = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-            const frame = parseFrame(raw);
-            if (frame.retry != null) retryMs = frame.retry;
-            if (frame.id) lastId = frame.id;
-            if (!frame.data) continue;
-            let payload;
-            try {
-              payload = JSON.parse(frame.data);
-            } catch {
-              continue;
-            }
-            onEvent?.({
-              id: frame.id || lastId,
-              type: payload.type || frame.event,
-              data: payload,
-            });
+    window.addEventListener("offline", dropConn);
+    try {
+      while (!stopped) {
+        connAbort = new AbortController();
+        const signal = mergeAbort(abort.signal, connAbort.signal);
+        try {
+          const headers = {
+            Accept: "text/event-stream",
+            ...authHeader(),
+          };
+          if (lastId) headers["Last-Event-ID"] = lastId;
+          const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/events`), {
+            headers,
+            signal,
+            cache: "no-store",
+          });
+          if (!res.ok) {
+            onError?.(res.status, 2);
+            await sleep(retryMs, abort.signal);
+            continue;
           }
+          if (!res.body) {
+            onError?.("empty-body", 2);
+            await sleep(retryMs, abort.signal);
+            continue;
+          }
+          onOpen?.();
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          while (!stopped) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            buf = buf.replace(/\r\n/g, "\n");
+            let sep;
+            while ((sep = buf.indexOf("\n\n")) !== -1) {
+              const raw = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              const frame = parseFrame(raw);
+              if (frame.retry != null) retryMs = frame.retry;
+              if (frame.id) lastId = frame.id;
+              if (!frame.data) continue;
+              let payload;
+              try {
+                payload = JSON.parse(frame.data);
+              } catch {
+                continue;
+              }
+              onEvent?.({
+                id: frame.id || lastId,
+                type: payload.type || frame.event,
+                data: payload,
+              });
+            }
+          }
+          onError?.("disconnect", 0);
+        } catch (err) {
+          if (stopped || abort.signal.aborted) return;
+          onError?.(err, 0);
         }
-        onError?.("disconnect", 0);
-      } catch (err) {
-        if (stopped || abort.signal.aborted) return;
-        onError?.(err, 0);
+        if (stopped) return;
+        try {
+          await sleep(retryMs, abort.signal);
+        } catch {
+          return;
+        }
       }
-      if (stopped) return;
-      try {
-        await sleep(retryMs, abort.signal);
-      } catch {
-        return;
-      }
+    } finally {
+      window.removeEventListener("offline", dropConn);
     }
   };
 
   void run();
   return () => {
     stopped = true;
+    dropConn();
     abort.abort();
   };
 }
