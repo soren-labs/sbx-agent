@@ -89,9 +89,7 @@ def test_canonical_blocks_agree() -> None:
 
     assert fs["codex_home"] == "$SBX_WORK/.codex"
     assert fs["production_work"] == "/work"
-    assert fs["codex_rollout"] == (
-        "$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl"
-    )
+    assert fs["codex_rollout"] == ("$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl")
     assert str(fs["auth_json_mode"]) == "600"
     assert fs["config_toml"]["approval_policy"] == "never"
     assert fs["config_toml"]["sandbox_mode"] == "danger-full-access"
