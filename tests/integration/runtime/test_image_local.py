@@ -83,8 +83,14 @@ def test_dockerfile_local_is_generated_from_packages_txt() -> None:
     assert spec.nodesource_setup_url in on_disk
     for pkg in spec.apt:
         assert pkg in on_disk
-    assert "idle_timeout" not in on_disk
-    assert "CODEX_AUTH_JSON" not in on_disk
+    instructions = [
+        line for line in on_disk.splitlines() if line.strip() and not line.lstrip().startswith("#")
+    ]
+    joined = "\n".join(instructions)
+    assert "idle_timeout" not in joined
+    assert "CODEX_AUTH_JSON" not in joined
+    assert "cpu=" not in joined
+    assert "memory=" not in joined
 
 
 def test_image_py_reads_packages_and_does_not_bake_sandbox_params() -> None:

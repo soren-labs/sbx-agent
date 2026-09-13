@@ -115,17 +115,18 @@ FROM python:{spec.python_version}-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive \\
     SBX_WORK=/work
 
-COPY runtime/packages.txt /opt/sbx/packages.txt
-COPY runtime/entrypoint.sh {ENTRYPOINT_REMOTE}
-
-RUN chmod +x {ENTRYPOINT_REMOTE} \\
- && apt-get update \\
+RUN apt-get update \\
  && apt-get install -y --no-install-recommends {apt} \\
  && curl -fsSL {spec.nodesource_setup_url} | bash - \\
  && apt-get install -y --no-install-recommends nodejs \\
  && npm i -g {spec.codex_npm_spec} \\
  && apt-get clean \\
- && rm -rf /var/lib/apt/lists/* \\
+ && rm -rf /var/lib/apt/lists/*
+
+COPY runtime/packages.txt /opt/sbx/packages.txt
+COPY runtime/entrypoint.sh {ENTRYPOINT_REMOTE}
+
+RUN chmod +x {ENTRYPOINT_REMOTE} \\
  && mkdir -p /work/inbox /work/turns /work/.codex
 
 WORKDIR /work
