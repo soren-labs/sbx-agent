@@ -1,0 +1,9 @@
+{
+  "name": "sbx-browser-web",
+  "private": true,
+  "version": "0.0.1",
+  "description": "sbx-browser web UI (Playwright lives here; page assets land in later WPs)",
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

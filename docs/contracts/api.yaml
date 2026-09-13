@@ -1,0 +1,389 @@
+openapi: 3.1.0
+info:
+  title: sbx-browser Session API
+  version: 0.1.0
+  description: |
+    会话控制面 HTTP API。覆盖 Linear SOR-31 全部端点。
+    所有端点使用 HTTP Basic Auth；失败返回 401。
+    状态机：`creating → idle ⇄ running → closed | timed_out | lost`。
+    SSE 帧：`id: <events.jsonl 行号>` / `event: <type>` / `data: <json>`。
+    连接后立即发一帧 `: keepalive` 注释，之后每 15 s 再发 `: keepalive`。
+    `Last-Event-ID` 为上次收到的行号，服务从下一行续传。
+x-canonical:
+  error_codes: [401, 404, 409, 429]
+  keepalives_s: 15
+  sse:
+    id: events.jsonl line number
+    event: type
+    data: json
+    keepalive: ": keepalive"
+  paths:
+    - inbox/<n>.md
+    - turns/<n>.json
+    - events.jsonl
+    - session.json
+  exit_codes:
+    "0": success
+    "2": codex_nonzero
+    "3": timeout
+    "4": bad_json
+  commands:
+    - init
+    - turn
+    - stop
+  codex_events:
+    - thread.started
+    - turn.started
+    - item.started
+    - item.updated
+    - item.completed
+    - turn.completed
+    - turn.failed
+    - error
+  item_types:
+    - agent_message
+    - command_execution
+    - file_change
+    - reasoning
+    - error
+  runner_events:
+    - sbx.turn_started
+    - sbx.turn_finished
+    - sbx.error
+  usage_fields:
+    - input_tokens
+    - cached_input_tokens
+    - output_tokens
+  usage_fields_optional:
+    - cache_write_input_tokens
+    - reasoning_output_tokens
+  http_paths:
+    - POST /api/sessions
+    - GET /api/sessions
+    - GET /api/sessions/{id}
+    - POST /api/sessions/{id}/messages
+    - POST /api/sessions/{id}/stop
+    - DELETE /api/sessions/{id}
+    - GET /api/sessions/{id}/events
+servers:
+  - url: http://127.0.0.1:8787
+    description: WP0 mock_api default
+security:
+  - basicAuth: []
+tags:
+  - name: sessions
+paths:
+  /api/sessions:
+    post:
+      tags: [sessions]
+      summary: Create a session
+      operationId: createSession
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSessionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/ConcurrencyLimit"
+    get:
+      tags: [sessions]
+      summary: List sessions
+      operationId: listSessions
+      responses:
+        "200":
+          description: Session list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/sessions/{id}:
+    get:
+      tags: [sessions]
+      summary: Get session (status, usage, cost, messages)
+      operationId: getSession
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [sessions]
+      summary: Close a session
+      operationId: deleteSession
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Closed; status is `closed`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/sessions/{id}/messages:
+    post:
+      tags: [sessions]
+      summary: Submit a user turn
+      operationId: postMessage
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostMessageRequest"
+      responses:
+        "202":
+          description: Turn accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostMessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/TurnInProgress"
+  /api/sessions/{id}/stop:
+    post:
+      tags: [sessions]
+      summary: Stop the current turn
+      operationId: stopSession
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "202":
+          description: Stop accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/sessions/{id}/events:
+    get:
+      tags: [sessions]
+      summary: SSE event stream
+      operationId: sessionEvents
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: events.jsonl 行号；从下一行续传
+          schema:
+            type: string
+      responses:
+        "200":
+          description: |
+            `text/event-stream`. Each event frame:
+
+            ```
+            id: <events.jsonl 1-based line number>
+            event: <type>
+            data: <json>
+
+            ```
+
+            Comment keepalive frames (immediate, then every 15 s):
+
+            ```
+            : keepalive
+
+            ```
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: HTTP Basic Auth. Invalid or missing credentials → 401.
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    SessionStatus:
+      type: string
+      enum: [creating, idle, running, closed, timed_out, lost]
+    Usage:
+      type: object
+      required: [input_tokens, cached_input_tokens, output_tokens]
+      properties:
+        input_tokens:
+          type: integer
+          minimum: 0
+        cached_input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_write_input_tokens:
+          type: integer
+          minimum: 0
+        reasoning_output_tokens:
+          type: integer
+          minimum: 0
+    Message:
+      type: object
+      required: [role, text, turn_id, ts]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        text:
+          type: string
+        turn_id:
+          type: string
+        ts:
+          type: string
+          format: date-time
+    Session:
+      type: object
+      required:
+        - id
+        - title
+        - status
+        - created_at
+        - updated_at
+        - model
+        - turns
+        - usage
+        - cost_estimate_usd
+        - sandbox_seconds
+        - messages
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        model:
+          type: string
+        turns:
+          type: integer
+          minimum: 0
+          description: Completed turn count
+        usage:
+          $ref: "#/components/schemas/Usage"
+        cost_estimate_usd:
+          type: number
+        sandbox_seconds:
+          type: number
+          description: Accumulated sandbox lifetime in seconds
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+    CreateSessionRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        model:
+          type: string
+    CreateSessionResponse:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+    PostMessageRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+    PostMessageResponse:
+      type: object
+      required: [turn_id]
+      properties:
+        turn_id:
+          type: string
+    StopResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+    ErrorBody:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: integer
+          enum: [401, 404, 409, 429]
+  responses:
+    Unauthorized:
+      description: Missing or invalid HTTP Basic Auth
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    NotFound:
+      description: Session not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    TurnInProgress:
+      description: Previous turn has not finished (409)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    ConcurrencyLimit:
+      description: Concurrent session limit (2) exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"

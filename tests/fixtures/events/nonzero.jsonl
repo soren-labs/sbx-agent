@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a09a36-b4fb-7f90-b96e-42adeefa05e0"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"fake_codex nonzero scenario"}}
+{"type":"turn.failed","error":{"message":"fake_codex nonzero scenario"}}
