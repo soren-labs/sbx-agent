@@ -25,11 +25,30 @@ from control.config import (
     WORK_DIR,
 )
 
+_GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
+
 
 def _load_modal() -> Any:
     import modal
 
     return modal
+
+
+def _is_sandbox_gone(exc: BaseException) -> bool:
+    """``Sandbox.terminate``/``from_id`` raise these when already shutting down."""
+    return any(cls.__name__ in _GONE_ERROR_NAMES for cls in type(exc).mro())
+
+
+def _codex_secrets(modal: Any) -> list[Any]:
+    """Secret for every Sandbox ``create`` / ``exec``.
+
+    Prefer an ephemeral ``from_dict`` when this process has ``CODEX_AUTH_JSON``
+    (local uvicorn with ``SBX_BACKEND=modal``). Otherwise the named Secret.
+    """
+    auth_json = os.environ.get("CODEX_AUTH_JSON")
+    if auth_json:
+        return [modal.Secret.from_dict({"CODEX_AUTH_JSON": auth_json})]
+    return [modal.Secret.from_name(CODEX_SECRET_NAME)]
 
 
 def _resolve_image(modal: Any) -> Any:
@@ -68,16 +87,22 @@ class ModalProcess:
 
     def kill(self) -> None:
         modal = _load_modal()
-        sb = modal.Sandbox.from_id(self._sandbox_id)
-        killer = sb.exec(
-            "bash",
-            "-c",
-            f"if [ -f {self._pid_file} ]; then "
-            f"kill $(cat {self._pid_file}) 2>/dev/null || true; fi",
-            bufsize=1,
-        )
-        _close_stdin(killer)
-        killer.wait()
+        try:
+            sb = modal.Sandbox.from_id(self._sandbox_id)
+            killer = sb.exec(
+                "bash",
+                "-c",
+                f"if [ -f {self._pid_file} ]; then "
+                f"kill $(cat {self._pid_file}) 2>/dev/null || true; fi",
+                bufsize=1,
+                secrets=_codex_secrets(modal),
+            )
+            _close_stdin(killer)
+            killer.wait()
+        except Exception as exc:
+            if _is_sandbox_gone(exc):
+                return
+            raise
 
 
 def _close_stdin(proc: Any) -> None:
@@ -102,17 +127,12 @@ class ModalBackend:
     def create(self, spec: SandboxSpec) -> SandboxHandle:
         modal = _load_modal()
         tags = dict(spec.tags)
-        auth_json = os.environ.get("CODEX_AUTH_JSON")
-        if auth_json:
-            secrets = [modal.Secret.from_dict({"CODEX_AUTH_JSON": auth_json})]
-        else:
-            secrets = [modal.Secret.from_name(CODEX_SECRET_NAME)]
         sb = modal.Sandbox.create(
             "sleep",
             "infinity",
             app=modal.App.lookup(self._app_name, create_if_missing=True),
             image=_resolve_image(modal),
-            secrets=secrets,
+            secrets=_codex_secrets(modal),
             env={"CODEX_HOME": CODEX_HOME, "SBX_WORK": WORK_DIR},
             cpu=CPU,
             memory=MEMORY_MIB,
@@ -133,22 +153,33 @@ class ModalBackend:
         sb = modal.Sandbox.from_id(handle.id)
         pid_file = f"/tmp/sbx-exec-{uuid.uuid4().hex}.pid"
         wrapped = ["bash", "-c", f'echo $$ > {pid_file}; exec "$@"', "sbx-exec", *argv]
+        secrets = _codex_secrets(modal)
         if env:
-            proc = sb.exec(*wrapped, bufsize=1, env=dict(env))
+            proc = sb.exec(*wrapped, bufsize=1, env=dict(env), secrets=secrets)
         else:
-            proc = sb.exec(*wrapped, bufsize=1)
+            proc = sb.exec(*wrapped, bufsize=1, secrets=secrets)
         _close_stdin(proc)
         return ModalProcess(proc, sandbox_id=handle.id, pid_file=pid_file)
 
     def terminate(self, handle: SandboxHandle) -> None:
         modal = _load_modal()
-        sb = modal.Sandbox.from_id(handle.id)
-        sb.terminate()
+        try:
+            sb = modal.Sandbox.from_id(handle.id)
+            sb.terminate()
+        except Exception as exc:
+            if _is_sandbox_gone(exc):
+                return
+            raise
 
     def poll(self, handle: SandboxHandle) -> SandboxPoll:
         modal = _load_modal()
-        sb = modal.Sandbox.from_id(handle.id)
-        rc = sb.poll()
+        try:
+            sb = modal.Sandbox.from_id(handle.id)
+            rc = sb.poll()
+        except Exception as exc:
+            if _is_sandbox_gone(exc):
+                return SandboxPoll(alive=False, active_processes=0)
+            raise
         alive = rc is None
         return SandboxPoll(alive=alive, active_processes=1 if alive else 0)
 
