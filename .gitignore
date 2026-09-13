@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Playwright
+node_modules/
+web/node_modules/
+tests/e2e/artifacts/
+test-results/
+playwright-report/
+
+# Local env & secrets (never commit)
+.env
+.env.*
+*.pem
+auth.json
+.modal.toml
+.codex/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
