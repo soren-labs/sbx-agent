@@ -4,6 +4,8 @@ Start: ``python -m tests.fakes.mock_api --port 8787``
 
 HTTP Basic user/password default to ``sbx`` / ``sbx`` (local mock only, not a secret).
 Override with ``SBX_API_USER`` / ``SBX_API_PASSWORD``.
+
+Serves ``web/`` as static files at ``/`` so the chat page can develop against this mock.
 """
 
 from __future__ import annotations
@@ -16,26 +18,45 @@ import secrets
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "events" / "success.jsonl"
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "events"
+FIXTURE = FIXTURES / "success.jsonl"
+RESUME_FIXTURE = FIXTURES / "resume.jsonl"
+WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 MAX_CONCURRENT = 2
 SSE_INTERVAL_S = float(os.environ.get("SBX_SSE_INTERVAL_SECONDS", "0.2"))
 SSE_KEEPALIVE_S = float(os.environ.get("SBX_SSE_KEEPALIVE_SECONDS", "15"))
+SSE_RETRY_MS = int(os.environ.get("SBX_SSE_RETRY_MS", "250"))
+SSE_DROP_FIRST_AFTER = int(os.environ.get("SBX_SSE_DROP_FIRST_AFTER", "0"))
+CREATE_DELAY_S = float(os.environ.get("SBX_MOCK_CREATE_DELAY_S", "0"))
+TURN_EVENT_INTERVAL_S = float(os.environ.get("SBX_MOCK_TURN_INTERVAL_SECONDS", "0.25"))
 BASIC_USER = os.environ.get("SBX_API_USER", "sbx")
 BASIC_PASSWORD = os.environ.get("SBX_API_PASSWORD", "sbx")
+DEFAULT_MODEL = "gpt-5.6-luna"
 
 app = FastAPI(title="sbx-browser mock API", version="0.1.0")
 security = HTTPBasic(auto_error=False)
 _lock = threading.Lock()
 _sessions: dict[str, dict[str, Any]] = {}
+_sse_conn_counts: dict[str, int] = {}
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=".*",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["Authorization", "Last-Event-ID", "Content-Type"],
+)
 
 
 def _now() -> datetime:
@@ -50,18 +71,36 @@ def _usage() -> dict[str, int]:
     return {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
 
 
+def _merge_usage(base: dict[str, int], extra: dict[str, Any] | None) -> dict[str, int]:
+    if not extra:
+        return dict(base)
+    out = dict(base)
+    for key in (
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "cache_write_input_tokens",
+        "reasoning_output_tokens",
+    ):
+        if key in extra:
+            out[key] = int(extra[key])
+    return out
+
+
 def _cost(usage: dict[str, int]) -> float:
     return round(
-        usage["input_tokens"] * 1.25e-6
-        + usage["cached_input_tokens"] * 0.125e-6
-        + usage["output_tokens"] * 1.0e-5,
+        usage.get("input_tokens", 0) * 1.25e-6
+        + usage.get("cached_input_tokens", 0) * 0.125e-6
+        + usage.get("output_tokens", 0) * 1.0e-5,
         6,
     )
 
 
-def _load_fixture_events() -> list[dict[str, Any]]:
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for line in FIXTURE.read_text(encoding="utf-8").splitlines():
+    if not path.is_file():
+        return events
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -71,11 +110,59 @@ def _load_fixture_events() -> list[dict[str, Any]]:
     return events
 
 
+def _load_fixture_events() -> list[dict[str, Any]]:
+    return _load_jsonl(FIXTURE)
+
+
+def _usage_from_events(events: list[dict[str, Any]]) -> dict[str, int]:
+    usage = _usage()
+    for ev in events:
+        if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
+            usage = _merge_usage(usage, ev["usage"])
+        if ev.get("type") == "sbx.turn_finished" and isinstance(ev.get("usage"), dict):
+            usage = _merge_usage(usage, ev["usage"])
+    return usage
+
+
+def _enrich_turn(events: list[dict[str, Any]], n: int, reasoning_text: str) -> list[dict[str, Any]]:
+    """Wrap Codex JSONL with runner sbx.* events and a reasoning item (UI coverage)."""
+    out: list[dict[str, Any]] = [{"type": "sbx.turn_started", "n": n}]
+    inserted_reason = False
+    last_usage: dict[str, Any] | None = None
+    for ev in events:
+        out.append(ev)
+        if not inserted_reason and ev.get("type") == "turn.started":
+            out.append(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": f"item_reasoning_{n}",
+                        "type": "reasoning",
+                        "text": reasoning_text,
+                    },
+                }
+            )
+            inserted_reason = True
+        if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
+            last_usage = ev["usage"]
+    out.append(
+        {
+            "type": "sbx.turn_finished",
+            "status": "success",
+            "exit_code": 0,
+            "duration_s": 1.4,
+            "usage": last_usage or _usage(),
+        }
+    )
+    return out
+
+
 def _public(sess: dict[str, Any]) -> dict[str, Any]:
     now = _now()
     closed = sess["status"] in {"closed", "timed_out", "lost"}
     end = sess["updated_at"] if closed else now
     sandbox_seconds = max(0.0, (end - sess["created_at"]).total_seconds())
+    usage = dict(sess["usage"])
     return {
         "id": sess["id"],
         "title": sess["title"],
@@ -84,15 +171,11 @@ def _public(sess: dict[str, Any]) -> dict[str, Any]:
         "updated_at": _iso(sess["updated_at"]),
         "model": sess["model"],
         "turns": sess["turns"],
-        "usage": dict(sess["usage"]),
-        "cost_estimate_usd": _cost(sess["usage"]),
+        "usage": usage,
+        "cost_estimate_usd": _cost(usage),
         "sandbox_seconds": sandbox_seconds,
         "messages": list(sess["messages"]),
     }
-
-
-def _error(code: int, error: str) -> JSONResponse:
-    return JSONResponse(status_code=code, content={"error": error, "code": code})
 
 
 def require_basic(credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
@@ -137,6 +220,50 @@ async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONR
     )
 
 
+def _new_session(
+    *,
+    title: str,
+    model: str,
+    status: str = "idle",
+    created_at: datetime | None = None,
+    events: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    turns: int = 0,
+    usage: dict[str, int] | None = None,
+    sid: str | None = None,
+) -> dict[str, Any]:
+    now = created_at or _now()
+    evs = events if events is not None else _load_fixture_events()
+    return {
+        "id": sid or uuid.uuid4().hex,
+        "title": title,
+        "status": status,
+        "created_at": now,
+        "updated_at": now,
+        "model": model,
+        "turns": turns,
+        "usage": usage if usage is not None else _usage_from_events(evs),
+        "messages": list(messages or []),
+        "events": list(evs),
+        "current_turn_id": None,
+        "timer": None,
+        "stop_requested": False,
+    }
+
+
+def _promote_creating(sid: str, delay: float) -> None:
+    if delay <= 0:
+        return
+    time.sleep(delay)
+    with _lock:
+        sess = _sessions.get(sid)
+        if sess is None:
+            return
+        if sess["status"] == "creating":
+            sess["status"] = "idle"
+            sess["updated_at"] = _now()
+
+
 @app.post("/api/sessions", status_code=201)
 def create_session(
     body: CreateSessionRequest | None = None,
@@ -152,22 +279,22 @@ def create_session(
                 status_code=429,
                 detail={"error": "concurrency_limit", "code": 429},
             )
-        sid = uuid.uuid4().hex
-        now = _now()
-        _sessions[sid] = {
-            "id": sid,
-            "title": body.title or "untitled",
-            "status": "idle",
-            "created_at": now,
-            "updated_at": now,
-            "model": body.model or "gpt-5",
-            "turns": 0,
-            "usage": _usage(),
-            "messages": [],
-            "events": _load_fixture_events(),
-            "current_turn_id": None,
-            "timer": None,
-        }
+        initial = "creating" if CREATE_DELAY_S > 0 else "idle"
+        sess = _new_session(
+            title=body.title or "untitled",
+            model=body.model or DEFAULT_MODEL,
+            status=initial,
+            events=_enrich_turn(
+                _load_fixture_events(),
+                1,
+                "I will write a small file in /work and verify it.",
+            ),
+            usage=_usage(),
+        )
+        _sessions[sess["id"]] = sess
+        sid = sess["id"]
+    if CREATE_DELAY_S > 0:
+        threading.Thread(target=_promote_creating, args=(sid, CREATE_DELAY_S), daemon=True).start()
     return {"session_id": sid}
 
 
@@ -190,27 +317,46 @@ def get_session(sid: str, _: str = Depends(require_basic)) -> dict[str, Any]:
         return _public(_get(sid))
 
 
-def _finish_turn(sid: str, turn_id: str) -> None:
-    time.sleep(1.0)
+def _assistant_text(events: list[dict[str, Any]]) -> str:
+    text = "mock turn complete"
+    for ev in events:
+        item = ev.get("item") if isinstance(ev.get("item"), dict) else None
+        if ev.get("type") == "item.completed" and item and item.get("type") == "agent_message":
+            text = str(item.get("text") or text)
+    return text
+
+
+def _run_turn(sid: str, turn_id: str, events: list[dict[str, Any]]) -> None:
+    """Append turn events over time so an already-open SSE stream can follow."""
+    for ev in events:
+        time.sleep(TURN_EVENT_INTERVAL_S)
+        with _lock:
+            sess = _sessions.get(sid)
+            if sess is None:
+                return
+            if sess.get("current_turn_id") != turn_id or sess.get("stop_requested"):
+                return
+            sess["events"].append(ev)
+            sess["updated_at"] = _now()
+            if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
+                sess["usage"] = _merge_usage(sess["usage"], ev["usage"])
+            if ev.get("type") == "sbx.turn_finished" and isinstance(ev.get("usage"), dict):
+                sess["usage"] = _merge_usage(sess["usage"], ev["usage"])
     with _lock:
         sess = _sessions.get(sid)
         if sess is None:
             return
-        if sess["status"] != "running" or sess["current_turn_id"] != turn_id:
+        if sess.get("current_turn_id") != turn_id:
             return
         sess["status"] = "idle"
         sess["current_turn_id"] = None
+        sess["stop_requested"] = False
         sess["turns"] += 1
         sess["updated_at"] = _now()
-        sess["usage"] = {
-            "input_tokens": sess["usage"]["input_tokens"] + 128,
-            "cached_input_tokens": sess["usage"]["cached_input_tokens"],
-            "output_tokens": sess["usage"]["output_tokens"] + 64,
-        }
         sess["messages"].append(
             {
                 "role": "assistant",
-                "text": "mock turn complete",
+                "text": _assistant_text(events),
                 "turn_id": turn_id,
                 "ts": _iso(_now()),
             }
@@ -235,9 +381,11 @@ def post_message(
                 status_code=409,
                 detail={"error": "turn_in_progress", "code": 409},
             )
-        turn_id = f"turn-{sess['turns'] + 1}"
+        turn_n = sess["turns"] + 1
+        turn_id = f"turn-{turn_n}"
         sess["status"] = "running"
         sess["current_turn_id"] = turn_id
+        sess["stop_requested"] = False
         sess["updated_at"] = _now()
         sess["messages"].append(
             {
@@ -247,7 +395,14 @@ def post_message(
                 "ts": _iso(_now()),
             }
         )
-        timer = threading.Thread(target=_finish_turn, args=(sid, turn_id), daemon=True)
+        source = _load_jsonl(RESUME_FIXTURE if turn_n > 1 else FIXTURE)
+        reason = (
+            "The user asked to continue; I will update the existing workspace file."
+            if turn_n > 1
+            else "I will write a small file in /work and verify it."
+        )
+        queued = _enrich_turn(source, turn_n, reason)
+        timer = threading.Thread(target=_run_turn, args=(sid, turn_id, queued), daemon=True)
         sess["timer"] = timer
         timer.start()
     return {"turn_id": turn_id}
@@ -260,7 +415,17 @@ def stop_session(sid: str, _: str = Depends(require_basic)) -> dict[str, str]:
         if sess["status"] == "running":
             sess["status"] = "idle"
             sess["current_turn_id"] = None
+            sess["stop_requested"] = True
             sess["updated_at"] = _now()
+            sess["events"].append(
+                {
+                    "type": "sbx.turn_finished",
+                    "status": "timeout",
+                    "exit_code": 3,
+                    "duration_s": 0.2,
+                    "usage": dict(sess["usage"]),
+                }
+            )
         return {"status": sess["status"]}
 
 
@@ -270,6 +435,7 @@ def delete_session(sid: str, _: str = Depends(require_basic)) -> dict[str, Any]:
         sess = _get(sid)
         sess["status"] = "closed"
         sess["current_turn_id"] = None
+        sess["stop_requested"] = True
         sess["updated_at"] = _now()
         return _public(sess)
 
@@ -291,8 +457,9 @@ async def session_events(
     _: str = Depends(require_basic),
 ) -> StreamingResponse:
     with _lock:
-        sess = _get(sid)
-        events = list(sess["events"])
+        _get(sid)
+        conn_n = _sse_conn_counts.get(sid, 0) + 1
+        _sse_conn_counts[sid] = conn_n
 
     try:
         last_id = int(last_event_id) if last_event_id else 0
@@ -300,19 +467,33 @@ async def session_events(
         last_id = 0
 
     async def gen() -> Any:
+        yield f"retry: {SSE_RETRY_MS}\n\n"
         yield ": keepalive\n\n"
-        for index, payload in enumerate(events, start=1):
-            if await request.is_disconnected():
-                return
-            if index <= last_id:
-                continue
-            await asyncio.sleep(SSE_INTERVAL_S)
-            yield _format_sse(index, payload)
+        cursor = last_id
+        emitted = 0
+        last_keepalive = time.monotonic()
         while True:
             if await request.is_disconnected():
                 return
-            await asyncio.sleep(SSE_KEEPALIVE_S)
-            yield ": keepalive\n\n"
+            with _lock:
+                sess = _sessions.get(sid)
+                if sess is None:
+                    return
+                events = list(sess["events"])
+            while cursor < len(events):
+                if await request.is_disconnected():
+                    return
+                cursor += 1
+                await asyncio.sleep(SSE_INTERVAL_S)
+                yield _format_sse(cursor, events[cursor - 1])
+                emitted += 1
+                if SSE_DROP_FIRST_AFTER > 0 and conn_n == 1 and emitted >= SSE_DROP_FIRST_AFTER:
+                    return
+            now = time.monotonic()
+            if now - last_keepalive >= SSE_KEEPALIVE_S:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            await asyncio.sleep(min(0.1, SSE_INTERVAL_S))
 
     return StreamingResponse(
         gen(),
@@ -329,13 +510,70 @@ def reset_state() -> None:
     """Test helper: drop all in-memory sessions."""
     with _lock:
         _sessions.clear()
+        _sse_conn_counts.clear()
+
+
+def seed_demo_sessions() -> None:
+    """Terminal sessions with canned history for the chat page's read-only e2e."""
+    past = _now() - timedelta(minutes=12)
+    canned = _enrich_turn(
+        _load_fixture_events(),
+        1,
+        "I will write a small file in /work and verify it.",
+    )
+    usage = _usage_from_events(canned)
+    user_msg = {
+        "role": "user",
+        "text": "Create hello.txt in the workspace.",
+        "turn_id": "turn-1",
+        "ts": _iso(past),
+    }
+    asst_msg = {
+        "role": "assistant",
+        "text": _assistant_text(canned),
+        "turn_id": "turn-1",
+        "ts": _iso(past + timedelta(seconds=8)),
+    }
+    specs = (
+        ("seed-closed", "已关闭 · 只读历史", "closed"),
+        ("seed-timeout", "已超时 · 只读历史", "timed_out"),
+        ("seed-lost", "已丢失 · 只读历史", "lost"),
+    )
+    with _lock:
+        for sid, title, status in specs:
+            _sessions[sid] = _new_session(
+                sid=sid,
+                title=title,
+                model=DEFAULT_MODEL,
+                status=status,
+                created_at=past,
+                events=canned,
+                messages=[user_msg, asst_msg],
+                turns=1,
+                usage=usage,
+            )
+
+
+def mount_web() -> None:
+    if WEB_DIR.is_dir() and not any(getattr(r, "name", None) == "web" for r in app.routes):
+        app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+
+
+mount_web()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="sbx-browser mock session API")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--no-seed",
+        action="store_true",
+        help="Do not insert closed/timed_out/lost demo sessions",
+    )
     args = parser.parse_args()
+    if not args.no_seed:
+        seed_demo_sessions()
     import uvicorn
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
