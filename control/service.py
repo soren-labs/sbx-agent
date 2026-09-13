@@ -87,7 +87,10 @@ class ControlPlane:
 
     def public(self, rec: SessionRecord) -> dict[str, Any]:
         now = self.clock()
-        end = rec.ended_at if rec.status in TERMINAL_STATUSES else now
+        if rec.status in TERMINAL_STATUSES:
+            end = rec.ended_at or rec.updated_at or now
+        else:
+            end = now
         sandbox_seconds = max(0.0, (end - rec.created_at).total_seconds())
         usage = dict(rec.usage)
         usage.setdefault("input_tokens", 0)
