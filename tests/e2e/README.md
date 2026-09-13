@@ -15,4 +15,4 @@ make test-e2e
 
 场景包装：`hang` 提示词走 hang；`codex exec resume` 走 resume fixture；其余 success。
 
-每步截图写入 `artifacts/`（本目录已被 `.gitignore` 忽略生成物；PR 中的样张以 `git add -f` 提交）。
+每步截图写入 `artifacts/wp2g_*.png`（本目录已被 `.gitignore` 忽略生成物；PR 中的样张以 `git add -f` 提交）。
