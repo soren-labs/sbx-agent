@@ -46,17 +46,19 @@ def _iso(ts: datetime) -> str:
     return ts.isoformat()
 
 
+USD_PER_CPU_SECOND = 0.00003942
+USD_PER_GIB_SECOND = 0.00000667
+MVP_CPU_REQUEST = 1
+MVP_MEMORY_GIB_REQUEST = 1
+
+
 def _usage() -> dict[str, int]:
     return {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
 
 
-def _cost(usage: dict[str, int]) -> float:
-    return round(
-        usage["input_tokens"] * 1.25e-6
-        + usage["cached_input_tokens"] * 0.125e-6
-        + usage["output_tokens"] * 1.0e-5,
-        6,
-    )
+def _cost(sandbox_seconds: float) -> float:
+    rate = MVP_CPU_REQUEST * USD_PER_CPU_SECOND + MVP_MEMORY_GIB_REQUEST * USD_PER_GIB_SECOND
+    return round(max(0.0, sandbox_seconds) * rate, 6)
 
 
 def _load_fixture_events() -> list[dict[str, Any]]:
@@ -85,7 +87,7 @@ def _public(sess: dict[str, Any]) -> dict[str, Any]:
         "model": sess["model"],
         "turns": sess["turns"],
         "usage": dict(sess["usage"]),
-        "cost_estimate_usd": _cost(sess["usage"]),
+        "cost_estimate_usd": _cost(sandbox_seconds),
         "sandbox_seconds": sandbox_seconds,
         "messages": list(sess["messages"]),
     }

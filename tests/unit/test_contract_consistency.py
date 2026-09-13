@@ -87,6 +87,9 @@ def test_canonical_blocks_agree() -> None:
     assert set(runner["commands"]) == COMMANDS
     assert set(canon["commands"]) == COMMANDS
 
+    assert runner["keepalives_s"] == canon["keepalives_s"] == 15
+    assert runner["sse"] == canon["sse"]
+
     assert fs["codex_home"] == "$SBX_WORK/.codex"
     assert fs["production_work"] == "/work"
     assert fs["codex_rollout"] == ("$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl")
@@ -94,6 +97,16 @@ def test_canonical_blocks_agree() -> None:
     assert fs["config_toml"]["approval_policy"] == "never"
     assert fs["config_toml"]["sandbox_mode"] == "danger-full-access"
     assert fs["shell_environment_policy_exclude"] == ["CODEX_AUTH_JSON"]
+    assert fs["pid_file"] == "runner.pid"
+    assert fs["session_json_additional_keys_allowed"] is True
+    turn_fields = ["n", "codex_session_id", "status", "usage", "message", "exit_code"]
+    assert fs["turn_json_fields"] == turn_fields
+    assert runner["turn_json_fields"] == turn_fields
+
+    cost = canon["cost_estimate"]
+    assert cost["mvp_cpu_request"] == 1
+    assert cost["mvp_memory_gib_request"] == 1
+    assert "sandbox_seconds" in cost["formula"]
 
 
 def test_api_yaml_paths_and_status_codes() -> None:
@@ -142,6 +155,18 @@ def test_api_yaml_paths_and_status_codes() -> None:
     assert set(usage_schema["required"]) == USAGE
     assert USAGE_OPTIONAL <= set(usage_schema["properties"])
 
+    cost_desc = api["components"]["schemas"]["Session"]["properties"]["cost_estimate_usd"][
+        "description"
+    ]
+    assert "sandbox_seconds" in cost_desc
+    assert "0.00003942" in cost_desc
+    assert "0.00000667" in cost_desc
+
+    conflict = api["components"]["responses"]["Conflict"]["description"]
+    assert "turn_in_progress" in conflict
+    assert "session_not_runnable" in conflict
+    assert "closed" in conflict
+
     schemes = api["components"]["securitySchemes"]
     assert schemes["basicAuth"]["scheme"] == "basic"
 
@@ -163,6 +188,8 @@ def test_markdown_bodies_mention_shared_tokens() -> None:
     assert "bufsize=1" in runner
     assert "CODEX_AUTH_JSON" in filesystem
     assert "600" in filesystem
+    assert "runner.pid" in filesystem
+    assert "runner.pid" in runner
 
 
 def test_fixtures_only_use_catalogued_event_names() -> None:

@@ -172,6 +172,9 @@ class LocalProcessBackend:
             env=merged,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
+            # stderr is discarded here; JSONL lives on stdout. WP1-C must attach
+            # its own log strategy (for example a sidecar file) if diagnostics
+            # from Codex/runner are needed — do not mix stderr into stdout.
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,

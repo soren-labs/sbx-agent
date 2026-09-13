@@ -23,7 +23,8 @@
 | `runtime/image.py` `runtime/entrypoint.sh` `Dockerfile.local` `Makefile` `README.md` | WP1-A / `SOR-29` | 镜像与入口；`image` / `deploy` target 由该包实现 |
 | `runtime/runner/**` `tests/unit/runner/**` | WP1-B / `SOR-30` | Codex 会话驱动 |
 | `control/**`（除冻结的 `backend.py`）`tests/unit/control/**` `tests/integration/control/**` | WP1-C / `SOR-31` | 会话 API、状态机、SSE、reaper；可新增 `control/backends/modal.py` |
-| `web/**` `tests/e2e/**` | WP1-D / `SOR-32` | 聊天页；Playwright 对 mock_api / 后续真控制面 |
+| `web/**` | WP1-D / `SOR-32` | 聊天页；Playwright 对 mock_api |
+| `tests/e2e/**` | WP1-D / `SOR-32` 起步；**WP2-G / `SOR-41`** 对真控制面 | G 可修 `web/**` 缺陷；截图 `tests/e2e/artifacts/` |
 | `tests/integration/**` | WP2-F / `SOR-40` | 无云集成（真 runner + LocalProcessBackend + fake_codex） |
 | `tests/e2e_modal/**` | WP2-H / `SOR-42` | 编排者在 WSL 跑真实 Modal e2e |
 | `tests/fakes/` `tests/fixtures/` | WP0 提供；后续包只扩展不重写契约语义 | `fake_codex.py` / `stub_runner.py` / `mock_api.py` / 事件样本 |

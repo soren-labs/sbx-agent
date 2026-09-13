@@ -29,6 +29,7 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
 ### `runner turn --n N --message-file F [--max-seconds S]`
 
 - 默认 `--max-seconds` **900**。
+- **上一轮未结束**：若 `$SBX_WORK/runner.pid` 存在且该 PID 仍存活，立即失败，**不**启动第二个 Codex，写入 `sbx.error`，退出码 **2**。控制面必须以 HTTP 409 挡住并发 turn，不得只靠 runner 互斥。不引入退出码 1 作为跨包约定。
 - 将 `F` 复制为 `$SBX_WORK/inbox/<N>.md`。`$PROMPT` 取该文件全文。
 - 第 1 轮调用（**stdin 关闭**，prompt 仅为位置参数，不用 `-`）：
 
@@ -48,13 +49,13 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
 
   `session_id` 来自 `session.json.codex_session_id`（即首轮 `thread.started.thread_id`）。后续轮 `thread.started.thread_id` 与首轮相同。
 - Codex stdout **逐行追加**到 `$SBX_WORK/events.jsonl`，同时写 runner 自己的 stdout。以 `\n` 为界切行；无法解析的行计为坏行并继续，最终退出码 4。
-- 在 Codex 输出前后插入 `sbx.turn_started` / `sbx.turn_finished{status,exit_code,duration_s,usage}`；异常插入 `sbx.error`。
-- 解析 `thread.started`、`turn.completed.usage`、最终 `agent_message`，写入 `turns/<N>.json`，更新 `session.json`（`codex_session_id`、`turn`）。
+- 在 Codex 输出前后插入 `sbx.turn_started{n}` / `sbx.turn_finished{n,status,exit_code,duration_s,usage}`；异常插入 `sbx.error`。
+- 解析 `thread.started`、`turn.completed.usage`、最终 `agent_message`，写入 `turns/<N>.json`，更新 `session.json`（至少 `codex_session_id`、`turn`）。`turns/<N>.json` 键冻结为：`n`、`codex_session_id`、`status`、`usage`、`message`、`exit_code`。P0 实测后续轮可以没有 `agent_message`，此时 `message` 为 **空字符串**。
 - 软超时：到达 `S` 秒后对 Codex 进程 **SIGTERM**，再等 **30 s** 收尾；仍未退出则 SIGKILL。超时退出码 3。
 
 ### `runner stop`
 
-终止当前正在进行的 `turn`（对 Codex 子进程 SIGTERM → 宽限 → SIGKILL），不删除 `$SBX_WORK`。
+终止当前正在进行的 `turn`（对 Codex 子进程 SIGTERM → 宽限 → SIGKILL），不删除 `$SBX_WORK`。无运行中的轮（无 `runner.pid` 或 PID 已退出）时 **幂等成功，退出码 0**。
 
 ## 进程约束
 
@@ -69,7 +70,7 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
 | 码 | 含义 |
 | --- | --- |
 | 0 | 成功 |
-| 2 | Codex 进程非 0 |
+| 2 | Codex 进程非 0，或无法启动本轮（上一轮仍在进行） |
 | 3 | 超时 |
 | 4 | 事件流中出现无法解析的非 JSON 行（坏 JSON） |
 
@@ -95,6 +96,13 @@ paths:
   - turns/<n>.json
   - events.jsonl
   - session.json
+turn_json_fields:
+  - n
+  - codex_session_id
+  - status
+  - usage
+  - message
+  - exit_code
 codex_events:
   - thread.started
   - turn.started

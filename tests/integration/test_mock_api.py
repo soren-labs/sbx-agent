@@ -81,6 +81,16 @@ def test_message_409_when_turn_running(client: TestClient) -> None:
     assert stop.status_code == 202
 
 
+def test_message_409_when_session_closed(client: TestClient) -> None:
+    sid = client.post("/api/sessions", json={"title": "gone"}, auth=AUTH).json()["session_id"]
+    client.delete(f"/api/sessions/{sid}", auth=AUTH)
+    again = client.post(f"/api/sessions/{sid}/messages", json={"text": "nope"}, auth=AUTH)
+    assert again.status_code == 409
+    body = again.json()
+    assert body["code"] == 409
+    assert body["error"] == "session_not_runnable"
+
+
 def test_404(client: TestClient) -> None:
     r = client.get("/api/sessions/does-not-exist", auth=AUTH)
     assert r.status_code == 404

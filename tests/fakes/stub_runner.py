@@ -36,6 +36,27 @@ def pid_file(root: Path) -> Path:
     return root / "runner.pid"
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def turn_in_progress(root: Path) -> bool:
+    path = pid_file(root)
+    if not path.is_file():
+        return False
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return False
+    return _pid_alive(pid)
+
+
 def emit(root: Path, obj: dict) -> None:
     line = json.dumps(obj, ensure_ascii=False)
     events = root / "events.jsonl"
@@ -135,6 +156,9 @@ def _write_session(root: Path, session: dict) -> None:
 
 def cmd_turn(args: argparse.Namespace) -> int:
     root = work_root()
+    if turn_in_progress(root):
+        emit(root, {"type": "sbx.error", "message": "turn already in progress"})
+        return EXIT_CODEX
     start = time.monotonic()
     pid_file(root).write_text(str(os.getpid()), encoding="utf-8")
 
@@ -231,6 +255,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
         root,
         {
             "type": "sbx.turn_finished",
+            "n": args.n,
             "status": status,
             "exit_code": code,
             "duration_s": duration,

@@ -57,6 +57,12 @@ x-canonical:
   usage_fields_optional:
     - cache_write_input_tokens
     - reasoning_output_tokens
+  cost_estimate:
+    formula: sandbox_seconds * (cpu_request * usd_per_cpu_second + memory_gib_request * usd_per_gib_second)
+    usd_per_cpu_second: 0.00003942
+    usd_per_gib_second: 0.00000667
+    mvp_cpu_request: 1
+    mvp_memory_gib_request: 1
   http_paths:
     - POST /api/sessions
     - GET /api/sessions
@@ -170,7 +176,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/TurnInProgress"
+          $ref: "#/components/responses/Conflict"
   /api/sessions/{id}/stop:
     post:
       tags: [sessions]
@@ -315,6 +321,14 @@ components:
           $ref: "#/components/schemas/Usage"
         cost_estimate_usd:
           type: number
+          description: |
+            Sandbox 时长 × 单价，不含模型 token 费用（token 见 `usage`）。
+            `sandbox_seconds * (cpu_request * usd_per_cpu_second
+            + memory_gib_request * usd_per_gib_second)`。
+            单价取 Modal Sandbox 公开价：CPU `$0.00003942` / 物理核 / 秒，
+            内存 `$0.00000667` / GiB / 秒。
+            MVP 请求值（SOR-31）：`cpu_request=1`，`memory_gib_request=1`
+            （`cpu=(1,2)`、`memory=(1024,4096)` 的 request）。
         sandbox_seconds:
           type: number
           description: Accumulated sandbox lifetime in seconds
@@ -375,8 +389,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorBody"
-    TurnInProgress:
-      description: Previous turn has not finished (409)
+    Conflict:
+      description: |
+        409 when the session cannot accept a new turn:
+        - `running`: previous turn has not finished (`error` = `turn_in_progress`)
+        - `closed` / `timed_out` / `lost`: session is not runnable
+          (`error` = `session_not_runnable`)
       content:
         application/json:
           schema:

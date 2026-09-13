@@ -47,7 +47,7 @@
 | `type` | 形状 | 说明 |
 | --- | --- | --- |
 | `sbx.turn_started` | `{n}` | 第 n 轮开始，写在 Codex 输出之前 |
-| `sbx.turn_finished` | `{status,exit_code,duration_s,usage}` | 第 n 轮结束（成功或失败） |
+| `sbx.turn_finished` | `{n,status,exit_code,duration_s,usage}` | 第 n 轮结束（成功或失败）。`n` 与对应的 `sbx.turn_started` 相同，供 SSE 对账 |
 | `sbx.error` | `{message}` | runner 层异常（坏 JSON、超时收尾失败等） |
 
 `sbx.turn_finished.status`：`success` / `codex_error` / `timeout` / `bad_json`，与 CLI 退出码 0 / 2 / 3 / 4 对应。
