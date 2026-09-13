@@ -8,9 +8,11 @@ it skips with an explanation when the docker daemon is not available.
 
 from __future__ import annotations
 
+import inspect
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -22,10 +24,14 @@ from runtime.image import (
     FORBIDDEN_APT_PREFIXES,
     IMAGE_NAME,
     PACKAGES_TXT,
+    PYTHONPATH_REMOTE,
     REQUIRED_APT,
+    RUNTIME_DIR,
+    RUNTIME_REMOTE,
     invoke_control_deploy,
     load_packages,
     render_dockerfile_local,
+    write_local_secrets,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -78,7 +84,9 @@ def test_dockerfile_local_is_generated_from_packages_txt() -> None:
     assert on_disk == rendered
     spec = load_packages()
     assert f"FROM python:{spec.python_version}-slim-bookworm" in on_disk
-    assert "COPY runtime/packages.txt" in on_disk
+    assert f"COPY runtime {RUNTIME_REMOTE}" in on_disk
+    assert f"PYTHONPATH={PYTHONPATH_REMOTE}" in on_disk
+    assert "COPY runtime/entrypoint.sh" in on_disk
     assert spec.codex_npm_spec in on_disk
     assert spec.nodesource_setup_url in on_disk
     for pkg in spec.apt:
@@ -101,6 +109,9 @@ def test_image_py_reads_packages_and_does_not_bake_sandbox_params() -> None:
     assert "codex_npm_spec" in source
     assert "nodesource_setup_url" in source
     assert ".entrypoint(" in source
+    assert "add_local_dir" in source
+    assert RUNTIME_REMOTE in source
+    assert "PYTHONPATH" in source
     # Hardware / lifetime / secrets belong to Sandbox.create (control plane).
     assert "Sandbox.create" in source
     assert "idle_timeout" in source  # mentioned as NOT set here
@@ -108,6 +119,12 @@ def test_image_py_reads_packages_and_does_not_bake_sandbox_params() -> None:
     assert "Secret.from_dict" not in source
     assert "cpu=(" not in source
     assert "memory=(" not in source
+
+
+def test_runtime_dir_contains_runner_package() -> None:
+    assert (RUNTIME_DIR / "__init__.py").is_file()
+    assert (RUNTIME_DIR / "runner" / "__init__.py").is_file()
+    assert (RUNTIME_DIR / "runner" / "__main__.py").is_file()
 
 
 def test_makefile_test_does_not_build_modal_image() -> None:
@@ -130,6 +147,23 @@ def test_makefile_test_does_not_build_modal_image() -> None:
     assert "modal " not in joined
     assert "\nimage:" in "\n" + makefile
     assert "\ndeploy:" in "\n" + makefile
+    assert "\nsecrets:" in "\n" + makefile
+    assert "\ntest-e2e-modal:" in "\n" + makefile
+    assert "WP2-H" in makefile
+    secrets_block: list[str] = []
+    in_secrets = False
+    for line in lines:
+        if line.startswith("secrets:"):
+            in_secrets = True
+            continue
+        if in_secrets:
+            if line and not line[0].isspace() and line.endswith(":"):
+                break
+            secrets_block.append(line)
+    secrets_joined = "\n".join(secrets_block)
+    assert "write_local_secrets" in secrets_joined
+    assert "echo" not in secrets_joined
+    assert "cat " not in secrets_joined
 
 
 def test_entrypoint_creates_layout_and_exits_on_sigterm(tmp_path: Path) -> None:
@@ -162,10 +196,17 @@ def test_entrypoint_creates_layout_and_exits_on_sigterm(tmp_path: Path) -> None:
     assert proc.returncode is not None
 
 
+def test_invoke_control_deploy_imports_control_deploy_not_app_main() -> None:
+    source = inspect.getsource(invoke_control_deploy)
+    assert "from control.deploy import deploy" in source
+    assert "control.app" not in source
+
+
 @pytest.mark.skip(
     reason=(
-        "WP1-C wired control.app.main as a uvicorn CLI; invoke_control_deploy() "
-        "picks it up and argparse-exits under pytest. Out of WP2-F scope; tracked as SOR-47."
+        "Blocked by SOR-53: control.deploy.deploy() is not on main yet. "
+        "WP1-A must not implement control/deploy.py. When WP1-C lands, calling "
+        "this would talk to Modal and must stay out of make test."
     )
 )
 def test_invoke_control_deploy_placeholder(capsys: pytest.CaptureFixture[str]) -> None:
@@ -176,6 +217,34 @@ def test_invoke_control_deploy_placeholder(capsys: pytest.CaptureFixture[str]) -
     assert IMAGE_NAME in out or "sbx-runtime" in out
     assert "token" not in out.lower()
     assert "password" not in out.lower()
+
+
+def test_write_local_secrets_does_not_print_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    token_id = "ak-REDACTED"
+    token_secret = "as-REDACTED"
+    auth = '{"token":"REDACTED"}'
+    monkeypatch.setenv("MODAL_TOKEN_ID", token_id)
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", token_secret)
+    monkeypatch.setenv("CODEX_AUTH_JSON", auth)
+    modal_toml = tmp_path / ".modal.toml"
+    auth_json = tmp_path / ".codex" / "auth.json"
+    write_local_secrets(modal_toml=modal_toml, auth_json=auth_json)
+    out = capsys.readouterr().out
+    assert token_id not in out
+    assert token_secret not in out
+    assert auth not in out
+    assert "ak-" not in out
+    assert "as-" not in out
+    text = modal_toml.read_text(encoding="utf-8")
+    assert "[sorenlab2026]" in text
+    assert "active = true" in text
+    assert token_id in text
+    assert token_secret in text
+    assert stat.S_IMODE(modal_toml.stat().st_mode) == 0o600
+    assert auth_json.read_text(encoding="utf-8") == auth
+    assert stat.S_IMODE(auth_json.stat().st_mode) == 0o600
 
 
 @pytest.fixture(scope="module")
@@ -189,6 +258,40 @@ def local_docker_image() -> str:
         check=True,
     )
     return tag
+
+
+def test_docker_runtime_runner_importable(local_docker_image: str) -> None:
+    env = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "printenv", local_docker_image, "PYTHONPATH"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert env.stdout.strip() == PYTHONPATH_REMOTE
+    probe = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            local_docker_image,
+            "-c",
+            "import pathlib, runtime.runner; print(pathlib.Path(runtime.runner.__file__))",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    path = probe.stdout.strip()
+    assert path.startswith(f"{RUNTIME_REMOTE}/runner")
+    listing = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "test", local_docker_image, "-d", RUNTIME_REMOTE],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert listing.returncode == 0
 
 
 def test_docker_codex_and_node_versions(local_docker_image: str) -> None:
