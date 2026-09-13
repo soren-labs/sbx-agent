@@ -36,9 +36,9 @@ def build_codex_argv(
     """Build ``codex exec`` / ``codex exec resume`` argv.
 
     Prompt is a positional argument (never ``-``). First turn matches
-    ``runner-cli.md`` plus P0: ``-C $SBX_WORK``. Resume matches P0 / the
-    issue supplement, and still passes ``-C`` so fake_codex writes into
-    ``$SBX_WORK``.
+    ``runner-cli.md`` plus P0: ``-C $SBX_WORK``. Resume matches P0 / Codex
+    CLI 0.153.0: ``codex exec resume`` does **not** accept ``-C`` (cwd is
+    already ``work`` in ``start_codex``).
     """
     cmd = [*codex_bin_tokens()]
     if thread_id:
@@ -47,8 +47,6 @@ def build_codex_argv(
             "resume",
             "--json",
             "--skip-git-repo-check",
-            "-C",
-            str(work),
             "--dangerously-bypass-approvals-and-sandbox",
             thread_id,
             prompt,

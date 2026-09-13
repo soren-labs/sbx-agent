@@ -42,11 +42,17 @@ def test_resume_argv_thread_id_then_prompt(tmp_path: Path, monkeypatch: pytest.M
         thread_id="01a09a36-b4fb-7f90-b96e-42adeefa05e0",
         model="gpt-5.6-luna",
     )
-    assert argv[1:4] == ["exec", "resume", "--json"]
-    assert "--skip-git-repo-check" in argv
-    assert "-C" in argv
-    assert argv[-2] == "01a09a36-b4fb-7f90-b96e-42adeefa05e0"
-    assert argv[-1] == "second turn"
+    assert argv == [
+        "codex",
+        "exec",
+        "resume",
+        "--json",
+        "--skip-git-repo-check",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "01a09a36-b4fb-7f90-b96e-42adeefa05e0",
+        "second turn",
+    ]
+    assert "-C" not in argv
     assert argv[-1] != "-"
     assert "-m" not in argv
 
