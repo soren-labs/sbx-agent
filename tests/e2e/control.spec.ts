@@ -30,7 +30,7 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await waitAppReady(page);
     await expect(page.getByTestId("empty-sessions")).toBeVisible();
     await expect(page.getByTestId("session-item")).toHaveCount(0);
-    await shot(page, "01_login_empty.png");
+    await shot(page, "wp2g_01_login_empty.png");
   });
 
   test("2. create session: creating hint then idle", async ({ page }) => {
@@ -51,12 +51,12 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await page.getByTestId("new-session").click();
     await expect(page.getByTestId("cold-start")).toBeVisible();
     await expect(page.getByTestId("new-session")).toHaveText("创建中…");
-    await shot(page, "02_creating.png");
+    await shot(page, "wp2g_02_creating.png");
 
     await expect(page.getByTestId("session-title")).toHaveText(ctx.title, { timeout: 30_000 });
     await waitIdle(page);
     await expect(page.getByTestId("cold-start")).toHaveCount(0);
-    await shot(page, "03_idle.png");
+    await shot(page, "wp2g_03_idle.png");
   });
 
   test("3. send message: stream, collapsible command/file, usage and cost", async ({
@@ -73,21 +73,21 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await expect(page.getByTestId("agent-message")).toContainText("Created hello.txt");
     await expect(page.getByTestId("command-block")).toBeVisible();
     await expect(page.getByTestId("file-block")).toBeVisible();
-    await shot(page, "04_stream.png");
+    await shot(page, "wp2g_04_stream.png");
 
     await page.getByTestId("command-block").locator("summary").click();
     await expect(page.getByTestId("command-output")).toBeVisible();
-    await shot(page, "05_command_expanded.png");
+    await shot(page, "wp2g_05_command_expanded.png");
 
     await page.getByTestId("file-block").locator("summary").click();
     await expect(page.getByTestId("file-list")).toBeVisible();
     await expect(page.getByTestId("file-list")).toContainText("hello.txt");
-    await shot(page, "06_file_expanded.png");
+    await shot(page, "wp2g_06_file_expanded.png");
 
     await waitIdle(page);
     await expect(page.getByTestId("session-usage")).not.toHaveText("in 0 · cache 0 · out 0");
     await expect(page.getByTestId("session-cost")).not.toHaveText("$0.00");
-    await shot(page, "07_usage_cost.png");
+    await shot(page, "wp2g_07_usage_cost.png");
   });
 
   test("4. second turn resume keeps history", async ({ page }) => {
@@ -104,7 +104,7 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await expect(page.getByTestId("agent-message").first()).toContainText("Created hello.txt");
     await expect(page.getByTestId("user-message").first()).toContainText("Write hello.txt");
     await waitIdle(page);
-    await shot(page, "08_resume_history.png");
+    await shot(page, "wp2g_08_resume_history.png");
   });
 
   test("5. hang then stop returns idle within 5s", async ({ page }) => {
@@ -120,7 +120,7 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await expect(page.getByTestId("session-status")).toHaveText("空闲", { timeout: 5_000 });
     expect(Date.now() - t0).toBeLessThan(5_000);
     await expect(page.getByTestId("stop-turn")).toHaveCount(0);
-    await shot(page, "09_hang_stop.png");
+    await shot(page, "wp2g_09_hang_stop.png");
   });
 
   test("6. reload does not drop or duplicate events (Last-Event-ID)", async ({ page }) => {
@@ -143,13 +143,16 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await expect(page.getByTestId("file-block")).toHaveCount(fileCount);
     await expect(page.getByTestId("user-message")).toHaveCount(userCount);
 
-    await page.context().setOffline(true);
-    await page.waitForTimeout(400);
-    await page.context().setOffline(false);
+    const resumed = page.waitForRequest(
+      (req) => req.url().includes("/events") && Boolean(req.headers()["last-event-id"]),
+      { timeout: 15_000 },
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+    await resumed;
     await expect(page.getByTestId("agent-message")).toHaveCount(agentCount, { timeout: 20_000 });
     await expect(page.getByTestId("command-block")).toHaveCount(commandCount);
     expect(sseLastEventIds.some((id) => id !== "")).toBeTruthy();
-    await shot(page, "10_reload.png");
+    await shot(page, "wp2g_10_reload.png");
   });
 
   test("7. close session: list closed, detail read-only", async ({ page }) => {
@@ -161,7 +164,7 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await expect(page.getByTestId("session-status")).toHaveText("已关闭");
     const closed = page.locator(`[data-testid=session-item]`, { hasText: ctx.title });
     await expect(closed).toHaveAttribute("data-status", "closed");
-    await shot(page, "11_closed_readonly.png");
+    await shot(page, "wp2g_11_closed_readonly.png");
   });
 
   test("8. third live session shows friendly 429 copy", async ({ page }) => {
@@ -180,6 +183,6 @@ test.describe("WP2-G Playwright vs local control + fake_codex", () => {
     await page.getByTestId("new-session").click();
     await expect(page.getByTestId("error-banner")).toContainText("429");
     await expect(page.getByTestId("error-banner")).toContainText("上限");
-    await shot(page, "12_concurrency_429.png");
+    await shot(page, "wp2g_12_concurrency_429.png");
   });
 });
