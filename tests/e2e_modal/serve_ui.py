@@ -99,6 +99,12 @@ def build_app() -> FastAPI:
         out_headers = {
             key: value for key, value in resp.headers.items() if key.lower() not in HOP_BY_HOP
         }
+        media_type = resp.headers.get("content-type")
+        if media_type and "text/event-stream" in media_type:
+            out_headers["Cache-Control"] = "no-cache"
+            out_headers["X-Accel-Buffering"] = "no"
+            out_headers.pop("content-length", None)
+            out_headers.pop("Content-Length", None)
 
         async def gen():
             try:
@@ -112,7 +118,7 @@ def build_app() -> FastAPI:
             gen(),
             status_code=resp.status_code,
             headers=out_headers,
-            media_type=resp.headers.get("content-type"),
+            media_type=media_type,
         )
 
     app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")

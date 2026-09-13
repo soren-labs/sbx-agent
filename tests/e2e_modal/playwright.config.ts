@@ -20,6 +20,9 @@ export default defineConfig({
     baseURL: origin,
     viewport: { width: 1280, height: 800 },
     colorScheme: "dark",
+    trace: "off",
+    video: "off",
+    screenshot: "off",
     extraHTTPHeaders: {
       Authorization: `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`,
     },

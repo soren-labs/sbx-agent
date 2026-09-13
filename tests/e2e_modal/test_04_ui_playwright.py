@@ -22,6 +22,9 @@ def test_ui_two_turns_then_readonly(client: httpx.Client, control_url: str) -> N
     env["SBX_UI_TITLE"] = f"wp2h-ui-{int(time.time())}"
     art = artifacts_dir()
     env["SBX_UI_ARTIFACTS"] = str(art)
+    # Config lives in tests/e2e_modal/, so Node resolves @playwright/test from
+    # that directory unless NODE_PATH points at web/node_modules (same as make test-e2e).
+    env["NODE_PATH"] = str(REPO_ROOT / "web" / "node_modules")
     try:
         proc = subprocess.run(
             [
