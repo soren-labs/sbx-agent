@@ -10,6 +10,7 @@ set -euo pipefail
 
 export SBX_WORK="${SBX_WORK:-/work}"
 export CODEX_HOME="${CODEX_HOME:-${SBX_WORK}/.codex}"
+export PYTHONPATH="${PYTHONPATH:-/opt/sbx}"
 
 mkdir -p "${SBX_WORK}/inbox" "${SBX_WORK}/turns" "${CODEX_HOME}"
 

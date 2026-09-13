@@ -1,4 +1,6 @@
-.PHONY: lint test test-e2e image deploy
+.PHONY: lint test test-e2e image deploy secrets test-e2e-modal
+
+export MODAL_PROFILE ?= sorenlab2026
 
 # spike/ is owned by the P0 orchestrator (SOR-28) and currently fails ruff (E501/F401);
 # tracked as SOR-43 (child of SOR-29). Wave 1 lint excludes it; do not edit spike/.
@@ -21,3 +23,15 @@ image:
 # WP1-C owns the real control-plane deploy. Sandbox params stay out of the image.
 deploy:
 	uv run python -c "from runtime.image import invoke_control_deploy; invoke_control_deploy()"
+
+# Write Cloud Secrets into ~/.modal.toml and ~/.codex/auth.json. Never echo values.
+secrets:
+	uv run python -c "from runtime.image import write_local_secrets; write_local_secrets()"
+
+# Real Modal e2e is WP2-H (SOR-42). This target only runs it when that tree exists.
+test-e2e-modal:
+	@if [ -d tests/e2e_modal ]; then \
+		uv run pytest tests/e2e_modal; \
+	else \
+		echo "tests/e2e_modal is owned by WP2-H (SOR-42); not implemented in WP1-A."; \
+	fi

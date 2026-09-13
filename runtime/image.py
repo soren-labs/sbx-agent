@@ -10,7 +10,7 @@ with the Modal image. Sandbox lifetime and hardware (``idle_timeout``,
 from __future__ import annotations
 
 import argparse
-import importlib
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +24,9 @@ DOCKERFILE_LOCAL = REPO_ROOT / "Dockerfile.local"
 APP_NAME = "sbx-runtime"
 IMAGE_NAME = "sbx-runtime"
 ENTRYPOINT_REMOTE = "/opt/sbx/entrypoint.sh"
+RUNTIME_REMOTE = "/opt/sbx/runtime"
+PYTHONPATH_REMOTE = "/opt/sbx"
+MODAL_WORKSPACE = "sorenlab2026"
 
 REQUIRED_APT = (
     "curl",
@@ -113,7 +116,8 @@ def render_dockerfile_local(spec: PackageSpec | None = None) -> str:
 FROM python:{spec.python_version}-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \\
-    SBX_WORK=/work
+    SBX_WORK=/work \\
+    PYTHONPATH={PYTHONPATH_REMOTE}
 
 RUN apt-get update \\
  && apt-get install -y --no-install-recommends {apt} \\
@@ -123,7 +127,7 @@ RUN apt-get update \\
  && apt-get clean \\
  && rm -rf /var/lib/apt/lists/*
 
-COPY runtime/packages.txt /opt/sbx/packages.txt
+COPY runtime {RUNTIME_REMOTE}
 COPY runtime/entrypoint.sh {ENTRYPOINT_REMOTE}
 
 RUN chmod +x {ENTRYPOINT_REMOTE} \\
@@ -155,35 +159,78 @@ def sbx_runtime_image():
             "codex --version",
         )
         .add_local_file(str(ENTRYPOINT_SH), ENTRYPOINT_REMOTE, copy=True)
+        .add_local_dir(RUNTIME_DIR, RUNTIME_REMOTE, copy=True)
         .run_commands(f"chmod +x {ENTRYPOINT_REMOTE}")
-        .env({"SBX_WORK": "/work"})
+        .env({"SBX_WORK": "/work", "PYTHONPATH": PYTHONPATH_REMOTE})
         .entrypoint([ENTRYPOINT_REMOTE])
     )
 
 
 def invoke_control_deploy() -> None:
-    """Placeholder ``make deploy``: call WP1-C if present, otherwise print a hint."""
-    candidates = (
-        ("control.deploy", "deploy"),
-        ("control.deploy", "main"),
-        ("control.app", "deploy"),
-        ("control.app", "main"),
+    """``make deploy``: WP1-C ``control.deploy.deploy()`` if present (SOR-47 / SOR-53).
+
+    Must not call ``control.app.main`` (local uvicorn CLI). WP1-A does not
+    implement ``control/deploy.py``; until that module lands, print a hint.
+    """
+    try:
+        from control.deploy import deploy as control_deploy
+    except ImportError:
+        print("control deploy entry not available yet (WP1-C / SOR-53).")
+        print("Build the named image with: make image")
+        print(
+            "Sandbox parameters (idle_timeout, timeout, cpu, memory, workdir, tags, secrets) "
+            "are passed by the control plane at Sandbox.create, not baked into sbx-runtime."
+        )
+        return
+    control_deploy()
+
+
+def _toml_quoted(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def write_local_secrets(
+    *,
+    modal_toml: Path | None = None,
+    auth_json: Path | None = None,
+    workspace: str = MODAL_WORKSPACE,
+) -> None:
+    """Write Modal + Codex credentials from env into well-known paths.
+
+    Never prints secret values. Used by ``make secrets``. Does not bake
+    credentials into the image.
+    """
+    token_id = os.environ.get("MODAL_TOKEN_ID") or ""
+    token_secret = os.environ.get("MODAL_TOKEN_SECRET") or ""
+    auth = os.environ.get("CODEX_AUTH_JSON") or ""
+    missing = [
+        name
+        for name, value in (
+            ("MODAL_TOKEN_ID", token_id),
+            ("MODAL_TOKEN_SECRET", token_secret),
+            ("CODEX_AUTH_JSON", auth),
+        )
+        if not value
+    ]
+    if missing:
+        raise SystemExit(f"missing env: {', '.join(missing)}")
+
+    toml_path = modal_toml or Path.home() / ".modal.toml"
+    auth_path = auth_json or Path.home() / ".codex" / "auth.json"
+    toml_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    toml_path.write_text(
+        f"[{workspace}]\n"
+        f"token_id = {_toml_quoted(token_id)}\n"
+        f"token_secret = {_toml_quoted(token_secret)}\n"
+        "active = true\n",
+        encoding="utf-8",
     )
-    for mod_name, attr in candidates:
-        try:
-            mod = importlib.import_module(mod_name)
-        except ImportError:
-            continue
-        fn = getattr(mod, attr, None)
-        if callable(fn):
-            fn()
-            return
-    print("control deploy entry not available yet (WP1-C).")
-    print("Build the named image with: make image")
-    print(
-        "Sandbox parameters (idle_timeout, timeout, cpu, memory, workdir, tags, secrets) "
-        "are passed by the control plane at Sandbox.create, not baked into sbx-runtime."
-    )
+    toml_path.chmod(0o600)
+    auth_path.write_text(auth, encoding="utf-8")
+    auth_path.chmod(0o600)
+    print(f"wrote {toml_path} (workspace {workspace})")
+    print(f"wrote {auth_path}")
 
 
 def build_named_image() -> None:
