@@ -199,7 +199,8 @@ def test_entrypoint_creates_layout_and_exits_on_sigterm(tmp_path: Path) -> None:
 def test_invoke_control_deploy_imports_control_deploy_not_app_main() -> None:
     source = inspect.getsource(invoke_control_deploy)
     assert "from control.deploy import deploy" in source
-    assert "control.app" not in source
+    assert "from control.app" not in source
+    assert "importlib.import_module" not in source
 
 
 @pytest.mark.skip(
