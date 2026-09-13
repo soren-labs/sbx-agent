@@ -12,8 +12,12 @@ build/
 node_modules/
 web/node_modules/
 tests/e2e/artifacts/
+tests/e2e_modal/artifacts/**
+!tests/e2e_modal/artifacts/.gitkeep
+!tests/e2e_modal/artifacts/timings.json
 test-results/
 playwright-report/
+playwright-report-modal/
 
 # Local env & secrets (never commit)
 .env
