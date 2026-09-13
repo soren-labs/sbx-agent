@@ -1,0 +1,19 @@
+# Source of truth for the sbx-runtime image.
+# runtime/image.py (Modal) and Dockerfile.local (local docker) both read this file.
+# Format: key=value at the top; [apt] is one Debian package name per line.
+# Do not list Chrome / Chromium (P2 browser variant). Do not put secrets here.
+
+python_version=3.12
+node_major=22
+codex_npm=@openai/codex
+codex_version=0.153.0
+
+[apt]
+curl
+git
+ca-certificates
+ripgrep
+jq
+procps
+build-essential
+python3-pip
