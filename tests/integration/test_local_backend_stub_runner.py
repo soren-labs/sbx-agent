@@ -25,6 +25,12 @@ def test_local_backend_runs_stub_runner_and_streams_events(stub_runner: Path) ->
         env={"SBX_WORK": str(handle.root), "PYTHONUNBUFFERED": "1"},
     )
     assert init.wait() == 0
+    config = (handle.root / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert 'approval_policy = "never"' in config
+    assert 'sandbox_mode = "danger-full-access"' in config
+    assert 'exclude = ["CODEX_AUTH_JSON"]' in config
+    auth = handle.root / ".codex" / "auth.json"
+    assert auth.stat().st_mode & 0o777 == 0o600
 
     msg = _write_message(handle.root)
     proc = backend.exec(
@@ -61,6 +67,24 @@ def test_local_backend_runs_stub_runner_and_streams_events(stub_runner: Path) ->
     assert poll.alive is True
     backend.terminate(handle)
     assert not handle.root.exists()
+
+
+def test_local_backend_exec_stdin_is_devnull() -> None:
+    backend = LocalProcessBackend()
+    handle = backend.create(SandboxSpec(tags={"case": "stdin"}))
+    proc = backend.exec(
+        handle,
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.readlink('/proc/self/fd/0'), flush=True)",
+        ],
+        env={"PYTHONUNBUFFERED": "1"},
+    )
+    lines = [line.strip() for line in proc.stdout if line.strip()]
+    assert proc.wait() == 0
+    assert lines and lines[0] == "/dev/null"
+    backend.terminate(handle)
 
 
 def test_local_backend_kill_stops_hanging_stub_runner(stub_runner: Path) -> None:

@@ -19,14 +19,16 @@ CODEX_EVENTS = {
     "item.updated",
     "item.completed",
     "turn.completed",
+    "turn.failed",
     "error",
 }
 RUNNER_EVENTS = {"sbx.turn_started", "sbx.turn_finished", "sbx.error"}
-ITEM_TYPES = {"agent_message", "command_execution", "file_change", "reasoning"}
+ITEM_TYPES = {"agent_message", "command_execution", "file_change", "reasoning", "error"}
 PATHS = {"inbox/<n>.md", "turns/<n>.json", "events.jsonl", "session.json"}
 EXIT_CODES = {"0": "success", "2": "codex_nonzero", "3": "timeout", "4": "bad_json"}
 ERROR_CODES = {401, 404, 409, 429}
 USAGE = {"input_tokens", "cached_input_tokens", "output_tokens"}
+USAGE_OPTIONAL = {"cache_write_input_tokens", "reasoning_output_tokens"}
 COMMANDS = {"init", "turn", "stop"}
 HTTP_PATHS = {
     "/api/sessions",
@@ -64,6 +66,7 @@ def test_canonical_blocks_agree() -> None:
         assert set(blob["runner_events"]) == RUNNER_EVENTS
         assert set(blob["item_types"]) == ITEM_TYPES
         assert set(blob["usage_fields"]) == USAGE
+        assert set(blob["usage_fields_optional"]) == USAGE_OPTIONAL
 
     assert set(fs["paths"]) == PATHS
     assert set(events["paths"]) == PATHS
@@ -86,6 +89,13 @@ def test_canonical_blocks_agree() -> None:
 
     assert fs["codex_home"] == "$SBX_WORK/.codex"
     assert fs["production_work"] == "/work"
+    assert fs["codex_rollout"] == (
+        "$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl"
+    )
+    assert str(fs["auth_json_mode"]) == "600"
+    assert fs["config_toml"]["approval_policy"] == "never"
+    assert fs["config_toml"]["sandbox_mode"] == "danger-full-access"
+    assert fs["shell_environment_policy_exclude"] == ["CODEX_AUTH_JSON"]
 
 
 def test_api_yaml_paths_and_status_codes() -> None:
@@ -130,6 +140,10 @@ def test_api_yaml_paths_and_status_codes() -> None:
     statuses = set(api["components"]["schemas"]["SessionStatus"]["enum"])
     assert statuses == {"creating", "idle", "running", "closed", "timed_out", "lost"}
 
+    usage_schema = api["components"]["schemas"]["Usage"]
+    assert set(usage_schema["required"]) == USAGE
+    assert USAGE_OPTIONAL <= set(usage_schema["properties"])
+
     schemes = api["components"]["securitySchemes"]
     assert schemes["basicAuth"]["scheme"] == "basic"
 
@@ -147,6 +161,10 @@ def test_markdown_bodies_mention_shared_tokens() -> None:
     assert "exit" in runner.lower()
     for code in ("0", "2", "3", "4"):
         assert re.search(rf"\b{code}\b", runner)
+    assert "stdin=subprocess.DEVNULL" in runner
+    assert "bufsize=1" in runner
+    assert "CODEX_AUTH_JSON" in filesystem
+    assert "600" in filesystem
 
 
 def test_fixtures_only_use_catalogued_event_names() -> None:
@@ -163,7 +181,66 @@ def test_fixtures_only_use_catalogued_event_names() -> None:
             item = obj.get("item")
             if isinstance(item, dict) and "type" in item:
                 item_seen.add(item["type"])
-    assert seen <= (CODEX_EVENTS | RUNNER_EVENTS | {"turn.failed"})
+    assert seen <= (CODEX_EVENTS | RUNNER_EVENTS)
     assert item_seen <= ITEM_TYPES
     assert "thread.started" in seen
     assert "agent_message" in item_seen
+    assert "error" in item_seen
+    assert "turn.failed" in seen
+
+
+def test_real_multiturn_types_are_canonical() -> None:
+    path = ROOT / "tests" / "fixtures" / "events" / "real_multiturn.jsonl"
+    types: set[str] = set()
+    item_types: set[str] = set()
+    thread_ids: list[str] = []
+    turn_markers: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        types.add(obj["type"])
+        turn_markers.append(obj["type"])
+        if obj["type"] == "thread.started":
+            thread_ids.append(obj["thread_id"])
+        item = obj.get("item")
+        if isinstance(item, dict) and "type" in item:
+            item_types.add(item["type"])
+    assert types <= CODEX_EVENTS
+    assert item_types <= ITEM_TYPES
+    assert thread_ids == ["01a09a36-b4fb-7f90-b96e-42adeefa05e0"] * 3
+    assert turn_markers.count("thread.started") == 3
+    assert turn_markers.count("turn.completed") == 3
+    assert "error" in item_types
+    assert "command_execution" in item_types
+    assert "file_change" in item_types
+
+
+def test_fixture_observed_codex_shape() -> None:
+    """P0-recorded sequencing: agent_message is completed-only; bash -lc; 5 usage fields."""
+    fixture_dir = ROOT / "tests" / "fixtures" / "events"
+    for path in fixture_dir.glob("*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("{"):
+                continue
+            obj = json.loads(stripped)
+            item = obj.get("item")
+            if not isinstance(item, dict):
+                if obj.get("type") == "turn.completed":
+                    usage = obj["usage"]
+                    assert USAGE <= set(usage)
+                    assert USAGE_OPTIONAL <= set(usage)
+                    assert usage["cached_input_tokens"] >= 10000
+                if obj.get("type") == "thread.started":
+                    assert obj["thread_id"] == "01a09a36-b4fb-7f90-b96e-42adeefa05e0"
+                continue
+            if item.get("type") == "agent_message":
+                assert obj["type"] == "item.completed"
+            if item.get("type") == "command_execution":
+                assert item["command"].startswith("/bin/bash -lc ")
+                if obj["type"] == "item.started":
+                    assert item.get("exit_code") is None
+            if item.get("type") in {"command_execution", "file_change"}:
+                assert obj["type"] in {"item.started", "item.updated", "item.completed"}

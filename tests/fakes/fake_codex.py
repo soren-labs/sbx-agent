@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-DEFAULT_THREAD_ID = "01900000-0000-7000-8000-000000000001"
+DEFAULT_THREAD_ID = "01a09a36-b4fb-7f90-b96e-42adeefa05e0"
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "events"
 
 _BOOL_FLAGS = {
@@ -109,14 +109,17 @@ def parse_argv(argv: list[str]) -> dict:
     else:
         prompt_token = positionals[0] if positionals else None
 
-    prompt = ""
-    if prompt_token == "-" or prompt_token is None:
-        if not sys.stdin.isatty():
-            prompt = sys.stdin.read()
-        elif prompt_token == "-":
-            prompt = sys.stdin.read()
-    else:
+    # Real Codex: piped stdin waits for EOF even when a positional prompt is
+    # given, then appends it as a <stdin> block. Runner must pass DEVNULL.
+    stdin_block = ""
+    if not sys.stdin.isatty():
+        stdin_block = sys.stdin.read()
+    if prompt_token == "-":
+        prompt = stdin_block
+    elif prompt_token is not None:
         prompt = prompt_token
+    else:
+        prompt = stdin_block
 
     return {
         "cwd": cwd or Path.cwd(),

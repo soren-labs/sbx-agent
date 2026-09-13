@@ -10,7 +10,9 @@ import sys
 import time
 from pathlib import Path
 
-DEFAULT_THREAD = "01900000-0000-7000-8000-000000000001"
+DEFAULT_THREAD = "01a09a36-b4fb-7f90-b96e-42adeefa05e0"
+USAGE_REQUIRED = {"input_tokens", "cached_input_tokens", "output_tokens"}
+USAGE_OPTIONAL = {"cache_write_input_tokens", "reasoning_output_tokens"}
 
 
 def _env(scenario: str, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -30,18 +32,21 @@ def _run(
     cwd: Path,
     extra_env: dict[str, str] | None = None,
     timeout: float = 8.0,
-    stdin: str | None = None,
+    stdin: int | str | None = subprocess.DEVNULL,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(fake_codex), *args],
-        cwd=cwd,
-        env=_env(scenario, extra_env),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-        input=stdin,
-    )
+    kwargs: dict = {
+        "cwd": cwd,
+        "env": _env(scenario, extra_env),
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "check": False,
+    }
+    if isinstance(stdin, str):
+        kwargs["input"] = stdin
+    else:
+        kwargs["stdin"] = stdin
+    return subprocess.run([sys.executable, str(fake_codex), *args], **kwargs)
 
 
 def _events(stdout: str) -> list[dict]:
@@ -63,21 +68,35 @@ def test_success_writes_hello_and_events(fake_codex: Path, tmp_path: Path) -> No
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "hello.txt").read_text(encoding="utf-8") == "hello from fake_codex\n"
-    types = [e["type"] for e in _events(result.stdout)]
+    events = _events(result.stdout)
+    types = [e["type"] for e in events]
     assert types[0] == "thread.started"
+    assert events[0]["thread_id"] == DEFAULT_THREAD
     assert "turn.started" in types
     assert "item.started" in types
-    assert "item.updated" in types
     assert "item.completed" in types
     assert types[-1] == "turn.completed"
+    assert not any(
+        e["type"] == "item.started" and e.get("item", {}).get("type") == "agent_message"
+        for e in events
+    )
     item_types = {
         e["item"]["type"]
-        for e in _events(result.stdout)
+        for e in events
         if e.get("type") == "item.completed" and isinstance(e.get("item"), dict)
     }
     assert item_types >= {"agent_message", "command_execution", "file_change"}
-    usage = _events(result.stdout)[-1]["usage"]
-    assert set(usage) >= {"input_tokens", "cached_input_tokens", "output_tokens"}
+    started_cmds = [
+        e["item"]
+        for e in events
+        if e.get("type") == "item.started" and e.get("item", {}).get("type") == "command_execution"
+    ]
+    assert started_cmds
+    assert started_cmds[0]["command"].startswith("/bin/bash -lc ")
+    assert started_cmds[0]["exit_code"] is None
+    usage = events[-1]["usage"]
+    assert set(usage) >= USAGE_REQUIRED | USAGE_OPTIONAL
+    assert usage["cached_input_tokens"] >= 10000
 
 
 def test_resume_appends_hello_and_keeps_thread_id(fake_codex: Path, tmp_path: Path) -> None:
@@ -137,7 +156,14 @@ def test_nonzero_exits_1_with_stderr(fake_codex: Path, tmp_path: Path) -> None:
     assert "nonzero" in result.stderr
     types = [e["type"] for e in _events(result.stdout)]
     assert "thread.started" in types
+    assert "turn.failed" in types
     assert "turn.completed" not in types
+    items = [
+        e["item"]["type"]
+        for e in _events(result.stdout)
+        if e.get("type") == "item.completed" and isinstance(e.get("item"), dict)
+    ]
+    assert "error" in items
 
 
 def test_hang_sigterm_exits_cleanly(fake_codex: Path, tmp_path: Path) -> None:
@@ -145,6 +171,7 @@ def test_hang_sigterm_exits_cleanly(fake_codex: Path, tmp_path: Path) -> None:
         [sys.executable, str(fake_codex), "exec", "--json", "hang"],
         cwd=tmp_path,
         env=_env("hang"),
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -197,10 +224,23 @@ def test_slow_honors_override_seconds(fake_codex: Path, tmp_path: Path) -> None:
     assert types[-1] == "turn.completed"
 
 
-def test_prompt_from_stdin_dash(fake_codex: Path, tmp_path: Path) -> None:
+def test_positional_prompt_with_closed_stdin(fake_codex: Path, tmp_path: Path) -> None:
     result = _run(
         fake_codex,
-        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"],
+        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "hello from argv"],
+        scenario="success",
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 0
+    assert _events(result.stdout)[0]["type"] == "thread.started"
+
+
+def test_dash_prompt_still_reads_stdin(fake_codex: Path, tmp_path: Path) -> None:
+    """Codex accepts ``-``; runner-cli forbids it. Fake still implements the CLI."""
+    result = _run(
+        fake_codex,
+        ["exec", "--json", "-"],
         scenario="success",
         cwd=tmp_path,
         stdin="prompt from stdin\n",

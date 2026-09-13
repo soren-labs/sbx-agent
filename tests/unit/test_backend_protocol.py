@@ -35,6 +35,14 @@ def test_modal_methods_document_sdk_and_are_unimplemented() -> None:
         source = inspect.getsource(func)
         assert "raise NotImplementedError" in source
         # Tests must not call these methods (would be the place `import modal` could run).
+    exec_doc = ModalBackend.exec.__doc__ or ""
+    assert "bufsize=1" in exec_doc
+    assert "write_eof" in exec_doc
+    backend_exec_doc = inspect.getdoc(SandboxBackend.exec) or ""
+    assert "/dev/null" in backend_exec_doc
+    local_src = inspect.getsource(LocalProcessBackend.exec)
+    assert "stdin=subprocess.DEVNULL" in local_src
+    assert "bufsize=1" in local_src
 
 
 def test_spec_and_handle_types() -> None:
