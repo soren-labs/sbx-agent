@@ -37,6 +37,9 @@ pythonpath = ["."]
 line-length = 100
 target-version = "py312"
 src = ["control", "runtime", "tests"]
+# P0 spike is orchestrator-owned and not a CI dependency (SOR-43/44/45).
+extend-exclude = ["spike"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
