@@ -77,17 +77,9 @@ def _devin_secrets(modal: Any) -> list[Any]:
                     "files": {".local/share/devin/credentials.toml": content},
                 }
             )
-    secret_env: dict[str, str] = {}
-    if blob:
-        secret_env[_ACCOUNT_CREDENTIAL_ENV] = blob
-    if os.environ.get("SBX_GITHUB_EPHEMERAL") == "1":
-        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-        if github_token:
-            secret_env["GH_TOKEN"] = github_token
-            secret_env["GITHUB_TOKEN"] = github_token
-    if not secret_env:
+    if not blob:
         return []
-    return [modal.Secret.from_dict(secret_env)]
+    return [modal.Secret.from_dict({_ACCOUNT_CREDENTIAL_ENV: blob})]
 
 
 def _spec_provider(spec: SandboxSpec) -> str:
