@@ -151,6 +151,7 @@ def seed_account(
     status: str = "active",
     max_concurrent: int = 1,
     models: tuple[str, ...] = (),
+    secret_name: str = "",
 ) -> Account:
     account = Account(
         id=account_id,
@@ -158,6 +159,7 @@ def seed_account(
         label=account_id,
         status=status,
         max_concurrent=max_concurrent,
+        secret_name=secret_name,
         models=models,
         created_at=_iso(),
     )

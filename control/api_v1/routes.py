@@ -48,6 +48,7 @@ from control.api_v1.schemas import (
     usage_public,
 )
 from control.api_v1.state import AgentMeta, V1State
+from control.devin_pool import ScheduleRefused
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.sandbox_io import read_json, read_text, sandbox_env
 from control.service import ConcurrencyLimit, SessionConflict, format_sse
@@ -182,6 +183,33 @@ def _require_run(plane: Any, rec: Any, run_id: str, v1: V1State) -> dict[str, An
 # ---------------------------------------------------------------- agents
 
 
+def _raise_schedule_error(
+    error: str | None,
+    *,
+    retry_after: float | None,
+    provider: str,
+    requested: str,
+) -> None:
+    if not error:
+        return
+    if error == "invalid_provider":
+        raise V1ApiError(400, "invalid_provider", f"unknown provider {provider!r}")
+    if error in ("account_busy", "account_unavailable"):
+        raise V1ApiError(409, error, f"account {requested!r} cannot take the run")
+    raise V1ApiError(
+        429,
+        "provider_exhausted",
+        f"no account available for provider {provider!r}",
+        retry_after=retry_after,
+    )
+
+
+def _release_agent_lease(v1: V1State, agent_id: str) -> None:
+    lease = v1.pop_lease(agent_id)
+    if lease is not None:
+        lease.release()
+
+
 @router.post("/agents", status_code=201)
 def create_agent(
     body: CreateAgentRequest,
@@ -193,29 +221,63 @@ def create_agent(
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
-    decision = scheduler.decide(provider=provider, account=requested)
-    if decision.error == "invalid_provider":
-        raise V1ApiError(400, "invalid_provider", f"unknown provider {provider!r}")
-    if decision.error in ("account_busy", "account_unavailable"):
-        raise V1ApiError(409, decision.error, f"account {requested!r} cannot take the run")
-    if decision.error:
-        raise V1ApiError(
-            429,
-            "provider_exhausted",
-            f"no account available for provider {provider!r}",
+
+    # P2.1's Devin pool exposes an atomic acquire() in addition to the frozen
+    # consultative Scheduler.decide() port.  Use it when available so two
+    # concurrent POSTs cannot both observe the same free slot.
+    lease = None
+    acquire = getattr(scheduler, "acquire", None)
+    if callable(acquire):
+        try:
+            lease = acquire(provider=provider, account=requested)
+        except ScheduleRefused as exc:
+            _raise_schedule_error(
+                exc.error,
+                retry_after=exc.retry_after,
+                provider=provider,
+                requested=requested,
+            )
+            raise AssertionError("unreachable")
+        account = lease.account
+    else:
+        decision = scheduler.decide(provider=provider, account=requested)
+        _raise_schedule_error(
+            decision.error,
             retry_after=decision.retry_after,
+            provider=provider,
+            requested=requested,
         )
-    resolved = decision.account.id if decision.account is not None else requested
+        account = decision.account
+
+    resolved = account.id if account is not None else requested
+    secret_name = None
+    if account is not None:
+        secret_name = account.secret_name or (
+            f"sbx-acct-{resolved}" if provider == "devin" else None
+        )
+
     try:
         session_id = plane.create_session(
             owner=key.id,
             title=body.name,
             model=body.agent.model,
+            provider=provider,
+            account_id=resolved,
+            secret_name=secret_name,
         )
     except ConcurrencyLimit as exc:
+        if lease is not None:
+            lease.release()
         raise V1ApiError(
             429, "concurrency_limit", "per-key concurrent sandbox cap reached"
         ) from exc
+    except Exception:
+        if lease is not None:
+            lease.release()
+        raise
+
+    if lease is not None:
+        v1.set_lease(session_id, lease)
     v1.set_meta(
         session_id,
         AgentMeta(
@@ -225,16 +287,24 @@ def create_agent(
             idle_timeout_s=body.idle_timeout_s,
         ),
     )
-    if decision.account is not None:
+    if account is not None:
         try:
-            registry.touch(decision.account.id, _iso_now())
+            registry.touch(account.id, _iso_now())
         except KeyError:
             pass
     try:
         turn_id = plane.post_message(session_id, body.prompt.text)
     except SessionConflict as exc:
+        try:
+            plane.close(session_id)
+        finally:
+            _release_agent_lease(v1, session_id)
         raise V1ApiError(exc.code, exc.error, exc.error) from exc
     except KeyError as exc:
+        try:
+            plane.close(session_id)
+        finally:
+            _release_agent_lease(v1, session_id)
         raise not_found("agent not found after create") from exc
     n = _turn_n(turn_id) or 1
     rec = _require_agent(plane, session_id)
@@ -295,6 +365,7 @@ def delete_agent(
         rec = plane.close(agent_id)
     except KeyError:
         raise not_found("agent not found") from None
+    _release_agent_lease(v1, agent_id)
     return agent_public(plane.public(rec), v1.get_meta(agent_id))
 
 

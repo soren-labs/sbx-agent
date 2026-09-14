@@ -122,6 +122,9 @@ class ControlPlane:
         owner: str,
         title: str | None,
         model: str | None,
+        provider: str = "codex",
+        account_id: str = "auto",
+        secret_name: str | None = None,
     ) -> str:
         with self._lock:
             live = self.backend.list(tags={"owner": owner})
@@ -129,7 +132,13 @@ class ControlPlane:
                 raise ConcurrencyLimit()
             session_id = uuid.uuid4().hex
             tags = {"session_id": session_id, "owner": owner}
-            handle = self.backend.create(SandboxSpec(tags=tags))
+            # Preserve the exact P1 sandbox shape for legacy /api callers.
+            # P2.1 provider sessions carry enough metadata for Modal to select
+            # the correct image and reattach the per-account Secret on exec.
+            if provider != "codex" or account_id != "auto":
+                tags.update({"provider": provider, "account_id": account_id})
+            secrets = [secret_name] if secret_name else []
+            handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
             now = self.clock()
             rec = SessionRecord(
                 id=session_id,
@@ -150,10 +159,17 @@ class ControlPlane:
             self.store.put(rec)
 
         try:
+            init_args = ["init", "--auth", "auth_json", "--model", rec.model]
+            init_env: dict[str, str] = {}
+            if provider != "codex" or account_id != "auto":
+                init_args += ["--provider", provider]
+                if account_id != "auto":
+                    init_args += ["--account-id", account_id]
+                    init_env["SBX_ACCOUNT_ID"] = account_id
             init = self.backend.exec(
                 handle,
-                self.runner("init", "--auth", "auth_json", "--model", rec.model),
-                env=sandbox_env(handle),
+                self.runner(*init_args),
+                env=sandbox_env(handle, init_env),
             )
             code = drain(init)
             if code != 0:

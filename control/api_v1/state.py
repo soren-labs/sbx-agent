@@ -200,6 +200,7 @@ class V1State:
 
     agents: dict[str, AgentMeta] = field(default_factory=dict)
     cancelled_runs: dict[str, set[int]] = field(default_factory=dict)
+    leases: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:
@@ -209,6 +210,14 @@ class V1State:
     def get_meta(self, session_id: str) -> AgentMeta | None:
         with self.lock:
             return self.agents.get(session_id)
+
+    def set_lease(self, session_id: str, lease: Any) -> None:
+        with self.lock:
+            self.leases[session_id] = lease
+
+    def pop_lease(self, session_id: str) -> Any | None:
+        with self.lock:
+            return self.leases.pop(session_id, None)
 
     def mark_cancelled(self, session_id: str, turn_n: int) -> None:
         with self.lock:

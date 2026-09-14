@@ -149,6 +149,7 @@ class SessionService(Protocol):
         provider: str = "codex",
         account_id: str = "auto",
         model: str | None = None,
+        secret_name: str | None = None,
     ) -> str:
         """Create a session (one sandbox); returns the session id."""
 

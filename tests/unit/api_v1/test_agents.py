@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+from control.devin_pool import DevinAccountPool
 from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run
 
 
@@ -29,6 +33,68 @@ class TestCreateAgent:
         body = create_agent(client, auth, agent={"provider": "devin"})
         assert body["agent"]["provider"] == "devin"
         assert body["agent"]["account_id"] == "acct-devin-1"
+
+    def test_provider_devin_pool_wires_sandbox_and_releases_lease(
+        self, client, auth, v1_env
+    ) -> None:
+        seed_account(
+            v1_env,
+            "acct-devin-1",
+            provider="devin",
+            max_concurrent=8,
+            models=("swe-2-high",),
+            secret_name="sbx-acct-devin-1",
+        )
+        pool = DevinAccountPool(v1_env.registry, account_id="acct-devin-1")
+        v1_env.app.state.scheduler = pool
+        body = create_agent(
+            client,
+            auth,
+            agent={
+                "provider": "devin",
+                "account_id": "auto",
+                "model": "swe-2-high",
+            },
+        )
+        agent_id = body["agent"]["id"]
+        assert pool.active_count == 1
+        rec = v1_env.store.get(agent_id)
+        assert rec is not None
+        assert rec.sandbox_tags["provider"] == "devin"
+        assert rec.sandbox_tags["account_id"] == "acct-devin-1"
+        session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
+        assert session["provider"] == "devin"
+        assert session["account_id"] == "acct-devin-1"
+        deleted = client.delete(f"/v1/agents/{agent_id}", headers=auth)
+        assert deleted.status_code == 200
+        assert pool.active_count == 0
+
+    def test_devin_pool_hard_cap_and_delete_release(self, client, auth, v1_env) -> None:
+        seed_account(
+            v1_env,
+            "acct-devin-1",
+            provider="devin",
+            max_concurrent=8,
+            secret_name="sbx-acct-devin-1",
+        )
+        pool = DevinAccountPool(v1_env.registry, account_id="acct-devin-1")
+        v1_env.app.state.scheduler = pool
+        v1_env.app.state.plane.max_concurrent = 8
+        agent_ids = []
+        for _ in range(8):
+            body = create_agent(client, auth, agent={"provider": "devin"})
+            agent_ids.append(body["agent"]["id"])
+        assert pool.active_count == 8
+        refused = client.post(
+            "/v1/agents",
+            json={"prompt": {"text": "ninth"}, "agent": {"provider": "devin"}},
+            headers=auth,
+        )
+        assert refused.status_code == 429
+        assert refused.json()["error"]["code"] == "provider_exhausted"
+        for agent_id in agent_ids:
+            assert client.delete(f"/v1/agents/{agent_id}", headers=auth).status_code == 200
+        assert pool.active_count == 0
 
     def test_provider_devin_without_account_exhausts(self, client, auth) -> None:
         resp = client.post(
