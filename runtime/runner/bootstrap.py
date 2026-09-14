@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from runtime.runner.constants import (
+    EXIT_INTERNAL,
     EXIT_OK,
     PLACEHOLDER_AUTH_JSON,
     PLACEHOLDER_PROVIDER_AUTH_JSON,
     SANDBOX_AGENTS_MD,
     SHELL_ENV_EXCLUDE,
+)
+from runtime.runner.credentials import (
+    ACCOUNT_ID_ENV,
+    CredentialError,
+    restore_credential_blob,
+    sandbox_home,
 )
 from runtime.runner.workspace import (
     atomic_write,
@@ -75,9 +83,14 @@ def _write_auth_json(home: Path, auth: str, root: Path) -> None:
     dest.chmod(0o600)
 
 
-def cmd_init(*, auth: str, model: str) -> int:
+def cmd_init(*, auth: str, model: str, provider: str = "codex") -> int:
     root = work_root()
     ensure_layout(root)
+    try:
+        restore_credential_blob(sandbox_home(root), provider=provider)
+    except CredentialError as exc:
+        print(f"runner init: {exc}", file=sys.stderr)
+        return EXIT_INTERNAL
     home = codex_home(root)
     atomic_write(home / "config.toml", render_config_toml(model=model, auth=auth))
     _write_auth_json(home, auth, root)
@@ -86,5 +99,8 @@ def cmd_init(*, auth: str, model: str) -> int:
     session = default_session()
     session["model"] = model
     session["auth"] = auth
+    session["provider"] = provider
+    session["account_id"] = os.environ.get(ACCOUNT_ID_ENV)
+    session["native_session_id"] = None
     save_session(root, session)
     return EXIT_OK

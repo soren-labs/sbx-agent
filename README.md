@@ -62,13 +62,22 @@ P2 把单 Codex 会话扩展为 Cursor Cloud Agent 式的多 provider 平台：
 包列表的唯一来源是 `runtime/packages.txt`。`runtime/image.py` 读取它构造 Modal Image；`Dockerfile.local` 由同一文件生成，供无云 `docker build` 验证。
 
 ```bash
-make image    # python -m runtime.image → 构建并 publish 命名镜像 sbx-runtime（需要 Modal 凭证）
-make deploy   # 占位调用 control 的 deploy；WP1-C 未合入时打印提示
-make test     # pytest unit + integration；禁止连 Modal、禁止云凭证
+make image        # python -m runtime.image → 构建并 publish 命名镜像 sbx-runtime（需要 Modal 凭证）
+make image-devin  # python -m runtime.image --devin → publish sbx-runtime-devin（SOR-74）
+make deploy       # 占位调用 control 的 deploy；WP1-C 未合入时打印提示
+make test         # pytest unit + integration；禁止连 Modal、禁止云凭证
 make lint
 ```
 
 无云验证：`docker build -f Dockerfile.local` 后断言 `codex --version` 为 `codex-cli 0.153.0`、`node --version` 为 v22、entrypoint 收到 SIGTERM 后 5 s 内退出（见 `tests/integration/runtime/test_image_local.py`）。真实 `modal run` / `sb.exec("codex --version")` 由编排者在 WSL 执行。
+
+### Devin-only 快速通道（SOR-74）
+
+命名镜像 **`sbx-runtime-devin`**：`sbx-runtime` 之上叠加 pin 的 Devin CLI standalone bundle（`3000.10.21`，sha256 校验，见 `runtime/install-devin.sh` 与 `packages.txt` 的 `devin_*` 键），镜像 env 把 `HOME`/XDG 固定到 `$SBX_WORK/home`。`Dockerfile.devin.local` 是同一配方的本地生成物。
+
+- `provider=devin` 的 `SandboxSpec`（`tags["provider"]="devin"` + `secrets=["sbx-acct-<id>"]`）让 `ModalBackend` 选择该镜像与每账号凭证 Secret；Codex 默认路径不变。
+- `runner init --provider devin` 把 `SBX_ACCOUNT_CREDENTIAL` blob 还原到 `$SBX_WORK/home` 下（权限 600），如 `home/.local/share/devin/credentials.toml`；`provider` 不匹配则 init 失败。
+- 子进程环境剔除 `ACP_BACKEND` 与 `DEVIN_API_KEY` / `DEVIN_V3_API_KEY` / `DEVIN_LEGACY_API_KEY` / `DEVIN_ORG_ID`（`runtime/runner/credentials.py` + `entrypoint.sh`），auth 只来自凭证 blob，不依赖 Devin Desktop。
 
 ## 为什么用 `--dangerously-bypass-approvals-and-sandbox`
 

@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from runtime.runner.constants import TERM_GRACE_S
+from runtime.runner.credentials import CREDENTIAL_ENV_EXCLUDE
 
 
 def codex_bin_tokens() -> list[str]:
@@ -67,7 +68,7 @@ def build_codex_argv(
 
 
 def child_env(work: Path, home: Path) -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if key != "CODEX_AUTH_JSON"}
+    env = {key: value for key, value in os.environ.items() if key not in CREDENTIAL_ENV_EXCLUDE}
     env["SBX_WORK"] = str(work)
     env["CODEX_HOME"] = str(home)
     env.setdefault("PYTHONUNBUFFERED", "1")

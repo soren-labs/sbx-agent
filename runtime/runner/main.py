@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from runtime.runner.adapter import PROVIDERS
 from runtime.runner.bootstrap import cmd_init
 from runtime.runner.constants import DEFAULT_MAX_SECONDS, EXIT_INTERNAL
 from runtime.runner.turn import cmd_stop, cmd_turn
@@ -19,9 +20,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--auth",
         choices=["auth_json", "provider"],
         default="auth_json",
-        help="Credential mode (default: auth_json)",
+        help="Credential mode (default: auth_json; codex only)",
     )
-    p_init.add_argument("--model", required=True, help="Codex model id")
+    p_init.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default="codex",
+        help="Agent provider (default: codex); must match SBX_ACCOUNT_CREDENTIAL",
+    )
+    p_init.add_argument("--model", required=True, help="Model id")
 
     p_turn = sub.add_parser("turn", help="Run one Codex turn from a message file")
     p_turn.add_argument("--n", type=int, required=True, help="Turn number")
@@ -41,7 +48,7 @@ def run(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "init":
-        return cmd_init(auth=args.auth, model=args.model)
+        return cmd_init(auth=args.auth, model=args.model, provider=args.provider)
     if args.cmd == "turn":
         return cmd_turn(n=args.n, message_file=args.message_file, max_seconds=args.max_seconds)
     if args.cmd == "stop":
