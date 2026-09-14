@@ -1,0 +1,182 @@
+"""Agent endpoints: create/list/get/delete, scheduler errors, filters, usage."""
+
+from __future__ import annotations
+
+from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run
+
+
+class TestCreateAgent:
+    def test_create_runs_first_turn(self, client, auth) -> None:
+        body = create_agent(client, auth, name="demo")
+        agent, run = body["agent"], body["run"]
+        assert agent["name"] == "demo"
+        assert agent["provider"] == "codex"
+        assert agent["account_id"] == "acct-codex-1"  # scheduler pick, not "auto"
+        assert agent["status"] in ("running", "idle")
+        assert agent["model"] == "gpt-5.6-luna"
+        assert run["id"] == "run-1"
+        assert run["agent_id"] == agent["id"]
+        assert run["status"] in ("RUNNING", "FINISHED")
+
+    def test_named_account_is_used(self, client, auth, v1_env) -> None:
+        seed_account(v1_env, "acct-codex-2", max_concurrent=5)
+        body = create_agent(client, auth, agent={"provider": "codex", "account_id": "acct-codex-2"})
+        assert body["agent"]["account_id"] == "acct-codex-2"
+        assert v1_env.registry.get("acct-codex-2").last_used_at is not None
+
+    def test_provider_devin_accepted(self, client, auth, v1_env) -> None:
+        seed_account(v1_env, "acct-devin-1", provider="devin", models=("swe-2-high",))
+        body = create_agent(client, auth, agent={"provider": "devin"})
+        assert body["agent"]["provider"] == "devin"
+        assert body["agent"]["account_id"] == "acct-devin-1"
+
+    def test_provider_devin_without_account_exhausts(self, client, auth) -> None:
+        resp = client.post(
+            "/v1/agents",
+            json={"prompt": {"text": "hi"}, "agent": {"provider": "devin"}},
+            headers=auth,
+        )
+        assert resp.status_code == 429
+        assert resp.json()["error"]["code"] == "provider_exhausted"
+        assert resp.json()["error"]["retry_after"] > 0
+
+    def test_unknown_provider_is_400(self, client, auth) -> None:
+        resp = client.post(
+            "/v1/agents",
+            json={"prompt": {"text": "hi"}, "agent": {"provider": "bogus"}},
+            headers=auth,
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_provider"
+
+    def test_malformed_body_is_400(self, client, auth) -> None:
+        resp = client.post("/v1/agents", json={"agent": {"provider": "codex"}}, headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_provider"
+
+    def test_named_account_busy_is_409(self, client, auth, v1_env) -> None:
+        v1_env.registry.set_running("acct-codex-1", 1)  # max_concurrent == 1
+        resp = client.post(
+            "/v1/agents",
+            json={
+                "prompt": {"text": "hi"},
+                "agent": {"provider": "codex", "account_id": "acct-codex-1"},
+            },
+            headers=auth,
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "account_busy"
+
+    def test_named_account_unavailable_is_409(self, client, auth, v1_env) -> None:
+        v1_env.registry.mark_status("acct-codex-1", "disabled")
+        resp = client.post(
+            "/v1/agents",
+            json={
+                "prompt": {"text": "hi"},
+                "agent": {"provider": "codex", "account_id": "acct-codex-1"},
+            },
+            headers=auth,
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "account_unavailable"
+        resp = client.post(
+            "/v1/agents",
+            json={
+                "prompt": {"text": "hi"},
+                "agent": {"provider": "codex", "account_id": "acct-missing"},
+            },
+            headers=auth,
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "account_unavailable"
+
+    def test_concurrency_limit_is_429(self, client, auth, v1_env) -> None:
+        v1_env.app.state.plane.max_concurrent = 1
+        create_agent(client, auth)
+        resp = client.post(
+            "/v1/agents",
+            json={"prompt": {"text": "again"}, "agent": {"provider": "codex"}},
+            headers=auth,
+        )
+        assert resp.status_code == 429
+        assert resp.json()["error"]["code"] == "concurrency_limit"
+
+
+class TestAgentReadDelete:
+    def test_get_and_delete(self, client, auth) -> None:
+        agent = create_agent(client, auth)["agent"]
+        got = client.get(f"/v1/agents/{agent['id']}", headers=auth)
+        assert got.status_code == 200
+        assert got.json()["id"] == agent["id"]
+        deleted = client.delete(f"/v1/agents/{agent['id']}", headers=auth)
+        assert deleted.status_code == 200
+        assert deleted.json()["status"] == "closed"
+        # history stays readable after close
+        got = client.get(f"/v1/agents/{agent['id']}", headers=auth)
+        assert got.status_code == 200
+        assert got.json()["status"] == "closed"
+
+    def test_get_missing_is_404(self, client, auth) -> None:
+        resp = client.get("/v1/agents/nope", headers=auth)
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "not_found"
+
+    def test_delete_missing_is_404(self, client, auth) -> None:
+        resp = client.delete("/v1/agents/nope", headers=auth)
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "not_found"
+
+    def test_usage_shape(self, client, auth) -> None:
+        agent = create_agent(client, auth)["agent"]
+        wait_run(client, auth, agent["id"], "run-1")
+        resp = client.get(f"/v1/agents/{agent['id']}/usage", headers=auth)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == {"usage", "cost_estimate_usd", "sandbox_seconds"}
+        usage = body["usage"]
+        assert usage["input_tokens"] >= 0
+        assert usage["cached_input_tokens"] >= 0
+        assert usage["output_tokens"] >= 0
+        assert body["cost_estimate_usd"] >= 0
+        assert body["sandbox_seconds"] >= 0
+
+    def test_usage_missing_agent_is_404(self, client, auth) -> None:
+        resp = client.get("/v1/agents/nope/usage", headers=auth)
+        assert resp.status_code == 404
+
+
+class TestListAgents:
+    def test_list_and_filters(self, client, auth, v1_env) -> None:
+        seed_account(v1_env, "acct-devin-1", provider="devin")
+        a1 = create_agent(client, auth, name="one")["agent"]
+        a2 = create_agent(client, auth, name="two", agent={"provider": "devin"})["agent"]
+
+        all_agents = client.get("/v1/agents", headers=auth).json()
+        ids = {a["id"] for a in all_agents["agents"]}
+        assert {a1["id"], a2["id"]} <= ids
+        assert "next_cursor" in all_agents
+
+        by_provider = client.get("/v1/agents?provider=devin", headers=auth).json()
+        assert [a["id"] for a in by_provider["agents"]] == [a2["id"]]
+
+        by_account = client.get("/v1/agents?account_id=acct-devin-1", headers=auth).json()
+        assert [a["id"] for a in by_account["agents"]] == [a2["id"]]
+
+        by_status = client.get("/v1/agents?status=closed", headers=auth).json()
+        assert by_status["agents"] == []
+        client.delete(f"/v1/agents/{a1['id']}", headers=auth)
+        by_status = client.get("/v1/agents?status=closed", headers=auth).json()
+        assert [a["id"] for a in by_status["agents"]] == [a1["id"]]
+
+    def test_bad_provider_filter_is_400(self, client, auth) -> None:
+        resp = client.get("/v1/agents?provider=bogus", headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_provider"
+
+    def test_cursor(self, client, auth) -> None:
+        create_agent(client, auth)
+        resp = client.get("/v1/agents?cursor=0", headers=auth)
+        assert resp.status_code == 200
+        resp = client.get("/v1/agents?cursor=zzz", headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_provider"
