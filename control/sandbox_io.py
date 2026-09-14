@@ -25,6 +25,25 @@ def is_local_root(handle: SandboxHandle) -> bool:
         return False
 
 
+# Control-plane env vars explicitly forwarded to sandbox children. Required
+# since LocalProcessBackend.exec no longer inherits os.environ (SOR-56).
+_FORWARD_ENV_KEYS = (
+    "CODEX_BIN",
+    "SBX_ACCOUNT_CREDENTIAL",
+    "SBX_ACCOUNT_ID",
+    "SBX_PROVIDER_API_KEY",
+    "SBX_PROVIDER_BASE_URL",
+    "PYTHONPATH",
+    "FAKE_CODEX_SCENARIO",
+    "FAKE_CODEX_THREAD_ID",
+    "FAKE_CODEX_SLOW_SECONDS",
+    "FAKE_AGY_SCENARIO",
+    "FAKE_GROK_SCENARIO",
+    "FAKE_OPENCODE_SCENARIO",
+    "FAKE_DEVIN_SCENARIO",
+)
+
+
 def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     env = {
         "SBX_WORK": str(handle.root),
@@ -36,6 +55,10 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
     auth_json = os.environ.get("CODEX_AUTH_JSON")
     if auth_json:
         env["CODEX_AUTH_JSON"] = auth_json
+    for key in _FORWARD_ENV_KEYS:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
     if extra:
         env.update(extra)
     return env

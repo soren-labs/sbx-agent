@@ -1,0 +1,195 @@
+"""Shared machinery for the non-Codex fake provider CLIs (SOR-59).
+
+Each fake_*_<provider>.py script parses its own argv shape, then delegates
+to :func:`run_scenario`, which replays ``tests/fixtures/events/<provider>/
+<scenario>.jsonl`` with the same timing / file / exit-code semantics as
+``fake_codex.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+FIXTURE_BASE = Path(__file__).resolve().parent.parent / "fixtures" / "events"
+
+SCENARIOS = ("success", "resume", "nonzero", "hang", "badjson", "slow", "auth_invalid")
+
+
+def fixture(provider: str, scenario: str) -> Path:
+    path = FIXTURE_BASE / provider / f"{scenario}.jsonl"
+    if not path.is_file():
+        print(f"unknown scenario fixture: {provider}/{scenario}", file=sys.stderr)
+        sys.exit(1)
+    return path
+
+
+def emit_line(line: str) -> None:
+    sys.stdout.write(line if line.endswith("\n") else line + "\n")
+    sys.stdout.flush()
+
+
+def install_term_handler() -> None:
+    def _handler(_signum: int, _frame: object) -> None:
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
+
+
+def scan_argv(
+    tokens: list[str],
+    *,
+    bool_flags: set[str],
+    value_flags: set[str],
+    subcommand: str | None = None,
+) -> tuple[list[str], dict[str, str], set[str]]:
+    """Split argv into (positionals, flag values, bool flags seen)."""
+    tokens = list(tokens)
+    if subcommand is not None:
+        if not tokens or tokens[0] != subcommand:
+            print(f"expected subcommand: {subcommand}", file=sys.stderr)
+            sys.exit(2)
+        tokens = tokens[1:]
+    positionals: list[str] = []
+    values: dict[str, str] = {}
+    seen: set[str] = set()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in bool_flags:
+            seen.add(tok)
+            i += 1
+        elif tok in value_flags:
+            if i + 1 >= len(tokens):
+                print(f"flag {tok} requires a value", file=sys.stderr)
+                sys.exit(2)
+            values[tok] = tokens[i + 1]
+            i += 2
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            positionals.append(tok)
+            i += 1
+    return positionals, values, seen
+
+
+def rewrite_json(line: str, mutator: Callable[[dict], None]) -> str:
+    """Apply ``mutator`` to a JSON line; pass non-JSON through unchanged."""
+    stripped = line.strip()
+    if not stripped.startswith("{"):
+        return line.rstrip("\n")
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return line.rstrip("\n")
+    mutator(obj)
+    return json.dumps(obj, ensure_ascii=False)
+
+
+def replay(
+    path: Path,
+    *,
+    rewrite: Callable[[str], str] | None = None,
+    hang_after_first: bool = False,
+    pause_after_first: float = 0.0,
+) -> None:
+    first = True
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        emit_line(rewrite(raw) if rewrite else raw)
+        if first:
+            first = False
+            if hang_after_first:
+                install_term_handler()
+                time.sleep(3600)
+                return
+            if pause_after_first > 0:
+                install_term_handler()
+                time.sleep(pause_after_first)
+                install_term_handler()
+
+
+def write_hello(cwd: Path, content: str) -> None:
+    (cwd / "hello.txt").write_text(content, encoding="utf-8")
+
+
+def append_hello(cwd: Path, content: str) -> None:
+    with (cwd / "hello.txt").open("a", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def run_scenario(
+    *,
+    provider: str,
+    scenario_env: str,
+    slow_env: str,
+    session_env: str,
+    default_session_id: str,
+    is_resume: bool,
+    session_id: str | None,
+    cwd: Path,
+    rewrite: Callable[[str, str], str],
+    hello_content: str,
+    resume_content: str,
+) -> None:
+    """Common scenario dispatch mirroring fake_codex.main()."""
+    cwd.mkdir(parents=True, exist_ok=True)
+    os.chdir(cwd)
+
+    scenario = os.environ.get(scenario_env, "success")
+    sid = session_id or os.environ.get(session_env, default_session_id)
+    rw = lambda line: rewrite(line, sid)  # noqa: E731
+
+    if scenario == "resume":
+        if not is_resume:
+            emit_line(
+                json.dumps(
+                    {"type": "error", "message": "resume scenario requires a resume invocation"}
+                )
+            )
+            print(f"{scenario_env}=resume requires a resume invocation", file=sys.stderr)
+            sys.exit(1)
+        hello = cwd / "hello.txt"
+        if not hello.is_file():
+            print("hello.txt not found", file=sys.stderr)
+            sys.exit(1)
+        append_hello(cwd, resume_content)
+        replay(fixture(provider, "resume"), rewrite=rw)
+        sys.exit(0)
+
+    if scenario == "hang":
+        replay(fixture(provider, "hang"), rewrite=rw, hang_after_first=True)
+        sys.exit(0)
+
+    if scenario == "slow":
+        delay = float(os.environ.get(slow_env, "40"))
+        if not is_resume:
+            write_hello(cwd, hello_content)
+        replay(fixture(provider, "slow"), rewrite=rw, pause_after_first=delay)
+        sys.exit(0)
+
+    if scenario in {"nonzero", "auth_invalid"}:
+        replay(fixture(provider, scenario), rewrite=rw)
+        print(f"{provider} {scenario} scenario", file=sys.stderr)
+        sys.exit(1)
+
+    if scenario == "badjson":
+        if not is_resume:
+            write_hello(cwd, hello_content)
+        replay(fixture(provider, "badjson"), rewrite=rw)
+        sys.exit(0)
+
+    # success (and unknown scenarios fall back to the success fixture)
+    if is_resume:
+        replay(fixture(provider, "success"), rewrite=rw)
+        sys.exit(0)
+    write_hello(cwd, hello_content)
+    replay(fixture(provider, "success"), rewrite=rw)
+    sys.exit(0)

@@ -1,0 +1,177 @@
+"""In-memory fakes for control/ports.py — used by P2-D, P2-E (mock_api), P2-F."""
+
+from __future__ import annotations
+
+import hashlib
+import secrets
+import threading
+import uuid
+from collections.abc import Iterable
+from dataclasses import replace
+from datetime import UTC, datetime
+from typing import Any
+
+from control.ports import Account, ApiKey, ScheduleDecision
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class InMemoryAccountRegistry:
+    """Dict-backed AccountRegistry; credential blobs kept in a parallel dict."""
+
+    def __init__(self) -> None:
+        self._accounts: dict[str, Account] = {}
+        self._blobs: dict[str, dict[str, Any]] = {}
+        self._running: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def list(self, provider: str | None = None) -> list[Account]:
+        with self._lock:
+            out = list(self._accounts.values())
+        if provider is not None:
+            out = [a for a in out if a.provider == provider]
+        return sorted(out, key=lambda a: a.id)
+
+    def get(self, account_id: str) -> Account | None:
+        with self._lock:
+            return self._accounts.get(account_id)
+
+    def put(self, account: Account) -> None:
+        with self._lock:
+            self._accounts[account.id] = account
+
+    def mark_status(
+        self,
+        account_id: str,
+        status: str,
+        *,
+        cooldown_until: str | None = None,
+        last_error: str | None = None,
+    ) -> Account:
+        with self._lock:
+            account = self._accounts.get(account_id)
+            if account is None:
+                raise KeyError(account_id)
+            updated = replace(
+                account,
+                status=status,
+                cooldown_until=cooldown_until,
+                last_error=last_error,
+            )
+            self._accounts[account_id] = updated
+            return updated
+
+    def touch(self, account_id: str, used_at: str) -> None:
+        with self._lock:
+            account = self._accounts.get(account_id)
+            if account is None:
+                raise KeyError(account_id)
+            self._accounts[account_id] = replace(account, last_used_at=used_at)
+
+    def remove(self, account_id: str) -> None:
+        with self._lock:
+            self._accounts.pop(account_id, None)
+            self._blobs.pop(account_id, None)
+            self._running.pop(account_id, None)
+
+    def running_count(self, account_id: str) -> int:
+        with self._lock:
+            return self._running.get(account_id, 0)
+
+    def set_running(self, account_id: str, count: int) -> None:
+        """Test helper: pretend N sessions are live on this account."""
+        with self._lock:
+            self._running[account_id] = count
+
+    def get_credential_blob(self, account_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            blob = self._blobs.get(account_id)
+            return dict(blob) if blob is not None else None
+
+    def put_credential_blob(self, account_id: str, blob: dict[str, Any]) -> None:
+        with self._lock:
+            self._blobs[account_id] = dict(blob)
+
+
+class InMemoryScheduler:
+    """LRU ``auto`` pick over an AccountRegistry (design v2 §3.3)."""
+
+    PROVIDERS = ("codex", "antigravity", "grok", "opencode", "devin")
+
+    def __init__(self, registry: InMemoryAccountRegistry) -> None:
+        self._registry = registry
+
+    def decide(self, *, provider: str, account: str | None = "auto") -> ScheduleDecision:
+        if provider not in self.PROVIDERS:
+            return ScheduleDecision(error="invalid_provider")
+        if account in (None, "auto"):
+            return self._auto(provider)
+        named = self._registry.get(account)
+        if named is None or named.provider != provider or named.status != "active":
+            return ScheduleDecision(error="account_unavailable")
+        if self._registry.running_count(named.id) >= named.max_concurrent:
+            return ScheduleDecision(error="account_busy")
+        return ScheduleDecision(account=named)
+
+    def _auto(self, provider: str) -> ScheduleDecision:
+        candidates = [
+            a
+            for a in self._registry.list(provider)
+            if a.status == "active" and self._registry.running_count(a.id) < a.max_concurrent
+        ]
+        if not candidates:
+            return ScheduleDecision(error="provider_exhausted", retry_after=60.0)
+        # LRU: never-used accounts first, then oldest last_used_at.
+        chosen = min(candidates, key=lambda a: a.last_used_at or "")
+        return ScheduleDecision(account=chosen)
+
+
+class InMemoryApiKeyStore:
+    """Generates ``sbx_<hex>`` tokens; stores sha256 hashes only."""
+
+    def __init__(self) -> None:
+        self._keys: dict[str, ApiKey] = {}
+        self._by_hash: dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _hash(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def create(self, *, label: str = "", scopes: Iterable[str] = ("agents",)) -> tuple[ApiKey, str]:
+        token = f"sbx_{secrets.token_hex(20)}"
+        record = ApiKey(
+            id=f"key_{uuid.uuid4().hex[:12]}",
+            key_hash=self._hash(token),
+            label=label,
+            scopes=tuple(scopes),
+            created_at=_iso_now(),
+        )
+        with self._lock:
+            self._keys[record.id] = record
+            self._by_hash[record.key_hash] = record.id
+        return record, token
+
+    def list(self) -> list[ApiKey]:
+        with self._lock:
+            return sorted(self._keys.values(), key=lambda k: k.id)
+
+    def lookup(self, token: str) -> ApiKey | None:
+        with self._lock:
+            key_id = self._by_hash.get(self._hash(token))
+            if key_id is None:
+                return None
+            record = self._keys.get(key_id)
+        if record is None or record.revoked_at is not None:
+            return None
+        return record
+
+    def revoke(self, key_id: str) -> bool:
+        with self._lock:
+            record = self._keys.get(key_id)
+            if record is None or record.revoked_at is not None:
+                return False
+            self._keys[key_id] = replace(record, revoked_at=_iso_now())
+            return True

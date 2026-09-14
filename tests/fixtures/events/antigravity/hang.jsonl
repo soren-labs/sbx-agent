@@ -1,0 +1,1 @@
+{"event": "init", "init": {"conversation_id": "c3b66b04-872b-4fbe-a3a4-058a026ef20a", "cwd": "/work", "tools": ["shell", "write_file", "read_file"]}}

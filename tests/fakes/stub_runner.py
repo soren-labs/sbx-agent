@@ -13,11 +13,13 @@ from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "events"
 DEFAULT_THREAD_ID = "01a09a36-b4fb-7f90-b96e-42adeefa05e0"
+PROVIDERS = ("codex", "antigravity", "grok", "opencode", "devin")
 
 EXIT_OK = 0
 EXIT_CODEX = 2
 EXIT_TIMEOUT = 3
 EXIT_BAD_JSON = 4
+EXIT_AUTH_INVALID = 5
 
 
 def work_root() -> Path:
@@ -26,6 +28,18 @@ def work_root() -> Path:
         print("SBX_WORK is required", file=sys.stderr)
         sys.exit(1)
     return Path(raw)
+
+
+def sandbox_home(root: Path) -> Path:
+    """$HOME inside the sandbox: ``$SBX_WORK/home`` (filesystem.md v2)."""
+    if _home_is_sandbox(root):
+        return Path(os.environ["HOME"])
+    return root / "home"
+
+
+def _home_is_sandbox(root: Path) -> bool:
+    home = os.environ.get("HOME")
+    return bool(home) and Path(home).resolve().is_relative_to(root.resolve())
 
 
 def codex_home(root: Path) -> Path:
@@ -45,10 +59,39 @@ def emit(root: Path, obj: dict) -> None:
 
 
 def emit_raw(root: Path, line: str) -> None:
+    """Canonical events go to events.jsonl; the same native line is mirrored
+    verbatim to events.raw.jsonl (Codex native == canonical)."""
     events = root / "events.jsonl"
     with events.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
+    with (root / "events.raw.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
     print(line, flush=True)
+
+
+def restore_credential_blob(root: Path) -> list[str]:
+    """Restore ``SBX_ACCOUNT_CREDENTIAL`` below ``$SBX_WORK/home`` (mode 600).
+
+    Returns the list of restored relative paths. Paths escaping the sandbox
+    home are rejected.
+    """
+    raw = os.environ.get("SBX_ACCOUNT_CREDENTIAL")
+    if not raw:
+        return []
+    blob = json.loads(raw)
+    files = blob.get("files") or {}
+    home = sandbox_home(root)
+    restored: list[str] = []
+    for relpath, content in files.items():
+        target = (home / relpath).resolve()
+        if not target.is_relative_to(home.resolve()):
+            print(f"credential path escapes HOME: {relpath}", file=sys.stderr)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(content), encoding="utf-8")
+        target.chmod(0o600)
+        restored.append(relpath)
+    return restored
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -58,6 +101,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     (root / "turns").mkdir(exist_ok=True)
     home = codex_home(root)
     home.mkdir(parents=True, exist_ok=True)
+
+    credential_files = restore_credential_blob(root)
 
     (home / "config.toml").write_text(
         (
@@ -99,8 +144,20 @@ def cmd_init(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     (root / "events.jsonl").write_text("", encoding="utf-8")
+    (root / "events.raw.jsonl").write_text("", encoding="utf-8")
     (root / "session.json").write_text(
-        json.dumps({"codex_session_id": None, "turn": 0}) + "\n",
+        json.dumps(
+            {
+                "provider": args.provider,
+                "account_id": args.account_id or os.environ.get("SBX_ACCOUNT_ID"),
+                "model": args.model,
+                "native_session_id": None,
+                "codex_session_id": None,  # v1 compatibility alias
+                "turn": 0,
+                "credential_files": credential_files,
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     return EXIT_OK
@@ -125,7 +182,7 @@ def _scenario() -> str:
 def _load_session(root: Path) -> dict:
     path = root / "session.json"
     if not path.is_file():
-        return {"codex_session_id": None, "turn": 0}
+        return {"codex_session_id": None, "native_session_id": None, "turn": 0}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -150,6 +207,17 @@ def cmd_turn(args: argparse.Namespace) -> int:
     message = Path(args.message_file).read_text(encoding="utf-8")
     (inbox / f"{args.n}.md").write_text(message, encoding="utf-8")
 
+    session = _load_session(root)
+    if args.n == 1:
+        emit(
+            root,
+            {
+                "type": "sbx.session_meta",
+                "provider": session.get("provider") or "codex",
+                "model": session.get("model"),
+                "account_id": session.get("account_id"),
+            },
+        )
     emit(root, {"type": "sbx.turn_started", "n": args.n})
 
     scenario = _scenario()
@@ -211,6 +279,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
     duration = round(time.monotonic() - start, 3)
     session = _load_session(root)
     session["codex_session_id"] = thread_id
+    session["native_session_id"] = thread_id
     session["turn"] = args.n
     _write_session(root, session)
 
@@ -220,6 +289,9 @@ def cmd_turn(args: argparse.Namespace) -> int:
     elif bad_json:
         status = "bad_json"
         code = EXIT_BAD_JSON
+    elif scenario == "auth_invalid":
+        status = "auth_invalid"
+        code = EXIT_AUTH_INVALID
     elif scenario == "nonzero":
         status = "codex_error"
         code = EXIT_CODEX
@@ -243,6 +315,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
             {
                 "n": args.n,
                 "codex_session_id": thread_id,
+                "native_session_id": thread_id,
                 "status": status,
                 "usage": usage,
                 "message": last_message,
@@ -259,6 +332,37 @@ def cmd_turn(args: argparse.Namespace) -> int:
         if pid_file(root).exists():
             pid_file(root).unlink()
     return code
+
+
+def cmd_export_credentials(_args: argparse.Namespace) -> int:
+    """Print a credential blob to stdout; empty stdout when unchanged.
+
+    Reads the restored files listed in ``session.json.credential_files`` and
+    compares them with the ``SBX_ACCOUNT_CREDENTIAL`` blob. A rewritten
+    credential file (e.g. refreshed tokens) produces a new blob on stdout.
+    """
+    root = work_root()
+    session = _load_session(root)
+    relpaths = session.get("credential_files") or []
+    home = sandbox_home(root)
+    files: dict[str, str] = {}
+    for relpath in relpaths:
+        target = (home / relpath).resolve()
+        if target.is_relative_to(home.resolve()) and target.is_file():
+            files[relpath] = target.read_text(encoding="utf-8")
+    if not files:
+        return EXIT_OK
+    new_blob = {"provider": session.get("provider") or "codex", "files": files}
+    old_raw = os.environ.get("SBX_ACCOUNT_CREDENTIAL")
+    if old_raw:
+        try:
+            old_blob = json.loads(old_raw)
+        except json.JSONDecodeError:
+            old_blob = None
+        if old_blob == new_blob:
+            return EXIT_OK
+    print(json.dumps(new_blob, ensure_ascii=False))
+    return EXIT_OK
 
 
 def cmd_stop(_args: argparse.Namespace) -> int:
@@ -282,8 +386,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_init = sub.add_parser("init")
-    p_init.add_argument("--auth", required=True, choices=["auth_json", "provider"])
+    p_init.add_argument("--auth", choices=["auth_json", "provider"], default="auth_json")
     p_init.add_argument("--model", required=True)
+    p_init.add_argument("--provider", choices=PROVIDERS, default="codex")
+    p_init.add_argument("--account-id", default=None)
 
     p_turn = sub.add_parser("turn")
     p_turn.add_argument("--n", type=int, required=True)
@@ -291,12 +397,15 @@ def main() -> None:
     p_turn.add_argument("--max-seconds", type=int, default=900)
 
     sub.add_parser("stop")
+    sub.add_parser("export-credentials")
 
     args = parser.parse_args()
     if args.cmd == "init":
         code = cmd_init(args)
     elif args.cmd == "turn":
         code = cmd_turn(args)
+    elif args.cmd == "export-credentials":
+        code = cmd_export_credentials(args)
     else:
         code = cmd_stop(args)
     raise SystemExit(code)

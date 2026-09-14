@@ -1,16 +1,29 @@
 openapi: 3.1.0
 info:
   title: sbx-browser Session API
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    会话控制面 HTTP API。覆盖 Linear SOR-31 全部端点。
+    会话控制面 HTTP API（网页内部 `/api/*`）。v2 覆盖多 provider / 多账号。
     所有端点使用 HTTP Basic Auth；失败返回 401。
     状态机：`creating → idle ⇄ running → closed | timed_out | lost`。
     SSE 帧：`id: <events.jsonl 行号>` / `event: <type>` / `data: <json>`。
     连接后立即发一帧 `: keepalive` 注释，之后每 15 s 再发 `: keepalive`。
     `Last-Event-ID` 为上次收到的行号，服务从下一行续传。
+    错误体：`{error: <subcode>, code: <http status>}`；`error` 取值见
+    canonical `error_subcodes`。
 x-canonical:
-  error_codes: [401, 404, 409, 429]
+  error_codes: [400, 401, 404, 409, 429]
+  error_subcodes:
+    - unauthorized
+    - not_found
+    - invalid_provider
+    - turn_in_progress
+    - session_not_runnable
+    - account_busy
+    - account_unavailable
+    - provider_exhausted
+    - concurrency_limit
+  providers: [codex, antigravity, grok, opencode, devin]
   keepalives_s: 15
   sse:
     id: events.jsonl line number
@@ -21,16 +34,19 @@ x-canonical:
     - inbox/<n>.md
     - turns/<n>.json
     - events.jsonl
+    - events.raw.jsonl
     - session.json
   exit_codes:
     "0": success
-    "2": codex_nonzero
+    "2": cli_nonzero
     "3": timeout
     "4": bad_json
+    "5": auth_invalid
   commands:
     - init
     - turn
     - stop
+    - export-credentials
   codex_events:
     - thread.started
     - turn.started
@@ -50,6 +66,7 @@ x-canonical:
     - sbx.turn_started
     - sbx.turn_finished
     - sbx.error
+    - sbx.session_meta
   usage_fields:
     - input_tokens
     - cached_input_tokens
@@ -65,6 +82,15 @@ x-canonical:
     - POST /api/sessions/{id}/stop
     - DELETE /api/sessions/{id}
     - GET /api/sessions/{id}/events
+    - GET /api/providers
+    - GET /api/accounts
+    - POST /api/accounts
+    - GET /api/accounts/{id}
+    - DELETE /api/accounts/{id}
+    - POST /api/accounts/{id}/verify
+    - GET /api/api-keys
+    - POST /api/api-keys
+    - DELETE /api/api-keys/{id}
 servers:
   - url: http://127.0.0.1:8787
     description: WP0 mock_api default
@@ -72,6 +98,8 @@ security:
   - basicAuth: []
 tags:
   - name: sessions
+  - name: accounts
+  - name: api-keys
 paths:
   /api/sessions:
     post:
@@ -91,8 +119,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CreateSessionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/AccountUnavailable"
         "429":
           $ref: "#/components/responses/ConcurrencyLimit"
     get:
@@ -228,6 +260,163 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/providers:
+    get:
+      tags: [accounts]
+      summary: List providers with models and account availability
+      operationId: listProviders
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Provider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/accounts:
+    get:
+      tags: [accounts]
+      summary: List accounts (optionally filtered by provider)
+      operationId: listAccounts
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ProviderId"
+      responses:
+        "200":
+          description: Account list (never contains credential material)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [accounts]
+      summary: Import an account credential
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/accounts/{id}:
+    get:
+      tags: [accounts]
+      summary: Get account (status, concurrency, last use; never credentials)
+      operationId: getAccount
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [accounts]
+      summary: Remove an account and its credential
+      operationId: deleteAccount
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "204":
+          description: Removed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/accounts/{id}/verify:
+    post:
+      tags: [accounts]
+      summary: Probe the account credential in a throwaway sandbox
+      operationId: verifyAccount
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: Verified account (status updated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/api-keys:
+    get:
+      tags: [api-keys]
+      summary: List API keys (hashes only, never plaintext)
+      operationId: listApiKeys
+      responses:
+        "200":
+          description: API key list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [api-keys]
+      summary: Create an API key; plaintext returned once
+      operationId: createApiKey
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+      responses:
+        "201":
+          description: Created; `key` is the only plaintext response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/api-keys/{id}:
+    delete:
+      tags: [api-keys]
+      summary: Revoke an API key
+      operationId: deleteApiKey
+      parameters:
+        - $ref: "#/components/parameters/ApiKeyId"
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
   securitySchemes:
     basicAuth:
@@ -241,10 +430,25 @@ components:
       required: true
       schema:
         type: string
+    AccountId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ApiKeyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
     SessionStatus:
       type: string
       enum: [creating, idle, running, closed, timed_out, lost]
+    ProviderId:
+      type: string
+      enum: [codex, antigravity, grok, opencode, devin]
     Usage:
       type: object
       required: [input_tokens, cached_input_tokens, output_tokens]
@@ -286,6 +490,8 @@ components:
         - status
         - created_at
         - updated_at
+        - provider
+        - account_id
         - model
         - turns
         - usage
@@ -305,6 +511,11 @@ components:
         updated_at:
           type: string
           format: date-time
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        account_id:
+          type: string
+          description: Resolved account id (`auto` is resolved at create time)
         model:
           type: string
         turns:
@@ -327,6 +538,13 @@ components:
       properties:
         title:
           type: string
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+          default: codex
+        account_id:
+          type: string
+          description: Account id, or `"auto"` for scheduler pick
+          default: "auto"
         model:
           type: string
     CreateSessionResponse:
@@ -353,15 +571,148 @@ components:
       properties:
         status:
           $ref: "#/components/schemas/SessionStatus"
+    Provider:
+      type: object
+      required: [provider, models, accounts_total, accounts_available]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        models:
+          type: array
+          items:
+            type: string
+        accounts_total:
+          type: integer
+          minimum: 0
+        accounts_available:
+          type: integer
+          minimum: 0
+          description: active accounts with a free slot
+    AccountStatus:
+      type: string
+      enum: [active, cooling, invalid, disabled]
+    Account:
+      type: object
+      required: [id, provider, label, status, max_concurrent]
+      properties:
+        id:
+          type: string
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        label:
+          type: string
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        max_concurrent:
+          type: integer
+          minimum: 1
+        running:
+          type: integer
+          minimum: 0
+          description: Currently running sessions on this account
+        models:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        cooldown_until:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+          description: REDACTED short code only, never credential material
+    CreateAccountRequest:
+      type: object
+      required: [provider, label]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        label:
+          type: string
+        credential:
+          type: object
+          description: |
+            Credential blob `{"files": {"<relpath under HOME>": "<content>"}}`.
+            Sent over HTTPS to the control plane; never logged or returned.
+          properties:
+            files:
+              type: object
+              additionalProperties:
+                type: string
+        max_concurrent:
+          type: integer
+          minimum: 1
+        models:
+          type: array
+          items:
+            type: string
+    ApiKey:
+      type: object
+      required: [id, label, scopes, created_at]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [agents, admin]
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [agents, admin]
+          default: [agents]
+    ApiKeyCreated:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: "`sbx_<key>` plaintext, returned exactly once"
     ErrorBody:
       type: object
       required: [error, code]
       properties:
         error:
           type: string
+          enum:
+            - unauthorized
+            - not_found
+            - invalid_provider
+            - turn_in_progress
+            - session_not_runnable
+            - account_busy
+            - account_unavailable
+            - provider_exhausted
+            - concurrency_limit
         code:
           type: integer
-          enum: [401, 404, 409, 429]
+          enum: [400, 401, 404, 409, 429]
   responses:
     Unauthorized:
       description: Missing or invalid HTTP Basic Auth
@@ -370,19 +721,37 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorBody"
     NotFound:
-      description: Session not found
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    InvalidProvider:
+      description: Unknown provider or malformed request (400 invalid_provider)
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorBody"
     TurnInProgress:
-      description: Previous turn has not finished (409)
+      description: Previous turn has not finished (409 turn_in_progress)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    AccountUnavailable:
+      description: |
+        409 when a named account cannot take the session:
+        `account_busy` (no free slot) or `account_unavailable`
+        (not `active`: cooling / invalid / disabled / missing).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorBody"
     ConcurrencyLimit:
-      description: Concurrent session limit (2) exceeded
+      description: |
+        429 when capacity is exhausted: `provider_exhausted` (auto pick found
+        no free account; may carry a retry hint) or `concurrency_limit`
+        (global `SBX_MAX_CONCURRENT` cap, P1 semantics).
       content:
         application/json:
           schema:

@@ -21,12 +21,24 @@ from typing import Protocol, runtime_checkable
 
 _SIGTERM_GRACE_S = 5.0
 
+# Parent env vars that sandboxed processes may inherit (SOR-56). Everything
+# else — credentials, tokens, provider config — must be passed explicitly via
+# ``exec(env=...)`` or ``SandboxSpec.env``.
+_EXEC_ENV_WHITELIST = ("PATH", "HOME", "LANG")
+
 
 @dataclass(frozen=True)
 class SandboxSpec:
-    """How to create a sandbox."""
+    """How to create a sandbox.
+
+    ``secrets`` names Modal Secrets to attach (P2: one per account,
+    ``sbx-acct-<account_id>``). ``env`` is a baseline environment applied to
+    every ``exec`` in this sandbox; the per-call ``env`` argument overrides it.
+    """
 
     tags: dict[str, str] = field(default_factory=dict)
+    secrets: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -136,12 +148,19 @@ class _LineIterator:
 @dataclass
 class _Record:
     handle: SandboxHandle
+    spec_env: dict[str, str] = field(default_factory=dict)
+    secrets: list[str] = field(default_factory=list)
     procs: list[LocalProcess] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class LocalProcessBackend:
-    """Local tempdir sandbox: ``create`` makes a directory used as the sandbox root."""
+    """Local tempdir sandbox: ``create`` makes a directory used as the sandbox root.
+
+    ``exec`` does **not** inherit the parent environment (SOR-56): children get
+    only the ``_EXEC_ENV_WHITELIST`` vars plus ``SandboxSpec.env`` plus the
+    explicit ``env=`` argument. Tests must pass everything they need via ``env=``.
+    """
 
     def __init__(self) -> None:
         self._records: dict[str, _Record] = {}
@@ -151,7 +170,11 @@ class LocalProcessBackend:
         root = Path(tempfile.mkdtemp(prefix="sbx-"))
         handle = SandboxHandle(id=uuid.uuid4().hex, root=root, tags=dict(spec.tags))
         with self._lock:
-            self._records[handle.id] = _Record(handle=handle)
+            self._records[handle.id] = _Record(
+                handle=handle,
+                spec_env=dict(spec.env),
+                secrets=list(spec.secrets),
+            )
         return handle
 
     def exec(
@@ -160,9 +183,12 @@ class LocalProcessBackend:
         argv: list[str],
         env: Mapping[str, str] | None = None,
     ) -> Process:
-        """Start ``argv``. Child stdin is ``/dev/null`` (already closed)."""
+        """Start ``argv``. Child stdin is ``/dev/null`` (already closed).
+
+        Child env = whitelisted parent vars + ``SandboxSpec.env`` + ``env``."""
         rec = self._require(handle)
-        merged = dict(os.environ)
+        merged = {k: v for k, v in os.environ.items() if k in _EXEC_ENV_WHITELIST}
+        merged.update(rec.spec_env)
         if env:
             merged.update(env)
         merged.setdefault("SBX_WORK", str(handle.root))
