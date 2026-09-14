@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from runtime.runner.constants import TERM_GRACE_S
+from runtime.runner.workspace import sandbox_home
 
 
 def codex_bin_tokens() -> list[str]:
@@ -66,10 +67,32 @@ def build_codex_argv(
     return cmd
 
 
+# Env vars that must never reach the provider CLI subprocess: injected
+# credential blobs and provider key material (runner-cli.md §凭证注入; the
+# Devin CLI must authenticate from its restored credentials file only, and
+# ACP_BACKEND must not leak into `devin acp`).
+CHILD_ENV_DENYLIST: tuple[str, ...] = (
+    "CODEX_AUTH_JSON",
+    "SBX_ACCOUNT_CREDENTIAL",
+    "ACP_BACKEND",
+    "DEVIN_API_KEY",
+    "DEVIN_V3_API_KEY",
+    "DEVIN_LEGACY_API_KEY",
+    "DEVIN_ORG_ID",
+    "DEVIN_MODEL",
+    "DEVIN_REFUSAL_FALLBACK",
+    "WINDSURF_API_KEY",
+)
+
+
 def child_env(work: Path, home: Path) -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if key != "CODEX_AUTH_JSON"}
+    env = {key: value for key, value in os.environ.items() if key not in CHILD_ENV_DENYLIST}
     env["SBX_WORK"] = str(work)
     env["CODEX_HOME"] = str(home)
+    # Provider CLIs always see the sandbox $HOME ($SBX_WORK/home), never the
+    # runner's inherited HOME — the restored credential blob is the only
+    # auth source (filesystem.md).
+    env["HOME"] = str(sandbox_home(work))
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 

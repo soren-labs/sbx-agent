@@ -28,8 +28,13 @@ class TestAdapterRegistry:
         assert isinstance(adapter, AgentAdapter)
         assert adapter.provider == "codex"
 
+    def test_devin_registered(self) -> None:
+        adapter = get_adapter("devin")
+        assert isinstance(adapter, AgentAdapter)
+        assert adapter.provider == "devin"
+
     def test_other_providers_not_yet_registered(self) -> None:
-        for provider in ("antigravity", "grok", "opencode", "devin"):
+        for provider in ("antigravity", "grok", "opencode"):
             with pytest.raises(KeyError):
                 get_adapter(provider)
 

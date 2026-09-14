@@ -106,6 +106,10 @@ class TurnState:
         self._apply(obj)
         return obj, False
 
+    def consume_obj(self, obj: dict[str, Any]) -> None:
+        """Apply one already-translated canonical event."""
+        self._apply(obj)
+
     def _apply(self, obj: dict[str, Any]) -> None:
         event_type = obj.get("type")
         if event_type == "thread.started":
