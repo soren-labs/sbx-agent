@@ -8,14 +8,21 @@ export function apiBase() {
   return "";
 }
 
+function isLocalHost() {
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1";
+}
+
 export function apiUser() {
   if (typeof window.SBX_API_USER === "string") return window.SBX_API_USER;
-  return "sbx";
+  // Local mock / Playwright only. Production (sbx.sorenforge.com) uses the
+  // Cloudflare edge proxy so the browser never sees Basic credentials.
+  return isLocalHost() ? "sbx" : "";
 }
 
 export function apiPassword() {
   if (typeof window.SBX_API_PASSWORD === "string") return window.SBX_API_PASSWORD;
-  return "sbx";
+  return isLocalHost() ? "sbx" : "";
 }
 
 export function origin() {

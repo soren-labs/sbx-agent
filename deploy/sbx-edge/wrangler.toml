@@ -1,0 +1,21 @@
+name = "sbx-browser"
+main = "worker.js"
+compatibility_date = "2026-09-13"
+workers_dev = true
+account_id = "c14af78004126af83b7144a6ba2b01ea"
+
+# Public origin. Secrets SBX_BASIC_USER / SBX_BASIC_PASS are set with
+# `wrangler secret put` and must never land in this file or git.
+[vars]
+SBX_CONTROL_URL = "https://sorenlab2026--sbx-control-fastapi-app.modal.run"
+WEB_ORIGIN = "https://sbx-browser-220900135zyf-9957s-projects.vercel.app"
+
+[assets]
+directory = "../../web"
+binding = "ASSETS"
+run_worker_first = true
+not_found_handling = "single-page-application"
+
+[[routes]]
+pattern = "sbx.sorenforge.com"
+custom_domain = true

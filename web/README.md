@@ -16,7 +16,9 @@ python -m tests.fakes.mock_api --port 8787
 </script>
 ```
 
-`sbx` / `sbx` 只用于本地 mock，不是生产凭证。SSE 按 EventSource 语义消费（`id` / `event` / `data` / `retry`、断线自动重连并带 `Last-Event-ID`）。原生 `EventSource` 无法设置 `Authorization`，且 Chromium 会丢掉 URL 里的 `user:pass`，因此客户端用 `fetch` 读 `text/event-stream`。
+`sbx` / `sbx` 只用于本地 mock（hostname 为 `localhost` / `127.0.0.1` 时的默认值），不是生产凭证。生产域名由 Cloudflare Worker 把 `/api/*` 代理到 Modal 控制面并注入 Basic Auth，**浏览器 bundle 不带密码**。
+
+SSE 按 EventSource 语义消费（`id` / `event` / `data` / `retry`、断线自动重连并带 `Last-Event-ID`）。原生 `EventSource` 无法设置 `Authorization`，且 Chromium 会丢掉 URL 里的 `user:pass`，因此客户端用 `fetch` 读 `text/event-stream`。
 
 Playwright：`make test-e2e`（配置在 `playwright.config.ts`，用例在 `../tests/e2e/`）。
 
