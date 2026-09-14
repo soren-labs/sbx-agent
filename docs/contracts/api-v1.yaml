@@ -1,0 +1,934 @@
+openapi: 3.1.0
+info:
+  title: sbx-browser Public API v1
+  version: 1.0.0
+  description: |
+    公开 REST API，形状对齐 Cursor Cloud Agents API（设计 v2 §3.4）。
+    `agent ≙ session`，`run ≙ turn`：创建 agent 立刻跑首个 run，follow-up
+    是同一 agent 上的新 run。
+    认证：`Authorization: Bearer sbx_<key>`（控制面只存 `sha256(key)`）。
+    scopes：`agents`（默认）/ `admin`（accounts / api-keys / verify 需要）。
+    错误体统一 `{error:{code, message, retry_after?}}`；`code` 取 canonical
+    `error_subcodes`，HTTP 状态取 canonical `error_codes`。
+    SSE 帧与 `/api/*` 相同：`id: <events.jsonl 行号>` / `event: <type>` /
+    `data: <json>`，15 s `: keepalive`，支持 `Last-Event-ID` 续传。
+x-canonical:
+  error_codes: [400, 401, 403, 404, 409, 429]
+  error_subcodes:
+    - unauthorized
+    - forbidden
+    - not_found
+    - invalid_provider
+    - turn_in_progress
+    - session_not_runnable
+    - account_busy
+    - account_unavailable
+    - provider_exhausted
+    - concurrency_limit
+  providers: [codex, antigravity, grok, opencode, devin]
+  keepalives_s: 15
+  sse:
+    id: events.jsonl line number
+    event: type
+    data: json
+    keepalive: ": keepalive"
+  paths:
+    - inbox/<n>.md
+    - turns/<n>.json
+    - events.jsonl
+    - events.raw.jsonl
+    - session.json
+  exit_codes:
+    "0": success
+    "2": cli_nonzero
+    "3": timeout
+    "4": bad_json
+    "5": auth_invalid
+  commands:
+    - init
+    - turn
+    - stop
+    - export-credentials
+  codex_events:
+    - thread.started
+    - turn.started
+    - item.started
+    - item.updated
+    - item.completed
+    - turn.completed
+    - turn.failed
+    - error
+  item_types:
+    - agent_message
+    - command_execution
+    - file_change
+    - reasoning
+    - error
+  runner_events:
+    - sbx.turn_started
+    - sbx.turn_finished
+    - sbx.error
+    - sbx.session_meta
+  usage_fields:
+    - input_tokens
+    - cached_input_tokens
+    - output_tokens
+  usage_fields_optional:
+    - cache_write_input_tokens
+    - reasoning_output_tokens
+  http_paths:
+    - POST /v1/agents
+    - GET /v1/agents
+    - GET /v1/agents/{id}
+    - DELETE /v1/agents/{id}
+    - POST /v1/agents/{id}/runs
+    - GET /v1/agents/{id}/runs
+    - GET /v1/agents/{id}/runs/{runId}
+    - GET /v1/agents/{id}/runs/{runId}/stream
+    - POST /v1/agents/{id}/runs/{runId}/cancel
+    - GET /v1/agents/{id}/usage
+    - GET /v1/models
+    - GET /v1/me
+    - GET /v1/accounts
+    - POST /v1/accounts
+    - GET /v1/accounts/{id}
+    - DELETE /v1/accounts/{id}
+    - POST /v1/accounts/{id}/verify
+    - GET /v1/api-keys
+    - POST /v1/api-keys
+    - DELETE /v1/api-keys/{id}
+servers:
+  - url: https://sbx.sorenforge.com
+    description: Production (Cloudflare Worker → sbx-control)
+security:
+  - bearerAuth: []
+tags:
+  - name: agents
+  - name: runs
+  - name: accounts
+  - name: api-keys
+  - name: meta
+paths:
+  /v1/agents:
+    post:
+      tags: [agents]
+      summary: Create an agent and immediately queue its first run
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAgentResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/AccountUnavailable"
+        "429":
+          $ref: "#/components/responses/Exhausted"
+    get:
+      tags: [agents]
+      summary: List agents
+      operationId: listAgents
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ProviderId"
+        - name: account_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/AgentStatus"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/agents/{id}:
+    get:
+      tags: [agents]
+      summary: Get agent detail
+      operationId: getAgent
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [agents]
+      summary: Close an agent (reclaim sandbox; history stays read-only)
+      operationId: deleteAgent
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Closed agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/runs:
+    post:
+      tags: [runs]
+      summary: Follow-up run on an existing agent
+      operationId: createRun
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "201":
+          description: Run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Agent already running (`turn_in_progress`) or closed (`session_not_runnable`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+    get:
+      tags: [runs]
+      summary: List runs of an agent
+      operationId: listRuns
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Run list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Run"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/runs/{runId}:
+    get:
+      tags: [runs]
+      summary: Get run status and result
+      operationId: getRun
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/runs/{runId}/stream:
+    get:
+      tags: [runs]
+      summary: SSE stream of canonical events for this run
+      operationId: streamRun
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/RunId"
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: events.jsonl 行号；从下一行续传
+          schema:
+            type: string
+      responses:
+        "200":
+          description: |
+            `text/event-stream`. Frames identical to `/api/sessions/{id}/events`:
+
+            ```
+            id: <events.jsonl 1-based line number>
+            event: <type>
+            data: <json>
+
+            ```
+
+            `: keepalive` comment on connect, then every 15 s.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/runs/{runId}/cancel:
+    post:
+      tags: [runs]
+      summary: Cancel a running run (= P1 stop)
+      operationId: cancelRun
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run marked CANCELLED (or already terminal)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/usage:
+    get:
+      tags: [agents]
+      summary: Accumulated usage and cost for an agent
+      operationId: getAgentUsage
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Usage totals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentUsage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/models:
+    get:
+      tags: [meta]
+      summary: Available models per provider with free account counts
+      operationId: listModels
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Model"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/me:
+    get:
+      tags: [meta]
+      summary: API key identity and scopes
+      operationId: getMe
+      responses:
+        "200":
+          description: Key info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/accounts:
+    get:
+      tags: [accounts]
+      summary: List accounts (admin scope; never returns credentials)
+      operationId: listAccountsV1
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ProviderId"
+      responses:
+        "200":
+          description: Account list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [accounts]
+      summary: Import an account credential (admin scope)
+      operationId: createAccountV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: Created (credential never echoed back)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/accounts/{id}:
+    get:
+      tags: [accounts]
+      summary: Get account (admin scope)
+      operationId: getAccountV1
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [accounts]
+      summary: Remove an account and its credential (admin scope)
+      operationId: deleteAccountV1
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "204":
+          description: Removed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/accounts/{id}/verify:
+    post:
+      tags: [accounts]
+      summary: Probe account credential in a throwaway sandbox (admin scope)
+      operationId: verifyAccountV1
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: Verified account (status updated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/api-keys:
+    get:
+      tags: [api-keys]
+      summary: List API keys (admin scope; hashes only)
+      operationId: listApiKeysV1
+      responses:
+        "200":
+          description: API key list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api_keys]
+                properties:
+                  api_keys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [api-keys]
+      summary: Create an API key (admin scope; plaintext returned once)
+      operationId: createApiKeyV1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+      responses:
+        "201":
+          description: Created; `key` is the only plaintext response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/api-keys/{id}:
+    delete:
+      tags: [api-keys]
+      summary: Revoke an API key (admin scope)
+      operationId: deleteApiKeyV1
+      parameters:
+        - $ref: "#/components/parameters/ApiKeyId"
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer sbx_<key>`. Control plane stores
+        `sha256(key)` only; plaintext is returned once at create time.
+  parameters:
+    AgentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+    AccountId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ApiKeyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    ProviderId:
+      type: string
+      enum: [codex, antigravity, grok, opencode, devin]
+    AgentStatus:
+      type: string
+      enum: [creating, idle, running, closed, timed_out, lost]
+      description: Same enum as P1 session status.
+    RunStatus:
+      type: string
+      enum: [CREATING, RUNNING, FINISHED, ERROR, CANCELLED, EXPIRED]
+      description: Cursor-shaped run state derived from turn state.
+    Usage:
+      type: object
+      required: [input_tokens, cached_input_tokens, output_tokens]
+      properties:
+        input_tokens:
+          type: integer
+          minimum: 0
+        cached_input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_write_input_tokens:
+          type: integer
+          minimum: 0
+        reasoning_output_tokens:
+          type: integer
+          minimum: 0
+    Prompt:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+    AgentSpec:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        account_id:
+          type: string
+          description: Account id, or `"auto"` for scheduler pick (default).
+          default: "auto"
+        model:
+          type: string
+    CreateAgentRequest:
+      type: object
+      required: [prompt, agent]
+      properties:
+        prompt:
+          $ref: "#/components/schemas/Prompt"
+        agent:
+          $ref: "#/components/schemas/AgentSpec"
+        name:
+          type: string
+        idle_timeout_s:
+          type: integer
+          minimum: 1
+    CreateAgentResponse:
+      type: object
+      required: [agent, run]
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+        run:
+          $ref: "#/components/schemas/Run"
+    CreateRunRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          $ref: "#/components/schemas/Prompt"
+    Agent:
+      type: object
+      required:
+        - id
+        - name
+        - provider
+        - account_id
+        - model
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        account_id:
+          type: string
+        model:
+          type: string
+        status:
+          $ref: "#/components/schemas/AgentStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        usage:
+          $ref: "#/components/schemas/Usage"
+        cost_estimate_usd:
+          type: number
+    AgentList:
+      type: object
+      required: [agents]
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agent"
+        next_cursor:
+          type: string
+          nullable: true
+    Run:
+      type: object
+      required: [id, agent_id, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        result:
+          type: object
+          nullable: true
+          properties:
+            text:
+              type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+    AgentUsage:
+      type: object
+      required: [usage, cost_estimate_usd, sandbox_seconds]
+      properties:
+        usage:
+          $ref: "#/components/schemas/Usage"
+        cost_estimate_usd:
+          type: number
+        sandbox_seconds:
+          type: number
+    Model:
+      type: object
+      required: [provider, model, accounts_available]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        model:
+          type: string
+        accounts_available:
+          type: integer
+          minimum: 0
+    Me:
+      type: object
+      required: [key_id, scopes]
+      properties:
+        key_id:
+          type: string
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [agents, admin]
+    AccountStatus:
+      type: string
+      enum: [active, cooling, invalid, disabled]
+    Account:
+      type: object
+      required: [id, provider, label, status, max_concurrent]
+      properties:
+        id:
+          type: string
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        label:
+          type: string
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        max_concurrent:
+          type: integer
+          minimum: 1
+        running:
+          type: integer
+          minimum: 0
+        models:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        cooldown_until:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+          description: REDACTED short code only, never credential material
+    CreateAccountRequest:
+      type: object
+      required: [provider, label]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        label:
+          type: string
+        credential:
+          type: object
+          description: |
+            Credential blob `{"files": {"<relpath under HOME>": "<content>"}}`.
+            Transported over HTTPS only; never logged or returned.
+          properties:
+            files:
+              type: object
+              additionalProperties:
+                type: string
+        max_concurrent:
+          type: integer
+          minimum: 1
+        models:
+          type: array
+          items:
+            type: string
+    ApiKey:
+      type: object
+      required: [id, label, scopes, created_at]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [agents, admin]
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [agents, admin]
+          default: [agents]
+    ApiKeyCreated:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: "`sbx_<key>` plaintext, returned exactly once"
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - unauthorized
+                - forbidden
+                - not_found
+                - invalid_provider
+                - turn_in_progress
+                - session_not_runnable
+                - account_busy
+                - account_unavailable
+                - provider_exhausted
+                - concurrency_limit
+            message:
+              type: string
+            retry_after:
+              type: number
+              description: Seconds; present on `provider_exhausted` / `concurrency_limit` when known
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer key (401 unauthorized)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Forbidden:
+      description: Valid key without the required `admin` scope (403 forbidden)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    NotFound:
+      description: Resource not found (404 not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    InvalidProvider:
+      description: Unknown provider or malformed request (400 invalid_provider)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    AccountUnavailable:
+      description: |
+        409 when a named account cannot take the run: `account_busy`
+        (no free slot) or `account_unavailable` (not `active`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Exhausted:
+      description: |
+        429 when capacity is exhausted: `provider_exhausted` (auto pick found
+        no free account) or `concurrency_limit` (global cap). `retry_after`
+        in the error body when known.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"

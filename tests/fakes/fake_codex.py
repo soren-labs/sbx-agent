@@ -2,7 +2,7 @@
 """Fake Codex CLI (0.153.0-shaped ``exec --json`` / ``exec resume``).
 
 Scenarios are selected with ``FAKE_CODEX_SCENARIO``:
-success, resume, nonzero, hang, badjson, slow.
+success, resume, nonzero, hang, badjson, slow, auth_invalid.
 
 ``FAKE_CODEX_SLOW_SECONDS`` overrides the silent delay after ``thread.started``
 in the ``slow`` scenario (default 40).
@@ -231,6 +231,11 @@ def main() -> None:
     if scenario == "nonzero":
         replay(_fixture("nonzero"), thread_id=thread_id)
         print("fake_codex nonzero scenario", file=sys.stderr)
+        sys.exit(1)
+
+    if scenario == "auth_invalid":
+        replay(_fixture("auth_invalid"), thread_id=thread_id)
+        print("fake_codex auth_invalid scenario", file=sys.stderr)
         sys.exit(1)
 
     if scenario == "badjson":

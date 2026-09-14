@@ -1,14 +1,32 @@
 # runner CLI
 
-Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `runner`（测试假件：`tests/fakes/stub_runner.py`）。工作目录语义见 `filesystem.md`；事件见 `events.md`。行为必须与 Linear `SOR-30` 一致。
+Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 `runner`（测试假件：`tests/fakes/stub_runner.py`）。工作目录语义见 `filesystem.md`；事件见 `events.md`。v1 行为与 Linear `SOR-30` 一致；v2（`SOR-59` 起）扩展为多 provider，向后兼容。
 
-环境：`SBX_WORK`（生产 `/work`）、`CODEX_HOME=$SBX_WORK/.codex`、`CODEX_BIN`（默认 `codex`，测试指向 `tests/fakes/fake_codex.py`）。
+环境：`SBX_WORK`（生产 `/work`）、`HOME=$SBX_WORK/home`、`CODEX_HOME=$HOME/.codex`、`CODEX_BIN`（默认 `codex`，测试指向 `tests/fakes/fake_codex.py`）。
+
+## Provider
+
+`--provider` 取值：`codex | antigravity | grok | opencode | devin`。每个 provider 由 `runtime/runner/adapter.py` 的 `AgentAdapter` 驱动：argv 构造、事件翻译、原生 session id 提取、健康判定。
+
+## 凭证注入
+
+凭证经环境变量 `SBX_ACCOUNT_CREDENTIAL` 注入，值为 JSON blob：
+
+```json
+{"provider": "codex", "files": {".codex/auth.json": "<file content>"}}
+```
+
+- `files` 的 key 是相对 `$HOME` 的路径；`init` 时逐个还原到 `$HOME` 下，文件权限 **600**。
+- 内容可以是原文或 base64（由控制面约定）；blob 的 `provider` 必须与 `--provider` 一致，否则 `init` 失败。
+- 还原完成后，runner **不得**让 CLI 子进程继承 `SBX_ACCOUNT_CREDENTIAL`（codex 写入 `shell_environment_policy.exclude`；其他 provider 由 adapter 在子进程 env 中剔除）。
+- v1 兼容输入：`CODEX_AUTH_JSON`（或 `$SBX_WORK/auth.json`）仅在 `--provider codex` 时仍被接受，写入 `$CODEX_HOME/auth.json`。
+- `SBX_ACCOUNT_ID`（可选）：当前账号 id，记入 `session.json.account_id` 与 `sbx.session_meta`。
 
 ## 命令
 
-### `runner init --auth auth_json|provider --model M`
+### `runner init --provider P --model M [--auth auth_json|provider]`
 
-1. 创建 `$CODEX_HOME`，写入 `config.toml`（最小内容）：
+1. 创建 `$HOME`（=`$SBX_WORK/home`）与 `$CODEX_HOME`（=`$HOME/.codex`），写入 `config.toml`（最小内容）：
 
    ```toml
    model = "<M>"
@@ -16,21 +34,22 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
    sandbox_mode = "danger-full-access"
 
    [shell_environment_policy]
-   exclude = ["CODEX_AUTH_JSON"]
+   exclude = ["CODEX_AUTH_JSON", "SBX_PROVIDER_API_KEY", "SBX_ACCOUNT_CREDENTIAL"]
    ```
 
-   凭证经环境变量注入后写入 `$CODEX_HOME/auth.json`，随后 **不** 让 Codex 子进程继承 `CODEX_AUTH_JSON`。
-2. 按 `--auth` 安装凭证（**不得**把真实 token 写入仓库或日志）：
-   - `auth_json`：将 `$SBX_WORK/auth.json`（若存在）复制到 `$CODEX_HOME/auth.json`，或写入占位文件；所有 token 字段必须是 `REDACTED`；文件权限 **600**
+   凭证经环境变量注入后写入 `$CODEX_HOME/auth.json`，随后 **不** 让 Codex 子进程继承 `CODEX_AUTH_JSON` / `SBX_ACCOUNT_CREDENTIAL`。
+2. 按上节还原 `SBX_ACCOUNT_CREDENTIAL` blob（**不得**把真实 token 写入仓库或日志）。`--auth` 保留一版作 codex 兼容别名（仅 `--provider codex` 有意义）：
+   - `auth_json`：v1 路径——`CODEX_AUTH_JSON` 或 `$SBX_WORK/auth.json` → `$CODEX_HOME/auth.json`；无输入时写占位文件；所有 token 字段必须是 `REDACTED`；文件权限 **600**
    - `provider`：写入 provider 登录占位（token 字段同样 `REDACTED`），权限同样 600，不发起网络登录
 3. 写入 `$SBX_WORK/AGENTS.md`（sandbox 内说明，不是仓库根 `AGENTS.md`）
-4. 初始化空的 `events.jsonl`、`session.json`（`codex_session_id` 空、`turn` 0）、`inbox/`、`turns/`
+4. 初始化空的 `events.jsonl`、`events.raw.jsonl`、`session.json`（`native_session_id` 空、`codex_session_id` 别名同值、`provider`、`account_id`、`turn` 0）、`inbox/`、`turns/`
 
 ### `runner turn --n N --message-file F [--max-seconds S]`
 
 - 默认 `--max-seconds` **900**。
 - 将 `F` 复制为 `$SBX_WORK/inbox/<N>.md`。`$PROMPT` 取该文件全文。
-- 第 1 轮调用（**stdin 关闭**，prompt 仅为位置参数，不用 `-`）：
+- 第 `N` 轮调用该 provider adapter 的 `first_turn_argv`（`N=1` 且无 `native_session_id`）或 `resume_argv`（后续轮，id 来自 `session.json.native_session_id`）。**stdin 关闭**，prompt 只作位置参数，不用 `-`。
+- Codex provider 第 1 轮调用：
 
   ```
   $CODEX_BIN exec --json --skip-git-repo-check -C $SBX_WORK \
@@ -38,7 +57,7 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
     "$PROMPT"
   ```
 
-- 第 2 轮及以后：
+  第 2 轮及以后：
 
   ```
   $CODEX_BIN exec resume --json --skip-git-repo-check -C $SBX_WORK \
@@ -46,19 +65,26 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
     "$PROMPT"
   ```
 
-  `session_id` 来自 `session.json.codex_session_id`（即首轮 `thread.started.thread_id`）。后续轮 `thread.started.thread_id` 与首轮相同。
-- Codex stdout **逐行追加**到 `$SBX_WORK/events.jsonl`，同时写 runner 自己的 stdout。以 `\n` 为界切行；无法解析的行计为坏行并继续，最终退出码 4。
-- 在 Codex 输出前后插入 `sbx.turn_started` / `sbx.turn_finished{status,exit_code,duration_s,usage}`；异常插入 `sbx.error`。
-- 解析 `thread.started`、`turn.completed.usage`、最终 `agent_message`，写入 `turns/<N>.json`，更新 `session.json`（`codex_session_id`、`turn`）。
-- 软超时：到达 `S` 秒后对 Codex 进程 **SIGTERM**，再等 **30 s** 收尾；仍未退出则 SIGKILL。超时退出码 3。
+  `session_id` 来自 `session.json.native_session_id`（即首轮 `thread.started.thread_id`；`codex_session_id` 别名）。后续轮 `thread.started.thread_id` 与首轮相同。
+- CLI stdout **逐行原样追加**到 `$SBX_WORK/events.raw.jsonl`；每行经 adapter `translate` 归一化后（Codex 为恒等透传，且经脱敏）追加到 `$SBX_WORK/events.jsonl`，同时写 runner 自己的 stdout。以 `\n` 为界切行；无法解析的行计为坏行并继续，最终退出码 4。
+- 第 1 轮在 `sbx.turn_started` 之前插入一次 `sbx.session_meta{provider, model, account_id}`（不含凭证）。每轮在 CLI 输出前后插入 `sbx.turn_started` / `sbx.turn_finished{status,exit_code,duration_s,usage}`；异常插入 `sbx.error`。
+- 解析首个原生 session 标记（Codex：`thread.started.thread_id`）、`turn.completed.usage`、最终 `agent_message`，写入 `turns/<N>.json`，更新 `session.json`（`native_session_id`、别名 `codex_session_id`、`turn`）。
+- 软超时：到达 `S` 秒后对 CLI 进程 **SIGTERM**，再等 **30 s** 收尾；仍未退出则 SIGKILL。超时退出码 3。
+- adapter `health_from` 判定 `auth_invalid` 时退出码 5（见下）。
+
+### `runner export-credentials`
+
+- 把当前 `$HOME` 下该 provider 的凭证文件（adapter `credential_files`）重新打包为凭证 blob，JSON 打到 **stdout**，退出码 0。
+- 与注入的 blob 无变化时输出 **空**（stdout 为空）。
+- 控制面读 stdout 更新该账号的 Secret；**任何实现都不得把该 stdout 写进日志或事件流**。
 
 ### `runner stop`
 
-终止当前正在进行的 `turn`（对 Codex 子进程 SIGTERM → 宽限 → SIGKILL），不删除 `$SBX_WORK`。
+终止当前正在进行的 `turn`（对 CLI 子进程 SIGTERM → 宽限 → SIGKILL），不删除 `$SBX_WORK`。
 
 ## 进程约束
 
-1. **必须关闭 stdin**。Codex 在 stdin 为打开的管道时会等待 EOF 后才继续（help 原文：*If stdin is piped and a prompt is also provided, stdin is appended as a `<stdin>` block*；P0 在 Sandbox 内 25 s 超时复现挂死）。runner 启动 Codex 时：
+1. **必须关闭 stdin**。Codex 在 stdin 为打开的管道时会等待 EOF 后才继续（help 原文：*If stdin is piped and a prompt is also provided, stdin is appended as a `<stdin>` block*；P0 在 Sandbox 内 25 s 超时复现挂死）。runner 启动 CLI 时：
    - Python：`stdin=subprocess.DEVNULL`
    - shell：`</dev/null`
 2. **prompt 只通过位置参数传递，不使用 `-`。**
@@ -69,9 +95,10 @@ Sandbox 内驱动 Codex 会话的进程入口。可执行文件名约定为 `run
 | 码 | 含义 |
 | --- | --- |
 | 0 | 成功 |
-| 2 | Codex 进程非 0 |
+| 2 | provider CLI 进程非 0 |
 | 3 | 超时 |
 | 4 | 事件流中出现无法解析的非 JSON 行（坏 JSON） |
+| 5 | 认证失效（adapter `health_from` 判 `auth_invalid`） |
 
 （无退出码 1 的契约语义；假件内部错误可用 1，但不作为跨包约定。）
 
@@ -80,20 +107,40 @@ commands:
   - init
   - turn
   - stop
+  - export-credentials
+providers:
+  - codex
+  - antigravity
+  - grok
+  - opencode
+  - devin
 exit_codes:
   "0": success
-  "2": codex_nonzero
+  "2": cli_nonzero
   "3": timeout
   "4": bad_json
+  "5": auth_invalid
 error_codes:
+  - 400
   - 401
   - 404
   - 409
   - 429
+error_subcodes:
+  - unauthorized
+  - not_found
+  - invalid_provider
+  - turn_in_progress
+  - session_not_runnable
+  - account_busy
+  - account_unavailable
+  - provider_exhausted
+  - concurrency_limit
 paths:
   - inbox/<n>.md
   - turns/<n>.json
   - events.jsonl
+  - events.raw.jsonl
   - session.json
 codex_events:
   - thread.started
@@ -114,6 +161,7 @@ runner_events:
   - sbx.turn_started
   - sbx.turn_finished
   - sbx.error
+  - sbx.session_meta
 usage_fields:
   - input_tokens
   - cached_input_tokens

@@ -9,9 +9,20 @@ Cursor Cloud Agent 式的 Codex 云端会话：网页新建会话 → 一台按�
 - 项目概述与「已决定」表：Linear 项目描述
 - 设计方案 v1（顶部有 v1.1 范围收敛说明）：Linear 项目文档
 - 开发任务分配与并发计划 v1：Linear 项目文档
-- 当前起点：`SOR-39` WP0（仓库引导 + 接口契约 + 假件与测试脚手架）已合入；契约冻结。P0 spike（`SOR-28`）结论见 `spike/README.md`。
+- 当前起点：P1 `SOR-39` WP0 已合入。P2 进行中：`SOR-59` WP0 冻结 v2 契约（五 provider 多账号）与跨包 Protocol 壳；P0 spike（`SOR-28`）结论见 `spike/README.md`。
 
 仓库内的 `AGENTS.md`、`docs/contracts/` 是代码层面的规范来源。
+
+## P2 概览（多 provider / 多账号）
+
+P2 把单 Codex 会话扩展为 Cursor Cloud Agent 式的多 provider 平台：
+
+- **Provider 集合**：`codex` / `antigravity` / `grok` / `opencode` / `devin`，由 `runtime/runner/adapter.py` 的 `AgentAdapter` Protocol + 注册表统一驱动；Codex 行为保持不变，其余 provider 的 Adapter 在 `SOR-62` / `SOR-72` 实现。
+- **多账号凭证**：每个 provider 可挂多个账号；凭证以 blob `{provider, files:{relpath: content}}` 经 `SBX_ACCOUNT_CREDENTIAL` 注入，还原到沙箱 `HOME=$SBX_WORK/home`（权限 600）。`runner export-credentials` 把可能刷新的凭证以同一 blob 形式写回控制面。
+- **账号注册与调度**：`control/ports.py` 定义 `AccountRegistry` / `Scheduler` / `ApiKeyStore` / `SessionService` Protocol 与 `Account` / `ApiKey` / `ScheduleDecision` 数据类；`SOR-63` 实现（`modal.Dict` + 每账号 Secret），支持 `account_id` 指定或 `"auto"` LRU 选择。
+- **API 两层**：内部 `/api/*`（HTTP Basic，`docs/contracts/api.yaml`）供 web 看板；公开 `/v1/*`（Bearer `sbx_<key>`，`docs/contracts/api-v1.yaml`，`agent ≙ session`、`run ≙ turn`）由 `control/api_v1/`（`SOR-64`）实现。
+- **事件**：CLI 原生行原样落 `events.raw.jsonl`，Adapter 翻译为 canonical 事件写 `events.jsonl`；新增 `sbx.session_meta{provider, model, account_id}`，非 Codex usage 映射见 `docs/contracts/events.md`。
+- **测试隔离**：`tests/conftest.py` 剥离宿主凭证并隔离 HOME/XDG；`LocalProcessBackend.exec` 只继承白名单（`PATH` `HOME` `LANG`）+ `SandboxSpec.env` + 显式 `env=`；`tests/fakes/` 提供五个 provider 的可执行假件与 `tests/fakes/fake_ports.py` 内存版端口实现。
 
 ## 架构（P1 MVP）
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from starlette._utils import create_collapsing_task_group
 from starlette.types import Receive, Scope, Send
 
+from control.api_v1 import router as api_v1_router
 from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
     DEFAULT_MODEL,
@@ -156,6 +157,7 @@ def create_app(
     )
 
     app = FastAPI(title="sbx-control", version="0.1.0")
+    app.include_router(api_v1_router)  # empty shell until P2-D (SOR-64)
     app.state.plane = plane
     app.state.basic_user = basic_user
     app.state.basic_password = basic_password

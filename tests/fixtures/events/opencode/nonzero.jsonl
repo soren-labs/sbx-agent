@@ -1,0 +1,2 @@
+{"type": "step_start", "timestamp": 1789000000000, "sessionID": "ses_01a09b11abcd", "part": {"id": "prt_0", "sessionID": "ses_01a09b11abcd", "messageID": "msg_1", "type": "step-start", "snapshot": "snap0"}}
+{"type": "error", "timestamp": 1789000000009, "sessionID": "ses_01a09b11abcd", "error": {"name": "UnknownError", "data": {"message": "fake_opencode nonzero scenario"}}}

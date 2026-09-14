@@ -1,0 +1,7 @@
+{"type": "session.started", "session_id": "devin-session-01a09b11", "model": "swe-2-high"}
+{"type": "turn.started", "turn": 1}
+{"type": "reasoning", "text": "I will write a small file and verify it."}
+{"type": "tool_call", "tool": "shell", "input": {"command": "printf 'hello from fake_devin\\n' > hello.txt"}}
+{"type": "tool_result", "tool": "shell", "exit_code": 0, "output": ""}
+{"type": "assistant_message", "text": "Created hello.txt in the workspace."}
+{"type": "turn.completed", "status": "success", "usage": {"input_tokens": 5200, "output_tokens": 140, "thinking_tokens": 60, "cache_read_tokens": 3100}}

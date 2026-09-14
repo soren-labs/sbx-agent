@@ -11,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "docs" / "contracts"
 API_YAML = CONTRACTS / "api.yaml"
+API_V1_YAML = CONTRACTS / "api-v1.yaml"
 
 CODEX_EVENTS = {
     "thread.started",
@@ -22,20 +23,49 @@ CODEX_EVENTS = {
     "turn.failed",
     "error",
 }
-RUNNER_EVENTS = {"sbx.turn_started", "sbx.turn_finished", "sbx.error"}
+RUNNER_EVENTS = {"sbx.turn_started", "sbx.turn_finished", "sbx.error", "sbx.session_meta"}
 ITEM_TYPES = {"agent_message", "command_execution", "file_change", "reasoning", "error"}
-PATHS = {"inbox/<n>.md", "turns/<n>.json", "events.jsonl", "session.json"}
-EXIT_CODES = {"0": "success", "2": "codex_nonzero", "3": "timeout", "4": "bad_json"}
-ERROR_CODES = {401, 404, 409, 429}
+PATHS = {"inbox/<n>.md", "turns/<n>.json", "events.jsonl", "events.raw.jsonl", "session.json"}
+EXIT_CODES = {
+    "0": "success",
+    "2": "cli_nonzero",
+    "3": "timeout",
+    "4": "bad_json",
+    "5": "auth_invalid",
+}
+ERROR_CODES = {400, 401, 404, 409, 429}
+ERROR_SUBCODES = {
+    "unauthorized",
+    "not_found",
+    "invalid_provider",
+    "turn_in_progress",
+    "session_not_runnable",
+    "account_busy",
+    "account_unavailable",
+    "provider_exhausted",
+    "concurrency_limit",
+}
+PROVIDERS = {"codex", "antigravity", "grok", "opencode", "devin"}
 USAGE = {"input_tokens", "cached_input_tokens", "output_tokens"}
 USAGE_OPTIONAL = {"cache_write_input_tokens", "reasoning_output_tokens"}
-COMMANDS = {"init", "turn", "stop"}
+USAGE_MAPPING = {
+    "cache_read_tokens": "cached_input_tokens",
+    "thinking_tokens": "reasoning_output_tokens",
+    "cache_write_tokens": "cache_write_input_tokens",
+}
+COMMANDS = {"init", "turn", "stop", "export-credentials"}
 HTTP_PATHS = {
     "/api/sessions",
     "/api/sessions/{id}",
     "/api/sessions/{id}/messages",
     "/api/sessions/{id}/stop",
     "/api/sessions/{id}/events",
+    "/api/providers",
+    "/api/accounts",
+    "/api/accounts/{id}",
+    "/api/accounts/{id}/verify",
+    "/api/api-keys",
+    "/api/api-keys/{id}",
 }
 
 
@@ -67,6 +97,11 @@ def test_canonical_blocks_agree() -> None:
         assert set(blob["item_types"]) == ITEM_TYPES
         assert set(blob["usage_fields"]) == USAGE
         assert set(blob["usage_fields_optional"]) == USAGE_OPTIONAL
+        assert set(blob["error_subcodes"]) == ERROR_SUBCODES
+
+    for blob in (events, runner, canon):
+        assert set(blob["providers"]) == PROVIDERS
+    assert dict(events["usage_mapping"]) == USAGE_MAPPING
 
     assert set(fs["paths"]) == PATHS
     assert set(events["paths"]) == PATHS
@@ -87,13 +122,28 @@ def test_canonical_blocks_agree() -> None:
     assert set(runner["commands"]) == COMMANDS
     assert set(canon["commands"]) == COMMANDS
 
-    assert fs["codex_home"] == "$SBX_WORK/.codex"
+    assert fs["home"] == "$SBX_WORK/home"
+    assert fs["codex_home"] == "$HOME/.codex"
+    assert fs["codex_home_v1"] == "$SBX_WORK/.codex"
     assert fs["production_work"] == "/work"
+    assert fs["credential_env"] == "SBX_ACCOUNT_CREDENTIAL"
+    assert fs["account_id_env"] == "SBX_ACCOUNT_ID"
     assert fs["codex_rollout"] == ("$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl")
     assert str(fs["auth_json_mode"]) == "600"
     assert fs["config_toml"]["approval_policy"] == "never"
     assert fs["config_toml"]["sandbox_mode"] == "danger-full-access"
-    assert fs["shell_environment_policy_exclude"] == ["CODEX_AUTH_JSON"]
+    assert fs["shell_environment_policy_exclude"] == [
+        "CODEX_AUTH_JSON",
+        "SBX_PROVIDER_API_KEY",
+        "SBX_ACCOUNT_CREDENTIAL",
+    ]
+    assert set(fs["session_json_fields"]) == {
+        "turn",
+        "native_session_id",
+        "provider",
+        "account_id",
+    }
+    assert fs["session_json_aliases"]["codex_session_id"] == "native_session_id"
 
 
 def test_api_yaml_paths_and_status_codes() -> None:
@@ -128,6 +178,8 @@ def test_api_yaml_paths_and_status_codes() -> None:
         "status",
         "created_at",
         "updated_at",
+        "provider",
+        "account_id",
         "model",
         "turns",
         "usage",
@@ -138,12 +190,54 @@ def test_api_yaml_paths_and_status_codes() -> None:
     statuses = set(api["components"]["schemas"]["SessionStatus"]["enum"])
     assert statuses == {"creating", "idle", "running", "closed", "timed_out", "lost"}
 
+    assert set(api["components"]["schemas"]["ProviderId"]["enum"]) == PROVIDERS
+    create_req = api["components"]["schemas"]["CreateSessionRequest"]["properties"]
+    assert "provider" in create_req
+    assert "account_id" in create_req
+    assert "model" in create_req
+
+    account_schema = api["components"]["schemas"]["Account"]
+    assert set(account_schema["required"]) == {
+        "id",
+        "provider",
+        "label",
+        "status",
+        "max_concurrent",
+    }
+    assert set(api["components"]["schemas"]["AccountStatus"]["enum"]) == {
+        "active",
+        "cooling",
+        "invalid",
+        "disabled",
+    }
+
     usage_schema = api["components"]["schemas"]["Usage"]
     assert set(usage_schema["required"]) == USAGE
     assert USAGE_OPTIONAL <= set(usage_schema["properties"])
 
     schemes = api["components"]["securitySchemes"]
     assert schemes["basicAuth"]["scheme"] == "basic"
+
+
+def test_api_v1_yaml_is_cursor_shaped() -> None:
+    """Public v1 contract: /v1 routes, Bearer sbx_ auth, {error:{code,...}}."""
+    data = yaml.safe_load(API_V1_YAML.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    assert str(data["openapi"]).startswith("3.1")
+    paths = set(data["paths"])
+    assert paths, "api-v1.yaml has no paths"
+    for path in paths:
+        assert path.startswith("/v1/"), path
+    assert "/v1/agents" in paths
+    assert "/v1/agents/{id}" in paths
+    schemes = data["components"]["securitySchemes"]
+    bearer = schemes["bearerAuth"]
+    assert bearer["type"] == "http"
+    assert bearer["scheme"] == "bearer"
+    err = data["components"]["schemas"]["ErrorBody"]
+    assert "error" in err["required"]
+    props = set(err["properties"]["error"]["properties"])
+    assert {"code", "message"} <= props
 
 
 def test_markdown_bodies_mention_shared_tokens() -> None:
@@ -157,11 +251,19 @@ def test_markdown_bodies_mention_shared_tokens() -> None:
         assert path in filesystem
         assert path in runner
     assert "exit" in runner.lower()
-    for code in ("0", "2", "3", "4"):
+    for code in ("0", "2", "3", "4", "5"):
         assert re.search(rf"\b{code}\b", runner)
     assert "stdin=subprocess.DEVNULL" in runner
     assert "bufsize=1" in runner
+    assert "export-credentials" in runner
+    assert "SBX_ACCOUNT_CREDENTIAL" in runner
+    for provider in PROVIDERS:
+        assert provider in runner
+        assert provider in events
+        assert provider in filesystem
+    assert "sbx.session_meta" in events
     assert "CODEX_AUTH_JSON" in filesystem
+    assert "SBX_ACCOUNT_CREDENTIAL" in filesystem
     assert "600" in filesystem
 
 

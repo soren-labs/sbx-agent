@@ -22,12 +22,19 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from control.ports import Account
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from tests.fakes.fake_ports import (
+    InMemoryAccountRegistry,
+    InMemoryApiKeyStore,
+    InMemoryScheduler,
+)
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "events"
 FIXTURE = FIXTURES / "success.jsonl"
@@ -43,12 +50,25 @@ TURN_EVENT_INTERVAL_S = float(os.environ.get("SBX_MOCK_TURN_INTERVAL_SECONDS", "
 BASIC_USER = os.environ.get("SBX_API_USER", "sbx")
 BASIC_PASSWORD = os.environ.get("SBX_API_PASSWORD", "sbx")
 DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_PROVIDER = "codex"
+
+# Canned per-provider model lists for /api/providers (contract: api.yaml).
+PROVIDER_MODELS: dict[str, list[str]] = {
+    "codex": ["gpt-5.6-luna", "gpt-5.3-codex"],
+    "antigravity": ["gemini-3-pro", "claude-sonnet-4.5"],
+    "grok": ["grok-build", "grok-4.1"],
+    "opencode": ["anthropic/claude-sonnet-4.5", "openai/gpt-5.3-codex"],
+    "devin": ["swe-2-high", "swe-2"],
+}
 
 app = FastAPI(title="sbx-browser mock API", version="0.1.0")
 security = HTTPBasic(auto_error=False)
 _lock = threading.Lock()
 _sessions: dict[str, dict[str, Any]] = {}
 _sse_conn_counts: dict[str, int] = {}
+_accounts = InMemoryAccountRegistry()
+_scheduler = InMemoryScheduler(_accounts)
+_api_keys = InMemoryApiKeyStore()
 
 app.add_middleware(
     CORSMiddleware,
@@ -169,6 +189,8 @@ def _public(sess: dict[str, Any]) -> dict[str, Any]:
         "status": sess["status"],
         "created_at": _iso(sess["created_at"]),
         "updated_at": _iso(sess["updated_at"]),
+        "provider": sess["provider"],
+        "account_id": sess["account_id"],
         "model": sess["model"],
         "turns": sess["turns"],
         "usage": usage,
@@ -198,11 +220,26 @@ def require_basic(credentials: HTTPBasicCredentials | None = Depends(security)) 
 
 class CreateSessionRequest(BaseModel):
     title: str | None = None
+    provider: str | None = None
+    account_id: str | None = None
     model: str | None = None
 
 
 class PostMessageRequest(BaseModel):
     text: str = Field(min_length=1)
+
+
+class CreateAccountRequest(BaseModel):
+    provider: str
+    label: str
+    credential: dict[str, Any] | None = None
+    max_concurrent: int = 1
+    models: list[str] = Field(default_factory=list)
+
+
+class CreateApiKeyRequest(BaseModel):
+    label: str = ""
+    scopes: list[str] = Field(default_factory=lambda: ["agents"])
 
 
 @app.exception_handler(HTTPException)
@@ -224,6 +261,8 @@ def _new_session(
     *,
     title: str,
     model: str,
+    provider: str = DEFAULT_PROVIDER,
+    account_id: str | None = None,
     status: str = "idle",
     created_at: datetime | None = None,
     events: list[dict[str, Any]] | None = None,
@@ -240,6 +279,8 @@ def _new_session(
         "status": status,
         "created_at": now,
         "updated_at": now,
+        "provider": provider,
+        "account_id": account_id or f"acct-{provider}-1",
         "model": model,
         "turns": turns,
         "usage": usage if usage is not None else _usage_from_events(evs),
@@ -279,10 +320,38 @@ def create_session(
                 status_code=429,
                 detail={"error": "concurrency_limit", "code": 429},
             )
+        provider = body.provider or DEFAULT_PROVIDER
+        if provider not in PROVIDER_MODELS:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_provider", "code": 400},
+            )
+        decision = _scheduler.decide(provider=provider, account=body.account_id or "auto")
+        if decision.error == "account_busy":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "account_busy", "code": 409},
+            )
+        if decision.error == "account_unavailable":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "account_unavailable", "code": 409},
+            )
+        if decision.error == "provider_exhausted":
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "provider_exhausted", "code": 429},
+            )
+        account = decision.account
+        account_id = account.id if account is not None else f"acct-{provider}-1"
+        if account is not None:
+            _accounts.touch(account.id, _iso(_now()))
         initial = "creating" if CREATE_DELAY_S > 0 else "idle"
         sess = _new_session(
             title=body.title or "untitled",
-            model=body.model or DEFAULT_MODEL,
+            model=body.model or PROVIDER_MODELS[provider][0],
+            provider=provider,
+            account_id=account_id,
             status=initial,
             events=_enrich_turn(
                 _load_fixture_events(),
@@ -440,6 +509,136 @@ def delete_session(sid: str, _: str = Depends(require_basic)) -> dict[str, Any]:
         return _public(sess)
 
 
+def _account_public(account: Any) -> dict[str, Any]:
+    """Serialize a ports.Account to the api.yaml Account shape (no credentials)."""
+    return {
+        "id": account.id,
+        "provider": account.provider,
+        "label": account.label,
+        "status": account.status,
+        "max_concurrent": account.max_concurrent,
+        "running": _accounts.running_count(account.id),
+        "models": list(account.models),
+        "created_at": account.created_at,
+        "last_used_at": account.last_used_at,
+        "cooldown_until": account.cooldown_until,
+        "last_error": account.last_error,
+    }
+
+
+def _api_key_public(key: Any) -> dict[str, Any]:
+    return {
+        "id": key.id,
+        "label": key.label,
+        "scopes": list(key.scopes),
+        "created_at": key.created_at,
+        "revoked_at": key.revoked_at,
+    }
+
+
+@app.get("/api/providers")
+def list_providers(_: str = Depends(require_basic)) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for provider, models in PROVIDER_MODELS.items():
+        accounts = _accounts.list(provider)
+        available = sum(
+            1
+            for a in accounts
+            if a.status == "active" and _accounts.running_count(a.id) < a.max_concurrent
+        )
+        out.append(
+            {
+                "provider": provider,
+                "models": models,
+                "accounts_total": len(accounts),
+                "accounts_available": available,
+            }
+        )
+    return out
+
+
+@app.get("/api/accounts")
+def list_accounts(
+    provider: str | None = None,
+    _: str = Depends(require_basic),
+) -> list[dict[str, Any]]:
+    return [_account_public(a) for a in _accounts.list(provider)]
+
+
+@app.post("/api/accounts", status_code=201)
+def create_account(
+    body: CreateAccountRequest,
+    _: str = Depends(require_basic),
+) -> dict[str, Any]:
+    if body.provider not in PROVIDER_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_provider", "code": 400},
+        )
+    account = Account(
+        id=f"acct-{body.provider}-{uuid.uuid4().hex[:8]}",
+        provider=body.provider,
+        label=body.label,
+        max_concurrent=body.max_concurrent,
+        models=tuple(body.models),
+        created_at=_iso(_now()),
+    )
+    _accounts.put(account)
+    if body.credential is not None:
+        # Stored for the mock scheduler only; never returned or logged.
+        _accounts.put_credential_blob(
+            account.id,
+            {"provider": body.provider, "files": dict(body.credential.get("files") or {})},
+        )
+    return _account_public(_accounts.get(account.id))
+
+
+@app.get("/api/accounts/{account_id}")
+def get_account(account_id: str, _: str = Depends(require_basic)) -> dict[str, Any]:
+    account = _accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "code": 404})
+    return _account_public(account)
+
+
+@app.delete("/api/accounts/{account_id}", status_code=204)
+def delete_account(account_id: str, _: str = Depends(require_basic)) -> None:
+    if _accounts.get(account_id) is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "code": 404})
+    _accounts.remove(account_id)
+
+
+@app.post("/api/accounts/{account_id}/verify")
+def verify_account(account_id: str, _: str = Depends(require_basic)) -> dict[str, Any]:
+    account = _accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "code": 404})
+    # Mock verify: no real credential probe; mark the account active.
+    verified = _accounts.mark_status(account_id, "active", last_error=None)
+    return _account_public(verified)
+
+
+@app.get("/api/api-keys")
+def list_api_keys(_: str = Depends(require_basic)) -> list[dict[str, Any]]:
+    return [_api_key_public(k) for k in _api_keys.list()]
+
+
+@app.post("/api/api-keys", status_code=201)
+def create_api_key(
+    body: CreateApiKeyRequest | None = None,
+    _: str = Depends(require_basic),
+) -> dict[str, Any]:
+    body = body or CreateApiKeyRequest()
+    record, token = _api_keys.create(label=body.label, scopes=body.scopes)
+    return {**_api_key_public(record), "key": token}
+
+
+@app.delete("/api/api-keys/{key_id}", status_code=204)
+def delete_api_key(key_id: str, _: str = Depends(require_basic)) -> None:
+    if not _api_keys.revoke(key_id):
+        raise HTTPException(status_code=404, detail={"error": "not_found", "code": 404})
+
+
 def _format_sse(event_id: int, payload: dict[str, Any]) -> str:
     return (
         f"id: {event_id}\n"
@@ -507,10 +706,29 @@ async def session_events(
 
 
 def reset_state() -> None:
-    """Test helper: drop all in-memory sessions."""
+    """Test helper: drop all in-memory sessions; reseed canned accounts."""
     with _lock:
         _sessions.clear()
         _sse_conn_counts.clear()
+    for account in _accounts.list():
+        _accounts.remove(account.id)
+    seed_accounts()
+
+
+def seed_accounts() -> None:
+    """Canned accounts: one active account per provider (credentials absent)."""
+    past = _now() - timedelta(hours=2)
+    for provider in PROVIDER_MODELS:
+        _accounts.put(
+            Account(
+                id=f"acct-{provider}-1",
+                provider=provider,
+                label=f"{provider} (mock)",
+                max_concurrent=1,
+                models=tuple(PROVIDER_MODELS[provider]),
+                created_at=_iso(past),
+            )
+        )
 
 
 def seed_demo_sessions() -> None:
@@ -535,16 +753,18 @@ def seed_demo_sessions() -> None:
         "ts": _iso(past + timedelta(seconds=8)),
     }
     specs = (
-        ("seed-closed", "已关闭 · 只读历史", "closed"),
-        ("seed-timeout", "已超时 · 只读历史", "timed_out"),
-        ("seed-lost", "已丢失 · 只读历史", "lost"),
+        ("seed-closed", "已关闭 · 只读历史", "closed", "codex"),
+        ("seed-timeout", "已超时 · 只读历史", "timed_out", "devin"),
+        ("seed-lost", "已丢失 · 只读历史", "lost", "grok"),
     )
     with _lock:
-        for sid, title, status in specs:
+        for sid, title, status, provider in specs:
             _sessions[sid] = _new_session(
                 sid=sid,
                 title=title,
-                model=DEFAULT_MODEL,
+                model=PROVIDER_MODELS[provider][0],
+                provider=provider,
+                account_id=f"acct-{provider}-1",
                 status=status,
                 created_at=past,
                 events=canned,
@@ -560,6 +780,7 @@ def mount_web() -> None:
 
 
 mount_web()
+seed_accounts()
 
 
 def main() -> None:
