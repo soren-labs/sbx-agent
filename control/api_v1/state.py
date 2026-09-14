@@ -161,6 +161,37 @@ class InMemoryApiKeyStore:
             self._by_hash[record.key_hash] = record.id
         return record, token
 
+    def seed(
+        self,
+        token: str,
+        *,
+        label: str = "bootstrap",
+        scopes: Iterable[str] = ("agents", "admin"),
+    ) -> ApiKey:
+        """Install a pre-generated bearer token without ever storing plaintext.
+
+        Used only by the Modal control-plane bootstrap path: the plaintext
+        token lives in a Modal Secret, while this store keeps its sha256 just
+        like keys minted through ``create``. Re-seeding is idempotent.
+        """
+        if not token.startswith("sbx_"):
+            raise ValueError("bootstrap API key must use the sbx_ prefix")
+        digest = self._hash(token)
+        record = ApiKey(
+            id=f"key_bootstrap_{digest[:12]}",
+            key_hash=digest,
+            label=label,
+            scopes=tuple(scopes),
+            created_at=_iso_now(),
+        )
+        with self._lock:
+            existing_id = self._by_hash.get(digest)
+            if existing_id is not None and existing_id in self._keys:
+                return self._keys[existing_id]
+            self._keys[record.id] = record
+            self._by_hash[digest] = record.id
+        return record
+
     def list(self) -> list[ApiKey]:
         with self._lock:
             return sorted(self._keys.values(), key=lambda k: k.id)

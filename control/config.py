@@ -20,6 +20,7 @@ MODAL_APP_NAME = "sbx-control"
 SESSIONS_DICT_NAME = "sbx-sessions"
 CODEX_SECRET_NAME = "sbx-codex-auth"
 BASIC_SECRET_NAME = "sbx-basic-auth"
+V1_BOOTSTRAP_SECRET_NAME = "sbx-v1-bootstrap"
 RUNTIME_IMAGE_NAME = "sbx-runtime"
 # SOR-74: provider=devin sandboxes use this named image (sbx-runtime + pinned
 # standalone Devin CLI, HOME=$SBX_WORK/home). Keep in sync with

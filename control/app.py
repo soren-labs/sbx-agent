@@ -163,6 +163,12 @@ def create_app(
     app.state.basic_password = basic_password
     app.state.keepalive_s = keepalive
 
+    # P2.1 real-gate wiring is opt-in via a Modal Secret. Local/tests without
+    # SBX_V1_BOOTSTRAP_KEY keep the existing lazy in-memory /v1 defaults.
+    from control.api_v1.bootstrap import configure_v1_bootstrap
+
+    configure_v1_bootstrap(app)
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
         if isinstance(exc.detail, dict) and "code" in exc.detail:
