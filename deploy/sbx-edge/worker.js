@@ -2,9 +2,12 @@
  * Public edge for sbx.sorenforge.com.
  *
  * /api/*  → Modal sbx-control with HTTP Basic (secrets stay on the Worker)
+ * /v1/*   → Modal sbx-control public API; the client's
+ *           `Authorization: Bearer sbx_<key>` is passed through untouched —
+ *           the Worker never injects credentials. SSE bodies stream unbuffered.
  * everything else → Worker static assets (`web/`), with WEB_ORIGIN as fallback
  *
- * Strips WWW-Authenticate so the SPA can show a banner instead of a
+ * Strips WWW-Authenticate on /api/* so the SPA can show a banner instead of a
  * browser login dialog if upstream auth is misconfigured.
  */
 
@@ -53,13 +56,19 @@ export default {
     const pass = env.SBX_BASIC_PASS || "";
 
     const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
-    if (isApi) {
-      if (!control || !user || !pass) {
+    const isV1 = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
+    if (isApi || isV1) {
+      if (!control || (isApi && (!user || !pass))) {
         return Response.json({ error: "proxy_unconfigured", code: 500 }, { status: 500 });
       }
       const dest = `${control}${url.pathname}${url.search}`;
       const headers = filterHeaders(request.headers);
-      headers.set("Authorization", `Basic ${basicToken(user, pass)}`);
+      if (isApi) {
+        headers.set("Authorization", `Basic ${basicToken(user, pass)}`);
+      }
+      // /v1: client `Authorization` passes through as-is; Basic is never
+      // injected. `Last-Event-ID` and other SSE headers are already kept by
+      // filterHeaders, and `upstream.body` is streamed without buffering.
       const init = {
         method: request.method,
         headers,
@@ -70,7 +79,9 @@ export default {
       }
       const upstream = await fetch(dest, init);
       const outHeaders = filterHeaders(upstream.headers);
-      outHeaders.delete("www-authenticate");
+      if (isApi) {
+        outHeaders.delete("www-authenticate");
+      }
       return new Response(upstream.body, {
         status: upstream.status,
         statusText: upstream.statusText,
