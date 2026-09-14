@@ -218,6 +218,19 @@ def test_api_yaml_paths_and_status_codes() -> None:
     schemes = api["components"]["securitySchemes"]
     assert schemes["basicAuth"]["scheme"] == "basic"
 
+    error_body = api["components"]["schemas"]["ErrorBody"]
+    assert set(error_body["required"]) == {"error", "code"}
+    error_enum = error_body["properties"]["error"]["enum"]
+    assert isinstance(error_enum, list)
+    assert len(error_enum) == len(ERROR_SUBCODES)
+    for subcode in ERROR_SUBCODES:
+        assert subcode in error_enum, subcode
+    code_enum = error_body["properties"]["code"]["enum"]
+    assert isinstance(code_enum, list)
+    assert len(code_enum) == len(ERROR_CODES)
+    for code in ERROR_CODES:
+        assert code in code_enum, code
+
 
 def test_api_v1_yaml_is_cursor_shaped() -> None:
     """Public v1 contract: /v1 routes, Bearer sbx_ auth, {error:{code,...}}."""

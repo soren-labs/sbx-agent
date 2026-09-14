@@ -702,7 +702,7 @@ components:
           type: string
           enum:
             - unauthorized
-                    - not_found
+            - not_found
             - invalid_provider
             - turn_in_progress
             - session_not_runnable
