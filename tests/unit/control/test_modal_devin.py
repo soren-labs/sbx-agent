@@ -97,6 +97,20 @@ def test_devin_ephemeral_secret_from_local_credential_file(monkeypatch, tmp_path
     )
 
 
+def test_devin_github_token_requires_explicit_gate_flag(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
+    monkeypatch.setenv("GH_TOKEN", "REDACTED_GITHUB")
+    monkeypatch.delenv("SBX_GITHUB_EPHEMERAL", raising=False)
+    payload = _devin_secrets(_FakeModal)[0][1]
+    assert "GH_TOKEN" not in payload
+    assert "GITHUB_TOKEN" not in payload
+
+    monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+    payload = _devin_secrets(_FakeModal)[0][1]
+    assert payload["GH_TOKEN"] == "REDACTED_GITHUB"
+    assert payload["GITHUB_TOKEN"] == "REDACTED_GITHUB"
+
+
 def test_sandbox_secrets_codex_unchanged() -> None:
     secrets = _sandbox_secrets(_FakeModal, SandboxSpec())
     assert secrets == [("secret", "sbx-codex-auth")]
