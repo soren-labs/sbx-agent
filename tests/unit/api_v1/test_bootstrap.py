@@ -37,3 +37,14 @@ def test_bootstrap_seeds_hash_only_key_and_devin_pool(monkeypatch) -> None:
     assert app.state.scheduler.normal_slots == 4
     assert app.state.scheduler.soft_ceiling == 5
     assert app.state.scheduler.burst_slots == 8
+
+
+def test_bootstrap_allows_explicit_ephemeral_secret(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "b" * 40)
+    monkeypatch.setenv("SBX_DEVIN_ACCOUNT_ID", "devin-gate")
+    monkeypatch.setenv("SBX_DEVIN_SECRET_NAME", "")
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+    account = app.state.account_registry.get("devin-gate")
+    assert account is not None
+    assert account.secret_name == ""

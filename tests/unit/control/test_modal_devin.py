@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from control.backend import SandboxHandle, SandboxSpec
@@ -79,6 +80,21 @@ def test_devin_ephemeral_secret_from_local_blob(monkeypatch) -> None:
     assert _sandbox_secrets(_FakeModal, spec) == [
         ("dict", {"SBX_ACCOUNT_CREDENTIAL": "REDACTED_BLOB"})
     ]
+
+
+def test_devin_ephemeral_secret_from_local_credential_file(monkeypatch, tmp_path) -> None:
+    cred = tmp_path / "credentials.toml"
+    cred.write_text('windsurf_api_key = "REDACTED"\n', encoding="utf-8")
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL_FILE", str(cred))
+    secrets = _devin_secrets(_FakeModal)
+    assert len(secrets) == 1
+    payload = secrets[0][1]
+    blob = json.loads(payload["SBX_ACCOUNT_CREDENTIAL"])
+    assert blob["provider"] == "devin"
+    assert blob["files"][".local/share/devin/credentials.toml"] == (
+        'windsurf_api_key = "REDACTED"\n'
+    )
 
 
 def test_sandbox_secrets_codex_unchanged() -> None:

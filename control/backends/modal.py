@@ -6,6 +6,7 @@ open a Modal connection. Signatures match Modal SDK + P0 (SOR-28).
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import Iterator, Mapping
@@ -32,6 +33,7 @@ _GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
 # and per-account credential Secrets; anything else keeps the P1 Codex path.
 DEVIN_PROVIDER = "devin"
 _ACCOUNT_CREDENTIAL_ENV = "SBX_ACCOUNT_CREDENTIAL"
+_ACCOUNT_CREDENTIAL_FILE_ENV = "SBX_ACCOUNT_CREDENTIAL_FILE"
 
 
 def _load_modal() -> Any:
@@ -65,6 +67,16 @@ def _devin_secrets(modal: Any) -> list[Any]:
     credential blob without persisting that blob in Modal.
     """
     blob = os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
+    if not blob:
+        credential_file = os.environ.get(_ACCOUNT_CREDENTIAL_FILE_ENV)
+        if credential_file:
+            content = Path(credential_file).read_text(encoding="utf-8")
+            blob = json.dumps(
+                {
+                    "provider": "devin",
+                    "files": {".local/share/devin/credentials.toml": content},
+                }
+            )
     if not blob:
         return []
     return [modal.Secret.from_dict({_ACCOUNT_CREDENTIAL_ENV: blob})]

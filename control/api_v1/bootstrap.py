@@ -38,7 +38,8 @@ def configure_v1_bootstrap(app: Any) -> bool:
     app.state.api_key_store = key_store
 
     account_id = (os.environ.get("SBX_DEVIN_ACCOUNT_ID") or "devin-1").strip()
-    secret_name = (os.environ.get("SBX_DEVIN_SECRET_NAME") or f"sbx-acct-{account_id}").strip()
+    raw_secret_name = os.environ.get("SBX_DEVIN_SECRET_NAME")
+    secret_name = f"sbx-acct-{account_id}" if raw_secret_name is None else raw_secret_name.strip()
     registry = InMemoryAccountRegistry()
     registry.put(
         Account(
