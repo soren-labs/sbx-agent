@@ -102,7 +102,9 @@ def _run_prompt(rid: object) -> None:
             "toolCallId": "exec:0",
             "status": "in_progress",
             "content": [{"type": "content", "content": {"type": "text", "text": "hi"}}],
-            "_meta": {"terminal_exit": {"exit_code": 0}},
+            "_meta": (
+                {} if SCENARIO == "no_terminal_exit" else {"terminal_exit": {"exit_code": 0}}
+            ),
         }
     )
     _update(

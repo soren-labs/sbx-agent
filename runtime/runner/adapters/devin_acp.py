@@ -198,8 +198,8 @@ class AcpBridge:
                 return
             self._flush_buffer()
             exit_code = call.get("exit_code")
-            if status == "failed" and exit_code is None:
-                exit_code = 1
+            if exit_code is None:
+                exit_code = 1 if status == "failed" else 0
             _emit(
                 {
                     "type": "tool_result",

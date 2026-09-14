@@ -99,6 +99,19 @@ def test_success_turn(tmp_path: Path, repo_root: Path) -> None:
     assert usage["cache_read_tokens"] == 50
 
 
+def test_completed_tool_without_terminal_exit_defaults_zero(
+    tmp_path: Path, repo_root: Path
+) -> None:
+    env = _env(tmp_path, repo_root, "no_terminal_exit")
+    proc = _run_bridge(env, ["--model", "swe-2-medium", "--", "do it"])
+    assert proc.returncode == 0, proc.stderr
+    events = _ndjson(proc.stdout)
+    tool_result = next(e for e in events if e["type"] == "tool_result")
+    assert tool_result["status"] == "completed"
+    assert tool_result["exit_code"] == 0
+    assert tool_result["output"] == "hi"
+
+
 def test_resume_suppresses_history_replay(tmp_path: Path, repo_root: Path) -> None:
     env = _env(tmp_path, repo_root, "success")
     proc = _run_bridge(env, ["--resume", SESSION_ID, "--", "continue"])
