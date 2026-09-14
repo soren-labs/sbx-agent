@@ -31,6 +31,7 @@ _GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
 # SOR-74: ``SandboxSpec.tags["provider"] == "devin"`` selects the Devin image
 # and per-account credential Secrets; anything else keeps the P1 Codex path.
 DEVIN_PROVIDER = "devin"
+_ACCOUNT_CREDENTIAL_ENV = "SBX_ACCOUNT_CREDENTIAL"
 
 
 def _load_modal() -> Any:
@@ -56,6 +57,19 @@ def _codex_secrets(modal: Any) -> list[Any]:
     return [modal.Secret.from_name(CODEX_SECRET_NAME)]
 
 
+def _devin_secrets(modal: Any) -> list[Any]:
+    """Ephemeral single-account credential for the P2.1 local control path.
+
+    Named per-account Secrets remain authoritative when ``SandboxSpec.secrets``
+    is populated.  This fallback lets a local gate process inject its own
+    credential blob without persisting that blob in Modal.
+    """
+    blob = os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
+    if not blob:
+        return []
+    return [modal.Secret.from_dict({_ACCOUNT_CREDENTIAL_ENV: blob})]
+
+
 def _spec_provider(spec: SandboxSpec) -> str:
     """Provider selected for this sandbox (default ``codex``)."""
     return spec.tags.get("provider", "codex")
@@ -71,7 +85,7 @@ def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
     if spec.secrets:
         return [modal.Secret.from_name(name) for name in spec.secrets]
     if _spec_provider(spec) == DEVIN_PROVIDER:
-        return []
+        return _devin_secrets(modal)
     return _codex_secrets(modal)
 
 
@@ -178,7 +192,7 @@ class ModalProcess:
         if self._secret_names:
             return [modal.Secret.from_name(name) for name in self._secret_names]
         if self._provider == DEVIN_PROVIDER:
-            return []
+            return _devin_secrets(modal)
         return _codex_secrets(modal)
 
 
@@ -255,7 +269,7 @@ class ModalBackend:
         if names:
             return [modal.Secret.from_name(name) for name in names]
         if handle.tags.get("provider") == DEVIN_PROVIDER:
-            return []
+            return _devin_secrets(modal)
         return _codex_secrets(modal)
 
     def terminate(self, handle: SandboxHandle) -> None:

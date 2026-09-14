@@ -252,9 +252,7 @@ def create_agent(
     resolved = account.id if account is not None else requested
     secret_name = None
     if account is not None:
-        secret_name = account.secret_name or (
-            f"sbx-acct-{resolved}" if provider == "devin" else None
-        )
+        secret_name = account.secret_name or None
 
     try:
         session_id = plane.create_session(

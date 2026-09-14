@@ -9,6 +9,7 @@ from control.backends.modal import (
     ModalBackend,
     _create_env,
     _devin_home_env,
+    _devin_secrets,
     _resolve_image,
     _sandbox_secrets,
     _spec_provider,
@@ -65,9 +66,19 @@ def test_sandbox_secrets_per_account() -> None:
     assert secrets == [("secret", "sbx-acct-1"), ("secret", "sbx-extra")]
 
 
-def test_sandbox_secrets_devin_without_spec_gets_none() -> None:
+def test_sandbox_secrets_devin_without_spec_gets_none(monkeypatch) -> None:
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
     spec = SandboxSpec(tags={"provider": "devin"})
     assert _sandbox_secrets(_FakeModal, spec) == []
+
+
+def test_devin_ephemeral_secret_from_local_blob(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
+    assert _devin_secrets(_FakeModal) == [("dict", {"SBX_ACCOUNT_CREDENTIAL": "REDACTED_BLOB"})]
+    spec = SandboxSpec(tags={"provider": "devin"})
+    assert _sandbox_secrets(_FakeModal, spec) == [
+        ("dict", {"SBX_ACCOUNT_CREDENTIAL": "REDACTED_BLOB"})
+    ]
 
 
 def test_sandbox_secrets_codex_unchanged() -> None:
@@ -107,7 +118,8 @@ def test_image_name_constant_in_sync() -> None:
     assert DEVIN_IMAGE_NAME == RUNTIME_DEVIN_IMAGE_NAME
 
 
-def test_exec_secrets_follow_spec_and_provider() -> None:
+def test_exec_secrets_follow_spec_and_provider(monkeypatch) -> None:
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
     backend = ModalBackend()
     backend._secrets_by_sandbox["sb-devin"] = ["sbx-acct-9"]
     devin = SandboxHandle(id="sb-devin", root=Path("/work"), tags={"provider": "devin"})
