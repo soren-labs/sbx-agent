@@ -12,7 +12,11 @@ export SBX_WORK="${SBX_WORK:-/work}"
 export CODEX_HOME="${CODEX_HOME:-${SBX_WORK}/.codex}"
 export PYTHONPATH="${PYTHONPATH:-/opt/sbx}"
 
-mkdir -p "${SBX_WORK}/inbox" "${SBX_WORK}/turns" "${CODEX_HOME}"
+# SOR-74: agent CLIs must never see Desktop/ACP auth bridges or Devin API-key
+# env — auth comes only from the restored credential blob ($HOME/credentials).
+unset ACP_BACKEND DEVIN_API_KEY DEVIN_V3_API_KEY DEVIN_LEGACY_API_KEY DEVIN_ORG_ID WINDSURF_API_KEY DEVIN_OUTPOSTS_TOKEN
+
+mkdir -p "${SBX_WORK}/inbox" "${SBX_WORK}/turns" "${SBX_WORK}/home" "${CODEX_HOME}"
 
 child=""
 shutdown() {

@@ -21,6 +21,10 @@ SESSIONS_DICT_NAME = "sbx-sessions"
 CODEX_SECRET_NAME = "sbx-codex-auth"
 BASIC_SECRET_NAME = "sbx-basic-auth"
 RUNTIME_IMAGE_NAME = "sbx-runtime"
+# SOR-74: provider=devin sandboxes use this named image (sbx-runtime + pinned
+# standalone Devin CLI, HOME=$SBX_WORK/home). Keep in sync with
+# runtime.image.DEVIN_IMAGE_NAME.
+DEVIN_IMAGE_NAME = "sbx-runtime-devin"
 
 # Modal Starter sandbox list price (P0): billed at the request floor.
 CPU_USD_PER_CORE_S = 0.00003942

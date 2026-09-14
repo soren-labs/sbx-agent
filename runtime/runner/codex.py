@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from runtime.runner.constants import TERM_GRACE_S
+from runtime.runner.credentials import AGENT_ENV_EXCLUDE
 from runtime.runner.workspace import sandbox_home
 
 
@@ -71,17 +72,9 @@ def build_codex_argv(
 # credential blobs and provider key material (runner-cli.md §凭证注入; the
 # Devin CLI must authenticate from its restored credentials file only, and
 # ACP_BACKEND must not leak into `devin acp`).
-CHILD_ENV_DENYLIST: tuple[str, ...] = (
-    "CODEX_AUTH_JSON",
-    "SBX_ACCOUNT_CREDENTIAL",
-    "ACP_BACKEND",
-    "DEVIN_API_KEY",
-    "DEVIN_V3_API_KEY",
-    "DEVIN_LEGACY_API_KEY",
-    "DEVIN_ORG_ID",
+CHILD_ENV_DENYLIST: tuple[str, ...] = AGENT_ENV_EXCLUDE + (
     "DEVIN_MODEL",
     "DEVIN_REFUSAL_FALLBACK",
-    "WINDSURF_API_KEY",
 )
 
 

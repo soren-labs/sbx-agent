@@ -1,10 +1,11 @@
-"""Named Modal Image ``sbx-runtime`` (slim, no browser).
+"""Named Modal Image ``sbx-runtime`` (slim, no browser) + ``sbx-runtime-devin``.
 
-Package versions live in ``runtime/packages.txt``. ``Dockerfile.local`` is
-generated from the same file so local docker verification stays in lockstep
-with the Modal image. Sandbox lifetime and hardware (``idle_timeout``,
-``timeout``, ``cpu``, ``memory``, ``workdir``, ``tags``, ``secrets``) are
-**not** set here — WP1-C passes them to ``Sandbox.create``.
+Package versions live in ``runtime/packages.txt``. ``Dockerfile.local`` (and
+``Dockerfile.devin.local`` for the Devin fast path, SOR-74) are generated from
+the same file so local docker verification stays in lockstep with the Modal
+images. Sandbox lifetime and hardware (``idle_timeout``, ``timeout``, ``cpu``,
+``memory``, ``workdir``, ``tags``, ``secrets``) are **not** set here — the
+control plane passes them to ``Sandbox.create``.
 """
 
 from __future__ import annotations
@@ -23,10 +24,13 @@ DOCKERFILE_LOCAL = REPO_ROOT / "Dockerfile.local"
 
 APP_NAME = "sbx-runtime"
 IMAGE_NAME = "sbx-runtime"
+DEVIN_IMAGE_NAME = "sbx-runtime-devin"
 ENTRYPOINT_REMOTE = "/opt/sbx/entrypoint.sh"
 RUNTIME_REMOTE = "/opt/sbx/runtime"
+INSTALL_DEVIN_REMOTE = f"{RUNTIME_REMOTE}/install-devin.sh"
 PYTHONPATH_REMOTE = "/opt/sbx"
 MODAL_WORKSPACE = "sorenlab2026"
+DOCKERFILE_DEVIN_LOCAL = REPO_ROOT / "Dockerfile.devin.local"
 
 REQUIRED_APT = (
     "curl",
@@ -47,6 +51,10 @@ class PackageSpec:
     node_major: str
     codex_npm: str
     codex_version: str
+    devin_version: str
+    devin_base_url: str
+    devin_sha256_x86_64: str
+    devin_sha256_aarch64: str
     apt: tuple[str, ...]
 
     @property
@@ -81,7 +89,18 @@ def load_packages(path: Path | None = None) -> PackageSpec:
         keys[key.strip()] = value.strip()
 
     missing = [
-        k for k in ("python_version", "node_major", "codex_npm", "codex_version") if not keys.get(k)
+        k
+        for k in (
+            "python_version",
+            "node_major",
+            "codex_npm",
+            "codex_version",
+            "devin_version",
+            "devin_base_url",
+            "devin_sha256_x86_64",
+            "devin_sha256_aarch64",
+        )
+        if not keys.get(k)
     ]
     if missing:
         raise ValueError(f"packages.txt missing keys: {missing}")
@@ -99,25 +118,78 @@ def load_packages(path: Path | None = None) -> PackageSpec:
         node_major=keys["node_major"],
         codex_npm=keys["codex_npm"],
         codex_version=keys["codex_version"],
+        devin_version=keys["devin_version"],
+        devin_base_url=keys["devin_base_url"],
+        devin_sha256_x86_64=keys["devin_sha256_x86_64"],
+        devin_sha256_aarch64=keys["devin_sha256_aarch64"],
         apt=apt_tuple,
     )
 
 
-def render_dockerfile_local(spec: PackageSpec | None = None) -> str:
-    """Dockerfile used for no-cloud docker verification; values from packages.txt."""
+def devin_runtime_env(work: str = "/work") -> dict[str, str]:
+    """HOME/XDG for the Devin sandbox (filesystem.md: ``HOME=$SBX_WORK/home``).
+
+    Devin CLI resolves ``credentials.toml`` under ``$XDG_DATA_HOME/devin``
+    (default ``~/.local/share/devin``). Pinning both HOME and the XDG dirs keeps
+    the credential location stable no matter which env a sandbox exec inherits.
+    """
+    home = f"{work}/home"
+    return {
+        "HOME": home,
+        "XDG_CONFIG_HOME": f"{home}/.config",
+        "XDG_CACHE_HOME": f"{home}/.cache",
+        "XDG_DATA_HOME": f"{home}/.local/share",
+        "XDG_STATE_HOME": f"{home}/.local/state",
+    }
+
+
+def devin_install_command(spec: PackageSpec | None = None) -> str:
+    """Shell command that installs the pinned Devin CLI bundle inside an image."""
+    spec = spec or load_packages()
+    return (
+        f"SBX_DEVIN_VERSION={spec.devin_version} "
+        f"SBX_DEVIN_BASE_URL={spec.devin_base_url} "
+        f"SBX_DEVIN_SHA256_X86_64={spec.devin_sha256_x86_64} "
+        f"SBX_DEVIN_SHA256_AARCH64={spec.devin_sha256_aarch64} "
+        f"bash {INSTALL_DEVIN_REMOTE}"
+    )
+
+
+def render_dockerfile_local(spec: PackageSpec | None = None, *, devin: bool = False) -> str:
+    """Dockerfile used for no-cloud docker verification; values from packages.txt.
+
+    ``devin=True`` renders ``Dockerfile.devin.local`` (SOR-74): the same base
+    recipe plus the pinned standalone Devin CLI and HOME/XDG pointed at
+    ``/work/home``.
+    """
     spec = spec or load_packages()
     apt = " ".join(spec.apt)
-    return f"""\
+    env_lines = f"""\
+ENV DEBIAN_FRONTEND=noninteractive \\
+    SBX_WORK=/work \\
+    PYTHONPATH={PYTHONPATH_REMOTE}"""
+    if devin:
+        env_lines += "".join(
+            f" \\\n    {key}={value}" for key, value in devin_runtime_env().items()
+        )
+    extra_run = ""
+    mkdirs = "/work/inbox /work/turns /work/.codex"
+    if devin:
+        mkdirs += " /work/home"
+        extra_run = f"\nRUN {devin_install_command(spec)}\n"
+    header = """\
 # GENERATED FROM runtime/packages.txt — do not edit by hand.
 # Regenerate: python -m runtime.image --write-dockerfile
 # Local verification only. Production image: runtime/image.py (Modal debian_slim).
 # Sandbox cpu/memory/timeout/idle_timeout/workdir/tags/secrets are NOT baked in;
-# the control plane passes them to Sandbox.create.
+# the control plane passes them to Sandbox.create."""
+    if devin:
+        header += "\n# Devin fast path (SOR-74): base recipe + pinned standalone Devin CLI."
+    return f"""\
+{header}
 FROM python:{spec.python_version}-slim-bookworm
 
-ENV DEBIAN_FRONTEND=noninteractive \\
-    SBX_WORK=/work \\
-    PYTHONPATH={PYTHONPATH_REMOTE}
+{env_lines}
 
 RUN apt-get update \\
  && apt-get install -y --no-install-recommends {apt} \\
@@ -131,8 +203,8 @@ COPY runtime {RUNTIME_REMOTE}
 COPY runtime/entrypoint.sh {ENTRYPOINT_REMOTE}
 
 RUN chmod +x {ENTRYPOINT_REMOTE} \\
- && mkdir -p /work/inbox /work/turns /work/.codex
-
+ && mkdir -p {mkdirs}
+{extra_run}
 WORKDIR /work
 ENTRYPOINT ["{ENTRYPOINT_REMOTE}"]
 """
@@ -141,6 +213,12 @@ ENTRYPOINT ["{ENTRYPOINT_REMOTE}"]
 def write_dockerfile_local(path: Path | None = None) -> Path:
     dest = path or DOCKERFILE_LOCAL
     dest.write_text(render_dockerfile_local(), encoding="utf-8")
+    return dest
+
+
+def write_dockerfile_devin_local(path: Path | None = None) -> Path:
+    dest = path or DOCKERFILE_DEVIN_LOCAL
+    dest.write_text(render_dockerfile_local(devin=True), encoding="utf-8")
     return dest
 
 
@@ -164,6 +242,17 @@ def sbx_runtime_image():
         .env({"SBX_WORK": "/work", "PYTHONPATH": PYTHONPATH_REMOTE})
         .entrypoint([ENTRYPOINT_REMOTE])
     )
+
+
+def sbx_devin_image():
+    """Named Modal Image ``sbx-runtime-devin`` (SOR-74 Devin-only fast path).
+
+    ``sbx-runtime`` plus the pinned standalone Devin CLI bundle (sha256-verified
+    by ``runtime/install-devin.sh``) and HOME/XDG rooted at ``$SBX_WORK/home``
+    so the restored ``credentials.toml`` is the only auth source. No Devin
+    Desktop, no ACP bridge, no ``DEVIN_*`` key env is baked in.
+    """
+    return sbx_runtime_image().run_commands(devin_install_command()).env(devin_runtime_env())
 
 
 def invoke_control_deploy() -> None:
@@ -233,24 +322,27 @@ def write_local_secrets(
     print(f"wrote {auth_path}")
 
 
-def build_named_image() -> None:
-    """``modal image build`` equivalent: build + publish named image ``sbx-runtime``.
+def build_named_image(*, devin: bool = False) -> None:
+    """``modal image build`` equivalent: build + publish the named runtime image.
 
-    Requires Modal credentials. Never called from ``make test``.
+    ``devin=True`` builds ``sbx-runtime-devin`` (SOR-74). Requires Modal
+    credentials. Never called from ``make test``.
     """
     import modal
 
     spec = load_packages()
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
-    image = sbx_runtime_image()
+    image = sbx_devin_image() if devin else sbx_runtime_image()
+    name = DEVIN_IMAGE_NAME if devin else IMAGE_NAME
     with modal.enable_output():
         built = image.build(app)
         publish = getattr(built, "publish", None)
         if callable(publish):
-            publish(IMAGE_NAME)
+            publish(name)
+    extra = f", devin {spec.devin_version}" if devin else ""
     print(
-        f"named image {IMAGE_NAME} ready "
-        f"(python {spec.python_version}, node {spec.node_major}, {spec.codex_npm_spec})"
+        f"named image {name} ready "
+        f"(python {spec.python_version}, node {spec.node_major}, {spec.codex_npm_spec}{extra})"
     )
 
 
@@ -259,14 +351,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--write-dockerfile",
         action="store_true",
-        help="Regenerate Dockerfile.local from runtime/packages.txt (no Modal)",
+        help="Regenerate Dockerfile.local + Dockerfile.devin.local from packages.txt (no Modal)",
+    )
+    parser.add_argument(
+        "--devin",
+        action="store_true",
+        help="Build/publish sbx-runtime-devin instead of sbx-runtime (SOR-74)",
     )
     args = parser.parse_args(argv)
     if args.write_dockerfile:
-        path = write_dockerfile_local()
-        print(f"wrote {path}")
+        for write in (write_dockerfile_local, write_dockerfile_devin_local):
+            print(f"wrote {write()}")
         return 0
-    build_named_image()
+    build_named_image(devin=args.devin)
     return 0
 
 

@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e image deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e image image-devin deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -19,6 +19,11 @@ test-e2e:
 # Named Image sbx-runtime (Modal credentials required). Equivalent: `python -m runtime.image`.
 image:
 	uv run python -m runtime.image
+
+# SOR-74 Devin fast path: named Image sbx-runtime-devin (sbx-runtime + pinned
+# standalone Devin CLI). Same Modal credentials requirement as `image`.
+image-devin:
+	uv run python -m runtime.image --devin
 
 # WP1-C owns the real control-plane deploy. Sandbox params stay out of the image.
 deploy:
