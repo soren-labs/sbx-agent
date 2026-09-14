@@ -100,9 +100,16 @@ def _run_prompt(rid: object) -> None:
         {
             "sessionUpdate": "tool_call_update",
             "toolCallId": "exec:0",
-            "status": "completed",
+            "status": "in_progress",
             "content": [{"type": "content", "content": {"type": "text", "text": "hi"}}],
             "_meta": {"terminal_exit": {"exit_code": 0}},
+        }
+    )
+    _update(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "exec:0",
+            "status": "completed",
         }
     )
     _update(
