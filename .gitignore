@@ -26,6 +26,7 @@ playwright-report-modal/
 auth.json
 .modal.toml
 .codex/
+.wrangler/
 
 # Editors / OS
 .idea/
