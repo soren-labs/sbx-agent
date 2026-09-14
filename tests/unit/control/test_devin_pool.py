@@ -13,6 +13,7 @@ import pytest
 from control.devin_pool import (
     DEFAULT_BURST_SLOTS,
     DEFAULT_NORMAL_SLOTS,
+    DEFAULT_SOFT_CEILING,
     DevinAccountPool,
     ScheduleRefused,
     SlotLease,
@@ -98,24 +99,25 @@ class TestDecide:
 
 
 class TestSlots:
-    def test_eight_normal_slots(self) -> None:
+    def test_four_normal_slots(self) -> None:
         pool = _pool()
         leases = [pool.acquire() for _ in range(DEFAULT_NORMAL_SLOTS)]
         assert pool.active_count == DEFAULT_NORMAL_SLOTS
-        assert [lease.slot for lease in leases] == list(range(1, 9))
-        assert all(not lease.burst for lease in leases)
+        assert [lease.slot for lease in leases] == list(range(1, 5))
+        assert all(not lease.soft and not lease.burst for lease in leases)
         assert all(lease.account.id == "devin-1" for lease in leases)
         for lease in leases:
             lease.release()
         assert pool.active_count == 0
 
-    def test_burst_slots_nine_to_sixteen(self) -> None:
+    def test_soft_fifth_then_burst_six_to_eight(self) -> None:
         pool = _pool()
         leases = [pool.acquire() for _ in range(DEFAULT_BURST_SLOTS)]
-        assert [lease.burst for lease in leases] == [False] * 8 + [True] * 8
-        assert [lease.slot for lease in leases] == list(range(1, 17))
+        assert [lease.soft for lease in leases] == [False] * 4 + [True] + [False] * 3
+        assert [lease.burst for lease in leases] == [False] * 5 + [True] * 3
+        assert [lease.slot for lease in leases] == list(range(1, 9))
 
-    def test_seventeenth_rejected_and_frees_up(self) -> None:
+    def test_ninth_rejected_and_frees_up(self) -> None:
         pool = _pool()
         leases = [pool.acquire() for _ in range(DEFAULT_BURST_SLOTS)]
         with pytest.raises(ScheduleRefused) as exc:
@@ -179,7 +181,7 @@ class TestAsync:
 
         results = await asyncio.gather(*(worker() for _ in range(20)))
         assert results.count("ok") == DEFAULT_BURST_SLOTS
-        assert results.count("refused") == 4
+        assert results.count("refused") == 20 - DEFAULT_BURST_SLOTS
         assert sorted(granted) == list(range(1, DEFAULT_BURST_SLOTS + 1))
         assert pool.active_count == 0
 
@@ -301,14 +303,22 @@ class TestCooldown:
 
 
 class TestConfig:
+    def test_default_policy_is_four_five_eight(self) -> None:
+        pool = _pool()
+        assert pool.normal_slots == 4
+        assert pool.soft_ceiling == 5
+        assert pool.burst_slots == 8
+
     def test_env_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SBX_DEVIN_NORMAL_SLOTS", "2")
+        monkeypatch.setenv("SBX_DEVIN_SOFT_CEILING", "3")
         monkeypatch.setenv("SBX_DEVIN_BURST_SLOTS", "4")
         monkeypatch.setenv("SBX_DEVIN_COOLDOWN_S", "30")
         monkeypatch.setenv("SBX_DEVIN_ACCOUNT_ID", "devin-1")
         reg = _registry(_account("devin-1"), _account("devin-2"))
         pool = DevinAccountPool(reg)
         assert pool.normal_slots == 2
+        assert pool.soft_ceiling == 3
         assert pool.burst_slots == 4
         account = pool.account
         assert account is not None and account.id == "devin-1"
@@ -317,6 +327,7 @@ class TestConfig:
         monkeypatch.setenv("SBX_DEVIN_NORMAL_SLOTS", "2")
         pool = _pool(normal_slots=5, burst_slots=9)
         assert pool.normal_slots == 5
+        assert pool.soft_ceiling == DEFAULT_SOFT_CEILING
         assert pool.burst_slots == 9
 
     def test_invalid_slot_config(self) -> None:
@@ -324,6 +335,10 @@ class TestConfig:
             _pool(normal_slots=8, burst_slots=4)
         with pytest.raises(ValueError):
             _pool(normal_slots=0, burst_slots=1)
+        with pytest.raises(ValueError):
+            _pool(normal_slots=4, soft_ceiling=3, burst_slots=8)
+        with pytest.raises(ValueError):
+            _pool(normal_slots=4, soft_ceiling=9, burst_slots=8)
 
     def test_ambiguous_accounts_need_explicit_id(self) -> None:
         reg = _registry(_account("devin-1"), _account("devin-2"))

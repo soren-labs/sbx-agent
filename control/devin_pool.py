@@ -8,8 +8,9 @@ swap in the SOR-63 implementation without call-site changes.
 
 Slot policy (SOR-73, measured 2026-09-14 on one CLI login):
 
-* ``normal_slots`` (default 8): grants 1..8 — the preferred concurrency.
-* ``burst_slots`` (default 16): grants 9..16 come back flagged ``burst``.
+* ``normal_slots`` (default 4): grants 1..4 — the sustained target.
+* ``soft_ceiling`` (default 5): slot 5 is normal headroom, flagged ``soft``.
+* ``burst_slots`` (default 8): grants 6..8 are flagged ``burst``.
 * Beyond ``burst_slots`` the pool refuses with the canonical
   ``provider_exhausted`` (``account: "auto"``) / ``account_busy`` (named)
   subcodes from ``ports.SCHEDULE_ERRORS`` — the same shape the 429/409
@@ -37,8 +38,9 @@ from control.ports import Account, AccountRegistry, ScheduleDecision
 
 DEVIN_PROVIDER = "devin"
 
-DEFAULT_NORMAL_SLOTS = 8
-DEFAULT_BURST_SLOTS = 16
+DEFAULT_NORMAL_SLOTS = 4
+DEFAULT_SOFT_CEILING = 5
+DEFAULT_BURST_SLOTS = 8
 DEFAULT_COOLDOWN_S = 900.0  # design v2 §3.3: rate_limited → cooling 15 min
 DEFAULT_RETRY_HINT_S = 60.0
 
@@ -104,7 +106,8 @@ class SlotLease:
         self._pool = pool
         self.account = account
         self.slot = slot  # depth of held slots at grant (1..burst_slots)
-        self.burst = slot > pool.normal_slots
+        self.soft = pool.normal_slots < slot <= pool.soft_ceiling
+        self.burst = slot > pool.soft_ceiling
         self._released = False
 
     @property
@@ -146,6 +149,7 @@ class DevinAccountPool:
         *,
         account_id: str | None = None,
         normal_slots: int | None = None,
+        soft_ceiling: int | None = None,
         burst_slots: int | None = None,
         cooldown_s: float | None = None,
         retry_hint_s: float | None = None,
@@ -163,10 +167,21 @@ class DevinAccountPool:
             if burst_slots is not None
             else env_int("SBX_DEVIN_BURST_SLOTS", DEFAULT_BURST_SLOTS)
         )
-        if self.normal_slots < 1 or self.burst_slots < self.normal_slots:
+        env_soft = os.environ.get("SBX_DEVIN_SOFT_CEILING")
+        if soft_ceiling is not None:
+            self.soft_ceiling = soft_ceiling
+        elif env_soft not in (None, ""):
+            self.soft_ceiling = int(env_soft)
+        else:
+            self.soft_ceiling = min(max(DEFAULT_SOFT_CEILING, self.normal_slots), self.burst_slots)
+        if (
+            self.normal_slots < 1
+            or self.soft_ceiling < self.normal_slots
+            or self.burst_slots < self.soft_ceiling
+        ):
             raise ValueError(
                 f"invalid slot config: normal_slots={self.normal_slots} "
-                f"burst_slots={self.burst_slots}"
+                f"soft_ceiling={self.soft_ceiling} burst_slots={self.burst_slots}"
             )
         self._cooldown_s = (
             cooldown_s
@@ -213,8 +228,9 @@ class DevinAccountPool:
 
         Safe under concurrent async tasks and threads: the check-and-take
         critical section holds ``self._lock`` and never awaits. Slots are
-        counted 1..burst_slots; grants above ``normal_slots`` return a
-        ``burst`` lease.
+        counted 1..burst_slots; the slot above ``normal_slots`` through
+        ``soft_ceiling`` is marked ``soft`` and grants above ``soft_ceiling``
+        are marked ``burst``.
         """
         with self._lock:
             acct, refusal = self._pick_locked(provider=provider, account=account)
