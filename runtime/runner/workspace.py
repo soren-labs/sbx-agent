@@ -23,15 +23,39 @@ def codex_home(root: Path | None = None) -> Path:
     return base / ".codex"
 
 
+def sandbox_home(root: Path | None = None) -> Path:
+    """``$HOME`` inside the sandbox: ``$SBX_WORK/home`` (filesystem.md v2).
+
+    In production ``HOME`` is already ``$SBX_WORK/home``; honour it when it
+    resolves inside ``root``. In tests ``HOME`` is isolated elsewhere, so the
+    credential blob restores under ``root/home`` either way.
+    """
+    base = root if root is not None else work_root()
+    raw = os.environ.get("HOME")
+    if raw:
+        home = Path(raw).resolve()
+        try:
+            if home.is_relative_to(base.resolve()):
+                return Path(raw)
+        except OSError:
+            pass
+    return base / "home"
+
+
 def ensure_layout(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "inbox").mkdir(exist_ok=True)
     (root / "turns").mkdir(exist_ok=True)
     codex_home(root).mkdir(parents=True, exist_ok=True)
+    sandbox_home(root).mkdir(parents=True, exist_ok=True)
 
 
 def events_path(root: Path) -> Path:
     return root / "events.jsonl"
+
+
+def events_raw_path(root: Path) -> Path:
+    return root / "events.raw.jsonl"
 
 
 def session_path(root: Path) -> Path:
@@ -41,6 +65,10 @@ def session_path(root: Path) -> Path:
 def default_session() -> dict[str, Any]:
     return {
         "codex_session_id": None,
+        "native_session_id": None,
+        "provider": "codex",
+        "account_id": None,
+        "credential_files": [],
         "turn": 0,
         "pid": None,
         "model": None,
@@ -74,7 +102,16 @@ def save_session(root: Path, session: dict[str, Any]) -> None:
     atomic_write(session_path(root), json.dumps(session, ensure_ascii=False) + "\n")
 
 
+def emit_native(root: Path, line: str) -> None:
+    """Append one native CLI stdout line to ``events.raw.jsonl``."""
+    text = line if line.endswith("\n") else line + "\n"
+    with events_raw_path(root).open("a", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+
+
 def emit_raw(root: Path, line: str) -> None:
+    """Append one canonical event line to ``events.jsonl`` and runner stdout."""
     text = line if line.endswith("\n") else line + "\n"
     with events_path(root).open("a", encoding="utf-8") as fh:
         fh.write(text)

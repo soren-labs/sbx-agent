@@ -1,4 +1,10 @@
-"""``runner turn`` and ``runner stop``."""
+"""``runner turn`` and ``runner stop``.
+
+P2 (SOR-62/SOR-72): provider dispatch through ``AgentAdapter``. Native stdout
+lines go to ``events.raw.jsonl``; ``adapter.translate`` output (canonical
+events, Codex shape) goes to ``events.jsonl`` and runner stdout. Codex is the
+identity translation, so its stream is unchanged.
+"""
 
 from __future__ import annotations
 
@@ -8,26 +14,29 @@ import signal
 import time
 from pathlib import Path
 
-from runtime.runner.codex import build_codex_argv, iter_codex_stdout, start_codex
+from runtime.runner.adapter import get_adapter
+from runtime.runner.codex import iter_codex_stdout, start_codex
 from runtime.runner.constants import (
     DEFAULT_MAX_SECONDS,
+    EXIT_AUTH_INVALID,
     EXIT_BAD_JSON,
     EXIT_CODEX,
     EXIT_INTERNAL,
     EXIT_OK,
     EXIT_TIMEOUT,
+    STATUS_AUTH_INVALID,
     STATUS_BAD_JSON,
     STATUS_CODEX_ERROR,
     STATUS_SUCCESS,
     STATUS_TIMEOUT,
     TERM_GRACE_S,
 )
-from runtime.runner.events import TurnState, redact_line, redact_text
+from runtime.runner.events import TurnState, redact_line, redact_obj, redact_text
 from runtime.runner.workspace import (
     atomic_write,
     codex_home,
     emit,
-    emit_raw,
+    emit_native,
     ensure_layout,
     load_session,
     save_session,
@@ -82,12 +91,24 @@ def cmd_stop() -> int:
     return EXIT_OK
 
 
-def _finish_status(*, timed_out: bool, bad_json: bool, codex_rc: int | None) -> tuple[str, int]:
+def _stderr_tail(path: Path, limit: int = 4000) -> str:
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return data[-limit:]
+
+
+def _finish_status(
+    *, timed_out: bool, bad_json: bool, cli_rc: int | None, health: str
+) -> tuple[str, int]:
     if timed_out:
         return STATUS_TIMEOUT, EXIT_TIMEOUT
     if bad_json:
         return STATUS_BAD_JSON, EXIT_BAD_JSON
-    if codex_rc is None or codex_rc != 0:
+    if cli_rc is None or cli_rc != 0:
+        if health == "auth_invalid":
+            return STATUS_AUTH_INVALID, EXIT_AUTH_INVALID
         return STATUS_CODEX_ERROR, EXIT_CODEX
     return STATUS_SUCCESS, EXIT_OK
 
@@ -98,7 +119,14 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     home = codex_home(root)
     started = time.monotonic()
     session = load_session(root)
-    state = TurnState(thread_id=session.get("codex_session_id"))
+    provider = session.get("provider") or "codex"
+    try:
+        adapter = get_adapter(provider)
+    except KeyError as exc:
+        emit(root, {"type": "sbx.error", "message": str(exc)})
+        return EXIT_INTERNAL
+    native_id = session.get("native_session_id") or session.get("codex_session_id")
+    state = TurnState(thread_id=native_id)
     timed_out = False
     proc = None
 
@@ -117,23 +145,30 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     inbox = root / "inbox" / f"{n}.md"
     atomic_write(inbox, prompt)
 
+    if n == 1:
+        emit(
+            root,
+            {
+                "type": "sbx.session_meta",
+                "provider": provider,
+                "model": session.get("model"),
+                "account_id": session.get("account_id"),
+            },
+        )
     emit(root, {"type": "sbx.turn_started", "n": n})
 
-    thread_id = session.get("codex_session_id")
     model = session.get("model")
-    argv = build_codex_argv(
-        work=root,
-        prompt=prompt,
-        thread_id=thread_id if thread_id else None,
-        model=model if isinstance(model, str) and model else None,
-    )
+    if native_id:
+        argv = adapter.resume_argv(prompt, str(native_id))
+    else:
+        argv = adapter.first_turn_argv(prompt, model if isinstance(model, str) and model else "")
     stderr_path = root / "turns" / f"{n}.stderr"
 
     try:
         proc = start_codex(argv, work=root, home=home, stderr_path=stderr_path)
     except OSError as exc:
-        emit(root, {"type": "sbx.error", "message": f"failed to start Codex: {exc}"})
-        status, code = _finish_status(timed_out=False, bad_json=False, codex_rc=1)
+        emit(root, {"type": "sbx.error", "message": f"failed to start provider CLI: {exc}"})
+        status, code = _finish_status(timed_out=False, bad_json=False, cli_rc=1, health="unknown")
         _write_turn_finished(
             root,
             n=n,
@@ -141,6 +176,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
             state=state,
             status=status,
             code=code,
+            health="unknown",
             duration_s=round(time.monotonic() - started, 3),
         )
         return code
@@ -158,29 +194,41 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     signal.signal(signal.SIGTERM, _forward_term)
     signal.signal(signal.SIGINT, _forward_term)
 
+    def _record_thread() -> None:
+        if state.thread_id and session.get("native_session_id") != state.thread_id:
+            session["native_session_id"] = state.thread_id
+            session["codex_session_id"] = state.thread_id
+            session["pid"] = proc.pid
+            save_session(root, session)
+
     for line in iter_codex_stdout(
         proc, max_seconds=max_seconds, grace_s=TERM_GRACE_S, on_timeout=_on_timeout
     ):
         safe = redact_line(line)
         if safe:
-            emit_raw(root, safe)
-        _, bad = state.consume_line(line)
-        if bad:
+            emit_native(root, safe)
+        events = adapter.translate(line)
+        if not events and line.strip():
+            state.bad_json_lines += 1
             emit(root, {"type": "sbx.error", "message": "bad json in event stream"})
-        if state.thread_id and session.get("codex_session_id") != state.thread_id:
-            session["codex_session_id"] = state.thread_id
-            session["pid"] = proc.pid
-            save_session(root, session)
+        for event in events:
+            event = redact_obj(event)
+            emit(root, event)
+            state.consume_obj(event)
+        _record_thread()
 
-    codex_rc = proc.wait()
+    cli_rc = proc.wait()
     duration = round(time.monotonic() - started, 3)
+    health = "ok" if cli_rc == 0 else adapter.health_from(cli_rc, _stderr_tail(stderr_path))
     status, code = _finish_status(
         timed_out=timed_out,
         bad_json=state.bad_json_lines > 0,
-        codex_rc=codex_rc,
+        cli_rc=cli_rc,
+        health=health,
     )
     session = load_session(root)
     if state.thread_id:
+        session["native_session_id"] = state.thread_id
         session["codex_session_id"] = state.thread_id
     session["turn"] = n
     _write_turn_finished(
@@ -190,6 +238,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
         state=state,
         status=status,
         code=code,
+        health=health,
         duration_s=duration,
     )
     return code
@@ -203,11 +252,13 @@ def _write_turn_finished(
     state: TurnState,
     status: str,
     code: int,
+    health: str,
     duration_s: float,
 ) -> None:
     session["pid"] = None
     session["turn"] = n
     if state.thread_id:
+        session["native_session_id"] = state.thread_id
         session["codex_session_id"] = state.thread_id
     save_session(root, session)
     emit(
@@ -224,8 +275,10 @@ def _write_turn_finished(
     payload = {
         "n": n,
         "codex_session_id": state.thread_id or session.get("codex_session_id"),
+        "native_session_id": state.thread_id or session.get("native_session_id"),
         "status": status,
         "exit_code": code,
+        "health": health,
         "duration_s": duration_s,
         "usage": dict(state.usage),
         "message": redact_text(state.last_message),

@@ -118,6 +118,13 @@ class CodexAdapter:
         return "unknown"
 
 
+def _devin() -> AgentAdapter:
+    from runtime.runner.adapters.devin import DevinAdapter
+
+    return DevinAdapter()
+
+
 _REGISTRY: dict[str, Callable[[], AgentAdapter]] = {
     "codex": CodexAdapter,
+    "devin": _devin,
 }

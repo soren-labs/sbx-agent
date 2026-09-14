@@ -41,7 +41,8 @@ def test_success_scenario(work: Path, runner_env: dict[str, str]) -> None:
     code, turn, events = _turn(runner_env, work)
     assert code == 0
     types = [e["type"] for e in events]
-    assert types[0] == "sbx.turn_started"
+    assert types[0] == "sbx.session_meta"
+    assert types[1] == "sbx.turn_started"
     assert "thread.started" in types
     assert types[-1] == "sbx.turn_finished"
     assert events[-1]["status"] == "success"
@@ -137,7 +138,8 @@ def test_slow_scenario_completes(work: Path, runner_env: dict[str, str]) -> None
     assert turn["status"] == "success"
     assert (work / "hello.txt").is_file()
     types = [e["type"] for e in events]
-    assert types[0] == "sbx.turn_started"
+    assert types[0] == "sbx.session_meta"
+    assert types[1] == "sbx.turn_started"
     assert types[-1] == "sbx.turn_finished"
     assert set(turn["usage"]) == USAGE_FIELDS
 
