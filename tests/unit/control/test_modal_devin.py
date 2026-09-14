@@ -82,6 +82,34 @@ def test_devin_ephemeral_secret_from_local_blob(monkeypatch) -> None:
     ]
 
 
+def test_devin_github_token_requires_explicit_gate_flag(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
+    monkeypatch.setenv("GH_TOKEN", "REDACTED_GITHUB")
+    monkeypatch.delenv("SBX_GITHUB_EPHEMERAL", raising=False)
+    payload = _devin_secrets(_FakeModal)[0][1]
+    assert "GH_TOKEN" not in payload
+    assert "GITHUB_TOKEN" not in payload
+
+    monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+    payload = _devin_secrets(_FakeModal)[0][1]
+    assert payload["GH_TOKEN"] == "REDACTED_GITHUB"
+    assert payload["GITHUB_TOKEN"] == "REDACTED_GITHUB"
+
+
+def test_named_devin_secret_can_stack_ephemeral_github(monkeypatch) -> None:
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL_FILE", raising=False)
+    monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+    monkeypatch.setenv("GH_TOKEN", "REDACTED_GITHUB")
+    spec = SandboxSpec(tags={"provider": "devin"}, secrets=["sbx-acct-1"])
+    secrets = _sandbox_secrets(_FakeModal, spec)
+    assert secrets[0] == ("secret", "sbx-acct-1")
+    assert secrets[1] == (
+        "dict",
+        {"GH_TOKEN": "REDACTED_GITHUB", "GITHUB_TOKEN": "REDACTED_GITHUB"},
+    )
+
+
 def test_devin_ephemeral_secret_from_local_credential_file(monkeypatch, tmp_path) -> None:
     cred = tmp_path / "credentials.toml"
     cred.write_text('windsurf_api_key = "REDACTED"\n', encoding="utf-8")

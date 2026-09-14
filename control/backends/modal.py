@@ -77,9 +77,17 @@ def _devin_secrets(modal: Any) -> list[Any]:
                     "files": {".local/share/devin/credentials.toml": content},
                 }
             )
-    if not blob:
+    secret_env: dict[str, str] = {}
+    if blob:
+        secret_env[_ACCOUNT_CREDENTIAL_ENV] = blob
+    if os.environ.get("SBX_GITHUB_EPHEMERAL") == "1":
+        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            secret_env["GH_TOKEN"] = github_token
+            secret_env["GITHUB_TOKEN"] = github_token
+    if not secret_env:
         return []
-    return [modal.Secret.from_dict({_ACCOUNT_CREDENTIAL_ENV: blob})]
+    return [modal.Secret.from_dict(secret_env)]
 
 
 def _spec_provider(spec: SandboxSpec) -> str:
@@ -94,10 +102,11 @@ def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
     carrying the ``SBX_ACCOUNT_CREDENTIAL`` blob). Devin sandboxes never get
     the Codex auth Secret; anything else keeps the P1 Codex path unchanged.
     """
-    if spec.secrets:
-        return [modal.Secret.from_name(name) for name in spec.secrets]
+    named = [modal.Secret.from_name(name) for name in spec.secrets]
     if _spec_provider(spec) == DEVIN_PROVIDER:
-        return _devin_secrets(modal)
+        return [*named, *_devin_secrets(modal)]
+    if named:
+        return named
     return _codex_secrets(modal)
 
 
@@ -201,10 +210,11 @@ class ModalProcess:
             raise
 
     def _exec_secrets(self, modal: Any) -> list[Any]:
-        if self._secret_names:
-            return [modal.Secret.from_name(name) for name in self._secret_names]
+        named = [modal.Secret.from_name(name) for name in self._secret_names]
         if self._provider == DEVIN_PROVIDER:
-            return _devin_secrets(modal)
+            return [*named, *_devin_secrets(modal)]
+        if named:
+            return named
         return _codex_secrets(modal)
 
 
@@ -277,11 +287,12 @@ class ModalBackend:
         )
 
     def _exec_secrets(self, modal: Any, handle: SandboxHandle) -> list[Any]:
-        names = self._secrets_by_sandbox.get(handle.id)
-        if names:
-            return [modal.Secret.from_name(name) for name in names]
+        names = self._secrets_by_sandbox.get(handle.id) or []
+        named = [modal.Secret.from_name(name) for name in names]
         if handle.tags.get("provider") == DEVIN_PROVIDER:
-            return _devin_secrets(modal)
+            return [*named, *_devin_secrets(modal)]
+        if named:
+            return named
         return _codex_secrets(modal)
 
     def terminate(self, handle: SandboxHandle) -> None:
