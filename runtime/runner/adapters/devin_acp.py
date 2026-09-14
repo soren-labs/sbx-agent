@@ -186,13 +186,18 @@ class AcpBridge:
         if kind == "tool_call_update":
             tool_id = str(update.get("toolCallId") or "")
             status = str(update.get("status") or "")
+            call = self._tools.setdefault(tool_id, {})
+            output = _content_text(update.get("content"))
+            if output:
+                call["output"] = str(call.get("output") or "") + output
+            meta = update.get("_meta") if isinstance(update.get("_meta"), dict) else {}
+            exit_info = meta.get("terminal_exit")
+            if isinstance(exit_info, dict) and "exit_code" in exit_info:
+                call["exit_code"] = exit_info.get("exit_code")
             if status not in ("completed", "failed"):
                 return
             self._flush_buffer()
-            meta = update.get("_meta") if isinstance(update.get("_meta"), dict) else {}
-            call = self._tools.get(tool_id, {})
-            exit_info = meta.get("terminal_exit")
-            exit_code = exit_info.get("exit_code") if isinstance(exit_info, dict) else None
+            exit_code = call.get("exit_code")
             if status == "failed" and exit_code is None:
                 exit_code = 1
             _emit(
@@ -204,7 +209,7 @@ class AcpBridge:
                     "input": call.get("input", {}),
                     "status": status,
                     "exit_code": exit_code,
-                    "output": _content_text(update.get("content")),
+                    "output": str(call.get("output") or ""),
                 }
             )
             return

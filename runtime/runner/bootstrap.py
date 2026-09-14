@@ -86,6 +86,21 @@ def _write_auth_json(home: Path, auth: str, root: Path) -> None:
     dest.chmod(0o600)
 
 
+def _credential_target(root: Path, provider: str, relpath: str) -> Path | None:
+    home = sandbox_home(root).resolve()
+    candidate = (home / relpath).resolve()
+    if not candidate.is_relative_to(home):
+        return None
+    if provider == "codex" and (relpath == ".codex" or relpath.startswith(".codex/")):
+        codex = codex_home(root).resolve()
+        suffix = Path(relpath).parts[1:]
+        mapped = (codex.joinpath(*suffix) if suffix else codex).resolve()
+        if not mapped.is_relative_to(codex):
+            return None
+        return mapped
+    return candidate
+
+
 def restore_credential_blob(root: Path, provider: str) -> list[str] | None:
     """Restore ``SBX_ACCOUNT_CREDENTIAL`` below the sandbox ``$HOME``.
 
@@ -114,17 +129,17 @@ def restore_credential_blob(root: Path, provider: str) -> list[str] | None:
     if not isinstance(files, dict):
         print("credential blob files must be an object", file=sys.stderr)
         return None
-    home = sandbox_home(root).resolve()
     restored: list[str] = []
     for relpath, content in files.items():
-        target = (home / str(relpath)).resolve()
-        if not target.is_relative_to(home):
+        relpath = str(relpath)
+        target = _credential_target(root, provider, relpath)
+        if target is None:
             print(f"credential path escapes HOME: {relpath}", file=sys.stderr)
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(str(content), encoding="utf-8")
         target.chmod(0o600)
-        restored.append(str(relpath))
+        restored.append(relpath)
     return restored
 
 
@@ -137,16 +152,17 @@ def cmd_init(
     ensure_layout(root)
     home = codex_home(root)
 
-    credential_files = restore_credential_blob(root, provider)
-    if credential_files is None:
-        return EXIT_INTERNAL
-
     if provider == "codex":
         atomic_write(home / "config.toml", render_config_toml(model=model, auth=auth))
         _write_auth_json(home, auth, root)
+        credential_files = restore_credential_blob(root, provider)
     else:
+        credential_files = restore_credential_blob(root, provider)
         adapter = get_adapter(provider)
         adapter.prepare_home(sandbox_home(root), model)
+
+    if credential_files is None:
+        return EXIT_INTERNAL
 
     atomic_write(root / "AGENTS.md", SANDBOX_AGENTS_MD)
     events_path(root).write_text("", encoding="utf-8")
@@ -171,12 +187,13 @@ def cmd_export_credentials() -> int:
     root = work_root()
     session = load_session(root)
     relpaths = session.get("credential_files") or []
-    home = sandbox_home(root).resolve()
+    provider = str(session.get("provider") or "codex")
     files: dict[str, str] = {}
     for relpath in relpaths:
-        target = (home / str(relpath)).resolve()
-        if target.is_relative_to(home) and target.is_file():
-            files[str(relpath)] = target.read_text(encoding="utf-8")
+        relpath = str(relpath)
+        target = _credential_target(root, provider, relpath)
+        if target is not None and target.is_file():
+            files[relpath] = target.read_text(encoding="utf-8")
     if not files:
         return EXIT_OK
     new_blob = {"provider": session.get("provider") or "codex", "files": files}

@@ -101,3 +101,19 @@ def test_init_auth_defaults_to_auth_json(work: Path, runner_env: dict[str, str])
     assert session["auth"] == "auth_json"
     config = (work / ".codex" / "config.toml").read_text(encoding="utf-8")
     assert "[model_providers" not in config
+
+
+def test_init_codex_credential_blob_overrides_legacy_auth(
+    work: Path, runner_env: dict[str, str]
+) -> None:
+    legacy = {"tokens": {"access_token": "REDACTED_LEGACY"}}
+    blob_text = json.dumps({"tokens": {"access_token": "REDACTED_BLOB"}})
+    runner_env["CODEX_AUTH_JSON"] = json.dumps(legacy)
+    runner_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(
+        {"provider": "codex", "files": {".codex/auth.json": blob_text}}
+    )
+    result = run_runner(["init", "--provider", "codex", "--model", "gpt-5.6-luna"], runner_env)
+    assert result.returncode == 0, result.stderr
+    auth_path = work / ".codex" / "auth.json"
+    assert json.loads(auth_path.read_text(encoding="utf-8")) == json.loads(blob_text)
+    assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
