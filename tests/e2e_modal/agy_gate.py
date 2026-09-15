@@ -567,7 +567,7 @@ def main() -> int:
     log("building/checking derived image (sbx-runtime + host agy binary)")
     image = (
         sbx_runtime_image()
-        .add_local_file(str(agy_bin), "/usr/local/bin/agy")
+        .add_local_file(str(agy_bin), "/usr/local/bin/agy", copy=True)
         .run_commands("chmod 755 /usr/local/bin/agy")
     )
     image.build(app)
