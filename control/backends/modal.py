@@ -24,6 +24,7 @@ from control.config import (
     IDLE_TIMEOUT_S,
     MEMORY_MIB,
     MODAL_APP_NAME,
+    OPENCODE_IMAGE_NAME,
     RUNTIME_IMAGE_NAME,
     SANDBOX_TIMEOUT_S,
     WORK_DIR,
@@ -38,10 +39,16 @@ DEVIN_PROVIDER = "devin"
 # per-account credential Secrets (never the Codex auth Secret).
 ANTIGRAVITY_PROVIDER = "antigravity"
 GROK_PROVIDER = "grok"
-ACCOUNT_PROVIDERS = frozenset({DEVIN_PROVIDER, ANTIGRAVITY_PROVIDER, GROK_PROVIDER})
+# SOR-96: provider tag that resolves to the named opencode image and
+# per-account credential Secrets (``~/.local/share/opencode/auth.json``).
+OPENCODE_PROVIDER = "opencode"
+ACCOUNT_PROVIDERS = frozenset(
+    {DEVIN_PROVIDER, ANTIGRAVITY_PROVIDER, GROK_PROVIDER, OPENCODE_PROVIDER}
+)
 _PROVIDER_IMAGE_NAMES = {
     ANTIGRAVITY_PROVIDER: ANTIGRAVITY_IMAGE_NAME,
     GROK_PROVIDER: GROK_IMAGE_NAME,
+    OPENCODE_PROVIDER: OPENCODE_IMAGE_NAME,
 }
 # ``SBX_ACCOUNT_CREDENTIAL_FILE`` wrap target per provider (the file's relpath
 # inside the credential blob, relative to the sandbox $HOME).
@@ -49,6 +56,7 @@ _ACCOUNT_CREDENTIAL_FILE_REL = {
     DEVIN_PROVIDER: ".local/share/devin/credentials.toml",
     ANTIGRAVITY_PROVIDER: ".gemini/antigravity-cli/antigravity-oauth-token",
     GROK_PROVIDER: ".grok/auth.json",
+    OPENCODE_PROVIDER: ".local/share/opencode/auth.json",
 }
 _ACCOUNT_CREDENTIAL_ENV = "SBX_ACCOUNT_CREDENTIAL"
 _ACCOUNT_CREDENTIAL_FILE_ENV = "SBX_ACCOUNT_CREDENTIAL_FILE"
@@ -207,7 +215,9 @@ def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
 def _create_env(spec: SandboxSpec) -> dict[str, str]:
     env = {"CODEX_HOME": CODEX_HOME, "SBX_WORK": WORK_DIR}
     provider = _spec_provider(spec)
-    if provider == DEVIN_PROVIDER:
+    if provider in (DEVIN_PROVIDER, OPENCODE_PROVIDER):
+        # OpenCode auth.json is an XDG data file like the Devin credential,
+        # so it takes the same HOME+XDG pinning (SOR-96).
         env.update(_devin_home_env())
     elif provider in _PROVIDER_IMAGE_NAMES:
         env.update(_agent_home_env())

@@ -2,11 +2,11 @@
 
 Nothing is enabled by default. When ``SBX_V1_BOOTSTRAP_KEY`` is injected via
 a Modal Secret, seed a hash-only API key plus accounts per P2 Core provider —
-codex, devin, antigravity, grok — so the frozen candidate can schedule all
-four through the product ``/v1`` path. A provider seeds one account by
-default; ``SBX_<PROVIDER>_ACCOUNTS`` (a JSON list of ``{"id", "label"?,
-"secret_name"?, "slots"?, "models"?}``) seeds a real multi-account fleet —
-the Antigravity-4 / Grok-2 gate shape.
+codex, devin, antigravity, grok, opencode — so the frozen candidate can
+schedule all five through the product ``/v1`` path. A provider seeds one
+account by default; ``SBX_<PROVIDER>_ACCOUNTS`` (a JSON list of ``{"id",
+"label"?, "secret_name"?, "slots"?, "models"?}``) seeds a real multi-account
+fleet — the Antigravity-4 / Grok-2 gate shape.
 
 Scheduling runs on the SOR-63/D1 implementation: accounts persist in a
 ``PersistentAccountRegistry`` (``select_store()`` — ``modal.Dict
@@ -14,8 +14,7 @@ sbx-accounts`` on Modal, the local file store elsewhere) and
 ``AccountScheduler`` provides the atomic ``decide``/``acquire``/
 ``report_failure`` surface the /v1 routes consume behind
 ``app.state.scheduler``. Per-account slots come from ``Account.max_concurrent``
-and the global cap from ``SBX_MAX_CONCURRENT``; OpenCode stays deferred and
-refuses with ``provider_exhausted``, not ``invalid_provider``.
+and the global cap from ``SBX_MAX_CONCURRENT``.
 """
 
 from __future__ import annotations
@@ -46,6 +45,11 @@ PROVIDER_DEFAULT_MODELS = {
     "devin": ("swe-2-high", "swe-2-medium"),
     "antigravity": ("gemini-3.8-flash-low",),
     "grok": ("grok-4.6",),
+    # SOR-96: OpenCode models travel as ``provider/model`` argv (``-m``).
+    # The default pair covers the two auth channels the gate accounts use
+    # (Anthropic OAuth subscription + an API-key provider); a deploy
+    # overrides via ``SBX_OPENCODE_MODELS``.
+    "opencode": ("anthropic/claude-sonnet-4.5", "openai/gpt-5.3-codex"),
 }
 
 
@@ -229,6 +233,7 @@ def configure_v1_bootstrap(app: Any) -> bool:
         ("codex", "", _DEFAULT_PROVIDER_SLOTS),
         ("antigravity", None, _DEFAULT_PROVIDER_SLOTS),
         ("grok", None, _DEFAULT_PROVIDER_SLOTS),
+        ("opencode", None, _DEFAULT_PROVIDER_SLOTS),
     ):
         _seed_accounts(
             registry,

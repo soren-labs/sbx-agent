@@ -43,10 +43,10 @@ class TestAdapterRegistry:
         assert isinstance(adapter, AgentAdapter)
         assert adapter.provider == "devin"
 
-    def test_other_providers_not_yet_registered(self) -> None:
-        for provider in ("opencode",):
-            with pytest.raises(KeyError):
-                get_adapter(provider)
+    def test_opencode_registered(self) -> None:
+        adapter = get_adapter("opencode")
+        assert isinstance(adapter, AgentAdapter)
+        assert adapter.provider == "opencode"
 
     def test_unknown_provider(self) -> None:
         with pytest.raises(KeyError):

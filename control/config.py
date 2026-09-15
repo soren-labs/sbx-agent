@@ -37,6 +37,7 @@ DEVIN_IMAGE_NAME = "sbx-runtime-devin"
 # runtime.image.AGY_IMAGE_NAME / GROK_IMAGE_NAME.
 ANTIGRAVITY_IMAGE_NAME = "sbx-runtime-antigravity"
 GROK_IMAGE_NAME = "sbx-runtime-grok"
+OPENCODE_IMAGE_NAME = "sbx-runtime-opencode"
 
 # Modal Starter sandbox list price (P0): billed at the request floor.
 CPU_USD_PER_CORE_S = 0.00003942

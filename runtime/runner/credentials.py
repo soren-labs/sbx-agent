@@ -67,8 +67,22 @@ GROK_ENV_EXCLUDE: tuple[str, ...] = (
     "GROK_CONFIG_PATH",
 )
 
+# OpenCode-only (SOR-96): alternate config/auth channels that could relocate
+# or replace the restored ``~/.local/share/opencode/auth.json`` credential
+# source (an injected config can register extra providers or key envs; the
+# server auth vars belong to ``opencode serve``/``--attach``, never to the
+# sandboxed ``run`` path).
+OPENCODE_ENV_EXCLUDE: tuple[str, ...] = (
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_SERVER_PASSWORD",
+    "OPENCODE_SERVER_USERNAME",
+)
+
 # Union stripped by ``scrub_child_env`` for non-Codex agent children.
-AGENT_ENV_EXCLUDE: tuple[str, ...] = CREDENTIAL_ENV_EXCLUDE + DEVIN_ENV_EXCLUDE + GROK_ENV_EXCLUDE
+AGENT_ENV_EXCLUDE: tuple[str, ...] = (
+    CREDENTIAL_ENV_EXCLUDE + DEVIN_ENV_EXCLUDE + GROK_ENV_EXCLUDE + OPENCODE_ENV_EXCLUDE
+)
 
 
 class CredentialError(Exception):

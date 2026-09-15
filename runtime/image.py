@@ -45,7 +45,9 @@ DEVIN_IMAGE_NAME = "sbx-runtime-devin"
 # CLI binary from the build host (see sbx_antigravity_image / sbx_grok_image).
 AGY_IMAGE_NAME = "sbx-runtime-antigravity"
 GROK_IMAGE_NAME = "sbx-runtime-grok"
-# Release 0.1 OpenCode seam: sbx-runtime + pinned opencode-ai npm package.
+# Release 0.1 / SOR-96 OpenCode seam: named image = sbx-runtime + the pinned
+# ``opencode-ai`` npm package (public registry artifact, no host binary
+# needed — unlike agy/grok).
 OPENCODE_IMAGE_NAME = "sbx-runtime-opencode"
 AGY_BIN_ENV = "SBX_AGY_BIN"
 GROK_BIN_ENV = "SBX_GROK_BIN"
@@ -376,6 +378,12 @@ def sbx_devin_image(spec: PackageSpec | None = None):
         )
         .env(devin_runtime_env())
     )
+
+
+def opencode_install_command(spec: PackageSpec | None = None) -> str:
+    """Shell command that installs the pinned OpenCode CLI inside an image."""
+    spec = spec or load_packages()
+    return f"npm i -g {spec.opencode_npm_spec} && opencode --version"
 
 
 def agent_home_env(work: str = "/work") -> dict[str, str]:

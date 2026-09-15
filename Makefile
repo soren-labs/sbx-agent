@@ -33,8 +33,9 @@ image-antigravity:
 image-grok:
 	uv run python -m runtime.image --provider grok
 
-# Release 0.1 OpenCode seam: sbx-runtime + pinned opencode-ai npm package
-# (packages.txt opencode_*). Reproducible — no host artifact needed.
+# Release 0.1 OpenCode seam (SOR-96): named Image sbx-runtime-opencode —
+# sbx-runtime + pinned opencode-ai npm package (packages.txt opencode_*).
+# Reproducible — no host artifact needed; same Modal credentials as `image`.
 image-opencode:
 	uv run python -m runtime.image --provider opencode
 
@@ -42,6 +43,7 @@ image-opencode:
 # No Modal credentials required.
 image-manifest:
 	uv run python -m runtime.image --manifest
+
 
 # WP1-C owns the real control-plane deploy. Sandbox params stay out of the image.
 deploy:
