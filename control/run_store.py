@@ -123,9 +123,7 @@ def outcome_from_turn_payload(
         )
         return "EXPIRED", err.public(), result_text, usage
     if turn_status == "cancelled":
-        err = run_error_from_turn(payload) or RunError(
-            "cancelled", "control", "run cancelled"
-        )
+        err = run_error_from_turn(payload) or RunError("cancelled", "control", "run cancelled")
         return "CANCELLED", err.public(), result_text, usage
     err = run_error_from_turn(payload)
     if err is None:

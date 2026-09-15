@@ -11,8 +11,14 @@ from tests.integration.recovery.support import RecoveryEnv
 
 
 @pytest.fixture
-def make_recovery_env(stub_runner) -> Iterator[Callable[..., RecoveryEnv]]:
-    """Factory for control-plane instances; every built env is torn down."""
+def make_recovery_env(stub_runner, monkeypatch) -> Iterator[Callable[..., RecoveryEnv]]:
+    """Factory for control-plane instances; every built env is torn down.
+
+    ``FAKE_CODEX_TURN_SECONDS`` floors the stub turn duration so a 50ms
+    ``GET run`` poll deterministically observes the RUNNING window — the
+    assertable signal is status progression, not wall-clock luck.
+    """
+    monkeypatch.setenv("FAKE_CODEX_TURN_SECONDS", "0.3")
     envs: list[RecoveryEnv] = []
 
     def _make(**kwargs) -> RecoveryEnv:

@@ -340,6 +340,9 @@ def build_env(
             list(runner_cmd),
             turn_max_seconds=turn_max_seconds,
             max_concurrent=max_concurrent,
+            # Keep the durable run ledger wired: the rebuilt plane must use
+            # the same ledger create_app selected or run records go missing.
+            run_ledger=app.state.run_ledger,
         )
     registry = registry or InMemoryAccountRegistry()
     keys = keys or InMemoryApiKeyStore()

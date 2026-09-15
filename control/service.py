@@ -160,11 +160,7 @@ class ControlPlane:
         """
         with self._lock:
             for rec in self.store.list_all():
-                if (
-                    rec.owner == owner
-                    and rec.idempotency_key == key
-                    and rec.status != "lost"
-                ):
+                if rec.owner == owner and rec.idempotency_key == key and rec.status != "lost":
                     return rec
         return None
 
@@ -315,7 +311,7 @@ class ControlPlane:
         try:
             handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
         except Exception:
-            self._mark_create_failed(rec)
+            self._mark_create_failed_unless_run_cancelled(rec)
             raise
 
         with self._lock:
@@ -353,7 +349,7 @@ class ControlPlane:
             # Mark the record lost *before* terminating: even if terminate
             # fails, the record stays terminal with sandbox_id bound so the
             # reaper can retry cleanup (SOR-80).
-            self._mark_create_failed(rec)
+            self._mark_create_failed_unless_run_cancelled(rec)
             try:
                 self.backend.terminate(handle)
             except Exception:
@@ -375,6 +371,18 @@ class ControlPlane:
             stored.last_activity_at = now
             self.store.put(stored)
 
+    def _mark_create_failed_unless_run_cancelled(self, rec: SessionRecord) -> None:
+        """``lost`` for a failed create — unless run-1 already went terminal.
+
+        A cancelled queued first run settles the session record
+        (``discard_queued_first_turn``); a provisioning failure landing later
+        is worker fallout, not a session-status change (SOR-82 A4).
+        """
+        run1 = self.run_ledger.get(rec.id, 1) if self.run_ledger is not None else None
+        if run1 is not None and run1.terminal:
+            return
+        self._mark_create_failed(rec)
+
     def _mark_create_failed(self, rec: SessionRecord) -> None:
         """Terminal ``lost`` transition for a failed create; keeps sandbox_id."""
         with self._lock:
@@ -388,9 +396,22 @@ class ControlPlane:
             self.store.put(stored)
 
     def discard_queued_first_turn(self, session_id: str) -> None:
-        """Drop a queued-but-undispatched first turn reservation (cancel path)."""
+        """Drop a queued-but-undispatched first turn reservation (cancel path).
+
+        Also settles a still-``creating`` record to ``idle``: once run-1 is
+        cancelled its public status must be stable immediately — the
+        provisioning worker's late success or failure must not rewrite it
+        (SOR-82 A4 durability acceptance).
+        """
         with self._lock:
             self._first_turn_pending.discard(session_id)
+            rec = self.store.get(session_id)
+            if rec is not None and rec.status == "creating":
+                rec.status = "idle"
+                now = self.clock()
+                rec.updated_at = now
+                rec.last_activity_at = now
+                self.store.put(rec)
 
     def _next_turn_n(self, rec: SessionRecord) -> int:
         """Next never-reused turn number for ``rec``.
@@ -600,13 +621,19 @@ class ControlPlane:
     def _finish_turn(self, session_id: str, turn_id: str, n: int) -> None:
         with self._lock:
             rec = self.store.get(session_id)
-            if rec is None or rec.status in TERMINAL_STATUSES:
-                self._live.pop(session_id, None)
-                return
-            handle = rec.handle()
-            payload = read_json(self.backend, handle, f"turns/{n}.json") if handle else None
+            active = rec is not None and rec.status not in TERMINAL_STATUSES
+            handle = rec.handle() if rec is not None else None
+            payload = None
+            if handle is not None:
+                try:
+                    payload = read_json(self.backend, handle, f"turns/{n}.json")
+                except Exception:
+                    # Sandbox reclaimed mid-turn: the turn outcome is
+                    # unreadable — the ledger persist below records it as
+                    # ERROR, never success.
+                    payload = None
             now = self.clock()
-            if payload is not None:
+            if active and payload is not None:
                 rec.usage = merge_usage(rec.usage, payload.get("usage"))
                 rec.turns = max(rec.turns, int(payload.get("n") or n))
                 message = payload.get("message") or ""
@@ -619,19 +646,21 @@ class ControlPlane:
                             "ts": iso(now),
                         }
                     )
-            if rec.current_turn_id == turn_id:
-                rec.current_turn_id = None
-                rec.current_turn_n = None
-            if rec.status == "running":
-                rec.status = "idle"
-            rec.updated_at = now
-            rec.last_activity_at = now
-            self.store.put(rec)
+            if active:
+                if rec.current_turn_id == turn_id:
+                    rec.current_turn_id = None
+                    rec.current_turn_n = None
+                if rec.status == "running":
+                    rec.status = "idle"
+                rec.updated_at = now
+                rec.last_activity_at = now
+                self.store.put(rec)
             if self.run_ledger is not None:
                 # Persist the terminal outcome now, while turns/<n>.json may
                 # still be readable; after teardown this record is the only
                 # evidence. Inside the lock so it serializes against
-                # stop()/close() ledger cancels.
+                # stop()/close() ledger cancels; finish() is monotonic, so a
+                # recorded cancel still wins over a late success.
                 status, error, result_text, usage = outcome_from_turn_payload(payload)
                 self.run_ledger.finish(
                     session_id,

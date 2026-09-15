@@ -294,6 +294,14 @@ def cmd_turn(args: argparse.Namespace) -> int:
                 timed_out = True
             break
 
+    # Observability floor (SOR-82 A4): keep the turn alive long enough for
+    # ``GET run`` pollers to observe RUNNING; never extends past --max-seconds.
+    floor = float(os.environ.get("FAKE_CODEX_TURN_SECONDS", "0") or 0)
+    if floor > 0:
+        elapsed = time.monotonic() - start
+        headroom = args.max_seconds - elapsed
+        time.sleep(max(0.0, min(floor - elapsed, headroom)))
+
     duration = round(time.monotonic() - start, 3)
     session = _load_session(root)
     session["codex_session_id"] = thread_id

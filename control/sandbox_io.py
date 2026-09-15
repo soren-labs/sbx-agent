@@ -39,6 +39,7 @@ _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
         "FAKE_CODEX_SCENARIO",
         "FAKE_CODEX_THREAD_ID",
         "FAKE_CODEX_SLOW_SECONDS",
+        "FAKE_CODEX_TURN_SECONDS",
     ),
     "antigravity": ("FAKE_AGY_SCENARIO", "FAKE_AGY_SLOW_SECONDS"),
     "grok": ("FAKE_GROK_SCENARIO", "FAKE_GROK_SLOW_SECONDS"),

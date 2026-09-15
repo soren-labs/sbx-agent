@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -49,8 +50,8 @@ def _iso_now() -> str:
 class RunState:
     """Explicit run lifecycle record — the v1 view of one run's state.
 
-    ``error`` carries a minimal ``{code, message}`` diagnostic; A3 (SOR-86)
-    owns the full structured-error taxonomy.
+    ``error`` carries the canonical SOR-82 structured diagnostic
+    (``{code, source, message, retryable, retry_after?}``).
     """
 
     n: int
@@ -65,8 +66,8 @@ class RunState:
 class RunStateStore(Protocol):
     """Minimal run-state surface consumed by the ``/v1`` routes.
 
-    A1 (SOR-88) implements this against the durable run ledger; the in-memory
-    fallback below keeps local mode and tests working.
+    ``LedgerRunStates`` binds this to the durable run ledger; the in-memory
+    fallback below keeps ledger-less tests working.
     """
 
     def begin(
@@ -180,8 +181,12 @@ class LedgerRunStates:
 class _IdemEntry:
     """One claimed ``Idempotency-Key``: in-flight until ``done`` is set.
 
-    ``agent_id``/``body`` are populated on success; on failure the entry is
-    abandoned so a retry may proceed (only successful creates pin the key).
+    ``agent_id``/``body`` are populated when the handler's response is known
+    (``complete``); ``done`` is set only when the create has fully resolved —
+    the background worker's sandbox allocation settled — so a duplicate that
+    lands mid-provision waits for the worker instead of racing it (SOR-82 A4
+    in-flight retry acceptance). On failure the entry is abandoned so a retry
+    may proceed (only successful creates pin the key).
     """
 
     fingerprint: str
@@ -193,9 +198,11 @@ class _IdemEntry:
 class IdempotencyStore:
     """``(api_key_id, Idempotency-Key)`` → one logical agent create.
 
-    In-memory per control-plane process — the durable bound is A1/P2-C scope.
-    Concurrent duplicates wait for the in-flight create and replay its result,
-    so a lost response or retry never spawns a second sandbox.
+    In-memory per control-plane process; the durable bound lives on the
+    session record (``idempotency_key``/``idempotency_fingerprint``) so a
+    retry that lands after a restart still dedups. Concurrent duplicates wait
+    for the in-flight create — including its worker allocation — and replay
+    its result, so a lost response or retry never spawns a second sandbox.
     """
 
     def __init__(self, wait_s: float = _IDEM_WAIT_S) -> None:
@@ -221,7 +228,7 @@ class IdempotencyStore:
                     return "owned", entry
                 if entry.fingerprint != fingerprint:
                     return "conflict", None
-                if entry.agent_id is not None:
+                if entry.done.is_set() and entry.agent_id is not None:
                     return "hit", entry
             if not entry.done.wait(timeout=self._wait_s):
                 return "timeout", entry
@@ -238,10 +245,14 @@ class IdempotencyStore:
         agent_id: str,
         body: dict[str, Any],
     ) -> None:
+        """Record the handler's response; the create resolves on ``settle``."""
         with self._lock:
             if self._entries.get((key_id, idem_key)) is entry:
                 entry.agent_id = agent_id
                 entry.body = body
+
+    def settle(self, key_id: str, idem_key: str, entry: _IdemEntry) -> None:
+        """Mark the create fully resolved (worker allocation settled)."""
         entry.done.set()
 
     def abandon(self, key_id: str, idem_key: str, entry: _IdemEntry) -> None:
@@ -280,11 +291,26 @@ def launch_first_run(
     provider: str,
     account_id: str,
     secret_name: str | None,
+    on_provisioned: Callable[[], None] | None = None,
 ) -> None:
-    """Spawn the background create → init → first-turn worker (SOR-82 A2)."""
+    """Spawn the background create → init → first-turn worker (SOR-82 A2).
+
+    ``on_provisioned`` fires once the worker's sandbox allocation has
+    resolved (created, failed, or the session was closed underneath) — an
+    idempotent duplicate waits on it so a retry never races the worker.
+    """
     thread = threading.Thread(
         target=_first_run_worker,
-        args=(plane, v1, run_states, session_id, provider, account_id, secret_name),
+        args=(
+            plane,
+            v1,
+            run_states,
+            session_id,
+            provider,
+            account_id,
+            secret_name,
+            on_provisioned,
+        ),
         daemon=True,
         name=f"sbx-v1-create-{session_id[:8]}",
     )
@@ -306,6 +332,7 @@ def _first_run_worker(
     provider: str,
     account_id: str,
     secret_name: str | None,
+    on_provisioned: Callable[[], None] | None = None,
 ) -> None:
     """Advance run-1 CREATING → RUNNING → (terminal) around sandbox startup.
 
@@ -333,6 +360,12 @@ def _first_run_worker(
         run_states.transition(session_id, 1, "ERROR", error=_runtime_error(exc))
         _release_session_lease(v1, session_id)
         return
+    finally:
+        if on_provisioned is not None:
+            try:
+                on_provisioned()
+            except Exception:
+                pass
 
     # Provisioned → idle. A cancel/delete may have landed during cold start.
     state = run_states.get(session_id, 1)

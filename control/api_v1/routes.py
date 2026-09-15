@@ -250,9 +250,7 @@ def _run_public(
                 pub,
                 meta,
                 status="CANCELLED",
-                error=_run_error_public(
-                    "CANCELLED", cancelled=True, agent_status=rec.status
-                ),
+                error=_run_error_public("CANCELLED", cancelled=True, agent_status=rec.status),
             )
         payload = _turn_payload(plane, rec, n)
         if payload is not None:
@@ -282,8 +280,7 @@ def _run_public(
                 pub,
                 meta,
                 status=status,
-                error=record.error
-                or _run_error_public(status, agent_status=rec.status),
+                error=record.error or _run_error_public(status, agent_status=rec.status),
             )
         # Live session, open record, no readable evidence yet — the record's
         # persisted open status (CREATING/RUNNING) is the truth.
@@ -526,25 +523,6 @@ def create_agent(
     owned = None
     fingerprint = request_fingerprint(body)
     if idempotency_key:
-        # Durable dedup first: the session record pins (api key, key) so a
-        # retry landing after a control-plane restart — where the in-memory
-        # IdempotencyStore is empty — still resolves to the original agent.
-        prior = plane.find_by_idempotency(key.id, idempotency_key)
-        if prior is not None:
-            if prior.idempotency_fingerprint not in (None, fingerprint):
-                raise V1ApiError(
-                    409,
-                    "idempotency_conflict",
-                    "Idempotency-Key was already used with a different request body",
-                )
-            pub = plane.public(prior)
-            meta = _meta_for(v1, prior)
-            return {
-                "agent": agent_public(pub, meta),
-                "run": _run_public(
-                    plane, pub, prior, 1, v1.cancelled(prior.id), meta, run_states
-                ),
-            }
         outcome, entry = v1.idempotency.claim(key.id, idempotency_key, fingerprint)
         if outcome == "hit":
             return entry.body
@@ -560,8 +538,38 @@ def create_agent(
                 "idempotency_in_progress",
                 "a create with this Idempotency-Key is still in progress",
             )
-        owned = (entry,)
+        # Owned the claim: now the durable bound. The session record pins
+        # (api key, key), so a retry landing after a control-plane restart —
+        # where the in-memory IdempotencyStore is empty — still resolves to
+        # the original agent instead of provisioning a second worker.
+        prior = plane.find_by_idempotency(key.id, idempotency_key)
+        if prior is not None:
+            if prior.idempotency_fingerprint not in (None, fingerprint):
+                v1.idempotency.abandon(key.id, idempotency_key, entry)
+                raise V1ApiError(
+                    409,
+                    "idempotency_conflict",
+                    "Idempotency-Key was already used with a different request body",
+                )
+            pub = plane.public(prior)
+            meta = _meta_for(v1, prior)
+            result = {
+                "agent": agent_public(pub, meta),
+                "run": _run_public(plane, pub, prior, 1, v1.cancelled(prior.id), meta, run_states),
+            }
+            v1.idempotency.complete(key.id, idempotency_key, entry, agent_id=prior.id, body=result)
+            v1.idempotency.settle(key.id, idempotency_key, entry)
+            return result
+        owned = entry
 
+    on_provisioned = None
+    if owned is not None:
+        # The claim resolves only once the worker's sandbox allocation has —
+        # a duplicate that lands mid-provision waits instead of racing a
+        # second backend.create.
+        on_provisioned = lambda: v1.idempotency.settle(  # noqa: E731
+            key.id, idempotency_key, owned
+        )
     try:
         result = _create_agent_once(
             body,
@@ -573,17 +581,18 @@ def create_agent(
             run_states,
             idempotency_key=idempotency_key,
             idempotency_fingerprint=fingerprint,
+            on_provisioned=on_provisioned,
         )
     except Exception:
         if owned is not None:
             # Failed creates don't pin the key — a retry may proceed.
-            v1.idempotency.abandon(key.id, idempotency_key, owned[0])
+            v1.idempotency.abandon(key.id, idempotency_key, owned)
         raise
     if owned is not None:
         v1.idempotency.complete(
             key.id,
             idempotency_key,
-            owned[0],
+            owned,
             agent_id=result["agent"]["id"],
             body=result,
         )
@@ -601,6 +610,7 @@ def _create_agent_once(
     *,
     idempotency_key: str | None = None,
     idempotency_fingerprint: str | None = None,
+    on_provisioned: Any = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -693,14 +703,13 @@ def _create_agent_once(
         provider=provider,
         account_id=resolved,
         secret_name=secret_name,
+        on_provisioned=on_provisioned,
     )
 
     rec = _require_agent(plane, session_id)
     pub = plane.public(rec)
     agent = agent_public(pub, _meta_for(v1, rec))
-    run = _run_public(
-        plane, pub, rec, 1, v1.cancelled(session_id), _meta_for(v1, rec), run_states
-    )
+    run = _run_public(plane, pub, rec, 1, v1.cancelled(session_id), _meta_for(v1, rec), run_states)
     return {"agent": agent, "run": run}
 
 
@@ -720,10 +729,7 @@ def list_agents(
             start = max(0, int(cursor))
         except ValueError:
             raise V1ApiError(400, "invalid_provider", "malformed cursor") from None
-    agents = [
-        agent_public(plane.public(rec), _meta_for(v1, rec))
-        for rec in plane.store.list_all()
-    ]
+    agents = [agent_public(plane.public(rec), _meta_for(v1, rec)) for rec in plane.store.list_all()]
     agents = [
         a
         for a in agents
@@ -790,9 +796,7 @@ def create_run(
     run_states.begin(agent_id, n, prompt=body.prompt.text, status="RUNNING")
     rec = _require_agent(plane, agent_id)
     pub = plane.public(rec)
-    return _run_public(
-        plane, pub, rec, n, v1.cancelled(agent_id), _meta_for(v1, rec), run_states
-    )
+    return _run_public(plane, pub, rec, n, v1.cancelled(agent_id), _meta_for(v1, rec), run_states)
 
 
 @router.get("/agents/{agent_id}/runs")
