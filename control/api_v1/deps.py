@@ -20,9 +20,13 @@ from control.api_v1.state import (
     InMemoryApiKeyStore,
     V1State,
 )
+from control.artifact_ops import HandoffStoreView
+from control.artifacts import InMemoryArtifactStore
 from control.auth_bearer import bearer_scheme, bearer_token, has_scope, lookup_key
+from control.handoff import HandoffService
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.scheduler import AccountScheduler, session_running_source
+from control.workspace import InMemoryWorkspaceStore, WorkspaceService
 
 
 def get_plane(request: Request) -> Any:
@@ -157,6 +161,45 @@ def get_run_reporter(request: Request) -> RunFailureReporter:
         reporter = RunFailureReporter()
         request.app.state.run_failure_reporter = reporter
     return reporter
+
+
+def get_artifact_store(request: Request) -> Any:
+    """Durable artifact store (SOR-83/B1); in-memory default for tests."""
+    store = getattr(request.app.state, "artifact_store", None)
+    if store is None:
+        store = InMemoryArtifactStore()
+        request.app.state.artifact_store = store
+    return store
+
+
+def get_workspace_store(request: Request) -> Any:
+    """Workspace record store (SOR-83/B2); in-memory default for tests."""
+    store = getattr(request.app.state, "workspace_store", None)
+    if store is None:
+        store = InMemoryWorkspaceStore()
+        request.app.state.workspace_store = store
+    return store
+
+
+def get_workspaces(request: Request) -> WorkspaceService:
+    """Workspace prepare/record service bound to the plane's backend."""
+    service = getattr(request.app.state, "workspaces", None)
+    if service is None:
+        plane = get_plane(request)
+        service = WorkspaceService(plane.backend, get_workspace_store(request))
+        request.app.state.workspaces = service
+    return service
+
+
+def get_handoffs(request: Request) -> HandoffService:
+    """Handoff service; consumes the durable artifact store via the B1→B2 view."""
+    service = getattr(request.app.state, "handoffs", None)
+    if service is None:
+        service = HandoffService(
+            get_workspaces(request), HandoffStoreView(get_artifact_store(request))
+        )
+        request.app.state.handoffs = service
+    return service
 
 
 def api_key(

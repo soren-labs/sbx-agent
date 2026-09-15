@@ -28,15 +28,59 @@ class AgentSpec(BaseModel):
     model: str | None = None
 
 
+_COMMIT_SHA = r"^[0-9a-f]{40}$"
+
+
+class WorkspaceDecl(BaseModel):
+    """SOR-83 workspace declaration on agent create (``api-v1.yaml``)."""
+
+    repo: str = Field(min_length=1)
+    base_ref: str = Field(min_length=1)
+    base_sha: str = Field(pattern=_COMMIT_SHA)
+
+
+class HandoffRef(BaseModel):
+    """SOR-83 cross-agent handoff reference: exactly one of the fields.
+
+    ``artifact_id`` consumes a durable artifact package; ``head_sha`` checks
+    out an exact commit in the declared repo. ``workspace`` is only used by
+    ``POST /v1/agents/{id}/handoff`` when the agent has no recorded
+    workspace yet.
+    """
+
+    artifact_id: str | None = None
+    head_sha: str | None = Field(default=None, pattern=_COMMIT_SHA)
+    workspace: WorkspaceDecl | None = None
+
+
 class CreateAgentRequest(BaseModel):
     prompt: Prompt
     agent: AgentSpec
     name: str | None = None
     idle_timeout_s: int | None = Field(default=None, ge=1)
+    workspace: WorkspaceDecl | None = None
+    handoff: HandoffRef | None = None
 
 
 class CreateRunRequest(BaseModel):
     prompt: Prompt
+
+
+class CreateArtifactRequest(BaseModel):
+    """``POST /v1/agents/{id}/artifacts`` body (all optional)."""
+
+    run_id: str | None = None
+    test_command: str | None = None
+
+
+class ReviewWorkspaceRequest(BaseModel):
+    """``POST /v1/agents/{id}/workspace/review`` body.
+
+    ``head_sha`` pins the exact commit reviewed; omitted means "the recorded
+    head". A mismatch with the recorded head is ``head_sha_mismatch``.
+    """
+
+    head_sha: str | None = Field(default=None, pattern=_COMMIT_SHA)
 
 
 class CreateAccountRequest(BaseModel):

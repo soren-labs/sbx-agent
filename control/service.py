@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from control.backend import Process, SandboxBackend, SandboxSpec
+from control.backend import Process, SandboxBackend, SandboxHandle, SandboxSpec
 from control.config import (
     DEFAULT_MODEL,
     IDLE_TIMEOUT_S,
@@ -95,6 +95,8 @@ class ControlPlane:
         idle_timeout_s: int = IDLE_TIMEOUT_S,
         turn_max_seconds: int = TURN_MAX_SECONDS,
         run_ledger: RunLedger | None = None,
+        workspaces: Any = None,
+        handoffs: Any = None,
     ) -> None:
         self.backend = backend
         self.store = store
@@ -105,6 +107,15 @@ class ControlPlane:
         self.idle_timeout_s = idle_timeout_s
         self.turn_max_seconds = turn_max_seconds
         self.run_ledger = run_ledger
+        # SOR-83: optional WorkspaceService / HandoffService wired by the app
+        # layer; ``None`` means workspace declarations are not configured.
+        self.workspaces = workspaces
+        self.handoffs = handoffs
+        # SOR-83: fired inside close() after runs are finalized and before the
+        # sandbox is terminated, so workspace artifacts land in the durable
+        # store while the sandbox is still readable. Best-effort: failures are
+        # swallowed — a broken snapshot must never wedge teardown.
+        self.snapshot_hook: Callable[[SessionRecord, SandboxHandle], None] | None = None
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
         # Per-session provider/account/model context for run records. Lost on
@@ -715,6 +726,11 @@ class ControlPlane:
             self.store.put(rec)
         if live is not None:
             live.proc.kill()
+        if handle is not None and self.snapshot_hook is not None:
+            try:
+                self.snapshot_hook(rec, handle)
+            except Exception:
+                pass
         if handle is not None:
             try:
                 self.backend.terminate(handle)

@@ -40,6 +40,18 @@ x-canonical:
     - account_unavailable
     - provider_exhausted
     - concurrency_limit
+    - idempotency_conflict
+    - idempotency_in_progress
+    - workspace_invalid
+    - workspace_not_found
+    - repo_unavailable
+    - checkout_failed
+    - base_sha_mismatch
+    - head_sha_mismatch
+    - checksum_mismatch
+    - artifact_not_found
+    - artifact_invalid
+    - artifact_secret
   providers: [codex, antigravity, grok, opencode, devin]
   keepalives_s: 15
   sse:
@@ -112,6 +124,13 @@ x-canonical:
     - GET /v1/api-keys
     - POST /v1/api-keys
     - DELETE /v1/api-keys/{id}
+    - GET /v1/agents/{id}/workspace
+    - POST /v1/agents/{id}/workspace/review
+    - POST /v1/agents/{id}/handoff
+    - POST /v1/agents/{id}/artifacts
+    - GET /v1/artifacts
+    - GET /v1/artifacts/{artifactId}
+    - GET /v1/artifacts/{artifactId}/download
 servers:
   - url: https://sbx.sorenforge.com
     description: Production (Cloudflare Worker → sbx-control)
@@ -120,6 +139,8 @@ security:
 tags:
   - name: agents
   - name: runs
+  - name: workspaces
+  - name: artifacts
   - name: accounts
   - name: api-keys
   - name: meta
@@ -219,6 +240,205 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/workspace:
+    get:
+      tags: [workspaces]
+      summary: Durable workspace record (SOR-83)
+      description: |
+        Declared base (`base_sha`/`base_ref`), the actual `checkout_sha` the
+        sandbox stands on, current `head_sha`, and `reviewed_head_sha` — the
+        commit an independent reviewer pinned. 404 `workspace_not_found`
+        when the agent declared no workspace.
+      operationId: getWorkspace
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Workspace record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/agents/{id}/workspace/review:
+    post:
+      tags: [workspaces]
+      summary: Pin the reviewed head sha (SOR-83)
+      description: |
+        Records `reviewed_head_sha` — the exact commit a reviewer signed
+        off. `head_sha` omitted means "the recorded head"; an explicit value
+        that disagrees with it is an explicit 409 `head_sha_mismatch`,
+        never a silent mislabel.
+      operationId: reviewWorkspace
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewWorkspaceRequest"
+      responses:
+        "200":
+          description: Updated workspace record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
+  /v1/agents/{id}/handoff:
+    post:
+      tags: [workspaces]
+      summary: Apply a cross-agent handoff into a live workspace (SOR-83)
+      description: |
+        Exactly one of `artifact_id` / `head_sha`. `artifact_id` applies a
+        durable artifact package after validating repo identity, payload
+        checksum and that the workspace stands exactly on the artifact's
+        declared `base_sha`; `head_sha` checks out an exact commit that
+        must descend from the declared base. `workspace` supplies a
+        WorkspaceDecl only when the agent has no recorded workspace yet.
+        The agent must be `idle` with a live sandbox — a running turn is
+        409 `turn_in_progress`; a base gap is 409 `base_sha_mismatch`.
+      operationId: applyHandoff
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HandoffRef"
+      responses:
+        "200":
+          description: Workspace record after the handoff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
+  /v1/agents/{id}/artifacts:
+    post:
+      tags: [artifacts]
+      summary: Snapshot the agent's workspace into a durable artifact (SOR-83)
+      description: |
+        Collects the declared workspace while the sandbox is still alive so
+        the package outlives teardown. The manifest records base/head shas,
+        per-file sha256, producer identity and any `test_command` result;
+        the package members are `manifest.json`, `patch.diff` (working-tree
+        delta vs `checkout_sha`), `repo.bundle` when the worktree is clean
+        and HEAD moved, and `files/<path>` for every collected file.
+        `run_id` (default: the last run) gets an `artifact://<id>` ref on
+        its durable run record. Secret material in scope fails closed:
+        409 `artifact_secret`, nothing persisted.
+      operationId: createArtifact
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateArtifactRequest"
+      responses:
+        "201":
+          description: Artifact manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
+  /v1/artifacts:
+    get:
+      tags: [artifacts]
+      summary: List durable artifact manifests (SOR-83)
+      operationId: listArtifacts
+      parameters:
+        - name: agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by producing agent.
+      responses:
+        "200":
+          description: Artifact manifests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/artifacts/{artifactId}:
+    get:
+      tags: [artifacts]
+      summary: Artifact manifest detail (SOR-83)
+      operationId: getArtifact
+      parameters:
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: Artifact manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
+  /v1/artifacts/{artifactId}/download:
+    get:
+      tags: [artifacts]
+      summary: Download one package member (SOR-83)
+      description: |
+        Raw bytes of `manifest.json`, `patch.diff`, `repo.bundle` or
+        `files/<path>`; checksum-verified on read. Served from the durable
+        store — works after the producing sandbox is reclaimed.
+      operationId: downloadArtifact
+      parameters:
+        - $ref: "#/components/parameters/ArtifactId"
+        - name: member
+          in: query
+          required: false
+          schema:
+            type: string
+            default: patch.diff
+      responses:
+        "200":
+          description: Member bytes (`application/octet-stream`)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
   /v1/agents/{id}/runs:
     post:
       tags: [runs]
@@ -595,6 +815,12 @@ components:
       required: true
       schema:
         type: string
+    ArtifactId:
+      name: artifactId
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
     ProviderId:
       type: string
@@ -662,6 +888,185 @@ components:
         idle_timeout_s:
           type: integer
           minimum: 1
+        workspace:
+          $ref: "#/components/schemas/WorkspaceDecl"
+        handoff:
+          $ref: "#/components/schemas/HandoffRef"
+    WorkspaceDecl:
+      type: object
+      required: [repo, base_ref, base_sha]
+      description: |
+        SOR-83 workspace declaration. `base_sha` pins the exact commit the
+        run must start on; `base_ref` names where it is expected to sit. A
+        resolved `base_ref` that does not equal `base_sha` fails run-1 with
+        an explicit `base_sha_mismatch` — the agent is closed rather than
+        left running on the wrong version.
+      properties:
+        repo:
+          type: string
+          description: Clone URL or path the control plane clones.
+        base_ref:
+          type: string
+        base_sha:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+    HandoffRef:
+      type: object
+      description: |
+        SOR-83 cross-agent handoff reference — exactly one of
+        `artifact_id` / `head_sha` required. On `POST /v1/agents` a
+        `workspace` declaration must accompany the handoff; on
+        `POST /v1/agents/{id}/handoff` `workspace` is only used when the
+        agent has no recorded workspace yet.
+      properties:
+        artifact_id:
+          type: string
+          description: Durable artifact package to apply.
+        head_sha:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: Exact commit to check out; must descend from base.
+        workspace:
+          $ref: "#/components/schemas/WorkspaceDecl"
+    CreateArtifactRequest:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: "Run to attach `artifact://<id>` to (default: last run)."
+        test_command:
+          type: string
+          description: Command run in the workdir; exit code lands in the manifest.
+    ReviewWorkspaceRequest:
+      type: object
+      properties:
+        head_sha:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: |
+            Exact commit the reviewer signed off; omitted pins the recorded
+            head. A value that disagrees with the recorded head is an
+            explicit `head_sha_mismatch`.
+    WorkspaceRecord:
+      type: object
+      required: [agent_id, repo, base_ref, base_sha]
+      properties:
+        agent_id:
+          type: string
+        repo:
+          type: string
+        base_ref:
+          type: string
+        base_sha:
+          type: string
+        workdir:
+          type: string
+          description: Sandbox-root-relative workdir (default `repo`).
+        checkout_sha:
+          type: string
+          nullable: true
+          description: Commit the workspace actually stands on post-prepare.
+        head_sha:
+          type: string
+          nullable: true
+          description: Current workdir HEAD as last recorded by the control plane.
+        reviewed_head_sha:
+          type: string
+          nullable: true
+          description: Commit an independent reviewer pinned via `/workspace/review`.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    WorkspaceResponse:
+      type: object
+      required: [workspace]
+      properties:
+        workspace:
+          $ref: "#/components/schemas/WorkspaceRecord"
+    Artifact:
+      type: object
+      required: [artifact_id, format, created_at, producer, files, payloads]
+      description: |
+        Durable artifact manifest (SOR-83/B1). `payloads` maps member names
+        (`patch.diff`, `repo.bundle`) to sha256; `files` lists collected
+        workspace files with sha256+size. `download_url` serves any member
+        (`manifest.json`, payload members, `files/<path>`).
+      properties:
+        schema_version:
+          type: integer
+        artifact_id:
+          type: string
+        format:
+          type: string
+          enum: [patch]
+        base_sha:
+          type: string
+          description: Producer checkout_sha — the base the delta applies on.
+        head_sha:
+          type: string
+          description: Producer HEAD at snapshot time.
+        repo:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        producer:
+          type: object
+          properties:
+            agent_id:
+              type: string
+            run_id:
+              type: string
+              nullable: true
+        files:
+          type: array
+          items:
+            type: object
+            required: [path, sha256, size]
+            properties:
+              path:
+                type: string
+              sha256:
+                type: string
+              size:
+                type: integer
+        tests:
+          type: array
+          items:
+            type: object
+            properties:
+              command:
+                type: string
+              exit_code:
+                type: integer
+        payloads:
+          type: object
+          additionalProperties:
+            type: string
+          description: Member name → sha256.
+        warnings:
+          type: array
+          items:
+            type: string
+        download_url:
+          type: string
+    ArtifactList:
+      type: object
+      required: [artifacts]
+      properties:
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Artifact"
+    ArtifactResponse:
+      type: object
+      required: [artifact]
+      properties:
+        artifact:
+          $ref: "#/components/schemas/Artifact"
     CreateAgentResponse:
       type: object
       required: [agent, run]
@@ -970,6 +1375,18 @@ components:
                 - account_unavailable
                 - provider_exhausted
                 - concurrency_limit
+                - idempotency_conflict
+                - idempotency_in_progress
+                - workspace_invalid
+                - workspace_not_found
+                - repo_unavailable
+                - checkout_failed
+                - base_sha_mismatch
+                - head_sha_mismatch
+                - checksum_mismatch
+                - artifact_not_found
+                - artifact_invalid
+                - artifact_secret
             message:
               type: string
             retry_after:
@@ -990,6 +1407,17 @@ components:
             $ref: "#/components/schemas/ErrorBody"
     NotFound:
       description: Resource not found (404 not_found)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    WorkspaceConflict:
+      description: |
+        409 workspace/artifact domain failure (SOR-83):
+        `workspace_not_found`, `repo_unavailable`, `checkout_failed`,
+        `base_sha_mismatch`, `head_sha_mismatch`, `checksum_mismatch`,
+        `artifact_invalid`, or `artifact_secret` — always explicit, never a
+        silent mislabel or redact-and-ship.
       content:
         application/json:
           schema:

@@ -555,6 +555,28 @@ class RunLedger:
             error=run_error("cancelled", message, source="control"),
         )
 
+    def attach_artifacts(self, agent_id: str, n: int, refs: list[str]) -> RunRecord | None:
+        """Append artifact references to a record without touching status.
+
+        ``artifact_refs`` are evidence pointers, not outcome — appending a
+        durable ``artifact://<id>`` ref to a terminal record is legal (the
+        snapshot may land only just before teardown) and never rewrites the
+        monotonic status history. Returns the record, or None when absent.
+        """
+        with self._lock:
+            existing = self._store.get(agent_id, n)
+            if existing is None:
+                return None
+            merged = list(existing.artifact_refs)
+            for ref in refs:
+                if ref not in merged:
+                    merged.append(ref)
+            if merged == existing.artifact_refs:
+                return existing
+            record = replace(existing, artifact_refs=merged)
+            self._store.put(record)
+            return record
+
     def discard(self, agent_id: str, n: int) -> None:
         """Drop an open record (turn rolled back before exec). Never removes
         a terminal record."""

@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -144,11 +145,43 @@ def _select_run_store() -> RunStore:
     return FileRunStore(base / "sbx-browser" / "runs")
 
 
+def _xdg_state_dir(name: str) -> Path:
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return base / "sbx-browser" / name
+
+
+def _select_artifact_store() -> Any:
+    """SOR-83: durable artifact package store (survives sandbox teardown)."""
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.artifacts import ModalDictArtifactStore
+
+        return ModalDictArtifactStore()
+    from control.artifacts import FileArtifactStore
+
+    override = os.environ.get("SBX_ARTIFACT_STORE_DIR")
+    return FileArtifactStore(override or _xdg_state_dir("artifacts"))
+
+
+def _select_workspace_store() -> Any:
+    """SOR-83: durable workspace record store."""
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.workspace import ModalDictWorkspaceStore
+
+        return ModalDictWorkspaceStore()
+    from control.workspace import FileWorkspaceStore
+
+    override = os.environ.get("SBX_WORKSPACE_STORE_DIR")
+    return FileWorkspaceStore(override or _xdg_state_dir("workspaces"))
+
+
 def create_app(
     *,
     backend: SandboxBackend | None = None,
     store: SessionStore | None = None,
     run_store: RunStore | None = None,
+    artifact_store: Any | None = None,
+    workspace_store: Any | None = None,
     runner_cmd: list[str] | None = None,
     basic_user: str | None = None,
     basic_password: str | None = None,
@@ -162,6 +195,8 @@ def create_app(
     backend = backend or _select_backend()
     store = store or _select_store()
     run_store = run_store or _select_run_store()
+    artifact_store = artifact_store or _select_artifact_store()
+    workspace_store = workspace_store or _select_workspace_store()
     runner_cmd = runner_cmd or default_runner_cmd(backend_kind=backend_kind)
     user_default, pass_default = basic_credentials()
     basic_user = basic_user if basic_user is not None else user_default
@@ -171,6 +206,12 @@ def create_app(
         if keepalive_s is not None
         else env_float("SBX_SSE_KEEPALIVE_SECONDS", SSE_KEEPALIVE_S)
     )
+    from control.artifact_ops import HandoffStoreView, credential_forbidden_values
+    from control.handoff import HandoffService
+    from control.workspace import WorkspaceService
+
+    workspaces = WorkspaceService(backend, workspace_store, clock=clock)
+    handoffs = HandoffService(workspaces, HandoffStoreView(artifact_store))
     plane = ControlPlane(
         backend,
         store,
@@ -184,6 +225,8 @@ def create_app(
         if idle_timeout_s is not None
         else env_int("SBX_IDLE_TIMEOUT_S", IDLE_TIMEOUT_S),
         run_ledger=RunLedger(run_store, clock=clock),
+        workspaces=workspaces,
+        handoffs=handoffs,
     )
 
     app = FastAPI(title="sbx-control", version="0.1.0")
@@ -191,6 +234,42 @@ def create_app(
     app.state.plane = plane
     app.state.run_store = run_store
     app.state.run_ledger = plane.run_ledger
+    app.state.artifact_store = artifact_store
+    app.state.workspace_store = workspace_store
+    app.state.workspaces = workspaces
+    app.state.handoffs = handoffs
+
+    def _snapshot_on_close(rec: Any, handle: Any) -> None:
+        """SOR-83: persist the declared workspace artifact before teardown.
+
+        Best-effort — the close path swallows failures; agents without a
+        declared workspace simply skip (``workspace_not_found``).
+        """
+        from control.artifact_ops import snapshot_workspace_artifact
+
+        account_id = (rec.sandbox_tags or {}).get("account_id")
+        registry = getattr(app.state, "account_registry", None)
+        get_blob = getattr(registry, "get_credential_blob", None)
+        blob = None
+        if callable(get_blob) and account_id and account_id != "auto":
+            try:
+                blob = get_blob(account_id)
+            except Exception:
+                pass
+        run_n = rec.turns or None
+        snapshot_workspace_artifact(
+            backend=backend,
+            handle=handle,
+            workspaces=workspaces,
+            store=artifact_store,
+            agent_id=rec.id,
+            run_id=f"run-{run_n}" if run_n else None,
+            forbidden_values=credential_forbidden_values(blob),
+            ledger=plane.run_ledger,
+            run_n=run_n,
+        )
+
+    plane.snapshot_hook = _snapshot_on_close
     # SOR-82 integration: the durable run ledger is the source of truth, and
     # the /v1 run-state seam (begin/get/list/transition) binds to it by
     # default. Tests may still inject a substitute on app.state.run_states or

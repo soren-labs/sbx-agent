@@ -189,6 +189,7 @@ class ArtifactManifest:
     artifact_id: str
     base_sha: str = ""
     head_sha: str = ""
+    repo: str = ""
     created_at: str = ""
     producer_agent_id: str = ""
     producer_run_id: str | None = None
@@ -207,6 +208,7 @@ def manifest_to_dict(manifest: ArtifactManifest) -> dict[str, Any]:
         "format": manifest.format,
         "base_sha": manifest.base_sha,
         "head_sha": manifest.head_sha,
+        "repo": manifest.repo,
         "created_at": manifest.created_at,
         "producer": {
             "agent_id": manifest.producer_agent_id,
@@ -235,7 +237,7 @@ def manifest_from_dict(data: Any) -> ArtifactManifest:
     if fmt != ARTIFACT_FORMAT_PATCH:
         raise ArtifactCorruptError(f"unknown artifact format {fmt!r}")
     manifest = ArtifactManifest(artifact_id=str(artifact_id))
-    for key in ("base_sha", "head_sha", "created_at"):
+    for key in ("base_sha", "head_sha", "created_at", "repo"):
         value = data.get(key, "")
         if not isinstance(value, str):
             raise ArtifactCorruptError(f"manifest field {key} must be a string")
@@ -853,6 +855,7 @@ def build_artifact(
     run_id: str | None = None,
     base_sha: str = "",
     head_sha: str = "",
+    repo: str = "",
     tests: Sequence[TestResult | tuple[str, int] | Mapping[str, Any]] = (),
     include: Sequence[str] | None = None,
     payloads: Mapping[str, bytes | str] | None = None,
@@ -891,6 +894,7 @@ def build_artifact(
         artifact_id=artifact_id or f"art-{uuid.uuid4().hex[:16]}",
         base_sha=base_sha,
         head_sha=head_sha,
+        repo=repo,
         created_at=now,
         producer_agent_id=agent_id,
         producer_run_id=run_id,

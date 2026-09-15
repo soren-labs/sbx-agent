@@ -26,6 +26,7 @@ from control.config import TERMINAL_STATUSES
 from control.run_errors import RunError, run_error_for_run
 from control.run_store import TERMINAL_RUN_STATUSES, RunLedger
 from control.service import SessionConflict, release_lease
+from control.workspace import WORKSPACE_INVALID, WorkspaceError, WorkspaceSpec
 
 RUN_TERMINAL = TERMINAL_RUN_STATUSES
 
@@ -292,12 +293,19 @@ def launch_first_run(
     account_id: str,
     secret_name: str | None,
     on_provisioned: Callable[[], None] | None = None,
+    workspace: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
 ) -> None:
     """Spawn the background create → init → first-turn worker (SOR-82 A2).
 
     ``on_provisioned`` fires once the worker's sandbox allocation has
     resolved (created, failed, or the session was closed underneath) — an
     idempotent duplicate waits on it so a retry never races the worker.
+
+    ``workspace``/``handoff`` carry the SOR-83 declarations
+    (``{repo, base_ref, base_sha}`` / ``{artifact_id|head_sha}``): after the
+    sandbox is provisioned the worker prepares the declared checkout (and
+    applies the handoff) before run-1 may dispatch.
     """
     thread = threading.Thread(
         target=_first_run_worker,
@@ -310,6 +318,8 @@ def launch_first_run(
             account_id,
             secret_name,
             on_provisioned,
+            workspace,
+            handoff,
         ),
         daemon=True,
         name=f"sbx-v1-create-{session_id[:8]}",
@@ -338,6 +348,60 @@ def _persist_run1_terminal(
         pass
 
 
+def _workspace_error(exc: BaseException) -> dict[str, Any]:
+    """Canonical structured error for a workspace/handoff startup failure.
+
+    The SOR-83 machine code (``base_sha_mismatch`` et al.) rides inside the
+    message so the durable run record stays explicit while ``code`` keeps the
+    frozen run-error taxonomy. Deterministic declaration failures are not
+    retryable: replaying the same request would fail identically.
+    """
+    message = str(exc)[:300] or exc.__class__.__name__
+    return RunError("runtime_error", "control", message, retryable=False).public()
+
+
+def _prepare_workspace(
+    plane: Any,
+    session_id: str,
+    workspace: dict[str, Any],
+    handoff: dict[str, Any] | None,
+) -> None:
+    """Prepare the declared workspace on the fresh sandbox (SOR-83).
+
+    Runs after ``provision_session`` bound the sandbox and before run-1
+    dispatches. A handoff (``artifact_id`` or exact ``head_sha``) replaces
+    the plain clone: it still validates the declared base, then applies the
+    referenced artifact or checks out the referenced commit.
+    """
+    workspaces = getattr(plane, "workspaces", None)
+    if workspaces is None:
+        raise WorkspaceError(WORKSPACE_INVALID, "workspace service is not configured")
+    rec = plane.get(session_id)
+    handle = rec.handle() if rec is not None else None
+    if handle is None:
+        raise WorkspaceError(
+            WORKSPACE_INVALID, f"agent {session_id} has no live sandbox for workspace prepare"
+        )
+    spec = WorkspaceSpec(
+        repo=str(workspace.get("repo") or ""),
+        base_ref=str(workspace.get("base_ref") or ""),
+        base_sha=str(workspace.get("base_sha") or ""),
+    )
+    handoff = handoff or {}
+    artifact_id = handoff.get("artifact_id")
+    head_sha = handoff.get("head_sha")
+    if artifact_id or head_sha:
+        handoffs = getattr(plane, "handoffs", None)
+        if handoffs is None:
+            raise WorkspaceError(WORKSPACE_INVALID, "handoff service is not configured")
+        if artifact_id:
+            handoffs.prepare_from_artifact(handle, session_id, str(artifact_id), spec=spec)
+        else:
+            handoffs.prepare_from_head(handle, session_id, str(head_sha), spec=spec)
+    else:
+        workspaces.prepare(handle, session_id, spec)
+
+
 def _first_run_worker(
     plane: Any,
     v1: Any,
@@ -347,12 +411,17 @@ def _first_run_worker(
     account_id: str,
     secret_name: str | None,
     on_provisioned: Callable[[], None] | None = None,
+    workspace: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
 ) -> None:
     """Advance run-1 CREATING → RUNNING → (terminal) around sandbox startup.
 
     Provision failure persists run-1 as ``ERROR`` and frees the scheduler
     lease; a session that went terminal underneath (delete, reaper) yields
-    ``CANCELLED``. A cancel that lands before dispatch skips the turn.
+    ``CANCELLED``. A cancel that lands before dispatch skips the turn. A
+    declared workspace (SOR-83) is prepared before the turn dispatches —
+    failure is an explicit run-1 ``ERROR`` and the agent is closed rather
+    than left to run on the wrong version.
     """
     try:
         plane.provision_session(
@@ -380,6 +449,26 @@ def _first_run_worker(
                 on_provisioned()
             except Exception:
                 pass
+
+    # SOR-83: a declared workspace is cloned / handoff-applied before run-1
+    # may dispatch. The terminal check runs first so a cancelled run-1 never
+    # pays for a clone; a prepare failure is an explicit run-1 ERROR and the
+    # agent is closed rather than left to run on the wrong version.
+    if workspace is not None:
+        try:
+            state = run_states.get(session_id, 1)
+            if state is not None and state.status in RUN_TERMINAL:
+                plane.discard_queued_first_turn(session_id)
+                return
+            _prepare_workspace(plane, session_id, workspace, handoff)
+        except Exception as exc:
+            _persist_run1_terminal(run_states, session_id, "ERROR", _workspace_error(exc))
+            try:
+                plane.close(session_id)
+            except Exception:
+                pass
+            _release_session_lease(v1, session_id)
+            return
 
     # Provisioned → idle. A cancel/delete may have landed during cold start;
     # the run-state read itself is guarded so a store hiccup cannot kill the

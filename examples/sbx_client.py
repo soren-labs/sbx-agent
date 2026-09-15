@@ -55,12 +55,21 @@ class SbxClient:
         account_id: str = "auto",
         model: str | None = None,
         name: str | None = None,
+        workspace: dict | None = None,
+        handoff: dict | None = None,
     ) -> dict:
         body = {"prompt": {"text": text}, "agent": {"provider": provider, "account_id": account_id}}
         if model:
             body["agent"]["model"] = model
         if name:
             body["name"] = name
+        if workspace:
+            # SOR-83: {"repo", "base_ref", "base_sha"} — the run starts on
+            # this exact checkout; a wrong base_sha fails explicitly.
+            body["workspace"] = workspace
+        if handoff:
+            # {"artifact_id": ...} or {"head_sha": ...} — cross-agent handoff.
+            body["handoff"] = handoff
         return self._check(self.http.post("/v1/agents", json=body))
 
     def list_agents(self, **params) -> dict:
@@ -88,6 +97,55 @@ class SbxClient:
 
     def usage(self, agent_id: str) -> dict:
         return self._check(self.http.get(f"/v1/agents/{agent_id}/usage"))
+
+    # --- SOR-83: workspaces, handoffs, artifacts ---------------------------
+
+    def get_workspace(self, agent_id: str) -> dict:
+        return self._check(self.http.get(f"/v1/agents/{agent_id}/workspace"))["workspace"]
+
+    def review_workspace(self, agent_id: str, head_sha: str | None = None) -> dict:
+        body = {"head_sha": head_sha} if head_sha else {}
+        return self._check(self.http.post(f"/v1/agents/{agent_id}/workspace/review", json=body))[
+            "workspace"
+        ]
+
+    def apply_handoff(
+        self,
+        agent_id: str,
+        *,
+        artifact_id: str | None = None,
+        head_sha: str | None = None,
+        workspace: dict | None = None,
+    ) -> dict:
+        body: dict = {}
+        if artifact_id:
+            body["artifact_id"] = artifact_id
+        if head_sha:
+            body["head_sha"] = head_sha
+        if workspace:
+            body["workspace"] = workspace
+        return self._check(self.http.post(f"/v1/agents/{agent_id}/handoff", json=body))["workspace"]
+
+    def create_artifact(
+        self, agent_id: str, run_id: str | None = None, test_command: str | None = None
+    ) -> dict:
+        body = {k: v for k, v in {"run_id": run_id, "test_command": test_command}.items() if v}
+        return self._check(self.http.post(f"/v1/agents/{agent_id}/artifacts", json=body))[
+            "artifact"
+        ]
+
+    def list_artifacts(self, agent_id: str | None = None) -> list[dict]:
+        params = {"agent_id": agent_id} if agent_id else {}
+        return self._check(self.http.get("/v1/artifacts", params=params))["artifacts"]
+
+    def get_artifact(self, artifact_id: str) -> dict:
+        return self._check(self.http.get(f"/v1/artifacts/{artifact_id}"))
+
+    def download_artifact(self, artifact_id: str, member: str = "patch.diff") -> bytes:
+        resp = self.http.get(f"/v1/artifacts/{artifact_id}/download", params={"member": member})
+        if resp.status_code >= 400:
+            self._check(resp)
+        return resp.content
 
     def models(self) -> list[dict]:
         return self._check(self.http.get("/v1/models"))["models"]

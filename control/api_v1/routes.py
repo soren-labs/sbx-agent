@@ -30,6 +30,8 @@ from control.api_v1.deps import (
     admin_key,
     agents_key,
     api_key,
+    get_artifact_store,
+    get_handoffs,
     get_key_store,
     get_plane,
     get_registry,
@@ -37,6 +39,7 @@ from control.api_v1.deps import (
     get_run_states,
     get_scheduler,
     get_v1_state,
+    get_workspaces,
 )
 from control.api_v1.errors import V1ApiError, not_found
 from control.api_v1.lifecycle import (
@@ -50,14 +53,25 @@ from control.api_v1.schemas import (
     CreateAccountRequest,
     CreateAgentRequest,
     CreateApiKeyRequest,
+    CreateArtifactRequest,
     CreateRunRequest,
+    HandoffRef,
     ProviderId,
+    ReviewWorkspaceRequest,
     account_public,
     agent_public,
     api_key_public,
     usage_public,
 )
 from control.api_v1.state import AgentMeta, V1State
+from control.artifact_ops import credential_forbidden_values, snapshot_workspace_artifact
+from control.artifacts import (
+    ArtifactCorruptError,
+    ArtifactError,
+    ArtifactNotFoundError,
+    ArtifactSecretError,
+    manifest_to_dict,
+)
 from control.config import TERMINAL_STATUSES
 from control.devin_pool import ScheduleRefused
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
@@ -70,6 +84,14 @@ from control.run_store import (
 )
 from control.sandbox_io import read_json, read_text, sandbox_env
 from control.service import ConcurrencyLimit, SessionConflict, format_sse
+from control.workspace import (
+    ARTIFACT_NOT_FOUND,
+    WORKSPACE_INVALID,
+    WORKSPACE_NOT_FOUND,
+    WorkspaceError,
+    WorkspaceSpec,
+)
+from control.workspace import record_to_dict as workspace_record_to_dict
 
 AGENTS_PAGE_SIZE = 100
 _TURN_ID_RE = re.compile(r"^turn-(\d+)$")
@@ -572,6 +594,60 @@ def _default_model(provider: str, account: Account | None) -> str | None:
     return defaults[0] if defaults else None
 
 
+def _workspace_error(exc: WorkspaceError) -> V1ApiError:
+    """SOR-83 domain error → canonical v1 error (machine code preserved)."""
+    if exc.code in (WORKSPACE_NOT_FOUND, ARTIFACT_NOT_FOUND):
+        return V1ApiError(404, exc.code, exc.message)
+    if exc.code == WORKSPACE_INVALID:
+        return V1ApiError(400, exc.code, exc.message)
+    return V1ApiError(409, exc.code, exc.message)
+
+
+def _validate_workspace_decl(
+    body: CreateAgentRequest, artifacts: Any
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate the SOR-83 ``workspace``/``handoff`` declarations.
+
+    Handoff without a workspace is meaningless at create time (there is no
+    prior record to apply onto), and a referenced artifact must exist in the
+    durable store — both fail fast with explicit errors before any claim or
+    sandbox work begins.
+    """
+    workspace = body.workspace.model_dump() if body.workspace is not None else None
+    handoff = body.handoff.model_dump() if body.handoff is not None else None
+    if workspace is not None:
+        try:
+            WorkspaceSpec(
+                repo=workspace["repo"],
+                base_ref=workspace["base_ref"],
+                base_sha=workspace["base_sha"],
+            )
+        except WorkspaceError as exc:
+            raise _workspace_error(exc) from exc
+    if handoff is not None:
+        handoff.pop("workspace", None)  # only meaningful on the handoff route
+        has_artifact = bool(handoff.get("artifact_id"))
+        has_head = bool(handoff.get("head_sha"))
+        if has_artifact == has_head:
+            raise V1ApiError(
+                400,
+                WORKSPACE_INVALID,
+                "handoff needs exactly one of artifact_id or head_sha",
+            )
+        if workspace is None:
+            raise V1ApiError(400, WORKSPACE_INVALID, "handoff requires a workspace declaration")
+        if has_artifact:
+            try:
+                artifacts.manifest(handoff["artifact_id"])
+            except ArtifactNotFoundError as exc:
+                raise V1ApiError(
+                    404, ARTIFACT_NOT_FOUND, f"unknown artifact {handoff['artifact_id']!r}"
+                ) from exc
+            except ArtifactError as exc:
+                raise V1ApiError(409, "artifact_invalid", str(exc)) from exc
+    return workspace, handoff
+
+
 @router.post("/agents", status_code=201)
 def create_agent(
     body: CreateAgentRequest,
@@ -582,6 +658,7 @@ def create_agent(
     v1: V1State = Depends(get_v1_state),
     run_states: RunStateStore = Depends(get_run_states),
     reporter: RunFailureReporter = Depends(get_run_reporter),
+    artifacts: Any = Depends(get_artifact_store),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Create an agent and queue its first run (SOR-82 A2).
@@ -591,7 +668,11 @@ def create_agent(
     background worker and surface through ``GET`` polling. A retried
     ``Idempotency-Key`` with the same body replays the original response;
     a different body under a used key is a 409 ``idempotency_conflict``.
+
+    SOR-83: ``workspace`` declares the checkout the run must start on;
+    ``handoff`` makes run-1 start from a referenced artifact or commit.
     """
+    workspace, handoff = _validate_workspace_decl(body, artifacts)
     owned = None
     fingerprint = request_fingerprint(body)
     if idempotency_key:
@@ -665,6 +746,8 @@ def create_agent(
             idempotency_key=idempotency_key,
             idempotency_fingerprint=fingerprint,
             on_provisioned=on_provisioned,
+            workspace=workspace,
+            handoff=handoff,
         )
     except Exception:
         if owned is not None:
@@ -695,6 +778,8 @@ def _create_agent_once(
     idempotency_key: str | None = None,
     idempotency_fingerprint: str | None = None,
     on_provisioned: Any = None,
+    workspace: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -788,6 +873,8 @@ def _create_agent_once(
             account_id=resolved,
             secret_name=secret_name,
             on_provisioned=on_provisioned,
+            workspace=workspace,
+            handoff=handoff,
         )
     except Exception:
         _discard_agent(plane, v1, session_id, lease)
@@ -867,6 +954,227 @@ def delete_agent(
         # sandbox cleanup stays with the control plane / reaper (P2-C).
         _release_agent_lease(v1, agent_id)
     return agent_public(plane.public(rec), _meta_for(v1, rec))
+
+
+# --------------------------------------------- workspaces + artifacts (SOR-83)
+
+
+def _require_live_idle(plane: Any, agent_id: str) -> Any:
+    """The session record for workspace-mutating routes: must exist, sit
+    idle on a live sandbox (a running turn would mutate files mid-apply)."""
+    rec = _require_agent(plane, agent_id)
+    if rec.status == "running":
+        raise V1ApiError(409, "turn_in_progress", "a run is in progress")
+    if rec.status != "idle":
+        raise V1ApiError(409, "session_not_runnable", f"agent status is {rec.status}")
+    if rec.handle() is None:
+        raise V1ApiError(409, "session_not_runnable", "agent has no live sandbox")
+    return rec
+
+
+@router.get("/agents/{agent_id}/workspace")
+def get_workspace(
+    agent_id: str,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    workspaces: Any = Depends(get_workspaces),
+) -> dict[str, Any]:
+    """Durable workspace record: declared base, actual checkout/head, and
+    the sha an independent reviewer pinned (``reviewed_head_sha``)."""
+    _require_agent(plane, agent_id)
+    record = workspaces.get(agent_id)
+    if record is None:
+        raise not_found("workspace not found")
+    return {"workspace": workspace_record_to_dict(record)}
+
+
+@router.post("/agents/{agent_id}/workspace/review")
+def review_workspace(
+    agent_id: str,
+    body: ReviewWorkspaceRequest | None = None,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    workspaces: Any = Depends(get_workspaces),
+) -> dict[str, Any]:
+    """Pin ``reviewed_head_sha`` — the exact commit a reviewer signed off.
+
+    ``head_sha`` defaults to the recorded head; an explicit value that
+    disagrees with it is an explicit ``head_sha_mismatch``, never a silent
+    mislabel.
+    """
+    _require_agent(plane, agent_id)
+    try:
+        record = workspaces.mark_reviewed(agent_id, body.head_sha if body else None)
+    except WorkspaceError as exc:
+        raise _workspace_error(exc) from exc
+    return {"workspace": workspace_record_to_dict(record)}
+
+
+@router.post("/agents/{agent_id}/handoff")
+def apply_handoff(
+    agent_id: str,
+    body: HandoffRef,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    workspaces: Any = Depends(get_workspaces),
+    handoffs: Any = Depends(get_handoffs),
+) -> dict[str, Any]:
+    """Apply a second-agent handoff into a live agent's workspace.
+
+    ``artifact_id`` applies a durable artifact package; ``head_sha`` checks
+    out an exact commit. Both validate the artifact's declared base against
+    the workspace's recorded head before touching the workdir — a gap is an
+    explicit ``base_sha_mismatch``.
+    """
+    rec = _require_live_idle(plane, agent_id)
+    handle = rec.handle()
+    has_artifact = bool(body.artifact_id)
+    has_head = bool(body.head_sha)
+    if has_artifact == has_head:
+        raise V1ApiError(
+            400, WORKSPACE_INVALID, "handoff needs exactly one of artifact_id or head_sha"
+        )
+    spec = None
+    if body.workspace is not None:
+        try:
+            spec = WorkspaceSpec(
+                repo=body.workspace.repo,
+                base_ref=body.workspace.base_ref,
+                base_sha=body.workspace.base_sha,
+            )
+        except WorkspaceError as exc:
+            raise _workspace_error(exc) from exc
+    try:
+        if has_artifact:
+            record = handoffs.prepare_from_artifact(handle, agent_id, body.artifact_id, spec=spec)
+        else:
+            record = handoffs.prepare_from_head(handle, agent_id, body.head_sha, spec=spec)
+    except WorkspaceError as exc:
+        raise _workspace_error(exc) from exc
+    return {"workspace": workspace_record_to_dict(record)}
+
+
+def _artifact_public(manifest: Any) -> dict[str, Any]:
+    out = manifest_to_dict(manifest)
+    out["download_url"] = f"/v1/artifacts/{manifest.artifact_id}/download"
+    return out
+
+
+def _artifact_forbidden(plane: Any, v1: V1State, registry: Any, rec: Any) -> tuple[bytes, ...]:
+    """Secrets that must never enter this agent's artifact: the account's
+    credential blob contents plus ambient credential env values."""
+    account_id = _meta_for(v1, rec).account_id
+    blob = None
+    get_blob = getattr(registry, "get_credential_blob", None)
+    if callable(get_blob) and account_id and account_id != "auto":
+        try:
+            blob = get_blob(account_id)
+        except Exception:
+            blob = None
+    return credential_forbidden_values(blob)
+
+
+@router.post("/agents/{agent_id}/artifacts", status_code=201)
+def create_artifact(
+    agent_id: str,
+    body: CreateArtifactRequest | None = None,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    registry: AccountRegistry = Depends(get_registry),
+    v1: V1State = Depends(get_v1_state),
+    workspaces: Any = Depends(get_workspaces),
+    artifacts: Any = Depends(get_artifact_store),
+) -> dict[str, Any]:
+    """Snapshot the agent's declared workspace into a durable artifact.
+
+    Runs while the sandbox is still alive so the package outlives teardown.
+    The manifest records base/head shas, per-file checksums, producer
+    identity and any test result; ``run_id`` (default: the last run) gets an
+    ``artifact://<id>`` ref persisted on its durable run record.
+    """
+    rec = _require_live_idle(plane, agent_id)
+    run_id = body.run_id if body is not None else None
+    run_n: int | None = None
+    if run_id is not None:
+        run_n = _run_n(run_id)
+        if run_n is None:
+            raise V1ApiError(400, "invalid_provider", f"malformed run_id {run_id!r}")
+        if run_n not in _known_run_ns(rec, _ledger(plane)):
+            raise not_found("run not found")
+    elif rec.turns:
+        run_n = int(rec.turns)
+        run_id = f"run-{run_n}"
+    try:
+        manifest = snapshot_workspace_artifact(
+            backend=plane.backend,
+            handle=rec.handle(),
+            workspaces=workspaces,
+            store=artifacts,
+            agent_id=agent_id,
+            run_id=run_id,
+            test_command=body.test_command if body is not None else None,
+            forbidden_values=_artifact_forbidden(plane, v1, registry, rec),
+            ledger=_ledger(plane),
+            run_n=run_n,
+        )
+    except WorkspaceError as exc:
+        raise _workspace_error(exc) from exc
+    except ArtifactSecretError as exc:
+        raise V1ApiError(409, "artifact_secret", str(exc)) from exc
+    except ArtifactError as exc:
+        raise V1ApiError(409, "artifact_invalid", str(exc)) from exc
+    return {"artifact": _artifact_public(manifest)}
+
+
+@router.get("/artifacts")
+def list_artifacts(
+    agent_id: str | None = None,
+    key: ApiKey = Depends(agents_key),
+    artifacts: Any = Depends(get_artifact_store),
+) -> dict[str, Any]:
+    """Durable artifact manifests (``?agent_id=`` filters by producer)."""
+    return {"artifacts": [_artifact_public(m) for m in artifacts.list(agent_id=agent_id)]}
+
+
+@router.get("/artifacts/{artifact_id}")
+def get_artifact(
+    artifact_id: str,
+    key: ApiKey = Depends(agents_key),
+    artifacts: Any = Depends(get_artifact_store),
+) -> dict[str, Any]:
+    """Artifact manifest: file checksums, base/head shas, producer identity."""
+    try:
+        manifest = artifacts.manifest(artifact_id)
+    except ArtifactNotFoundError as exc:
+        raise not_found("artifact not found") from exc
+    except ArtifactCorruptError as exc:
+        raise V1ApiError(409, "artifact_invalid", str(exc)) from exc
+    return _artifact_public(manifest)
+
+
+@router.get("/artifacts/{artifact_id}/download")
+def download_artifact(
+    artifact_id: str,
+    member: str = "patch.diff",
+    key: ApiKey = Depends(agents_key),
+    artifacts: Any = Depends(get_artifact_store),
+) -> Response:
+    """Download one member's bytes (``manifest.json``, ``patch.diff``,
+    ``repo.bundle``, or ``files/<path>``). Checksum-verified on read; works
+    after the producing sandbox is gone."""
+    try:
+        data = artifacts.read(artifact_id, member)
+    except ArtifactNotFoundError as exc:
+        raise not_found("artifact or member not found") from exc
+    except ArtifactCorruptError as exc:
+        raise V1ApiError(409, "artifact_invalid", str(exc)) from exc
+    except ArtifactError as exc:
+        raise V1ApiError(400, "invalid_provider", str(exc)) from exc
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={"X-SBX-Artifact-Id": artifact_id},
+    )
 
 
 # ------------------------------------------------------------------- runs
