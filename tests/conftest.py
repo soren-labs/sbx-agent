@@ -21,6 +21,8 @@ _CLOUD_PREFIXES = (
     "SBX_BASIC_",
     "SBX_ACCOUNT_",
     "SBX_PROVIDER_",
+    "SBX_LINEAR_",
+    "LINEAR_",
 )
 _CLOUD_KEYS = frozenset(
     {

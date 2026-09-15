@@ -23,6 +23,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
+from runtime.runner import mcp
 from runtime.runner.events import parse_event_line
 from runtime.runner.workspace import atomic_write
 
@@ -182,7 +183,12 @@ class DevinAdapter:
         if model:
             agent["model"] = model
         data.setdefault("shell", {}).setdefault("setup_complete", True)
+        linear = mcp.linear_mcp_enabled()
+        if linear:
+            mcp.apply_linear_permissions(data)
         atomic_write(cfg_path, json.dumps(data, indent=2) + "\n")
+        if linear:
+            mcp.write_linear_mcp_config(home)
 
     def first_turn_argv(self, prompt: str, model: str) -> list[str]:
         if use_acp():

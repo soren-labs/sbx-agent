@@ -34,6 +34,13 @@ _GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
 DEVIN_PROVIDER = "devin"
 _ACCOUNT_CREDENTIAL_ENV = "SBX_ACCOUNT_CREDENTIAL"
 _ACCOUNT_CREDENTIAL_FILE_ENV = "SBX_ACCOUNT_CREDENTIAL_FILE"
+# SOR-77: task-scoped Linear MCP. ``SBX_LINEAR_MCP_EPHEMERAL=1`` on the
+# control plane opts a worker into a generated ``mcp_config.json``; the key
+# travels inside the Secret dict (never ``SandboxSpec.env``) and the runner
+# references it via ``${env:SBX_LINEAR_API_KEY}`` — no raw key on disk.
+_LINEAR_MCP_GATE_ENV = "SBX_LINEAR_MCP_EPHEMERAL"
+_LINEAR_API_KEY_ENV = "SBX_LINEAR_API_KEY"
+_LINEAR_HOST_KEY_ENVS = ("SBX_LINEAR_API_KEY", "LINEAR_API_KEY")
 
 
 def _load_modal() -> Any:
@@ -85,6 +92,13 @@ def _devin_secrets(modal: Any) -> list[Any]:
         if github_token:
             secret_env["GH_TOKEN"] = github_token
             secret_env["GITHUB_TOKEN"] = github_token
+    if os.environ.get(_LINEAR_MCP_GATE_ENV) == "1":
+        linear_key = next(
+            (os.environ.get(name) for name in _LINEAR_HOST_KEY_ENVS if os.environ.get(name)),
+            None,
+        )
+        if linear_key:
+            secret_env[_LINEAR_API_KEY_ENV] = linear_key
     if not secret_env:
         return []
     return [modal.Secret.from_dict(secret_env)]
