@@ -306,13 +306,23 @@ def test_translate_matching_resume_id() -> None:
     assert events[-1]["type"] == "turn.completed"
 
 
-def test_translate_bad_lines_return_empty() -> None:
+def test_translate_non_object_lines_return_empty() -> None:
+    """Only lines with no JSON object return [] (runner counts them bad)."""
     adapter = AntigravityAdapter()
     assert adapter.translate("this is not json") == []
     assert adapter.translate("") == []
     assert adapter.translate("[1,2,3]") == []
-    assert adapter.translate('{"event": "mystery"}') == []
-    assert adapter.translate('{"event": "step_update", "step_update": "x"}') == []
+
+
+def test_translate_unknown_events_are_noop() -> None:
+    """SOR-80: parseable objects never return []; unknown event kinds and
+    recognised kinds with unmappable payloads are acknowledged as NOOP."""
+    adapter = AntigravityAdapter()
+    assert adapter.translate('{"event": "mystery"}') == [{"type": NOOP_EVENT_TYPE}]
+    assert adapter.translate('{"event": "step_update", "step_update": "x"}') == [
+        {"type": NOOP_EVENT_TYPE}
+    ]
+    assert adapter.translate('{"event": "init"}') == [{"type": NOOP_EVENT_TYPE}]
 
 
 def test_extract_session_id() -> None:

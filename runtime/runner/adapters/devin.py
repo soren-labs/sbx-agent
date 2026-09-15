@@ -11,6 +11,12 @@ use); ``translate`` normalises it to canonical Codex-shaped events.
 ``DEVIN_BIN`` overrides the CLI binary (the bridge spawns
 ``DEVIN_BIN acp``; tests point it at fakes). ``SBX_DEVIN_TRANSPORT=cli``
 switches to direct ``devin -p`` argv for the ``fake_devin.py`` NDJSON fake.
+
+Forward compatibility (SOR-80): any parseable JSON object of an unknown
+``type`` — or a known type whose payload maps to no canonical event —
+yields ``{"type": "sbx.noop"}`` (dropped by ``runner turn``). ``[]`` is
+returned only for lines with no JSON object (unparseable / non-object),
+which the runner counts as a bad line.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from runtime.runner import mcp
+from runtime.runner.constants import NOOP_EVENT_TYPE
 from runtime.runner.events import parse_event_line
 from runtime.runner.workspace import atomic_write
 
@@ -85,6 +92,8 @@ _USAGE_FIELDS = (
     "output_tokens",
     "reasoning_output_tokens",
 )
+
+_NOOP = {"type": NOOP_EVENT_TYPE}
 
 
 def devin_bin_tokens() -> list[str]:
@@ -209,13 +218,13 @@ class DevinAdapter:
             session_id = obj.get("session_id")
             if isinstance(session_id, str) and session_id:
                 return [{"type": "thread.started", "thread_id": session_id}]
-            return []
+            return [_NOOP]
         if event_type == "turn.started":
             return [{"type": "turn.started"}]
         if event_type == "assistant_message":
             text = obj.get("text")
             if not isinstance(text, str) or not text:
-                return []
+                return [_NOOP]
             return [
                 {
                     "type": "item.completed",
@@ -229,7 +238,7 @@ class DevinAdapter:
         if event_type == "reasoning":
             text = obj.get("text")
             if not isinstance(text, str) or not text:
-                return []
+                return [_NOOP]
             return [
                 {
                     "type": "item.completed",
@@ -257,7 +266,11 @@ class DevinAdapter:
             return [{"type": "turn.failed", "error": {"message": message}}]
         if event_type == "error":
             return [{"type": "error", "message": self._error_message(obj)}]
-        return []
+        # Forward compatibility: a parseable object of an unknown type is
+        # acknowledged as NOOP, never a bad line. ``[]`` is reserved for
+        # lines with no JSON object (unparseable / non-object), which the
+        # runner counts as bad JSON.
+        return [_NOOP]
 
     def extract_session_id(self, events: Iterable[dict[str, Any]]) -> str | None:
         for ev in events:

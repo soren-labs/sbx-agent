@@ -368,15 +368,52 @@ def test_translate_messages_json_defensive() -> None:
     assert events[-1]["usage"]["output_tokens"] == 3
 
 
-def test_translate_bad_lines_return_empty() -> None:
+def test_translate_non_object_lines_return_empty() -> None:
+    """Only lines with no JSON object return [] (runner counts them bad)."""
     adapter = GrokAdapter()
     assert adapter.translate("this is not json") == []
     assert adapter.translate("") == []
     assert adapter.translate("[1,2,3]") == []
-    assert adapter.translate('{"type": "mystery"}') == []
+
+
+def test_translate_unknown_and_plan_kinds_are_noop() -> None:
+    """SOR-80: parseable objects never return []; unknown kinds and the
+    real 1.0.24 ``plan`` progress block are acknowledged as NOOP."""
+    adapter = GrokAdapter()
+    assert adapter.translate('{"type": "mystery"}') == [{"type": NOOP_EVENT_TYPE}]
+    plan = json.dumps(
+        {
+            "type": "plan",
+            "entries": [
+                {"content": "Inspect the workspace", "priority": "high", "status": "completed"},
+                {"content": "Write marker.txt", "priority": "high", "status": "in_progress"},
+                {"content": "Verify output", "priority": "medium", "status": "pending"},
+            ],
+        }
+    )
+    assert adapter.translate(plan) == [{"type": NOOP_EVENT_TYPE}]
     assert adapter.translate('{"type": "tool_call_update", "toolCallId": "x"}') == [
         {"type": NOOP_EVENT_TYPE}
     ]
+
+
+def test_translate_plan_then_completion() -> None:
+    """Real 1.0.24 shape: plan entries, then end.sessionId + usage close
+    the turn — the plan event must not poison the stream."""
+    events = _translate_all(_lines(REAL_FIXTURES / "plan.jsonl"))
+    types = [e["type"] for e in events]
+    assert types[0] == "turn.started"
+    assert "thread.started" in types
+    started = [e for e in events if e["type"] == "thread.started"]
+    assert started[0]["thread_id"] == REAL_ID
+    assert types[-1] == "turn.completed"
+    assert events[-1]["usage"]["input_tokens"] == 17255
+    messages = [
+        e["item"]
+        for e in events
+        if e["type"] == "item.completed" and e["item"]["type"] == "agent_message"
+    ]
+    assert messages[-1]["text"] == "DONE"
 
 
 def test_extract_session_id() -> None:

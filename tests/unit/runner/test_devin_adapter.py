@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from runtime.runner.adapter import get_adapter
 from runtime.runner.adapters.devin import DevinAdapter
+from runtime.runner.constants import NOOP_EVENT_TYPE
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1].parent / "fixtures" / "events" / "devin"
 
@@ -171,12 +172,21 @@ def test_translate_failures_and_errors() -> None:
     assert events[1] == {"type": "error", "message": "401"}
 
 
-def test_translate_bad_lines_return_empty() -> None:
+def test_translate_non_object_lines_return_empty() -> None:
+    """Only lines with no JSON object return [] (runner counts them bad)."""
     adapter = DevinAdapter()
     assert adapter.translate("this is not json") == []
     assert adapter.translate("") == []
     assert adapter.translate("[1,2,3]") == []
-    assert adapter.translate('{"type": "mystery"}') == []
+
+
+def test_translate_unknown_types_are_noop() -> None:
+    """SOR-80: parseable objects never return []; unknown types and known
+    types with unmappable payloads are acknowledged as NOOP."""
+    adapter = DevinAdapter()
+    assert adapter.translate('{"type": "mystery"}') == [{"type": NOOP_EVENT_TYPE}]
+    assert adapter.translate('{"type": "session.started"}') == [{"type": NOOP_EVENT_TYPE}]
+    assert adapter.translate('{"type": "assistant_message"}') == [{"type": NOOP_EVENT_TYPE}]
 
 
 def test_extract_session_id() -> None:
