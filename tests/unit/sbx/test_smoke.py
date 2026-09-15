@@ -81,6 +81,21 @@ def test_smoke_no_base_url_is_actionable(tmp_path) -> None:
     assert exc.value.code == "config_missing"
 
 
+def test_smoke_no_providers_is_actionable(tmp_path) -> None:
+    env = make_env(tmp_path)
+    load_or_create_key(key_path(env))
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(
+            providers=(), api_base_url="https://ws--sbx-control-fastapi-app.modal.run"
+        ),
+    )
+    with pytest.raises(BootstrapError) as exc:
+        run_smoke(cfg, env=env, transport=None)
+    assert exc.value.code == "config_missing"
+
+
 def test_smoke_provider_exhausted_is_actionable(tmp_path) -> None:
     token = "sbx_smoketoken"
     cfg, env = _cfg(tmp_path, token=token)

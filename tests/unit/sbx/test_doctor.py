@@ -6,7 +6,7 @@ from sbx.config import BootstrapConfig, key_path
 from sbx.doctor import failed, run_doctor
 from sbx.keys import generate_key, load_or_create_key
 from sbx.plane import SandboxInfo
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
+from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
 
 
 def _healthy(tmp_path, token=None):
@@ -16,7 +16,7 @@ def _healthy(tmp_path, token=None):
     key_path(env).write_text(token + "\n")
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    plane.secrets["sbx-basic-auth"] = {"SBX_BASIC_USER": "sbx", "SBX_BASIC_PASSWORD": "x"}
+    plane.secrets["sbx-basic-auth"] = {"SBX_BASIC_USER": "sbx", "SBX_BASIC_PASS": "x"}
     plane.secrets["sbx-v1-bootstrap"] = {"SBX_V1_BOOTSTRAP_KEY": token}
     for name in ("sbx-sessions", "sbx-runs", "sbx-accounts", "sbx-workflows"):
         plane.dicts[name] = {}
@@ -34,6 +34,32 @@ def test_doctor_happy_path_never_prints_secret(tmp_path, capsys) -> None:
     blob = "\n".join(f"{c.name} {c.detail} {c.hint}" for c in checks)
     assert token not in blob  # doctor output carries no plaintext
     assert "sha256:" in blob  # only the hash prefix is shown
+
+
+def test_doctor_reads_contract_fields(tmp_path) -> None:
+    """/v1 returns ``key_id`` + ``accounts_available`` — details must show them."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    auth = next(c for c in checks if c.name == "api-auth")
+    providers = next(c for c in checks if c.name == "providers")
+    assert auth.ok and "key_test" in auth.detail
+    assert providers.ok and "codex:1" in providers.detail
+
+
+def test_doctor_falls_back_to_deploy_state_url(tmp_path) -> None:
+    """Config without api.base_url still verifies the last deployed app."""
+    env = make_env(tmp_path)
+    token = generate_key()
+    load_or_create_key(key_path(env))
+    key_path(env).write_text(token + "\n")
+    write_state(tmp_path, {"app_url": "https://ws--sbx-control-fastapi-app.modal.run"})
+    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig())
+    plane = FakePlane()
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    api_url = next(c for c in checks if c.name == "api-url")
+    assert api_url.ok and "modal.run" in api_url.detail
 
 
 def test_doctor_missing_secret_fails_with_hint(tmp_path) -> None:

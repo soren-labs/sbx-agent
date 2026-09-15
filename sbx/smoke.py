@@ -68,7 +68,13 @@ def run_smoke(
             hint="run `sbx deploy` to mint one, or export SBX_API_KEY",
             code="api_key_missing",
         )
-    provider = provider or cfg.config.providers[0]
+    provider = provider or (cfg.config.providers[0] if cfg.config.providers else None)
+    if provider is None:
+        raise BootstrapError(
+            "no provider configured",
+            hint="set deploy.providers in the config or pass `sbx smoke --provider`",
+            code="config_missing",
+        )
 
     deadline = monotonic() + timeout_s
     agent_id = run_id = ""

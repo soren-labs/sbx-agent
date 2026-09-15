@@ -173,6 +173,8 @@ class ModalPlane:
         return existed
 
     def ensure_dict(self, name: str) -> bool:
+        if self.has_dict(name):
+            return False
         try:
             self._modal_dict().create(name, allow_existing=True)
         except Exception as exc:
@@ -228,9 +230,19 @@ class ModalPlane:
             )
         return url
 
+    @staticmethod
+    def _is_deployed(entry: dict[str, Any]) -> bool:
+        # ``modal app list`` keeps stopped apps around; only a live
+        # "deployed" state counts. A missing field means an older CLI —
+        # treat presence as deployed.
+        return entry.get("state", "deployed") == "deployed"
+
     def app_url(self, app_name: str) -> str | None:
         apps = self._apps()
-        if not any(a.get("description") == app_name or a.get("name") == app_name for a in apps):
+        if not any(
+            (a.get("description") == app_name or a.get("name") == app_name) and self._is_deployed(a)
+            for a in apps
+        ):
             return None
         workspace = self.workspace()
         if not workspace:
@@ -250,7 +262,9 @@ class ModalPlane:
 
     def stop_app(self, app_name: str) -> bool:
         for entry in self._apps():
-            if entry.get("description") == app_name or entry.get("name") == app_name:
+            if (
+                entry.get("description") == app_name or entry.get("name") == app_name
+            ) and self._is_deployed(entry):
                 app_id = entry.get("app_id") or entry.get("id")
                 if app_id:
                     self._cli(["app", "stop", str(app_id)])

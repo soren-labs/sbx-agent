@@ -144,7 +144,9 @@ def make_v1(
         if path == "/v1/me":
             if not authed(request):
                 return err(401, "unauthorized", "missing or invalid bearer token")
-            return httpx.Response(200, json={"id": "key_test", "scopes": ["agents", "admin"]})
+            return httpx.Response(
+                200, json={"key_id": "key_test", "label": "t", "scopes": ["agents", "admin"]}
+            )
         if not authed(request):
             return err(401, "unauthorized", "missing or invalid bearer token")
         if path == "/v1/models":
@@ -153,7 +155,7 @@ def make_v1(
                 json={
                     "models": models
                     if models is not None
-                    else [{"provider": "codex", "model": "gpt-5.6-luna", "free_accounts": 1}]
+                    else [{"provider": "codex", "model": "gpt-5.6-luna", "accounts_available": 1}]
                 },
             )
         if path == "/v1/agents" and request.method == "POST":

@@ -84,6 +84,7 @@ def _write_basic_auth(env: Mapping[str, str], user: str, password: str) -> Path:
     path = basic_auth_path(env)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # force the mode even when the file already existed
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"user": user, "password": password}) + "\n")
     return path
@@ -152,7 +153,7 @@ def _ensure_basic_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, s
         _write_basic_auth(env, creds["user"], creds["password"])
     plane.ensure_secret(
         cfg.basic_secret,
-        {"SBX_BASIC_USER": creds["user"], "SBX_BASIC_PASSWORD": creds["password"]},
+        {"SBX_BASIC_USER": creds["user"], "SBX_BASIC_PASS": creds["password"]},
     )
     return StepResult("secret:basic", True, f"{cfg.basic_secret} created (local copy saved)")
 

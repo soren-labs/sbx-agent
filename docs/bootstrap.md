@@ -47,7 +47,7 @@ plaintext exists only locally.
 | `doctor` | Modal auth, required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability, sandbox-list capability. Never prints secret values. |
 | `smoke` | `POST /v1/agents` with a trivial prompt → poll the run to a terminal status → `DELETE` the agent. |
 | `upgrade` | Snapshot all durable Dicts → redeploy → verify each is still readable with no lost keys. Aborts before touching anything when a store is unreadable. |
-| `uninstall` | Terminate all sandboxes owned by the app, re-list to prove zero leftovers, stop the app. `--purge-data` also deletes Dicts; `--purge-credentials` also deletes Secrets (incl. `sbx-acct-*`) and local credential files. Defaults preserve both. |
+| `uninstall` | Terminate all sandboxes owned by the app, re-list to prove zero leftovers, stop the app. `--purge-data` also deletes Dicts; `--purge-credentials` also deletes Secrets (incl. `sbx-acct-*`), the local credential files, and the deploy record. Defaults preserve both. |
 
 All commands accept `--json` (machine-readable output and error objects),
 `--config`, and `--state-dir`. Errors carry a stable `code` plus an

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 import httpx
 
 from sbx.config import ResolvedConfig, key_path
+from sbx.deploy import read_deploy_state
 from sbx.httpapi import ApiError, V1Client
 from sbx.keys import fingerprint, resolve_api_key
 from sbx.plane import Plane
@@ -99,7 +100,8 @@ def _api_checks(
                 Check(
                     name="api-auth",
                     ok=True,
-                    detail=f"key {me.get('id', '?')} scopes={me.get('scopes', [])}",
+                    detail=f"key {me.get('key_id', me.get('id', '?'))} "
+                    f"scopes={me.get('scopes', [])}",
                 )
             )
             models = client.models()
@@ -119,7 +121,7 @@ def _api_checks(
     provider_lines = []
     for model in models.get("models", []):
         provider = model.get("provider", "?")
-        free = model.get("free_accounts", model.get("accounts"))
+        free = model.get("accounts_available")
         provider_lines.append(f"{provider}:{free}")
     checks.append(
         Check(
@@ -207,7 +209,10 @@ def run_doctor(
             )
         )
 
-    checks.extend(_api_checks(config.api_base_url, token, transport=transport))
+    # Same resolution order as `sbx status`: configured URL, else the last
+    # deployed URL recorded in the state dir.
+    base_url = config.api_base_url or str(read_deploy_state(env).get("app_url") or "")
+    checks.extend(_api_checks(base_url, token, transport=transport))
 
     app_url = None
     if workspace is not None:

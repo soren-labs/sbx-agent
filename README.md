@@ -112,7 +112,7 @@ MVP 默认认证模式是 `auth_json`。第三方 Responses 网关（DisTokens �
 ```bash
 modal secret create sbx-basic-auth \
   SBX_BASIC_USER='<username>' \
-  SBX_BASIC_PASSWORD='<long-random-password>'
+  SBX_BASIC_PASS='<long-random-password>'
 ```
 
 所有 `/api/sessions*` 端点走 HTTP Basic（见 `docs/contracts/api.yaml`）。本地假服务口令只用于 mock，不是生产凭证。
