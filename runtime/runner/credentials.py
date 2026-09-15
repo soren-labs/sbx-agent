@@ -67,8 +67,33 @@ GROK_ENV_EXCLUDE: tuple[str, ...] = (
     "GROK_CONFIG_PATH",
 )
 
+# Claude-only (SOR-97, Experimental): alternate auth/model/provider
+# channels that must never reach the ``claude`` child so the restored
+# ``~/.claude/.credentials.json`` stays the only credential source.
+# ``CLAUDE_CONFIG_DIR`` is stripped too so the CLI always resolves
+# ``~/.claude`` under the sandbox HOME (GROK_HOME/GROK_CONFIG_PATH
+# precedent).
+CLAUDE_ENV_EXCLUDE: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CONFIG_DIR",
+)
+
 # Union stripped by ``scrub_child_env`` for non-Codex agent children.
-AGENT_ENV_EXCLUDE: tuple[str, ...] = CREDENTIAL_ENV_EXCLUDE + DEVIN_ENV_EXCLUDE + GROK_ENV_EXCLUDE
+AGENT_ENV_EXCLUDE: tuple[str, ...] = (
+    CREDENTIAL_ENV_EXCLUDE + DEVIN_ENV_EXCLUDE + GROK_ENV_EXCLUDE + CLAUDE_ENV_EXCLUDE
+)
 
 
 class CredentialError(Exception):

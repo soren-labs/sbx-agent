@@ -14,7 +14,8 @@ Env knobs:
 - ``CLAUDE_REPLAY_STALE=1``: with ``--resume <id>``, mimic the real
   stale-id failure — stderr ``No conversation found with session ID:
   <id>`` plus a single ``result`` ``subtype=error_during_execution``
-  line on stdout, rc=0 (real capture, SOR-97).
+  line on stdout; the real 2.1.250 CLI exits rc=1 here (SOR-97), set
+  via ``CLAUDE_REPLAY_RC``.
 - ``CLAUDE_REPLAY_STDERR``: one extra stderr line.
 - ``CLAUDE_REPLAY_RC``: process exit code (default 0).
 - ``CLAUDE_REPLAY_PAUSE_S``: sleep N seconds after the first line.
@@ -113,6 +114,7 @@ def _spy() -> None:
                 "has_CODEX_AUTH_JSON": "CODEX_AUTH_JSON" in os.environ,
                 "has_ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY" in os.environ,
                 "has_CLAUDE_CODE_OAUTH_TOKEN": "CLAUDE_CODE_OAUTH_TOKEN" in os.environ,
+                "has_CLAUDE_CONFIG_DIR": "CLAUDE_CONFIG_DIR" in os.environ,
             }
         )
         + "\n",
@@ -125,7 +127,7 @@ def _term(_signum: int, _frame: object) -> None:
 
 
 def _emit_stale(requested: str) -> None:
-    """Real stale-resume shape: stderr notice + one error result, rc=0."""
+    """Real stale-resume shape: stderr notice + one error result, rc=1."""
     print(f"No conversation found with session ID: {requested}", file=sys.stderr)
     print(
         json.dumps(

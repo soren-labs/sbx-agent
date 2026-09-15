@@ -22,6 +22,7 @@ import pytest
 from runtime.runner.adapter import AgentAdapter, get_adapter
 from runtime.runner.adapters.claude import CLAUDE_CREDENTIALS_REL, ClaudeAdapter
 from runtime.runner.constants import NOOP_EVENT_TYPE
+from runtime.runner.credentials import AGENT_ENV_EXCLUDE, CLAUDE_ENV_EXCLUDE
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "claude"
 
@@ -56,6 +57,27 @@ def test_protocol_conformance() -> None:
 
 def test_credential_files_single_credentials_json() -> None:
     assert ClaudeAdapter().credential_files == (".claude/.credentials.json",)
+
+
+def test_env_exclude_wired_into_agent_scrub() -> None:
+    """Child env hygiene (SOR-97): every alternate claude auth/model
+    channel is unioned into ``AGENT_ENV_EXCLUDE`` so ``codex.child_env``
+    strips it — the restored ``.credentials.json`` stays the only
+    credential source."""
+    for key in CLAUDE_ENV_EXCLUDE:
+        assert key in AGENT_ENV_EXCLUDE
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        # Would redirect ~/.claude away from the restored credential file
+        # (GROK_HOME/GROK_CONFIG_PATH precedent).
+        "CLAUDE_CONFIG_DIR",
+    ):
+        assert key in CLAUDE_ENV_EXCLUDE
 
 
 def test_first_turn_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -210,8 +232,8 @@ def test_translate_resume_fixture() -> None:
 
 
 def test_translate_auth_invalid_fixture() -> None:
-    """Real fresh-HOME capture: rc=0 but the stream carries the auth
-    failure — error + turn.failed, and the health flag is recorded."""
+    """Real fresh-HOME capture (2.1.250 exits rc=1): the stream carries
+    the auth failure — error + turn.failed, health flag recorded."""
     adapter = ClaudeAdapter()
     events = _translate_all(_lines(FIXTURES / "auth_invalid.jsonl"), adapter)
     types = [e["type"] for e in events]
@@ -221,7 +243,9 @@ def test_translate_auth_invalid_fixture() -> None:
     errors = [e for e in events if e["type"] == "error"]
     assert "Not logged in" in errors[0]["message"]
     assert events[-1]["error"]["message"] == "Not logged in · Please run /login"
-    # rc=0 is masked by the CLI; the recorded flag still classifies it.
+    # The recorded flag outranks the exit code, so even a hypothetical
+    # rc=0-masking build would still classify account health.
+    assert adapter.health_from(1, "") == "auth_invalid"
     assert adapter.health_from(0, "") == "auth_invalid"
 
 
@@ -230,6 +254,7 @@ def test_translate_rate_limited_fixture() -> None:
     events = _translate_all(_lines(FIXTURES / "rate_limited.jsonl"), adapter)
     assert events[-1]["type"] == "turn.failed"
     assert "429" in events[-1]["error"]["message"]
+    assert adapter.health_from(1, "") == "rate_limited"
     assert adapter.health_from(0, "") == "rate_limited"
 
 

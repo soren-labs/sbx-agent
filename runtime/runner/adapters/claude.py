@@ -49,13 +49,17 @@ confirmed by session transcripts:
   forward compatibility). ``[]`` is reserved for lines with no JSON
   object, which the runner counts as bad JSON (events.md rule 5).
 
-Exit-code caveat (verified): the real CLI exits **rc=0 even on auth/API
-failure** — the terminal signal is the ``result`` line, not the exit
-code. Stale ``--resume`` ids print ``No conversation found with session
-ID: ...`` on stderr and emit a ``result`` ``subtype=error_during_execution``
-line on stdout, still rc=0. ``health_from`` therefore also consults flags
-recorded while translating error lines, though the current runner only
-calls it on nonzero rc (see SOR-97 review note §known-limitations).
+Exit codes (verified on the installed 2.1.250, fresh-HOME probes): auth
+and stale-resume failures exit **rc=1** while the stream still carries
+the truth — ``result`` keeps ``subtype=="success"`` with
+``is_error=true`` and the failure text, and a stale ``--resume`` id
+prints ``No conversation found with session ID: ...`` on stderr plus a
+``result`` ``subtype=error_during_execution`` line on stdout.
+``health_from`` consults flags recorded while translating error lines
+*before* the exit code, so a build that ever masks a stream-level
+failure with rc=0 still classifies account health correctly (the
+runner's ``sbx.turn_finished.status`` itself is rc-derived — see the
+SOR-97 review note §known-limitations).
 """
 
 from __future__ import annotations
@@ -82,22 +86,10 @@ Health = Literal["ok", "auth_invalid", "rate_limited", "unknown"]
 CLAUDE_CREDENTIALS_REL = ".claude/.credentials.json"
 
 # Alternate auth/model/provider channels that must never reach the
-# ``claude`` child (future AGENT_ENV_EXCLUDE union entry; SOR-97 spike).
-CLAUDE_ENV_EXCLUDE: tuple[str, ...] = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_CUSTOM_HEADERS",
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_SMALL_FAST_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-)
+# ``claude`` child live in ``runtime.runner.credentials.CLAUDE_ENV_EXCLUDE``,
+# already unioned into ``AGENT_ENV_EXCLUDE`` (stripped from every provider
+# child by ``codex.child_env``) so the restored file stays the only
+# credential source (grok/devin precedent).
 
 _AUTH_NEEDLES = (
     "not logged in",
@@ -307,8 +299,9 @@ class ClaudeAdapter:
         return None
 
     def health_from(self, exit_code: int | None, stderr_tail: str) -> Health:
-        # The real CLI reports auth/rate failures as stream events with
-        # rc=0; flags recorded by ``translate`` outrank the exit code.
+        # Auth/rate failures are stream events; flags recorded by
+        # ``translate`` outrank the exit code (verified 2.1.250 exits
+        # rc=1 there, but a build could mask a failure with rc=0).
         if self._auth_seen:
             return "auth_invalid"
         if self._rate_seen:

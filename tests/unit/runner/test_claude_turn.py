@@ -9,12 +9,14 @@ which speaks the verified production argv contract (``claude -p <PROMPT>
 bypassPermissions``; resume adds ``--resume <uuid>``) and replays the
 staged captures under ``tests/unit/runner/fixtures/claude/``.
 
-Known runner gap (documented in ``docs/reviews/SOR-97.md``): the real
-CLI exits rc=0 on stream-level failures, so ``sbx.turn_finished.status``
-stays ``success`` even though the canonical stream carries
-``error``+``turn.failed`` — the stream is the truthful record. The
-stale-resume path *does* fail correctly via the runner's replacement-id
-check.
+Verified exit codes (2.1.250, fresh-HOME probes): auth and stale-resume
+failures exit rc=1, so ``sbx.turn_finished.status`` fails correctly
+(``auth_invalid``/``codex_error``) while the canonical stream carries
+``error``+``turn.failed``. Residual runner gap (documented in
+``docs/reviews/SOR-97.md``): finish status is rc-derived, so a build
+that masked a stream-level failure with rc=0 would still report
+``success`` — covered here as a defensive variant, unobserved on the
+installed CLI.
 """
 
 from __future__ import annotations
@@ -214,7 +216,8 @@ def test_argv_exact_and_stdin_devnull(work: Path, claude_env: dict[str, str]) ->
 
 
 def test_credential_env_not_forwarded_to_cli(work: Path, claude_env: dict[str, str]) -> None:
-    """The CLI subprocess never sees the injected credential blob."""
+    """The CLI subprocess never sees the injected credential blob or any
+    alternate claude auth channel (``CLAUDE_ENV_EXCLUDE`` scrub)."""
     spy_out = work / "spy.json"
     claude_env.update(
         {
@@ -223,6 +226,9 @@ def test_credential_env_not_forwarded_to_cli(work: Path, claude_env: dict[str, s
                 {"provider": "claude", "files": {CRED_REL: CRED_JSON}}
             ),
             "CODEX_AUTH_JSON": json.dumps({"tokens": {"access_token": "REDACTED"}}),
+            "ANTHROPIC_API_KEY": "REDACTED",
+            "CLAUDE_CODE_OAUTH_TOKEN": "REDACTED",
+            "CLAUDE_CONFIG_DIR": str(work / "elsewhere"),
         }
     )
     init_claude(claude_env)
@@ -231,6 +237,9 @@ def test_credential_env_not_forwarded_to_cli(work: Path, claude_env: dict[str, s
     spy = json.loads(spy_out.read_text())
     assert spy["has_SBX_ACCOUNT_CREDENTIAL"] is False
     assert spy["has_CODEX_AUTH_JSON"] is False
+    assert spy["has_ANTHROPIC_API_KEY"] is False
+    assert spy["has_CLAUDE_CODE_OAUTH_TOKEN"] is False
+    assert spy["has_CLAUDE_CONFIG_DIR"] is False
     raw = (work / "events.jsonl").read_text(encoding="utf-8")
     assert CRED_JSON not in raw
 
@@ -250,14 +259,15 @@ def test_resume_turn_keeps_session(work: Path, claude_env: dict[str, str]) -> No
     assert session["native_session_id"] == SESS_ID
 
 
-def test_stale_resume_fails_via_replacement_check(work: Path, claude_env: dict[str, str]) -> None:
-    """Real stale shape: error result, no thread.started -> the runner's
-    stale-resume check fails the turn (exit 2) and keeps the old id."""
+def test_stale_resume_fails_real_shape(work: Path, claude_env: dict[str, str]) -> None:
+    """Real stale shape (2.1.250 exits rc=1): error result, no
+    thread.started -> turn fails (exit 2) and keeps the old id."""
     init_claude(claude_env)
     code1, doc1, _ = turn(claude_env, work, 1)
     assert code1 == 0
     assert doc1["native_session_id"] == SESS_ID
     claude_env["CLAUDE_REPLAY_STALE"] = "1"
+    claude_env["CLAUDE_REPLAY_RC"] = "1"  # verified 2.1.250 stale-resume rc
     code2, doc2, events2 = turn(claude_env, work, 2)
     assert code2 == 2
     assert doc2["status"] == "codex_error"
@@ -271,25 +281,81 @@ def test_stale_resume_fails_via_replacement_check(work: Path, claude_env: dict[s
     assert "No conversation found" in stderr_tail
 
 
-def test_auth_invalid_stream_fails_event_rc0_status_gap(
+def test_stale_resume_rc0_defensive_replacement_check(
     work: Path, claude_env: dict[str, str]
 ) -> None:
-    """Real no-auth shape (rc=0): the canonical stream carries
-    error+turn.failed, but ``sbx.turn_finished.status`` stays ``success``
-    — the rc-derived runner gap documented in the SOR-97 note."""
+    """Defensive variant (unobserved on 2.1.250): if a build ever answers
+    a stale resume with rc=0, the runner's replacement-id check still
+    fails the turn instead of adopting a different session."""
+    init_claude(claude_env)
+    code1, doc1, _ = turn(claude_env, work, 1)
+    assert code1 == 0
+    assert doc1["native_session_id"] == SESS_ID
+    claude_env["CLAUDE_REPLAY_STALE"] = "1"
+    code2, doc2, events2 = turn(claude_env, work, 2)
+    assert code2 == 2
+    assert doc2["status"] == "codex_error"
+    started2 = [e for e in events2 if e["type"] == "thread.started"]
+    assert {e["thread_id"] for e in started2} == {SESS_ID}
+    session = load_json(work / "session.json")
+    assert session["native_session_id"] == SESS_ID
+
+
+def test_auth_invalid_fails_real_shape(work: Path, claude_env: dict[str, str]) -> None:
+    """Real no-auth shape (2.1.250 exits rc=1): the stream carries
+    error+turn.failed and the recorded auth flag drives the finish
+    status to ``auth_invalid`` (exit 5)."""
     init_claude(claude_env)
     claude_env["CLAUDE_REPLAY_FIXTURE"] = str(FIXTURES / "auth_invalid.jsonl")
+    claude_env["CLAUDE_REPLAY_RC"] = "1"  # verified 2.1.250 no-auth rc
     code, doc, events = turn(claude_env, work, 1)
-    assert code == 0  # masked by the real CLI's exit code
+    assert code == 5
+    assert doc["status"] == "auth_invalid"
+    assert doc["health"] == "auth_invalid"
     types = [e["type"] for e in events]
     assert "error" in types
     assert "turn.failed" in types
     errors = [e for e in events if e["type"] == "error"]
     assert any("Not logged in" in e["message"] for e in errors)
     finished = [e for e in events if e["type"] == "sbx.turn_finished"]
-    # rc-derived finish status: truthful record is the canonical stream.
+    assert finished[-1]["status"] == "auth_invalid"
+    assert finished[-1]["exit_code"] == 5
+    assert doc["native_session_id"] == AUTH_ID
+    assert doc["error"] == "Not logged in · Please run /login"
+
+
+def test_auth_invalid_rc0_defensive_stream_truth(work: Path, claude_env: dict[str, str]) -> None:
+    """Defensive variant (unobserved on 2.1.250): if a build ever masks a
+    stream-level auth failure with rc=0, the canonical stream still
+    carries error+turn.failed even though the rc-derived finish status
+    reads ``success`` — the residual runner gap in the SOR-97 note."""
+    init_claude(claude_env)
+    claude_env["CLAUDE_REPLAY_FIXTURE"] = str(FIXTURES / "auth_invalid.jsonl")
+    code, doc, events = turn(claude_env, work, 1)
+    assert code == 0  # hypothetical masked exit code
+    types = [e["type"] for e in events]
+    assert "error" in types
+    assert "turn.failed" in types
+    errors = [e for e in events if e["type"] == "error"]
+    assert any("Not logged in" in e["message"] for e in errors)
+    finished = [e for e in events if e["type"] == "sbx.turn_finished"]
     assert finished[-1]["status"] == "success"
     assert doc["native_session_id"] == AUTH_ID
+
+
+def test_turn_timeout_via_hang(work: Path, claude_env: dict[str, str]) -> None:
+    """Cancel/timeout path is runner-owned (SIGTERM at --max-seconds, no
+    adapter changes): a hung CLI exits the turn ``timeout`` (exit 3)."""
+    init_claude(claude_env)
+    claude_env["CLAUDE_REPLAY_HANG"] = "1"
+    code, doc, events = turn(claude_env, work, 1, max_seconds=1, timeout=20.0)
+    assert code == 3
+    assert doc["status"] == "timeout"
+    assert doc["exit_code"] == 3
+    assert doc["native_session_id"] == SESS_ID  # init line arrived first
+    assert any(e["type"] == "sbx.error" for e in events)
+    finished = [e for e in events if e["type"] == "sbx.turn_finished"]
+    assert finished[-1]["status"] == "timeout"
 
 
 def test_badjson_exits_4(work: Path, claude_env: dict[str, str]) -> None:
