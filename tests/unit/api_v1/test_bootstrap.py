@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
-from control.api_v1.bootstrap import BootstrapScheduler, configure_v1_bootstrap
+from control.api_v1.bootstrap import (
+    PROVIDER_DEFAULT_MODELS,
+    BootstrapScheduler,
+    configure_v1_bootstrap,
+)
 from control.app import create_app
 from control.backend import LocalProcessBackend
 from control.devin_pool import DevinAccountPool, ScheduleRefused
@@ -255,6 +262,110 @@ def test_v1_named_account_and_slot_cap(monkeypatch, stub_runner) -> None:
             assert unknown.status_code == 409
             assert unknown.json()["error"]["code"] == "account_unavailable"
             assert client.delete(f"/v1/agents/{agent_id}", headers=auth).status_code == 200
+    finally:
+        for handle in list(backend.list()):
+            backend.terminate(handle)
+
+
+def test_v1_agents_concurrent_four_provider_bootstrap(monkeypatch, stub_runner) -> None:
+    """Four simultaneous ``POST /v1/agents`` — one per P2 Core provider.
+
+    Unlike the serial sweep above, all four requests race through the real
+    product path at once: each must acquire its own pool's slot lease, keep
+    provider/account/model metadata isolated per agent, and release every
+    lease on ``DELETE``.
+    """
+    token = "sbx_" + "3" * 40
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", token)
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    app = create_app(
+        backend=backend,
+        store=store,
+        runner_cmd=[sys.executable, str(stub_runner)],
+        max_concurrent=16,
+    )
+    auth = {"Authorization": f"Bearer {token}"}
+    barrier = threading.Barrier(len(P2_CORE_PROVIDERS))
+    try:
+        with TestClient(app) as client:
+
+            def create(provider: str) -> tuple[str, Any]:
+                barrier.wait(timeout=15)
+                resp = client.post(
+                    "/v1/agents",
+                    json={"prompt": {"text": "ping"}, "agent": {"provider": provider}},
+                    headers=auth,
+                )
+                return provider, resp
+
+            with ThreadPoolExecutor(max_workers=len(P2_CORE_PROVIDERS)) as pool:
+                responses = dict(pool.map(create, P2_CORE_PROVIDERS))
+
+            assert set(responses) == set(P2_CORE_PROVIDERS)
+            agents: dict[str, dict[str, Any]] = {}
+            for provider in P2_CORE_PROVIDERS:
+                resp = responses[provider]
+                assert resp.status_code == 201, f"{provider}: {resp.text}"
+                agent = resp.json()["agent"]
+                assert agent["provider"] == provider
+                assert agent["account_id"] == f"{provider}-1"
+                assert agent["model"] == PROVIDER_DEFAULT_MODELS[provider][0]
+                agents[provider] = agent
+
+            # Metadata is isolated per agent: the API view, the session
+            # record's sandbox tags, and the sandbox's own session.json all
+            # agree on the provider / account / model triple.
+            for provider, agent in agents.items():
+                fetched = client.get(f"/v1/agents/{agent['id']}", headers=auth)
+                assert fetched.status_code == 200, f"{provider}: {fetched.text}"
+                fetched_agent = fetched.json()
+                assert fetched_agent["provider"] == provider
+                assert fetched_agent["account_id"] == f"{provider}-1"
+                assert fetched_agent["model"] == PROVIDER_DEFAULT_MODELS[provider][0]
+
+                rec = store.get(agent["id"])
+                assert rec is not None
+                assert rec.sandbox_tags["provider"] == provider
+                assert rec.sandbox_tags["account_id"] == f"{provider}-1"
+                assert rec.model == PROVIDER_DEFAULT_MODELS[provider][0]
+                session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
+                assert session["provider"] == provider
+                assert session["account_id"] == f"{provider}-1"
+                assert session["model"] == PROVIDER_DEFAULT_MODELS[provider][0]
+
+            # All four slot leases are held simultaneously and independently:
+            # one active slot per provider pool, four distinct lease objects
+            # each bound to that provider's seeded account.
+            scheduler = app.state.scheduler
+            v1 = app.state.v1_state
+            with v1.lock:
+                leases = {p: v1.leases[a["id"]] for p, a in agents.items()}
+            assert len({id(lease) for lease in leases.values()}) == len(P2_CORE_PROVIDERS)
+            for provider in P2_CORE_PROVIDERS:
+                lease = leases[provider]
+                assert scheduler.pools[provider].active_count == 1
+                assert lease.account.provider == provider
+                assert lease.account.id == f"{provider}-1"
+                assert lease.slot == 1
+                assert not lease.released
+
+            def delete(provider: str) -> tuple[str, Any]:
+                barrier.wait(timeout=15)
+                resp = client.delete(f"/v1/agents/{agents[provider]['id']}", headers=auth)
+                return provider, resp
+
+            with ThreadPoolExecutor(max_workers=len(P2_CORE_PROVIDERS)) as pool:
+                deleted = dict(pool.map(delete, P2_CORE_PROVIDERS))
+
+            for provider in P2_CORE_PROVIDERS:
+                resp = deleted[provider]
+                assert resp.status_code == 200, f"{provider}: {resp.text}"
+                assert scheduler.pools[provider].active_count == 0
+                assert leases[provider].released
+            with v1.lock:
+                assert not v1.leases
+            assert not backend.list()
     finally:
         for handle in list(backend.list()):
             backend.terminate(handle)
