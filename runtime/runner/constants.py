@@ -23,6 +23,12 @@ USAGE_FIELDS: tuple[str, ...] = (
     "reasoning_output_tokens",
 )
 
+# Adapter-internal sentinel event type: ``translate`` may return
+# ``{"type": NOOP_EVENT_TYPE}`` for a recognised native line that maps to no
+# canonical event. ``runner turn`` drops it before ``events.jsonl``; only a
+# truly empty translate result counts as a bad line (events.md).
+NOOP_EVENT_TYPE = "sbx.noop"
+
 STATUS_SUCCESS = "success"
 STATUS_CODEX_ERROR = "codex_error"
 STATUS_TIMEOUT = "timeout"

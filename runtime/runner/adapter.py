@@ -118,6 +118,12 @@ class CodexAdapter:
         return "unknown"
 
 
+def _antigravity() -> AgentAdapter:
+    from runtime.runner.adapters.antigravity import AntigravityAdapter
+
+    return AntigravityAdapter()
+
+
 def _devin() -> AgentAdapter:
     from runtime.runner.adapters.devin import DevinAdapter
 
@@ -126,5 +132,6 @@ def _devin() -> AgentAdapter:
 
 _REGISTRY: dict[str, Callable[[], AgentAdapter]] = {
     "codex": CodexAdapter,
+    "antigravity": _antigravity,
     "devin": _devin,
 }

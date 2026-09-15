@@ -24,6 +24,7 @@ from runtime.runner.constants import (
     EXIT_INTERNAL,
     EXIT_OK,
     EXIT_TIMEOUT,
+    NOOP_EVENT_TYPE,
     STATUS_AUTH_INVALID,
     STATUS_BAD_JSON,
     STATUS_CODEX_ERROR,
@@ -126,6 +127,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
         emit(root, {"type": "sbx.error", "message": str(exc)})
         return EXIT_INTERNAL
     native_id = session.get("native_session_id") or session.get("codex_session_id")
+    requested_id = str(native_id) if native_id else None
     state = TurnState(thread_id=native_id)
     timed_out = False
     proc = None
@@ -158,8 +160,8 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     emit(root, {"type": "sbx.turn_started", "n": n})
 
     model = session.get("model")
-    if native_id:
-        argv = adapter.resume_argv(prompt, str(native_id))
+    if requested_id:
+        argv = adapter.resume_argv(prompt, requested_id)
     else:
         argv = adapter.first_turn_argv(prompt, model if isinstance(model, str) and model else "")
     stderr_path = root / "turns" / f"{n}.stderr"
@@ -195,11 +197,17 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     signal.signal(signal.SIGINT, _forward_term)
 
     def _record_thread() -> None:
-        if state.thread_id and session.get("native_session_id") != state.thread_id:
+        if (
+            state.thread_id
+            and (requested_id is None or state.thread_id == requested_id)
+            and session.get("native_session_id") != state.thread_id
+        ):
             session["native_session_id"] = state.thread_id
             session["codex_session_id"] = state.thread_id
             session["pid"] = proc.pid
             save_session(root, session)
+
+    observed_id: str | None = None  # thread.started emitted on this turn's stream
 
     for line in iter_codex_stdout(
         proc, max_seconds=max_seconds, grace_s=TERM_GRACE_S, on_timeout=_on_timeout
@@ -212,20 +220,41 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
             state.bad_json_lines += 1
             emit(root, {"type": "sbx.error", "message": "bad json in event stream"})
         for event in events:
+            if not isinstance(event, dict) or event.get("type") == NOOP_EVENT_TYPE:
+                continue
             event = redact_obj(event)
             emit(root, event)
+            if event.get("type") == "thread.started":
+                tid = event.get("thread_id")
+                if isinstance(tid, str) and tid:
+                    observed_id = tid
             state.consume_obj(event)
         _record_thread()
 
     cli_rc = proc.wait()
     duration = round(time.monotonic() - started, 3)
     health = "ok" if cli_rc == 0 else adapter.health_from(cli_rc, _stderr_tail(stderr_path))
+    # Stale resume: the provider CLI exited 0 but never confirmed the requested
+    # session id (agy warns on stderr and opens a new conversation). Never
+    # adopt a replacement id; fail the turn instead of forking the session.
+    stale_resume = requested_id is not None and observed_id != requested_id
+    if stale_resume:
+        state.thread_id = None
     status, code = _finish_status(
         timed_out=timed_out,
         bad_json=state.bad_json_lines > 0,
         cli_rc=cli_rc,
         health=health,
     )
+    if stale_resume and code == EXIT_OK:
+        emit(
+            root,
+            {
+                "type": "sbx.error",
+                "message": f"provider did not resume session {requested_id}",
+            },
+        )
+        status, code = STATUS_CODEX_ERROR, EXIT_CODEX
     session = load_session(root)
     if state.thread_id:
         session["native_session_id"] = state.thread_id
