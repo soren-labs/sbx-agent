@@ -184,6 +184,126 @@ class TestSnapshot:
         assert b"dirty.txt" in store.read(manifest.artifact_id, "patch.diff")
         assert store.read(manifest.artifact_id, "files/dirty.txt") == b"uncommitted\n"
 
+    def test_ignored_files_stay_out_of_manifest(
+        self,
+        tmp_path: Path,
+        backend: LocalProcessBackend,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        store: InMemoryArtifactStore,
+    ) -> None:
+        """Gitignored test/build output is not transportable downstream — it
+        must not enter the manifest, or consumer checksum verification can
+        never pass."""
+        origin, base = make_repo(tmp_path)
+        (origin / ".gitignore").write_text("__pycache__/\n*.log\n", encoding="utf-8")
+        host_git(origin, "add", "-A")
+        host_git(origin, "commit", "-qm", "ignore rules")
+        base = host_git(origin, "rev-parse", "HEAD")
+        workspaces.prepare(handle, "a1", WorkspaceSpec(str(origin), "main", base))
+        workdir = _workdir(handle)
+        # Producer ran tests: generated junk lands in the worktree.
+        (workdir / "__pycache__").mkdir()
+        (workdir / "__pycache__" / "a.pyc").write_bytes(b"\x00junk")
+        (workdir / "run.log").write_text("noise\n", encoding="utf-8")
+        _commit_in_workdir(handle, "b.txt", "two\n")
+        manifest = snapshot_workspace_artifact(
+            backend=backend,
+            handle=handle,
+            workspaces=workspaces,
+            store=store,
+            agent_id="a1",
+        )
+        paths = {f.path for f in manifest.files}
+        assert "__pycache__/a.pyc" not in paths and "run.log" not in paths
+        assert {"a.txt", "b.txt", ".gitignore"} <= paths
+        # The package must be consumable — the ignored files are absent
+        # downstream and therefore absent from verification.
+        consumer = backend.create(SandboxSpec())
+        cws = WorkspaceService(backend, InMemoryWorkspaceStore())
+        handoffs = HandoffService(cws, HandoffStoreView(store))
+        record = handoffs.prepare_from_artifact(
+            consumer, "cons", manifest.artifact_id, spec=WorkspaceSpec(str(origin), "main", base)
+        )
+        cdir = Path(consumer.root) / "repo"
+        assert (cdir / "b.txt").read_text() == "two\n"
+        assert not (cdir / "__pycache__").exists()
+        assert record.head_sha == manifest.head_sha
+        backend.terminate(consumer)
+
+    def test_empty_patch_handoff_is_a_noop(
+        self,
+        tmp_path: Path,
+        backend: LocalProcessBackend,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        store: InMemoryArtifactStore,
+    ) -> None:
+        """A no-change artifact (empty patch.diff, no bundle) must apply as
+        a no-op — ``git apply`` rejects empty input, so the handoff skips
+        the apply step for an empty payload."""
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", WorkspaceSpec(str(origin), "main", base))
+        manifest = snapshot_workspace_artifact(
+            backend=backend,
+            handle=handle,
+            workspaces=workspaces,
+            store=store,
+            agent_id="a1",
+        )
+        assert manifest.head_sha == base
+        assert store.read(manifest.artifact_id, "patch.diff") == b""
+        consumer = backend.create(SandboxSpec())
+        cws = WorkspaceService(backend, InMemoryWorkspaceStore())
+        handoffs = HandoffService(cws, HandoffStoreView(store))
+        record = handoffs.prepare_from_artifact(
+            consumer, "cons", manifest.artifact_id, spec=WorkspaceSpec(str(origin), "main", base)
+        )
+        assert record.head_sha == base
+        backend.terminate(consumer)
+
+    def test_embedded_repo_does_not_break_snapshot(
+        self,
+        tmp_path: Path,
+        backend: LocalProcessBackend,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        store: InMemoryArtifactStore,
+    ) -> None:
+        """A nested ``git init`` (no commit) used to hard-fail ``git add -N``
+        — and its contents could never survive an apply anyway."""
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", WorkspaceSpec(str(origin), "main", base))
+        workdir = _workdir(handle)
+        host_git(workdir, "init", "-q", "-b", "main", "vendored")
+        (workdir / "vendored" / "inner.py").write_text("x = 1\n", encoding="utf-8")
+        # A commitless embedded repo makes `git add -A` fail — stage the file
+        # directly, the way an agent working around it would.
+        (workdir / "b.txt").write_text("two\n", encoding="utf-8")
+        host_git(workdir, "add", "b.txt")
+        host_git(workdir, "commit", "-qm", "add b.txt")
+        manifest = snapshot_workspace_artifact(
+            backend=backend,
+            handle=handle,
+            workspaces=workspaces,
+            store=store,
+            agent_id="a1",
+        )
+        assert not any(f.path.startswith("vendored") for f in manifest.files)
+        consumer = backend.create(SandboxSpec())
+        cws = WorkspaceService(backend, InMemoryWorkspaceStore())
+        handoffs = HandoffService(cws, HandoffStoreView(store))
+        record = handoffs.prepare_from_artifact(
+            consumer, "cons", manifest.artifact_id, spec=WorkspaceSpec(str(origin), "main", base)
+        )
+        # Dirty tree (untracked embedded repo) → patch path → a fresh local
+        # commit carries the delta; the embedded content stays behind.
+        assert record.head_sha != base
+        cdir = Path(consumer.root) / "repo"
+        assert (cdir / "b.txt").read_text() == "two\n"
+        assert not (cdir / "vendored").exists()
+        backend.terminate(consumer)
+
     def test_no_workspace_record(
         self,
         backend: LocalProcessBackend,

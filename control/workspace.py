@@ -387,6 +387,8 @@ def sha256_file(backend: SandboxBackend, handle: SandboxHandle, relative: str) -
     path = handle.root / relative
     if is_local_root(handle):
         try:
+            if not path.is_file() or path.is_symlink():
+                return None
             return hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
             return None

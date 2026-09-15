@@ -373,42 +373,50 @@ class HandoffService:
         manifest: ArtifactManifest,
         payload: bytes,
     ) -> str:
-        """``git apply`` + commit. Returns the actual new head sha."""
+        """``git apply --index`` + commit of just the patch. Returns the
+        actual new head sha.
+
+        ``--index`` stages the patch as it applies, so the handoff commit
+        contains exactly the artifact's delta — never unrelated dirty
+        worktree content. A zero-change artifact carries an empty
+        ``patch.diff``; applying is skipped then, because ``git apply``
+        rejects empty input (and ``--allow-empty`` would also swallow
+        non-diff garbage as a silent no-op).
+        """
         backend = self._workspaces.backend
-        staging = f"{_STAGING_DIR}/{manifest.artifact_id}.patch"
-        write_payload(backend, handle, staging, payload)
-        target = str(handle.root / staging)
-        res = run_git(backend, handle, ["apply", "--check", target], cwd=workdir)
-        if res.code != 0:
-            raise WorkspaceError(
-                ARTIFACT_INVALID,
-                f"artifact {manifest.artifact_id} patch does not apply on the workspace base",
-            )
-        res = run_git(backend, handle, ["apply", target], cwd=workdir)
-        if res.code != 0:
-            raise WorkspaceError(
-                ARTIFACT_INVALID, f"artifact {manifest.artifact_id} failed to apply"
-            )
-        dirty = run_git(backend, handle, ["status", "--porcelain"], cwd=workdir)
-        if dirty.code != 0:
-            raise WorkspaceError(CHECKOUT_FAILED, "git status failed after patch apply")
-        if dirty.lines:
-            res = run_git(backend, handle, ["add", "-A"], cwd=workdir)
-            if res.code == 0:
-                res = run_git(
-                    backend,
-                    handle,
-                    [
-                        "-c",
-                        "user.name=sbx-handoff",
-                        "-c",
-                        "user.email=sbx-handoff@localhost",
-                        "commit",
-                        "-qm",
-                        f"handoff {manifest.artifact_id}",
-                    ],
-                    cwd=workdir,
+        if payload.strip():
+            staging = f"{_STAGING_DIR}/{manifest.artifact_id}.patch"
+            write_payload(backend, handle, staging, payload)
+            target = str(handle.root / staging)
+            res = run_git(backend, handle, ["apply", "--check", target], cwd=workdir)
+            if res.code != 0:
+                raise WorkspaceError(
+                    ARTIFACT_INVALID,
+                    f"artifact {manifest.artifact_id} patch does not apply on the workspace base",
                 )
+            res = run_git(backend, handle, ["apply", "--index", target], cwd=workdir)
+            if res.code != 0:
+                raise WorkspaceError(
+                    ARTIFACT_INVALID, f"artifact {manifest.artifact_id} failed to apply"
+                )
+        staged = run_git(backend, handle, ["diff", "--cached", "--quiet"], cwd=workdir)
+        if staged.code not in (0, 1):
+            raise WorkspaceError(CHECKOUT_FAILED, "git diff --cached failed after patch apply")
+        if staged.code == 1:
+            res = run_git(
+                backend,
+                handle,
+                [
+                    "-c",
+                    "user.name=sbx-handoff",
+                    "-c",
+                    "user.email=sbx-handoff@localhost",
+                    "commit",
+                    "-qm",
+                    f"handoff {manifest.artifact_id}",
+                ],
+                cwd=workdir,
+            )
             if res.code != 0:
                 raise WorkspaceError(CHECKOUT_FAILED, "failed to commit applied artifact payload")
         actual = git_head(backend, handle, workdir)

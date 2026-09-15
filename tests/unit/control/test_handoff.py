@@ -468,6 +468,31 @@ class TestPrepareFromArtifact:
             handoff.prepare_from_artifact(handle, "a1", "art-1", spec=spec(origin, base))
         assert exc.value.code == ARTIFACT_INVALID
 
+    def test_empty_patch_is_a_noop(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        handoff: HandoffService,
+        artifacts: InMemoryArtifactStore,
+    ) -> None:
+        """A no-change artifact (empty patch) applies cleanly — plain
+        ``git apply`` rejects empty input, so the apply step is skipped."""
+        origin, base = make_repo(tmp_path)
+        payload = b""
+        manifest = ArtifactManifest(
+            artifact_id="art-empty",
+            kind=ARTIFACT_KIND_PATCH,
+            repo=str(origin),
+            base_sha=base,
+            head_sha=base,
+            payload_sha256=sha256(payload),
+            files={"a.txt": sha256(b"one\n")},
+        )
+        artifacts.put(manifest, payload)
+        record = handoff.prepare_from_artifact(handle, "a1", "art-empty", spec=spec(origin, base))
+        assert record.head_sha == base
+        assert host_git(handle.root / "repo", "rev-parse", "HEAD") == base
+
     def test_unapplying_patch(
         self,
         tmp_path: Path,

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import os
+import shlex
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -160,12 +161,19 @@ def collect_sandbox_workspace(
     workdir: str,
     *,
     policy: WorkspacePolicy | None = None,
+    only: set[str] | None = None,
 ) -> tuple[list[ArtifactFile], dict[str, bytes], list[str], list[str]]:
     """Collect allowed files under ``workdir`` in a live sandbox.
 
     Returns ``(files, members, warnings, excluded)`` where ``excluded`` lists
     every workspace file the policy denied or the allowlist skipped — the
     diff pathspec that keeps denied content out of ``patch.diff`` too.
+
+    ``only`` bounds collection to a fixed relpath set (e.g. the
+    git-transportable file list): entries outside it are dropped before any
+    read — silently, since untransportable files (ignored build/test output,
+    embedded-repo contents) can never appear in ``patch.diff``/``repo.bundle``
+    and would only fail downstream checksum verification.
     """
     policy = policy or WorkspacePolicy()
     files: list[ArtifactFile] = []
@@ -178,6 +186,8 @@ def collect_sandbox_workspace(
             warnings.append(f"skipped symlink {relpath}")
             continue
         if kind != "f":
+            continue
+        if only is not None and relpath not in only:
             continue
         if policy.denial(relpath) is not None or not policy.is_included(relpath):
             excluded.append(relpath)
@@ -222,6 +232,38 @@ def credential_forbidden_values(
     return tuple(values)
 
 
+def _git_transportable(
+    backend: SandboxBackend, handle: SandboxHandle, workdir: str
+) -> tuple[set[str], set[str]]:
+    """``(visible files, opaque dir prefixes)`` under ``workdir``.
+
+    ``git ls-files -co --exclude-standard`` is exactly the set a downstream
+    checkout can reproduce: tracked files plus untracked files git would
+    transport (non-ignored). Anything else — gitignored test/build output,
+    embedded-repo contents — can be collected but never survives a
+    patch/bundle apply, so it must not enter the manifest. ``/``-suffixed
+    entries are embedded-repo boundaries: untransportable, and ``git add``
+    must not try to stage them as gitlinks (it hard-fails on a repo with no
+    checked-out commit), so they join the diff pathspec exclusions.
+    """
+    res = run_git(
+        backend,
+        handle,
+        ["ls-files", "-c", "-o", "--exclude-standard", "-z"],
+        cwd=workdir,
+    )
+    if res.code != 0:
+        raise WorkspaceError(CHECKOUT_FAILED, f"git ls-files failed in {workdir} (exit {res.code})")
+    visible: set[str] = set()
+    opaque: set[str] = set()
+    for line in res.lines:
+        for name in line.split("\0"):
+            if not name:
+                continue
+            (opaque if name.endswith("/") else visible).add(name)
+    return visible, opaque
+
+
 def _bundle_payload(
     backend: SandboxBackend,
     handle: SandboxHandle,
@@ -257,9 +299,10 @@ def _run_test_command(
     backend: SandboxBackend, handle: SandboxHandle, workdir: str, command: str
 ) -> int:
     """Run ``command`` inside the workdir; returns its exit code."""
+    cwd = shlex.quote(str(Path(handle.root) / workdir))
     proc = backend.exec(
         handle,
-        ["bash", "-lc", f"cd {workdir} && {command}"],
+        ["bash", "-lc", f"cd {cwd} && {command}"],
         env=sandbox_env(handle),
     )
     for _ in proc.stdout:
@@ -319,19 +362,24 @@ def snapshot_workspace_artifact(
         for value in forbidden_values
     )
     policy = WorkspacePolicy(forbidden_values=forbidden)
+    # Only git-transportable files can be reproduced by a downstream apply —
+    # gitignored output or embedded-repo contents would sit in the manifest
+    # yet always fail consumer-side checksum verification.
+    visible, opaque = _git_transportable(backend, handle, workdir)
     files, members, warnings, excluded = collect_sandbox_workspace(
-        backend, handle, workdir, policy=policy
+        backend, handle, workdir, policy=policy, only=visible
     )
 
     # Intent-to-add makes untracked files visible to `git diff` without
     # staging content; the excluded pathspec keeps denied/allowlist-skipped
-    # files out of the payload exactly as it keeps them out of members.
-    res = run_git(backend, handle, ["add", "-N", "-A"], cwd=workdir)
+    # files out of the payload exactly as it keeps them out of members, and
+    # keeps `git add` from staging embedded-repo gitlinks.
+    pathspec = [".", *(f":(exclude){path}" for path in sorted({*excluded, *opaque}))]
+    res = run_git(backend, handle, ["add", "-N", "-A", "--", *pathspec], cwd=workdir)
     if res.code != 0:
         raise WorkspaceError(
             CHECKOUT_FAILED, f"git add -N failed in workdir {workdir} (exit {res.code})"
         )
-    pathspec = [".", *(f":(exclude){path}" for path in excluded)]
     diff = run_git(backend, handle, ["diff", "--binary", base, "--", *pathspec], cwd=workdir)
     if diff.code != 0:
         raise WorkspaceError(

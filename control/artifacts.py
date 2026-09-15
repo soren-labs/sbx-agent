@@ -65,7 +65,9 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 # (``session.json``, event streams, ``turns/``, ``inbox/``) is run evidence,
 # not product — and the event stream can embed pasted user text — so it is
 # denied at the root too.
-_DENIED_COMPONENTS = frozenset({".git", ".codex", ".grok", ".gemini", ".ssh", ".gnupg", ".aws"})
+_DENIED_COMPONENTS = frozenset(
+    {".git", ".codex", ".grok", ".gemini", ".claude", ".ssh", ".gnupg", ".aws", ".sbx-handoff"}
+)
 _DENIED_TOP_LEVEL = frozenset(
     {
         "home",
@@ -80,19 +82,22 @@ _DENIED_TOP_LEVEL = frozenset(
         "session.json",
         "events.jsonl",
         "events.raw.jsonl",
+        "runner.pid",
     }
 )
 _DENIED_BASENAME_GLOBS = (
     ".env",
     ".env.*",
     ".netrc",
+    "netrc",
     ".npmrc",
     ".pypirc",
     ".git-credentials",
     ".dockercfg",
     "auth.json",
-    "credentials",
-    "credentials.json",
+    "credentials*",
+    ".credentials*",
+    "events*.jsonl",
     "id_rsa*",
     "id_dsa*",
     "id_ecdsa*",

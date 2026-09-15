@@ -27,7 +27,7 @@ prepare 顺序：clone → resolve `base_ref` → 比对 `base_sha` → 不一�
 | `manifest.json` | canonical JSON 清单（排序键），读时校验 |
 | `patch.diff` | 工作区相对 `checkout_sha` 的完整 diff（`--binary`，含未跟踪文件；被排除路径经 pathspec 滤除） |
 | `repo.bundle` | `git bundle HEAD ^base`——worktree 干净且 HEAD 移动时存在；钉住精确 commit |
-| `files/<relpath>` | 采集到的每个工作区文件的原始字节 |
+| `files/<relpath>` | 采集到的每个工作区文件的原始字节（仅限 git 可传输集合：tracked ∪ 未被 ignore 的 untracked） |
 
 清单字段：`artifact_id`、`format`、`base_sha`（生产者的
 `checkout_sha`，即交接链的验证锚点）、`head_sha`、`repo`、
@@ -47,6 +47,12 @@ prepare 顺序：clone → resolve `base_ref` → 比对 `base_sha` → 不一�
 - provider home/config 目录（`.codex/`、`.claude/`、`.config/` 等）；
 - runner 簿记：`events*.jsonl`、`inbox/`、`turns/`、`session.json`、
   `runner.pid`、`.sbx-handoff/` 暂存区。
+
+采集范围进一步限制为 **git 可传输文件**（`git ls-files -co
+--exclude-standard`）：被 `.gitignore` 覆盖的测试/构建产物、内嵌 repo
+内容等下游 apply 无法复现的路径不进入 manifest——否则消费侧 sha256
+复核必然失败。被拒绝路径同样以 pathspec 排除出 `patch.diff`；
+`git add -N` 也不会触碰内嵌 repo 边界。
 
 另外 `forbidden_values`（账号 credential blob 内容 + 环境里的
 `SBX_ACCOUNT_CREDENTIAL` / `CODEX_AUTH_JSON`）在任何允许文件或 payload
