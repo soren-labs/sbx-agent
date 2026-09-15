@@ -35,6 +35,30 @@ def test_redact_secret_keys_and_sk_strings() -> None:
     assert "REDACTED" in parsed["text"]
 
 
+def test_redact_covers_injected_token_shapes() -> None:
+    """SOR-101: ``events.jsonl`` is tailed verbatim into the public SSE
+    stream, so every credential shape the control plane can inject must be
+    stripped from provider text — not only sk-/Bearer."""
+    secrets = {
+        "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3In0.signaturepart",
+        "sbx": "sbx_" + "a1b2c3d4" * 5,
+        "xai": "xai-" + "A" * 32,
+        "ghp": "ghp_" + "B" * 36,
+        "ghpat": "github_pat_" + "C" * 30,
+        "linear": "lin_api_" + "d" * 40,
+        "aws": "AKIA" + "E" * 16,
+        "google": "AIza" + "F" * 35,
+    }
+    text = "provider 401: " + " ".join(secrets.values())
+    parsed = json.loads(redact_line(json.dumps({"type": "error", "message": text})))
+    for name, secret in secrets.items():
+        assert secret not in parsed["message"], name
+    # Non-JSON provider output is scrubbed by the same shapes.
+    scrubbed = redact_line(text)
+    for name, secret in secrets.items():
+        assert secret not in scrubbed, name
+
+
 def test_empty_line_is_not_bad_json() -> None:
     obj, bad = parse_event_line("  \n")
     assert obj is None
