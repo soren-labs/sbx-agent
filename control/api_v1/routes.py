@@ -49,8 +49,19 @@ from control.api_v1.schemas import (
     usage_public,
 )
 from control.api_v1.state import AgentMeta, V1State
+from control.config import TERMINAL_STATUSES
 from control.devin_pool import ScheduleRefused
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
+from control.run_store import (
+    CANCELLED,
+    EVIDENCE_UNAVAILABLE,
+    TIMEOUT,
+    UNKNOWN_RUN_STATUS,
+    RunRecord,
+    default_artifact_refs,
+    outcome_from_turn_payload,
+    run_error,
+)
 from control.sandbox_io import read_json, read_text, sandbox_env
 from control.service import ConcurrencyLimit, SessionConflict, format_sse
 
@@ -74,7 +85,12 @@ def _run_n(run_id: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _known_run_ns(rec: Any) -> set[int]:
+def _ledger(plane: Any) -> Any:
+    """The durable run ledger attached to the plane (None when absent)."""
+    return getattr(plane, "run_ledger", None)
+
+
+def _known_run_ns(rec: Any, ledger: Any = None) -> set[int]:
     ns = set(range(1, int(rec.turns) + 1))
     for message in rec.messages:
         n = _turn_n(message.get("turn_id"))
@@ -82,6 +98,13 @@ def _known_run_ns(rec: Any) -> set[int]:
             ns.add(n)
     if rec.current_turn_n is not None:
         ns.add(int(rec.current_turn_n))
+    if ledger is not None:
+        # The ledger is authoritative: a run persisted there is known even
+        # when the session record lost the matching messages/turn count.
+        try:
+            ns.update(record.n for record in ledger.list(rec.id))
+        except Exception:
+            pass
     return ns
 
 
@@ -104,10 +127,122 @@ def _turn_payload(plane: Any, rec: Any, n: int) -> dict[str, Any] | None:
     return payload
 
 
-def _run_public(
-    plane: Any, pub: dict[str, Any], rec: Any, n: int, cancelled: set[int]
+def _record_public(
+    record: RunRecord,
+    pub: dict[str, Any],
+    meta: Any = None,
+    *,
+    status: str | None = None,
+    error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Derive a Cursor-shaped Run from session record + ``turns/<n>.json``."""
+    """Persisted ``RunRecord`` → Cursor-shaped Run (authoritative)."""
+    run: dict[str, Any] = {
+        "id": record.id,
+        "agent_id": record.agent_id,
+        "status": status or record.status,
+        "created_at": record.created_at or pub["created_at"],
+        "updated_at": record.updated_at or pub["updated_at"],
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+        "result": {"text": record.result_text} if record.result_text else None,
+        "error": record.error if error is None else error,
+        "provider": record.provider or (meta.provider if meta else None),
+        "account_id": record.account_id or (meta.account_id if meta else None),
+        "model": record.model or pub.get("model"),
+        "artifact_refs": list(record.artifact_refs),
+    }
+    if record.usage is not None:
+        run["usage"] = usage_public(record.usage)
+    return run
+
+
+def _fallback_status(rec: Any) -> str:
+    """Honest status for a run whose evidence is gone, keyed on the session.
+
+    ``closed`` means the agent was deleted (run cancelled); ``timed_out``
+    means the sandbox expired mid-flight; anything else — including
+    ``lost`` and sessions that are still live but no longer own the turn —
+    is explicit ``UNKNOWN``, never inferred success.
+    """
+    if rec.status == "closed":
+        return "CANCELLED"
+    if rec.status == "timed_out":
+        return "EXPIRED"
+    return "UNKNOWN"
+
+
+def _fallback_error(status: str) -> dict[str, Any]:
+    if status == "CANCELLED":
+        return run_error(
+            CANCELLED,
+            "run has no recorded terminal state; the agent was closed",
+            source="control",
+        )
+    if status == "EXPIRED":
+        return run_error(
+            TIMEOUT,
+            "run has no recorded terminal state; the sandbox timed out",
+            source="control",
+            retryable=True,
+        )
+    return run_error(
+        EVIDENCE_UNAVAILABLE,
+        "run outcome unavailable: no persisted terminal state and no readable evidence",
+        source="control",
+    )
+
+
+def _run_public(
+    plane: Any,
+    pub: dict[str, Any],
+    rec: Any,
+    n: int,
+    cancelled: set[int],
+    meta: Any = None,
+) -> dict[str, Any]:
+    """Cursor-shaped Run; the durable ledger is authoritative once written.
+
+    Open records and pre-ledger sessions fall back to evidence-checked
+    derivation: a readable ``turns/<n>.json`` decides the terminal status
+    (persisted into the ledger when one is attached); without evidence the
+    status is explicit ``UNKNOWN`` or the session-derived fallback — never
+    inferred ``FINISHED``.
+    """
+    ledger = _ledger(plane)
+    record = ledger.get(rec.id, n) if ledger is not None else None
+    live = rec.current_turn_n == n and rec.status not in TERMINAL_STATUSES
+    if record is not None:
+        if record.terminal or live:
+            return _record_public(record, pub, meta)
+        if n in cancelled:
+            return _record_public(
+                record, pub, meta, status="CANCELLED", error=_fallback_error("CANCELLED")
+            )
+        payload = _turn_payload(plane, rec, n)
+        if payload is not None:
+            status, error, result_text, usage = outcome_from_turn_payload(payload)
+            record = ledger.finish(
+                rec.id,
+                n,
+                status=status,
+                result_text=result_text,
+                error=error,
+                usage=usage,
+                provider=meta.provider if meta else None,
+                account_id=meta.account_id if meta else None,
+                model=pub.get("model"),
+            )
+            return _record_public(record, pub, meta)
+        if record.status == UNKNOWN_RUN_STATUS:
+            # Corrupt stored payload: report it as-is (UNKNOWN) rather than
+            # guessing a terminal state from the session.
+            return _record_public(record, pub, meta)
+        status = _fallback_status(rec)
+        return _record_public(
+            record, pub, meta, status=status, error=record.error or _fallback_error(status)
+        )
+
+    # No ledger record (pre-ledger session or lost store): derive honestly.
     turn_id = f"turn-{n}"
     created_at: str = pub["created_at"]
     updated_at: str = pub["updated_at"]
@@ -122,30 +257,44 @@ def _run_public(
             updated_at = str(message.get("ts") or updated_at)
 
     usage: dict[str, Any] | None = None
-    if rec.current_turn_n == n and rec.status not in ("closed", "timed_out", "lost"):
+    error: dict[str, Any] | None = None
+    if live:
         status = "RUNNING"
     elif n in cancelled:
         status = "CANCELLED"
+        error = _fallback_error("CANCELLED")
     elif n <= int(rec.turns):
         payload = _turn_payload(plane, rec, n)
         if payload is not None:
-            turn_status = str(payload.get("status") or "")
-            if turn_status == "success":
-                status = "FINISHED"
-            elif turn_status == "timeout":
-                status = "EXPIRED"
-            else:
-                status = "ERROR"
-            if payload.get("message"):
-                result_text = str(payload["message"])
-            if isinstance(payload.get("usage"), dict):
-                usage = payload["usage"]
+            status, error, payload_text, usage = outcome_from_turn_payload(payload)
+            if payload_text is not None:
+                result_text = payload_text
+            if ledger is not None:
+                # Backfill: persist the outcome so later reads stay truthful
+                # after the sandbox is reclaimed.
+                record = ledger.finish(
+                    rec.id,
+                    n,
+                    status=status,
+                    result_text=result_text,
+                    error=error,
+                    usage=usage,
+                    provider=meta.provider if meta else None,
+                    account_id=meta.account_id if meta else None,
+                    model=pub.get("model"),
+                    created_at=created_at,
+                )
+                return _record_public(record, pub, meta)
         else:
-            status = "FINISHED"
+            # Turn counted but outcome unreadable — explicit unknown.
+            status = "UNKNOWN"
+            error = _fallback_error("UNKNOWN")
     elif rec.status in ("timed_out", "lost"):
         status = "EXPIRED"
+        error = _fallback_error("EXPIRED")
     else:
         status = "CANCELLED"
+        error = _fallback_error("CANCELLED")
 
     run: dict[str, Any] = {
         "id": f"run-{n}",
@@ -153,7 +302,14 @@ def _run_public(
         "status": status,
         "created_at": created_at,
         "updated_at": updated_at,
+        "started_at": created_at if status == "RUNNING" else None,
+        "finished_at": updated_at if status != "RUNNING" else None,
         "result": {"text": result_text} if result_text else None,
+        "error": error,
+        "provider": meta.provider if meta else None,
+        "account_id": meta.account_id if meta else None,
+        "model": pub.get("model"),
+        "artifact_refs": default_artifact_refs(n),
     }
     if usage is not None:
         run["usage"] = usage_public(usage)
@@ -163,7 +319,11 @@ def _run_public(
 def _runs(plane: Any, rec: Any, v1: V1State) -> list[dict[str, Any]]:
     pub = plane.public(rec)
     cancelled = v1.cancelled(rec.id)
-    return [_run_public(plane, pub, rec, n, cancelled) for n in sorted(_known_run_ns(rec))]
+    meta = v1.get_meta(rec.id)
+    ledger = _ledger(plane)
+    return [
+        _run_public(plane, pub, rec, n, cancelled, meta) for n in sorted(_known_run_ns(rec, ledger))
+    ]
 
 
 def _require_agent(plane: Any, agent_id: str) -> Any:
@@ -175,10 +335,10 @@ def _require_agent(plane: Any, agent_id: str) -> Any:
 
 def _require_run(plane: Any, rec: Any, run_id: str, v1: V1State) -> dict[str, Any]:
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec):
+    if n is None or n not in _known_run_ns(rec, _ledger(plane)):
         raise not_found("run not found")
     pub = plane.public(rec)
-    return _run_public(plane, pub, rec, n, v1.cancelled(rec.id))
+    return _run_public(plane, pub, rec, n, v1.cancelled(rec.id), v1.get_meta(rec.id))
 
 
 # ---------------------------------------------------------------- agents
@@ -338,7 +498,14 @@ def create_agent(
         n = _turn_n(turn_id) or 1
         rec = _require_agent(plane, session_id)
         agent = agent_public(plane.public(rec), v1.get_meta(session_id))
-        run = _run_public(plane, plane.public(rec), rec, n, v1.cancelled(session_id))
+        run = _run_public(
+            plane,
+            plane.public(rec),
+            rec,
+            n,
+            v1.cancelled(session_id),
+            v1.get_meta(session_id),
+        )
     except Exception:
         _discard_agent(plane, v1, session_id, lease)
         raise
@@ -425,7 +592,7 @@ def create_run(
     n = _turn_n(turn_id) or 0
     rec = _require_agent(plane, agent_id)
     pub = plane.public(rec)
-    return _run_public(plane, pub, rec, n, v1.cancelled(agent_id))
+    return _run_public(plane, pub, rec, n, v1.cancelled(agent_id), v1.get_meta(agent_id))
 
 
 @router.get("/agents/{agent_id}/runs")
@@ -461,7 +628,7 @@ def cancel_run(
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec):
+    if n is None or n not in _known_run_ns(rec, _ledger(plane)):
         raise not_found("run not found")
     if rec.current_turn_n == n and rec.status == "running":
         try:
@@ -515,7 +682,7 @@ async def stream_run(
 
     rec = _require_agent(plane, agent_id)
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec):
+    if n is None or n not in _known_run_ns(rec, _ledger(plane)):
         raise not_found("run not found")
     try:
         last_id = int(last_event_id) if last_event_id else 0

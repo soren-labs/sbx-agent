@@ -32,6 +32,7 @@ from control.config import (
     env_float,
     env_int,
 )
+from control.run_store import RunLedger, RunStore
 from control.sandbox_io import sandbox_env
 from control.service import (
     ConcurrencyLimit,
@@ -118,10 +119,36 @@ def _select_store() -> SessionStore:
     return InMemoryStore()
 
 
+def _select_run_store() -> RunStore:
+    """SOR-82/A1: the durable run ledger's backing store.
+
+    Production keeps run records in a ``modal.Dict`` (``sbx-runs``) so they
+    survive control-plane restarts and sandbox teardown. Locally the ledger
+    lives on disk under ``$SBX_RUN_STORE_DIR`` (or
+    ``$XDG_STATE_HOME/sbx-browser/runs``) — same re-open semantics.
+    """
+    kind = os.environ.get("SBX_BACKEND", "local")
+    if kind == "modal":
+        from control.run_store import ModalDictRunStore
+
+        return ModalDictRunStore()
+    from pathlib import Path
+
+    from control.run_store import FileRunStore
+
+    override = os.environ.get("SBX_RUN_STORE_DIR")
+    if override:
+        return FileRunStore(override)
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return FileRunStore(base / "sbx-browser" / "runs")
+
+
 def create_app(
     *,
     backend: SandboxBackend | None = None,
     store: SessionStore | None = None,
+    run_store: RunStore | None = None,
     runner_cmd: list[str] | None = None,
     basic_user: str | None = None,
     basic_password: str | None = None,
@@ -134,6 +161,7 @@ def create_app(
     backend_kind = os.environ.get("SBX_BACKEND", "local")
     backend = backend or _select_backend()
     store = store or _select_store()
+    run_store = run_store or _select_run_store()
     runner_cmd = runner_cmd or default_runner_cmd(backend_kind=backend_kind)
     user_default, pass_default = basic_credentials()
     basic_user = basic_user if basic_user is not None else user_default
@@ -155,11 +183,14 @@ def create_app(
         idle_timeout_s=idle_timeout_s
         if idle_timeout_s is not None
         else env_int("SBX_IDLE_TIMEOUT_S", IDLE_TIMEOUT_S),
+        run_ledger=RunLedger(run_store, clock=clock),
     )
 
     app = FastAPI(title="sbx-control", version="0.1.0")
     app.include_router(api_v1_router)  # empty shell until P2-D (SOR-64)
     app.state.plane = plane
+    app.state.run_store = run_store
+    app.state.run_ledger = plane.run_ledger
     app.state.basic_user = basic_user
     app.state.basic_password = basic_password
     app.state.keepalive_s = keepalive

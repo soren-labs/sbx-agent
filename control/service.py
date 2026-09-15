@@ -19,6 +19,7 @@ from control.config import (
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
 )
+from control.run_store import RunLedger, outcome_from_turn_payload
 from control.sandbox_io import drain, read_json, sandbox_env, write_file
 from control.store import SessionRecord, SessionStore, empty_usage, merge_usage
 
@@ -93,6 +94,7 @@ class ControlPlane:
         default_model: str = DEFAULT_MODEL,
         idle_timeout_s: int = IDLE_TIMEOUT_S,
         turn_max_seconds: int = TURN_MAX_SECONDS,
+        run_ledger: RunLedger | None = None,
     ) -> None:
         self.backend = backend
         self.store = store
@@ -102,8 +104,13 @@ class ControlPlane:
         self.default_model = default_model
         self.idle_timeout_s = idle_timeout_s
         self.turn_max_seconds = turn_max_seconds
+        self.run_ledger = run_ledger
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
+        # Per-session provider/account/model context for run records. Lost on
+        # restart; persisted RunRecords carry their own copies, and sandbox
+        # tags keep provider/account for sessions that predate the restart.
+        self._run_meta: dict[str, dict[str, str | None]] = {}
 
     def runner(self, *args: str) -> list[str]:
         return [*self.runner_cmd, *args]
@@ -231,6 +238,11 @@ class ControlPlane:
             rec.updated_at = now
             rec.last_activity_at = now
             self.store.put(rec)
+            self._run_meta[session_id] = {
+                "provider": provider,
+                "account_id": account_id,
+                "model": rec.model,
+            }
         return session_id
 
     def _mark_create_failed(self, rec: SessionRecord) -> None:
@@ -268,6 +280,17 @@ class ControlPlane:
             rec.updated_at = now
             rec.messages.append({"role": "user", "text": text, "turn_id": turn_id, "ts": iso(now)})
             self.store.put(rec)
+            if self.run_ledger is not None:
+                meta = self._run_meta.get(session_id, {})
+                self.run_ledger.begin(
+                    agent_id=session_id,
+                    n=n,
+                    provider=meta.get("provider") or rec.sandbox_tags.get("provider") or "codex",
+                    account_id=meta.get("account_id")
+                    or rec.sandbox_tags.get("account_id")
+                    or "auto",
+                    model=meta.get("model") or rec.model,
+                )
 
         rel = f"_prompt_{n}.md"
         try:
@@ -324,6 +347,15 @@ class ControlPlane:
             rec.updated_at = now
             rec.last_activity_at = now
             self.store.put(rec)
+            if self.run_ledger is not None:
+                # The turn never started; its open run record is rolled back
+                # with the pending user message.
+                try:
+                    n = int(turn_id.rsplit("-", 1)[-1])
+                except ValueError:
+                    n = 0
+                if n:
+                    self.run_ledger.discard(session_id, n)
 
     def _watch_turn(self, session_id: str, turn_id: str, n: int, proc: Process) -> None:
         try:
@@ -362,6 +394,20 @@ class ControlPlane:
             rec.updated_at = now
             rec.last_activity_at = now
             self.store.put(rec)
+            if self.run_ledger is not None:
+                # Persist the terminal outcome now, while turns/<n>.json may
+                # still be readable; after teardown this record is the only
+                # evidence. Inside the lock so it serializes against
+                # stop()/close() ledger cancels.
+                status, error, result_text, usage = outcome_from_turn_payload(payload)
+                self.run_ledger.finish(
+                    session_id,
+                    n,
+                    status=status,
+                    result_text=result_text,
+                    error=error,
+                    usage=usage,
+                )
             self._live.pop(session_id, None)
 
     def stop(self, session_id: str) -> str:
@@ -372,6 +418,10 @@ class ControlPlane:
             handle = rec.handle()
             live = self._live.get(session_id)
             if rec.status == "running":
+                if self.run_ledger is not None and rec.current_turn_n is not None:
+                    # Persist CANCELLED before the session goes idle: a late
+                    # _finish_turn can then never flip the run to FINISHED.
+                    self.run_ledger.cancel(session_id, int(rec.current_turn_n))
                 rec.status = "idle"
                 rec.current_turn_id = None
                 rec.current_turn_n = None
@@ -395,6 +445,14 @@ class ControlPlane:
                 raise KeyError(session_id)
             live = self._live.pop(session_id, None)
             handle = rec.handle()
+            self._run_meta.pop(session_id, None)
+            if self.run_ledger is not None:
+                # Runs still open can never complete once the sandbox is
+                # terminated; finalize them as CANCELLED so they stay
+                # truthful after teardown.
+                for record in self.run_ledger.list(session_id):
+                    if not record.terminal:
+                        self.run_ledger.cancel(session_id, record.n, message="agent closed")
             now = self.clock()
             rec.status = "closed"
             rec.ended_at = now

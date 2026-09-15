@@ -12,6 +12,7 @@
 | `deploy.py` | `deploy()`：`python -m modal deploy -m control.modal_app`。`make deploy` / WP1-A `invoke_control_deploy` 入口 |
 | `modal_app.py` | `@modal.asgi_app()` + `@modal.concurrent(max_inputs=20)` + reaper `Cron("*/5 * * * *")`；`CONTROL_IMAGE` 带 FastAPI 栈 |
 | `store.py` | `SessionStore` / `InMemoryStore` / `ModalDictStore` |
+| `run_store.py` | SOR-82/A1 durable run ledger：`RunRecord` / `RunLedger`（terminal 单调不可逆）/ `InMemoryRunStore` / `FileRunStore` / `ModalDictRunStore`（`sbx-runs` Dict） |
 | `reaper.py` | 纯函数 `reap(store, backend, now)` |
 | `service.py` | 状态机 `creating → idle ⇄ running → closed \| timed_out \| lost` |
 
@@ -39,3 +40,4 @@ uv run python -c "from control.deploy import deploy; deploy()"
 | `SBX_SSE_KEEPALIVE_SECONDS` | SSE `: keepalive` 间隔，默认 15 |
 | `SBX_MAX_CONCURRENT` | 每 owner 并发 Sandbox 上限，默认 2 |
 | `SBX_IDLE_TIMEOUT_S` | 空闲回收阈值，默认 1800 |
+| `SBX_RUN_STORE_DIR` | 本地 run ledger 落盘目录；默认 `$XDG_STATE_HOME/sbx-browser/runs`（modal 后端用 `sbx-runs` Dict） |

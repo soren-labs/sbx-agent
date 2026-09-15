@@ -590,8 +590,13 @@ components:
       description: Same enum as P1 session status.
     RunStatus:
       type: string
-      enum: [CREATING, RUNNING, FINISHED, ERROR, CANCELLED, EXPIRED]
-      description: Cursor-shaped run state derived from turn state.
+      enum: [CREATING, RUNNING, FINISHED, ERROR, CANCELLED, EXPIRED, UNKNOWN]
+      description: |
+        Cursor-shaped run state. Terminal states FINISHED/ERROR/CANCELLED/
+        EXPIRED are persisted in the run ledger (SOR-82/A1) and never change
+        once written — sandbox teardown cannot rewrite them. UNKNOWN means
+        the run's outcome is unavailable (no persisted terminal state and no
+        readable evidence); it is never inferred as success.
     Usage:
       type: object
       required: [input_tokens, cached_input_tokens, output_tokens]
@@ -717,14 +722,61 @@ components:
         updated_at:
           type: string
           format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
         result:
           type: object
           nullable: true
           properties:
             text:
               type: string
+        error:
+          $ref: "#/components/schemas/RunError"
         usage:
           $ref: "#/components/schemas/Usage"
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+          nullable: true
+        account_id:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        artifact_refs:
+          type: array
+          items:
+            type: string
+          description: |
+            Sandbox-relative evidence paths for this run
+            (``turns/<n>.json``, ``inbox/<n>.md``, ``events.jsonl``,
+            ``events.raw.jsonl``). Refs may be dangling after the sandbox is
+            reclaimed; the ledger record is the durable truth.
+    RunError:
+      type: object
+      nullable: true
+      required: [code, source, message, retryable]
+      description: |
+        Minimal structured error persisted on a run (SOR-82/A1 storage
+        shape). A3 freezes the canonical ``code`` taxonomy.
+      properties:
+        code:
+          type: string
+        source:
+          type: string
+          enum: [provider, runtime, control, telemetry]
+        message:
+          type: string
+        retryable:
+          type: boolean
+        retry_after:
+          type: number
     AgentUsage:
       type: object
       required: [usage, cost_estimate_usd, sandbox_seconds]
