@@ -19,6 +19,10 @@ _SECRET_KEYS = {
     "authorization",
     "token",
     "openai_api_key",
+    # grok streaming-json step-level usage events carry an account-bound
+    # ``signature`` blob (GROK_SPIKE.md handoff): never let it reach
+    # events.jsonl / events.raw.jsonl.
+    "signature",
 }
 
 _SK_RE = re.compile(r"sk-[A-Za-z0-9_-]{8,}")

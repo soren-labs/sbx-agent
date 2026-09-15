@@ -43,8 +43,32 @@ DEVIN_ENV_EXCLUDE: tuple[str, ...] = (
     "DEVIN_OUTPOSTS_TOKEN",
 )
 
+# Grok-only (SOR-62, spike/p2/GROK_SPIKE.md §子进程 env 剔除清单): every
+# alternate auth channel must be absent so the restored .grok/auth.json is
+# the only credential source. ``GROK_HOME``/``GROK_CONFIG_PATH`` are
+# stripped too so the CLI always resolves ``~/.grok`` under the sandbox
+# HOME (the spike lists them as "must not be set"; stripping guarantees it).
+GROK_ENV_EXCLUDE: tuple[str, ...] = (
+    "XAI_API_KEY",
+    "GROK_AUTH_PROVIDER_ACCESS_TOKEN",
+    "GROK_AUTH_PROVIDER_REFRESH_TOKEN",
+    "GROK_AUTH_PROVIDER_COMMAND",
+    "GROK_AUTH_PROVIDER_EXPIRES_AT",
+    "GROK_AUTH_PROVIDER_LABEL",
+    "GROK_CODE_XAI_API_KEY",
+    "GROK_DEPLOYMENT_KEY",
+    "GROK_ALPHA_TEST_KEY",
+    "GROK_AUTH_PATH",
+    "GROK_OAUTH_ENABLED",
+    "GROK_LOCAL_AUTH",
+    "GROK_OIDC_CLIENT_ID",
+    "GROK_SANDBOX",
+    "GROK_HOME",
+    "GROK_CONFIG_PATH",
+)
+
 # Union stripped by ``scrub_child_env`` for non-Codex agent children.
-AGENT_ENV_EXCLUDE: tuple[str, ...] = CREDENTIAL_ENV_EXCLUDE + DEVIN_ENV_EXCLUDE
+AGENT_ENV_EXCLUDE: tuple[str, ...] = CREDENTIAL_ENV_EXCLUDE + DEVIN_ENV_EXCLUDE + GROK_ENV_EXCLUDE
 
 
 class CredentialError(Exception):

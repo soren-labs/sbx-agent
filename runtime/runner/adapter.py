@@ -124,6 +124,12 @@ def _antigravity() -> AgentAdapter:
     return AntigravityAdapter()
 
 
+def _grok() -> AgentAdapter:
+    from runtime.runner.adapters.grok import GrokAdapter
+
+    return GrokAdapter()
+
+
 def _devin() -> AgentAdapter:
     from runtime.runner.adapters.devin import DevinAdapter
 
@@ -133,5 +139,6 @@ def _devin() -> AgentAdapter:
 _REGISTRY: dict[str, Callable[[], AgentAdapter]] = {
     "codex": CodexAdapter,
     "antigravity": _antigravity,
+    "grok": _grok,
     "devin": _devin,
 }
