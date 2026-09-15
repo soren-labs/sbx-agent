@@ -115,6 +115,48 @@ def test_classify_failure_retry_after():
     assert "retry_after" not in no_hint.public()
 
 
+def test_error_message_never_carries_secret_fragments():
+    """SOR-101: ``run.error.message`` is a second redaction seam — provider
+    text that slipped a token past the runner redaction still cannot reach
+    the API."""
+    err = classify_failure(
+        "401 unauthorized: bearer sbx_0123456789abcdef0123 rejected; "
+        "api key sk-THISLEAKEDVALUE12; "
+        "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3In0.signaturepart"
+    )
+    assert err is not None and err.code == CODE_AUTH_INVALID
+    for fragment in (
+        "sbx_0123456789abcdef0123",
+        "sk-THISLEAKEDVALUE12",
+        "eyJhbGciOiJIUzI1NiJ9",
+    ):
+        assert fragment not in err.message
+    assert "REDACTED" in err.message
+    # The same scrub applies on the turn-record path (timeout/cancel/detail).
+    timed_out = run_error_from_turn(
+        _turn(status="timeout", error="turn died with key sk-THISLEAKEDVALUE12 visible")
+    )
+    assert timed_out is not None
+    assert "sk-THISLEAKEDVALUE12" not in timed_out.message
+
+
+def test_error_message_redacts_injected_token_shapes():
+    """The second seam covers the rest of the injected credential universe —
+    xAI/GitHub/AWS/Google/Linear key shapes — not just sk-/bearer/sbx_/JWT."""
+    secrets = (
+        "xai-0123456789abcdefABCDEF0123456789",
+        "ghp_ABCDEFGHIJKLMNOPQRSTUVWX12345678",
+        "github_pat_11ABCDEFGH_abcdefghijklmnopqrstuv",
+        "lin_api_" + "0" * 40,
+        "AKIAIOSFODNN7EXAMPLE",
+        "AIza" + "Z" * 35,
+    )
+    err = classify_failure("403 forbidden: " + " ".join(secrets))
+    assert err is not None and err.code == CODE_AUTH_INVALID
+    for secret in secrets:
+        assert secret not in err.message
+
+
 # ---------------------------------------------------------------------------
 # run_error_from_turn: payload normalization.
 # ---------------------------------------------------------------------------

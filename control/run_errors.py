@@ -241,8 +241,30 @@ _NEEDLES: tuple[tuple[tuple[str, ...], RunErrorCode, RunErrorSource, bool], ...]
 )
 
 
+# Secret-shaped fragments must never reach a public ``run.error`` message.
+# Provider text is already redacted inside the runner (runtime.runner.events)
+# before ``turns/<n>.json`` is written — this is the second seam, so a
+# regression upstream still cannot echo token material to the API. Patterns
+# mirror the runner redaction: sk-/Bearer plus the injected credential
+# universe (sbx_ keys, OAuth JWTs, xAI/GitHub/AWS/Google/Linear tokens).
+_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "REDACTED"),
+    (re.compile(r"(?i)bearer\s+\S+"), "Bearer REDACTED"),
+    (re.compile(r"sbx_[0-9a-f]{16,}"), "REDACTED"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "REDACTED"),
+    (re.compile(r"xai-[A-Za-z0-9_-]{16,}"), "REDACTED"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "REDACTED"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{16,}"), "REDACTED"),
+    (re.compile(r"lin_(?:api|oauth)_[A-Za-z0-9]{16,}"), "REDACTED"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "REDACTED"),
+    (re.compile(r"AIza[0-9A-Za-z_-]{30,}"), "REDACTED"),
+)
+
+
 def _clip(text: str) -> str:
     text = text.strip()
+    for pattern, replacement in _SECRET_RES:
+        text = pattern.sub(replacement, text)
     return text if len(text) <= _MESSAGE_LIMIT else text[: _MESSAGE_LIMIT - 1] + "…"
 
 

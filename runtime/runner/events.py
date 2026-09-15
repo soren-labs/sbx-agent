@@ -28,6 +28,22 @@ _SECRET_KEYS = {
 _SK_RE = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
 _BEARER_RE = re.compile(r"(?i)bearer\s+\S+")
 
+# SOR-101: ``events.jsonl`` is tailed verbatim into the public SSE stream, so
+# every credential shape this system injects must be stripped from provider
+# text — OAuth JWTs (CODEX_AUTH_JSON), sbx_ API keys, xAI/GitHub/AWS/Google/
+# Linear tokens — not only sk-/Bearer. ``control.run_errors._SECRET_RES``
+# mirrors this set on the run.error path; keep them in sync.
+_EXTRA_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"sbx_[0-9a-f]{16,}"), "REDACTED"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "REDACTED"),
+    (re.compile(r"xai-[A-Za-z0-9_-]{16,}"), "REDACTED"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "REDACTED"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{16,}"), "REDACTED"),
+    (re.compile(r"lin_(?:api|oauth)_[A-Za-z0-9]{16,}"), "REDACTED"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "REDACTED"),
+    (re.compile(r"AIza[0-9A-Za-z_-]{30,}"), "REDACTED"),
+)
+
 
 def empty_usage() -> dict[str, int]:
     return {key: 0 for key in USAGE_FIELDS}
@@ -46,6 +62,8 @@ def add_usage(acc: dict[str, int], usage: dict[str, Any]) -> None:
 def redact_text(text: str) -> str:
     text = _SK_RE.sub("REDACTED", text)
     text = _BEARER_RE.sub("Bearer REDACTED", text)
+    for pattern, replacement in _EXTRA_SECRET_RES:
+        text = pattern.sub(replacement, text)
     return text
 
 

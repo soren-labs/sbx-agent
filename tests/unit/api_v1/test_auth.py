@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 
 class TestBearerAuth:
     def test_missing_header_is_401(self, client) -> None:
@@ -49,6 +51,22 @@ class TestBearerAuth:
         assert client.get("/v1/me", headers=headers).status_code == 200
         assert v1_env.keys.revoke(record.id)
         assert client.get("/v1/me", headers=headers).status_code == 401
+
+    def test_key_store_retains_hash_only(self, v1_env) -> None:
+        """SOR-101: plaintext ``sbx_`` tokens never persist — only sha256.
+
+        A store/database dump must not yield usable bearer material, and the
+        public record carries no plaintext at all.
+        """
+        record, token = v1_env.keys.create(label="scan", scopes=("agents",))
+        assert token.startswith("sbx_")
+        assert record.key_hash == hashlib.sha256(token.encode("utf-8")).hexdigest()
+        assert token not in repr(record) and token not in repr(vars(record))
+        assert token not in repr(v1_env.keys.list())
+        # Only the plaintext authenticates; the stored hash is not a token.
+        assert v1_env.keys.lookup(token) is not None
+        assert v1_env.keys.lookup(record.key_hash) is None
+        assert v1_env.keys.lookup(f"sbx_{record.key_hash}") is None
 
 
 class TestScopes:

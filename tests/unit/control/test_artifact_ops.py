@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -408,6 +409,68 @@ class TestCredentialForbiddenValues:
         )
         assert b"sk-provider-REDACTED" in values
         assert not any(b"/bin" == v for v in values)
+
+    def test_token_field_extracted_from_json_blob(self) -> None:
+        """A workdir file holding ONLY the token — not a byte-exact copy of
+        auth.json — must still fail the snapshot closed (SOR-101)."""
+        token = "CANARY-SBX-TOKEN-0123456789abcdef"
+        blob = {
+            "provider": "codex",
+            "files": {".codex/auth.json": json.dumps({"tokens": {"access_token": token}})},
+        }
+        values = credential_forbidden_values(blob, env={})
+        assert token.encode("utf-8") in values
+
+    def test_toml_credential_field_extracted(self) -> None:
+        token = "CANARY-SBX-TOKEN-0123456789abcdef"
+        blob = {
+            "provider": "devin",
+            "files": {".local/share/devin/credentials.toml": f'windsurf_api_key = "{token}"\n'},
+        }
+        values = credential_forbidden_values(blob, env={})
+        assert token.encode("utf-8") in values
+
+    def test_secret_fields_extracted_from_env_values(self) -> None:
+        """``SBX_ACCOUNT_CREDENTIAL`` nests credential JSON inside JSON — a
+        token two layers down is still its own forbidden value."""
+        token = "CANARY-SBX-TOKEN-0123456789abcdef"
+        env_blob = json.dumps(
+            {
+                "provider": "codex",
+                "files": {".codex/auth.json": json.dumps({"tokens": {"id_token": token}})},
+            }
+        )
+        values = credential_forbidden_values(
+            None,
+            env={
+                "SBX_ACCOUNT_CREDENTIAL": env_blob,
+                "CODEX_AUTH_JSON": json.dumps({"api_key": token}),
+            },
+        )
+        assert token.encode("utf-8") in values
+
+    def test_short_placeholder_values_not_extracted(self) -> None:
+        """``REDACTED`` placeholders are not treated as secrets — only the
+        whole-file value is forbidden, so fixtures cannot fail snapshots."""
+        blob = {"provider": "codex", "files": {"auth.json": '{"token":"REDACTED"}'}}
+        values = credential_forbidden_values(blob, env={})
+        assert b'{"token":"REDACTED"}' in values
+        assert b"REDACTED" not in values
+
+    def test_partial_token_copy_fails_collection(
+        self, backend: LocalProcessBackend, handle: SandboxHandle
+    ) -> None:
+        token = "CANARY-SBX-TOKEN-0123456789abcdef"
+        blob = {
+            "provider": "codex",
+            "files": {".codex/auth.json": json.dumps({"tokens": {"access_token": token}})},
+        }
+        workdir = _workdir(handle)
+        workdir.mkdir()
+        (workdir / "note.txt").write_text(f"debug token was {token}\n", encoding="utf-8")
+        policy = WorkspacePolicy(forbidden_values=credential_forbidden_values(blob, env={}))
+        with pytest.raises(ArtifactSecretError):
+            collect_sandbox_workspace(backend, handle, "repo", policy=policy)
 
 
 class TestWrongBase:

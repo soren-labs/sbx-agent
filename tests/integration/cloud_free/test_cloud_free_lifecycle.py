@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import threading
@@ -56,11 +57,17 @@ def test_item1_init_writes_config_and_agents_without_secrets(client: TestClient,
 
         auth_path = root / ".codex" / "auth.json"
         assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
+        # The credential directory itself is restricted (SOR-101).
+        assert stat.S_IMODE((root / ".codex").stat().st_mode) == 0o700
         auth = json.loads(auth_path.read_text(encoding="utf-8"))
         tokens = auth.get("tokens") or {}
+        # Compare digests, not values: if a host credential ever leaked into
+        # auth.json, a failing assert must not dump the token (SOR-55).
+        expected = hashlib.sha256(b"REDACTED").hexdigest()
         for key in ("access_token", "refresh_token", "id_token"):
             if key in tokens:
-                assert tokens[key] == "REDACTED"
+                got = hashlib.sha256(str(tokens[key]).encode("utf-8")).hexdigest()
+                assert got == expected, f"{key} is not the REDACTED placeholder"
 
         session = json.loads((root / "session.json").read_text(encoding="utf-8"))
         assert session["codex_session_id"] is None
