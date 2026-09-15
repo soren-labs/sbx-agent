@@ -31,6 +31,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -151,6 +152,26 @@ def descriptor_for(provider: str) -> ProviderDescriptor:
             "unknown_provider",
             f"unknown provider {provider!r}; supported: {sorted(_DESCRIPTOR_INDEX)}",
         ) from None
+
+
+_ACCOUNT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _check_account_id(account_id: Any) -> str:
+    """Reject ids that could escape the account store's file layout.
+
+    ``FileAccountStore`` maps an id to ``accounts/<id>.json`` /
+    ``credentials/<id>.json``, and the Modal lane embeds it verbatim in Dict
+    keys and the ``sbx-acct-<id>`` Secret name — only unreserved filename
+    characters are safe.
+    """
+    if not isinstance(account_id, str) or not _ACCOUNT_ID_RE.fullmatch(account_id):
+        raise OnboardingError(
+            "invalid_account_id",
+            f"invalid account id {account_id!r}: use 1-128 chars of "
+            "[A-Za-z0-9._-], starting with an alphanumeric",
+        )
+    return account_id
 
 
 # ------------------------------------------------------------------ validation
@@ -509,6 +530,15 @@ class OnboardingService:
     def registry(self) -> PersistentAccountRegistry:
         return self._registry
 
+    def _get_account(self, account_id: str) -> Account:
+        """Fetch ``account_id`` or raise; validates the id first so a
+        caller-supplied value can never reach a store path."""
+        _check_account_id(account_id)
+        account = self._registry.get(account_id)
+        if account is None:
+            raise OnboardingError("account_not_found", f"account {account_id!r} not found")
+        return account
+
     # -- write paths
 
     def add(
@@ -539,7 +569,7 @@ class OnboardingService:
             allow_open_permissions=allow_open_permissions,
             stdin_text=stdin_text,
         )
-        account_id = account_id or f"acct-{provider}-{uuid.uuid4().hex[:8]}"
+        account_id = _check_account_id(account_id or f"acct-{provider}-{uuid.uuid4().hex[:8]}")
         if self._registry.get(account_id) is not None:
             raise OnboardingError("account_exists", f"account {account_id!r} already exists")
         account = Account(
@@ -576,9 +606,7 @@ class OnboardingService:
         refresh leaves the previous blob byte-identical. Returns
         ``{"changed": bool, "files": int}`` — never blob content.
         """
-        account = self._registry.get(account_id)
-        if account is None:
-            raise OnboardingError("account_not_found", f"account {account_id!r} not found")
+        account = self._get_account(account_id)
         blob = collect_credential_blob(
             account.provider,
             source,
@@ -591,9 +619,7 @@ class OnboardingService:
 
     def export(self, account_id: str, out_path: Path | str) -> Path:
         """Write the stored blob to ``out_path`` (mode 600, atomic)."""
-        account = self._registry.get(account_id)
-        if account is None:
-            raise OnboardingError("account_not_found", f"account {account_id!r} not found")
+        self._get_account(account_id)
         blob = self._registry.get_credential_blob(account_id)
         if blob is None:
             raise OnboardingError(
@@ -625,9 +651,7 @@ class OnboardingService:
         ``invalid``/``cooling`` accounts but never re-enables a ``disabled``
         one (operator intent wins).
         """
-        account = self._registry.get(account_id)
-        if account is None:
-            raise OnboardingError("account_not_found", f"account {account_id!r} not found")
+        account = self._get_account(account_id)
         result = self._probe.probe(account, self._registry.get_credential_blob(account_id))
         status = result.status
         if status == "ok":
@@ -669,15 +693,13 @@ class OnboardingService:
         }
 
     def status(self, account_id: str) -> dict[str, Any]:
-        account = self._registry.get(account_id)
-        if account is None:
-            raise OnboardingError("account_not_found", f"account {account_id!r} not found")
-        return self.describe(account)
+        return self.describe(self._get_account(account_id))
 
     def list(self, provider: str | None = None) -> list[dict[str, Any]]:
         return [self.describe(a) for a in self._registry.list(provider)]
 
     def _set_status(self, account_id: str, status: str) -> Account:
+        _check_account_id(account_id)
         try:
             return self._registry.mark_status(account_id, status)
         except KeyError:
@@ -693,9 +715,7 @@ class OnboardingService:
 
     def remove(self, account_id: str, *, confirm: bool = False) -> None:
         """Delete record + blob. Requires ``--yes``; refuses running accounts."""
-        account = self._registry.get(account_id)
-        if account is None:
-            raise OnboardingError("account_not_found", f"account {account_id!r} not found")
+        self._get_account(account_id)
         if not confirm:
             raise OnboardingError(
                 "confirmation_required", f"removing {account_id!r} is irreversible; pass --yes"

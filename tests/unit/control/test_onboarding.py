@@ -517,6 +517,54 @@ class TestLifecycle:
         assert exc.value.code == "account_not_found"
 
 
+class TestAccountIdSafety:
+    """account_id feeds FileAccountStore paths and the sbx-acct-<id> Secret
+    name — anything outside [A-Za-z0-9._-] is refused before any store I/O."""
+
+    BAD_IDS = ("../escape", "..", "/abs", "a/b", "a\\b", "white space", ".hidden")
+
+    def test_add_rejects_unsafe_account_id(self, tmp_path: Path) -> None:
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        svc = _service(FileAccountStore(tmp_path / "store"))
+        for bad in self.BAD_IDS:
+            with pytest.raises(OnboardingError) as exc:
+                svc.add("grok", src, account_id=bad)
+            assert exc.value.code == "invalid_account_id"
+        assert svc.list() == []
+
+    def test_add_traversal_writes_nothing_outside_store(self, tmp_path: Path) -> None:
+        svc = _service(FileAccountStore(tmp_path / "store"))
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        with pytest.raises(OnboardingError):
+            svc.add("grok", src, account_id="../escape")
+        assert not (tmp_path / "escape.json").exists()
+
+    def test_remove_rejects_traversal_id(self, tmp_path: Path) -> None:
+        store_dir = tmp_path / "store"
+        svc = _service(FileAccountStore(store_dir))
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        svc.add("grok", src)  # materializes store dirs
+        victim = store_dir / "victim.json"  # == store/accounts/../victim.json
+        victim.write_text(json.dumps({"id": "../victim", "provider": "grok", "label": "x"}))
+        with pytest.raises(OnboardingError) as exc:
+            svc.remove("../victim", confirm=True)
+        assert exc.value.code == "invalid_account_id"
+        assert victim.is_file()
+
+    def test_lookup_commands_reject_unsafe_ids(self, tmp_path: Path) -> None:
+        svc = _service()
+        for call in (svc.status, svc.verify, svc.disable, svc.enable):
+            with pytest.raises(OnboardingError) as exc:
+                call("../x")
+            assert exc.value.code == "invalid_account_id"
+        with pytest.raises(OnboardingError) as exc:
+            svc.refresh("../x", tmp_path / "nope.json")
+        assert exc.value.code == "invalid_account_id"
+        with pytest.raises(OnboardingError) as exc:
+            svc.export("../x", tmp_path / "out.json")
+        assert exc.value.code == "invalid_account_id"
+
+
 class TestCli:
     def test_end_to_end_no_secret_leak(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
