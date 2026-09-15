@@ -114,7 +114,8 @@ class TestMissingEvidence:
 
         run = _get_run(client, auth, agent["id"])
         assert run["status"] == "UNKNOWN"
-        assert run["error"]["code"] == "evidence_unavailable"
+        assert run["error"]["code"] == "runtime_error"
+        assert run["error"]["source"] == "runtime"
 
     def test_corrupt_record_is_unknown(self, client, auth, v1_env) -> None:
         agent = create_agent(client, auth)["agent"]
@@ -125,7 +126,8 @@ class TestMissingEvidence:
 
         run = _get_run(client, auth, agent["id"])
         assert run["status"] == "UNKNOWN"
-        assert run["error"]["code"] == "ledger_record_corrupt"
+        assert run["error"]["code"] == "runtime_error"
+        assert run["error"]["source"] == "runtime"
 
     def test_open_record_finalized_on_agent_close(self, client, auth, v1_env) -> None:
         agent = create_agent(client, auth)["agent"]

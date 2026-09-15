@@ -141,12 +141,14 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     requested_id = str(native_id) if native_id else None
     state = TurnState(thread_id=native_id)
     timed_out = False
+    error_hint = ""  # runner-side terminal cause (timeout/spawn/stale/bad json)
     proc = None
 
     def _on_timeout() -> None:
-        nonlocal timed_out
+        nonlocal timed_out, error_hint
         timed_out = True
-        emit(root, {"type": "sbx.error", "message": f"turn {n} exceeded {max_seconds}s"})
+        error_hint = f"turn {n} exceeded {max_seconds}s"
+        emit(root, {"type": "sbx.error", "message": error_hint})
 
     try:
         src = Path(message_file)
@@ -180,7 +182,8 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
     try:
         proc = start_codex(argv, work=root, home=home, stderr_path=stderr_path)
     except OSError as exc:
-        emit(root, {"type": "sbx.error", "message": f"failed to start provider CLI: {exc}"})
+        error_hint = f"failed to start provider CLI: {exc}"
+        emit(root, {"type": "sbx.error", "message": error_hint})
         status, code = _finish_status(timed_out=False, bad_json=False, cli_rc=1, health="unknown")
         _write_turn_finished(
             root,
@@ -191,6 +194,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
             code=code,
             health="unknown",
             duration_s=round(time.monotonic() - started, 3),
+            error_hint=error_hint,
         )
         return code
 
@@ -237,6 +241,8 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
             obj, bad = parse_event_line(line)
             if bad or obj is None:
                 state.bad_json_lines += 1
+                if not error_hint:
+                    error_hint = "bad json in event stream"
                 emit(root, {"type": "sbx.error", "message": "bad json in event stream"})
         for event in events:
             if not isinstance(event, dict) or event.get("type") == NOOP_EVENT_TYPE:
@@ -266,13 +272,8 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
         health=health,
     )
     if stale_resume and code == EXIT_OK:
-        emit(
-            root,
-            {
-                "type": "sbx.error",
-                "message": f"provider did not resume session {requested_id}",
-            },
-        )
+        error_hint = f"provider did not resume session {requested_id}"
+        emit(root, {"type": "sbx.error", "message": error_hint})
         status, code = STATUS_CODEX_ERROR, EXIT_CODEX
     session = load_session(root)
     if state.thread_id:
@@ -288,6 +289,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
         code=code,
         health=health,
         duration_s=duration,
+        error_hint=error_hint,
     )
     return code
 
@@ -302,6 +304,7 @@ def _write_turn_finished(
     code: int,
     health: str,
     duration_s: float,
+    error_hint: str = "",
 ) -> None:
     session["pid"] = None
     session["turn"] = n
@@ -320,6 +323,7 @@ def _write_turn_finished(
         },
     )
     turn_path = root / "turns" / f"{n}.json"
+    detail = "" if status == STATUS_SUCCESS else (error_hint or redact_text(state.last_error))
     payload = {
         "n": n,
         "codex_session_id": state.thread_id or session.get("codex_session_id"),
@@ -330,6 +334,7 @@ def _write_turn_finished(
         "duration_s": duration_s,
         "usage": dict(state.usage),
         "message": redact_text(state.last_message),
+        "error": detail or None,
         "bad_json_lines": state.bad_json_lines,
     }
     atomic_write(turn_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")

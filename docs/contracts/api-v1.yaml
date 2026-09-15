@@ -10,10 +10,25 @@ info:
     scopes：`agents`（默认）/ `admin`（accounts / api-keys / verify 需要）。
     错误体统一 `{error:{code, message, retry_after?}}`；`code` 取 canonical
     `error_subcodes`，HTTP 状态取 canonical `error_codes`。
+    Run 终态另带结构化 `error`（`RunError`：`code/source/message/retryable/
+    retry_after?`），`code` 取 canonical `run_error_codes`，`source` 取
+    `run_error_sources`；调用方无需解析 SSE 即可诊断失败主因。
     SSE 帧与 `/api/*` 相同：`id: <events.jsonl 行号>` / `event: <type>` /
     `data: <json>`，15 s `: keepalive`，支持 `Last-Event-ID` 续传。
 x-canonical:
   error_codes: [400, 401, 403, 404, 409, 429]
+  run_error_codes:
+    - auth_invalid
+    - rate_limited
+    - quota_exhausted
+    - model_unavailable
+    - model_capacity
+    - provider_unavailable
+    - runtime_error
+    - event_parse_error
+    - timeout
+    - cancelled
+  run_error_sources: [provider, runtime, control, telemetry]
   error_subcodes:
     - unauthorized
     - forbidden
@@ -763,11 +778,28 @@ components:
       nullable: true
       required: [code, source, message, retryable]
       description: |
-        Minimal structured error persisted on a run (SOR-82/A1 storage
-        shape). A3 freezes the canonical ``code`` taxonomy.
+        结构化 run 失败原因（SOR-82）。`code` 为 canonical
+        `run_error_codes`；`source` 区分 provider / runtime / control /
+        telemetry；`message` 为脱敏后的诊断文本；`retryable` 表示换个时机
+        （或换个账号/model）重试可能成功；`retry_after` 为 provider 给出的
+        秒级重试提示（仅 `rate_limited` 等在可知时出现）。
+        `event_parse_error` 表示事件流解析失败——除非执行完整性被独立确认，
+        否则不得降级为 warning 或视为成功。持久化在 run ledger 上的错误
+        使用同一 canonical 形状。
       properties:
         code:
           type: string
+          enum:
+            - auth_invalid
+            - rate_limited
+            - quota_exhausted
+            - model_unavailable
+            - model_capacity
+            - provider_unavailable
+            - runtime_error
+            - event_parse_error
+            - timeout
+            - cancelled
         source:
           type: string
           enum: [provider, runtime, control, telemetry]
@@ -777,6 +809,7 @@ components:
           type: boolean
         retry_after:
           type: number
+          description: Seconds; present when the provider supplied a retry hint
     AgentUsage:
       type: object
       required: [usage, cost_estimate_usd, sandbox_seconds]

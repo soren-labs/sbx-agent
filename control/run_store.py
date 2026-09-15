@@ -26,22 +26,16 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from control.config import RUNS_DICT_NAME
+from control.run_errors import (
+    CODE_EVENT_PARSE_ERROR,
+    RunError,
+    run_error_from_turn,
+)
 
 OPEN_RUN_STATUSES = frozenset({"CREATING", "RUNNING"})
 TERMINAL_RUN_STATUSES = frozenset({"FINISHED", "ERROR", "CANCELLED", "EXPIRED"})
 UNKNOWN_RUN_STATUS = "UNKNOWN"
 RUN_STATUSES = OPEN_RUN_STATUSES | TERMINAL_RUN_STATUSES | {UNKNOWN_RUN_STATUS}
-
-# Minimal structured-error codes persisted on run records. A3 (SOR-82)
-# freezes the full canonical taxonomy; the ledger only needs these to store
-# outcomes without inventing success.
-EVIDENCE_UNAVAILABLE = "evidence_unavailable"
-RECORD_CORRUPT = "ledger_record_corrupt"
-CANCELLED = "cancelled"
-TIMEOUT = "timeout"
-AUTH_INVALID = "auth_invalid"
-EVENT_PARSE_ERROR = "event_parse_error"
-RUNTIME_ERROR = "runtime_error"
 
 _USAGE_KEYS = (
     "input_tokens",
@@ -50,11 +44,6 @@ _USAGE_KEYS = (
     "cache_write_input_tokens",
     "reasoning_output_tokens",
 )
-
-_TURN_STATUS_CODES = {
-    "auth_invalid": AUTH_INVALID,
-    "bad_json": EVENT_PARSE_ERROR,
-}
 
 
 def _iso_now() -> str:
@@ -69,16 +58,14 @@ def run_error(
     retryable: bool = False,
     retry_after: float | None = None,
 ) -> dict[str, Any]:
-    """Minimal structured error shape persisted on a run record."""
-    error: dict[str, Any] = {
-        "code": code,
-        "source": source,
-        "message": message,
-        "retryable": retryable,
-    }
-    if retry_after is not None:
-        error["retry_after"] = retry_after
-    return error
+    """Structured error persisted on a run record (canonical SOR-82 shape)."""
+    return RunError(
+        code=code,
+        source=source,
+        message=message,
+        retryable=retryable,
+        retry_after=retry_after,
+    ).public()
 
 
 def default_artifact_refs(n: int) -> list[str]:
@@ -97,15 +84,17 @@ def outcome_from_turn_payload(
     """Map a ``turns/<n>.json`` payload to (run status, error, result, usage).
 
     A missing/unreadable payload is explicit ``ERROR`` +
-    ``evidence_unavailable`` — never inferred success.
+    ``runtime_error`` — never inferred success.
     """
     if payload is None:
         return (
             "ERROR",
-            run_error(
-                EVIDENCE_UNAVAILABLE,
+            RunError(
+                "runtime_error",
+                "runtime",
                 "turn outcome missing: turns/<n>.json unreadable after the turn exited",
-            ),
+                retryable=True,
+            ).public(),
             None,
             None,
         )
@@ -119,18 +108,35 @@ def outcome_from_turn_payload(
         else None
     )
     if turn_status == "success":
-        return "FINISHED", None, result_text, usage
-    exit_code = payload.get("exit_code")
-    detail = f"turn status={turn_status or 'unknown'} exit_code={exit_code}"
-    if turn_status == "timeout":
-        return (
-            "EXPIRED",
-            run_error(TIMEOUT, f"turn exceeded max seconds ({detail})", retryable=True),
-            result_text,
-            usage,
+        # Completeness confirmed by the turn record; a recorded parse failure
+        # stays visible as an explicit warning on the FINISHED run.
+        warning = run_error_from_turn(payload)
+        error = (
+            warning.public()
+            if warning is not None and warning.code == CODE_EVENT_PARSE_ERROR
+            else None
         )
-    code = _TURN_STATUS_CODES.get(turn_status, RUNTIME_ERROR)
-    return "ERROR", run_error(code, f"turn failed ({detail})"), result_text, usage
+        return "FINISHED", error, result_text, usage
+    if turn_status == "timeout":
+        err = run_error_from_turn(payload) or RunError(
+            "timeout", "runtime", "turn exceeded max seconds", retryable=True
+        )
+        return "EXPIRED", err.public(), result_text, usage
+    if turn_status == "cancelled":
+        err = run_error_from_turn(payload) or RunError(
+            "cancelled", "control", "run cancelled"
+        )
+        return "CANCELLED", err.public(), result_text, usage
+    err = run_error_from_turn(payload)
+    if err is None:
+        # Contradictory record: turn failed but nothing diagnoses it.
+        exit_code = payload.get("exit_code")
+        err = RunError(
+            "runtime_error",
+            "runtime",
+            f"turn failed (status={turn_status or 'unknown'} exit_code={exit_code})",
+        )
+    return "ERROR", err.public(), result_text, usage
 
 
 @dataclass
@@ -220,9 +226,10 @@ def corrupt_record(agent_id: str, n: int, detail: str) -> RunRecord:
         created_at="",
         updated_at="",
         error=run_error(
-            RECORD_CORRUPT,
+            "runtime_error",
             f"stored run record is corrupt: {detail}",
-            source="control",
+            source="runtime",
+            retryable=True,
         ),
     )
 
@@ -547,7 +554,7 @@ class RunLedger:
             agent_id,
             n,
             status="CANCELLED",
-            error=run_error(CANCELLED, message, source="control"),
+            error=run_error("cancelled", message, source="control"),
         )
 
     def discard(self, agent_id: str, n: int) -> None:
@@ -561,16 +568,9 @@ class RunLedger:
 
 
 __all__ = [
-    "CANCELLED",
-    "EVIDENCE_UNAVAILABLE",
-    "EVENT_PARSE_ERROR",
-    "AUTH_INVALID",
     "OPEN_RUN_STATUSES",
-    "RECORD_CORRUPT",
-    "RUNTIME_ERROR",
     "RUN_STATUSES",
     "TERMINAL_RUN_STATUSES",
-    "TIMEOUT",
     "UNKNOWN_RUN_STATUS",
     "FileRunStore",
     "InMemoryRunStore",

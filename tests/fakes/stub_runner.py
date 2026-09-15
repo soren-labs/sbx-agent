@@ -229,8 +229,9 @@ def cmd_turn(args: argparse.Namespace) -> int:
     usage = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
     thread_id = _load_session(root).get("codex_session_id") or DEFAULT_THREAD_ID
     last_message = ""
+    last_error = ""
     timed_out = False
-    bad_json = False
+    bad_json_lines = 0
 
     lines = fixture.read_text(encoding="utf-8").splitlines()
     for index, raw in enumerate(lines):
@@ -252,7 +253,8 @@ def cmd_turn(args: argparse.Namespace) -> int:
         try:
             obj = json.loads(stripped)
         except json.JSONDecodeError:
-            bad_json = True
+            bad_json_lines += 1
+            last_error = "bad json in event stream"
             emit(root, {"type": "sbx.error", "message": "bad json in event stream"})
             continue
         if obj.get("type") == "thread.started" and obj.get("thread_id"):
@@ -266,9 +268,25 @@ def cmd_turn(args: argparse.Namespace) -> int:
             for opt in ("cache_write_input_tokens", "reasoning_output_tokens"):
                 if opt in obj["usage"]:
                     usage[opt] = int(obj["usage"][opt])
+        if obj.get("type") == "error":
+            err = obj.get("error")
+            msg = obj.get("message")
+            if isinstance(err, dict):
+                msg = err.get("message") or msg
+            elif isinstance(err, str) and err:
+                msg = err
+            if isinstance(msg, str) and msg:
+                last_error = msg
+        if obj.get("type") == "turn.failed":
+            err = obj.get("error")
+            msg = err.get("message") if isinstance(err, dict) else err
+            if isinstance(msg, str) and msg:
+                last_error = msg
         item = obj.get("item")
         if isinstance(item, dict) and item.get("type") == "agent_message" and item.get("text"):
             last_message = item["text"]
+        if isinstance(item, dict) and item.get("type") == "error" and item.get("message"):
+            last_error = str(item["message"])
         if scenario == "hang" and index == 0:
             remaining = args.max_seconds - (time.monotonic() - start)
             time.sleep(max(0.0, remaining if remaining < 3600 else 3600))
@@ -286,7 +304,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
     if timed_out:
         status = "timeout"
         code = EXIT_TIMEOUT
-    elif bad_json:
+    elif bad_json_lines:
         status = "bad_json"
         code = EXIT_BAD_JSON
     elif scenario == "auth_invalid":
@@ -319,6 +337,8 @@ def cmd_turn(args: argparse.Namespace) -> int:
                 "status": status,
                 "usage": usage,
                 "message": last_message,
+                "error": (last_error or None) if status != "success" else None,
+                "bad_json_lines": bad_json_lines,
                 "exit_code": code,
             },
             indent=2,

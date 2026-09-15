@@ -97,6 +97,7 @@ def parse_event_line(line: str) -> tuple[dict[str, Any] | None, bool]:
 class TurnState:
     thread_id: str | None = None
     last_message: str = ""
+    last_error: str = ""  # last provider error/turn.failed message this turn
     usage: dict[str, int] = field(default_factory=empty_usage)
     bad_json_lines: int = 0
 
@@ -124,7 +125,23 @@ class TurnState:
             usage = obj.get("usage")
             if isinstance(usage, dict):
                 add_usage(self.usage, usage)
+        elif event_type == "turn.failed":
+            error = obj.get("error")
+            message = error.get("message") if isinstance(error, dict) else error
+            if isinstance(message, str) and message:
+                self.last_error = message
+        elif event_type == "error":
+            message = obj.get("message")
+            if isinstance(message, str) and message:
+                self.last_error = message
         item = obj.get("item")
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "error"
+            and isinstance(item.get("message"), str)
+            and item["message"]
+        ):
+            self.last_error = item["message"]
         if isinstance(item, dict) and item.get("type") == "agent_message":
             text = item.get("text")
             if isinstance(text, str) and text:

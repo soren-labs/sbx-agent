@@ -9,7 +9,7 @@ Sandbox 内 `HOME` 固定为 `$SBX_WORK/home`（凭证 blob 还原的目标根�
 ```
 $SBX_WORK/
   inbox/<n>.md          # 第 n 轮用户消息（runner turn 从 --message-file 复制）
-  turns/<n>.json        # 第 n 轮结果（session id、usage、最终消息、退出码）
+  turns/<n>.json        # 第 n 轮结果（session id、usage、最终消息、退出码、失败细节 error）
   events.jsonl          # 追加写入的 JSONL 规范事件流（canonical，Codex 形状）
   events.raw.jsonl      # CLI 原生 stdout 行原样追加（排障用；codex 下与 events.jsonl 同形）
   session.json          # native_session_id、provider、account_id、turn 计数
@@ -32,6 +32,8 @@ $SBX_WORK/
 `session.json.native_session_id` 即首轮原生会话标记（Codex：`thread.started.thread_id`，UUIDv7）。后续 resume 与 Codex rollout 文件名都用这个 id。`codex_session_id` 保留为 `native_session_id` 的兼容别名（同值）。
 
 `session.json` 字段：`turn`、`native_session_id`、`provider`、`account_id`（+ 别名 `codex_session_id`、runner 内部字段如 `pid` `model` `auth`）。
+
+`turns/<n>.json.error`：失败轮的结构化失败细节——runner 侧终因（超时、坏 JSON、CLI 启动失败、stale resume）或最后一条 provider `error` / `turn.failed` / item `error` 消息（已脱敏）；成功轮为 `null`。控制面把它与 `status`/`health`/`exit_code` 一起归一化为 api-v1.yaml 的 `RunError`。
 
 ### `$CODEX_HOME/config.toml`
 

@@ -59,15 +59,12 @@ from control.api_v1.state import AgentMeta, V1State
 from control.config import TERMINAL_STATUSES
 from control.devin_pool import ScheduleRefused
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
+from control.run_errors import run_error_for_run
 from control.run_store import (
-    CANCELLED,
-    EVIDENCE_UNAVAILABLE,
-    TIMEOUT,
     UNKNOWN_RUN_STATUS,
     RunRecord,
     default_artifact_refs,
     outcome_from_turn_payload,
-    run_error,
 )
 from control.sandbox_io import read_json, read_text, sandbox_env
 from control.service import ConcurrencyLimit, SessionConflict, format_sse
@@ -203,25 +200,21 @@ def _fallback_status(rec: Any) -> str:
     return "UNKNOWN"
 
 
-def _fallback_error(status: str) -> dict[str, Any]:
-    if status == "CANCELLED":
-        return run_error(
-            CANCELLED,
-            "run has no recorded terminal state; the agent was closed",
-            source="control",
-        )
-    if status == "EXPIRED":
-        return run_error(
-            TIMEOUT,
-            "run has no recorded terminal state; the sandbox timed out",
-            source="control",
-            retryable=True,
-        )
-    return run_error(
-        EVIDENCE_UNAVAILABLE,
-        "run outcome unavailable: no persisted terminal state and no readable evidence",
-        source="control",
+def _run_error_public(
+    status: str,
+    *,
+    payload: Any = None,
+    cancelled: bool = False,
+    agent_status: str | None = None,
+) -> dict[str, Any] | None:
+    """Canonical ``run.error`` payload for a derived (non-ledger) status."""
+    err = run_error_for_run(
+        status,
+        payload=payload,
+        cancelled=cancelled,
+        agent_status=agent_status,
     )
+    return err.public() if err is not None else None
 
 
 def _run_public(
@@ -253,7 +246,13 @@ def _run_public(
             return _record_public(record, pub, meta)
         if n in cancelled:
             return _record_public(
-                record, pub, meta, status="CANCELLED", error=_fallback_error("CANCELLED")
+                record,
+                pub,
+                meta,
+                status="CANCELLED",
+                error=_run_error_public(
+                    "CANCELLED", cancelled=True, agent_status=rec.status
+                ),
             )
         payload = _turn_payload(plane, rec, n)
         if payload is not None:
@@ -279,7 +278,12 @@ def _run_public(
             # fall back to the session-derived terminal status.
             status = _fallback_status(rec)
             return _record_public(
-                record, pub, meta, status=status, error=record.error or _fallback_error(status)
+                record,
+                pub,
+                meta,
+                status=status,
+                error=record.error
+                or _run_error_public(status, agent_status=rec.status),
             )
         # Live session, open record, no readable evidence yet — the record's
         # persisted open status (CREATING/RUNNING) is the truth.
@@ -301,11 +305,11 @@ def _run_public(
 
     usage: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    payload: dict[str, Any] | None = None
     if live:
         status = "RUNNING"
     elif n in cancelled:
         status = "CANCELLED"
-        error = _fallback_error("CANCELLED")
     elif n <= int(rec.turns):
         payload = _turn_payload(plane, rec, n)
         if payload is not None:
@@ -331,13 +335,14 @@ def _run_public(
         else:
             # Turn counted but outcome unreadable — explicit unknown.
             status = "UNKNOWN"
-            error = _fallback_error("UNKNOWN")
     elif rec.status in ("timed_out", "lost"):
         status = "EXPIRED"
-        error = _fallback_error("EXPIRED")
-    else:
+    elif rec.status == "closed":
         status = "CANCELLED"
-        error = _fallback_error("CANCELLED")
+    else:
+        # The turn ended without a turns/<n>.json record (runner-internal
+        # failure) — report a diagnosable ERROR, never a silent success.
+        status = "ERROR"
 
     if run_states is not None:
         state = run_states.get(rec.id, n)
@@ -347,14 +352,14 @@ def _run_public(
                 updated_at = state.updated_at
             else:
                 # The derived view cannot see a queued/pre-dispatch run; its
-                # catch-all "CANCELLED" is only real when the cancel was
-                # recorded or the session went terminal.
-                catch_all_cancelled = (
-                    status == "CANCELLED"
+                # catch-all "CANCELLED"/"ERROR" is only real when the cancel
+                # was recorded or the session went terminal.
+                catch_all_terminal = (
+                    status in RUN_TERMINAL
                     and n not in cancelled
                     and rec.status not in ("closed", "timed_out", "lost")
                 )
-                if status in RUN_TERMINAL and not catch_all_cancelled:
+                if status in RUN_TERMINAL and not catch_all_terminal:
                     # Derived terminal truth (turn finished, session died):
                     # fold it into a RUNNING record so the store converges.
                     # A CREATING record belongs to the worker, which persists
@@ -369,6 +374,12 @@ def _run_public(
     else:
         run_state = None
 
+    error = _run_error_public(
+        status,
+        payload=payload,
+        cancelled=n in cancelled,
+        agent_status=rec.status,
+    )
     run: dict[str, Any] = {
         "id": f"run-{n}",
         "agent_id": rec.id,

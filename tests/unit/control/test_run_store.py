@@ -58,7 +58,8 @@ class TestOutcomeMapping:
     def test_missing_payload_is_error_not_success(self) -> None:
         status, error, result, usage = outcome_from_turn_payload(None)
         assert status == "ERROR"
-        assert error["code"] == "evidence_unavailable"
+        assert error["code"] == "runtime_error"
+        assert error["source"] == "runtime"
         assert result is None
         assert usage is None
 
@@ -190,7 +191,7 @@ class TestDurability:
         record = store.get("a1", 1)
         assert record is not None
         assert record.status == "UNKNOWN"
-        assert record.error["code"] == "ledger_record_corrupt"
+        assert record.error["code"] == "runtime_error"
         assert record.terminal is False
         # A corrupt record is still listed, not silently dropped.
         assert [r.n for r in store.list("a1")] == [1]
@@ -200,7 +201,7 @@ class TestDurability:
         store._items["a1/3"] = {"agent_id": "a1", "n": 3, "status": "BOGUS"}
         record = store.get("a1", 3)
         assert record.status == "UNKNOWN"
-        assert record.error["code"] == "ledger_record_corrupt"
+        assert record.error["code"] == "runtime_error"
 
     def test_record_from_dict_rejects_bad_shapes(self) -> None:
         for bad in (
