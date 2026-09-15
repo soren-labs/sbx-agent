@@ -158,6 +158,53 @@ class TestLookup:
         assert [a["agent_id"] for a in mine_view["agents"]] == [mine["agent"]["id"]]
         assert [a["agent_id"] for a in theirs_view["agents"]] == [theirs["agent"]["id"]]
 
+    def test_latest_run_keeps_run_contract_shape(self, client, auth, v1_env) -> None:
+        """``latest_run`` is a ``Run`` — required keys incl. ``agent_id``
+        and non-null ``created_at``/``updated_at`` stay populated."""
+        a = create_agent(client, auth, metadata=_meta("wf-shape", "t-1"))
+        wait_run(client, auth, a["agent"]["id"], "run-1")
+        view = _service(v1_env).lookup(v1_env.agents_key_id, "wf-shape")
+        latest = view["agents"][0]["latest_run"]
+        for key in ("id", "agent_id", "status", "created_at", "updated_at"):
+            assert latest[key], f"latest_run[{key}] must be populated"
+        assert latest["agent_id"] == a["agent"]["id"]
+
+    def test_derived_latest_run_keeps_run_contract_shape(self, v1_env) -> None:
+        """Ledger-less fallback: a run derived from the session record still
+        satisfies the required ``Run`` fields (status never inferred)."""
+        from datetime import UTC, datetime
+
+        from control.store import SessionRecord
+
+        now = datetime.now(UTC)
+        rec = SessionRecord(
+            id="ag-der",
+            title="t",
+            status="idle",
+            created_at=now,
+            updated_at=now,
+            model="m",
+            turns=1,
+            usage=None,
+            messages=[],
+            owner=v1_env.agents_key_id,
+            sandbox_tags={"provider": "codex", "account_id": "acct-1"},
+        )
+        plane = SimpleNamespace(get=lambda agent_id: rec, run_ledger=None)
+        svc = WorkflowService(InMemoryWorkflowStore(), plane, v1=V1State(), run_states=None)
+        svc.attach(
+            owner=v1_env.agents_key_id,
+            agent_id="ag-der",
+            metadata={"workflow_id": "wf-der", "task_id": "t", "role": "worker"},
+        )
+        view = svc.lookup(v1_env.agents_key_id, "wf-der")
+        latest = view["agents"][0]["latest_run"]
+        assert latest["agent_id"] == "ag-der"
+        assert latest["status"] == "UNKNOWN"
+        assert latest["created_at"] and latest["updated_at"]
+        assert latest["provider"] == "codex" and latest["model"] == "m"
+        assert "usage" not in latest  # unmeasured → omitted, never zeros
+
     def test_metadata_survives_store_reopen(self, client, auth, v1_env, tmp_path) -> None:
         """A fresh store object over the same dir = control-plane restart."""
         v1_env.app.state.workflow_store = FileWorkflowStore(tmp_path / "wf")

@@ -10,6 +10,7 @@ from control.workflow_store import (
     InMemoryWorkflowStore,
     WorkflowTaskRecord,
     record_from_dict,
+    record_to_dict,
 )
 
 
@@ -129,6 +130,38 @@ class TestDurability:
         store.attach(_record("agent-1"))
         store._indexes[("key_a", "wf-1")] = {"tasks": "not-a-dict"}
         assert [t.agent_id for t in store.list_workflow("key_a", "wf-1")] == ["agent-1"]
+
+    @pytest.mark.parametrize("store_kind", ["memory", "file"])
+    def test_stale_index_cannot_hide_an_agent(self, tmp_path, store_kind) -> None:
+        """Crash between the agent write and the index write leaves a
+        valid-but-stale index; the agent record must still be listed."""
+        store = _stores(tmp_path)[store_kind == "file"]
+        store.attach(_record("agent-1"))
+        raw = record_to_dict(_record("agent-2", task_id="t-2", created_at="2026-01-02"))
+        if store_kind == "file":
+            # Land the agent record without touching the index — the state
+            # a mid-attach crash leaves behind.
+            path = tmp_path / "wf" / "agents" / "agent-2.json"
+            path.write_text(json.dumps(raw), encoding="utf-8")
+        else:
+            store._agents["agent-2"] = raw
+        tasks = store.list_workflow("key_a", "wf-1")
+        assert sorted(t.agent_id for t in tasks) == ["agent-1", "agent-2"]
+
+    def test_stale_index_slot_does_not_double_list_a_moved_agent(self, tmp_path) -> None:
+        """A lost index-removal leaves agent-1 in wf-old's index while its
+        record says wf-new; the record is authoritative — no dual listing."""
+        store = InMemoryWorkflowStore()
+        store.attach(_record("agent-1", workflow_id="wf-old"))
+        store.attach(_record("agent-1", workflow_id="wf-new"))
+        stale = record_to_dict(_record("agent-1", workflow_id="wf-old"))
+        store._indexes[("key_a", "wf-old")] = {
+            "owner": "key_a",
+            "workflow_id": "wf-old",
+            "tasks": {"agent-1": stale},
+        }
+        assert store.list_workflow("key_a", "wf-old") == []
+        assert [t.workflow_id for t in store.list_workflow("key_a", "wf-new")] == ["wf-new"]
 
     def test_corrupt_agent_record_is_skipped(self, tmp_path) -> None:
         root = tmp_path / "wf"

@@ -28,6 +28,12 @@ from control.workflow_store import WorkflowStore, WorkflowTaskRecord
 _MISSING = "missing"
 
 
+def _session_dt(rec: Any, field: str) -> str:
+    """Session record datetime → ISO string for the ``Run`` contract."""
+    value = getattr(rec, field, None) if rec is not None else None
+    return value.isoformat() if hasattr(value, "isoformat") else (value or "")
+
+
 def _metadata_get(metadata: Any, key: str) -> Any:
     if isinstance(metadata, dict):
         return metadata.get(key)
@@ -140,7 +146,7 @@ class WorkflowService:
             "latest_run": None,
         }
         if records:
-            view["latest_run"] = self._run_view(task.agent_id, records[-1])
+            view["latest_run"] = self._run_view(task.agent_id, records[-1], rec)
         elif rec is not None:
             view["latest_run"] = self._derived_latest_run(task.agent_id, rec)
             if view["latest_run"] is not None:
@@ -162,32 +168,48 @@ class WorkflowService:
                 pass
         return []
 
-    def _run_view(self, agent_id: str, record: Any) -> dict[str, Any]:
-        """Persisted run record → light run summary (no sandbox I/O)."""
+    def _run_view(self, agent_id: str, record: Any, rec: Any = None) -> dict[str, Any]:
+        """Persisted run record → light run summary (no sandbox I/O).
+
+        Keeps the ``Run`` contract shape — ``agent_id`` plus non-null
+        ``created_at``/``updated_at`` are required there, so missing record
+        timestamps fall back to the session record. ``usage`` is omitted
+        while unmeasured (never fabricated zeros).
+        """
         n = int(getattr(record, "n", 0) or 0)
         status = str(getattr(record, "status", "UNKNOWN"))
         if status not in TERMINAL_RUN_STATUSES and n in self._cancelled(agent_id):
             status = "CANCELLED"
         refs = list(getattr(record, "artifact_refs", None) or default_artifact_refs(n))
         result_text = getattr(record, "result_text", None)
-        return {
+        view: dict[str, Any] = {
             "id": f"run-{n}",
+            "agent_id": agent_id,
             "n": n,
             "status": status,
-            "created_at": getattr(record, "created_at", None),
-            "updated_at": getattr(record, "updated_at", None),
+            "created_at": getattr(record, "created_at", None) or _session_dt(rec, "created_at"),
+            "updated_at": getattr(record, "updated_at", None) or _session_dt(rec, "updated_at"),
             "started_at": getattr(record, "started_at", None),
             "finished_at": getattr(record, "finished_at", None),
             "result": {"text": result_text} if result_text else None,
             "error": getattr(record, "error", None),
+            "provider": getattr(record, "provider", None),
+            "account_id": getattr(record, "account_id", None),
+            "model": getattr(record, "model", None),
             "artifact_refs": refs,
         }
+        usage = getattr(record, "usage", None)
+        if usage is not None:
+            view["usage"] = dict(usage)
+        return view
 
     def _derived_latest_run(self, agent_id: str, rec: Any) -> dict[str, Any] | None:
         """Ledger-less fallback: latest run derived from the session record.
 
         Status is never inferred as success — a finished turn with no
         persisted record is explicit ``UNKNOWN`` (same rule as the routes).
+        Timestamps come from the session record so the ``Run`` contract's
+        required fields stay populated.
         """
         n = max(int(rec.turns), int(rec.current_turn_n or 0))
         if n < 1:
@@ -200,16 +222,21 @@ class WorkflowService:
             status = "EXPIRED"
         else:
             status = "UNKNOWN"
+        tags = rec.sandbox_tags or {}
         return {
             "id": f"run-{n}",
+            "agent_id": agent_id,
             "n": n,
             "status": status,
-            "created_at": None,
-            "updated_at": None,
+            "created_at": _session_dt(rec, "created_at"),
+            "updated_at": _session_dt(rec, "updated_at"),
             "started_at": None,
             "finished_at": None,
             "result": None,
             "error": None,
+            "provider": tags.get("provider"),
+            "account_id": tags.get("account_id"),
+            "model": rec.model,
             "artifact_refs": default_artifact_refs(n),
         }
 

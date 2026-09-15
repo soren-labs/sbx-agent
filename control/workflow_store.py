@@ -17,11 +17,13 @@ Each store writes two records per attach:
 * an ``agent`` record — ``agent_id → WorkflowTaskRecord`` for per-agent
   reverse lookup;
 * an ``index`` record — ``(owner, workflow_id) → {agent_id: record}`` so
-  ``list_workflow`` is a single read instead of a scan over every session
-  (the "low-cost" half of the recover-workflow query).
+  bindings whose per-agent record was lost or corrupted are still
+  recoverable from the workflow entry alone.
 
-A missing or corrupt index falls back to scanning the per-agent records,
-so a damaged index can never hide live agents from scoped cleanup.
+``list_workflow`` merges the index with a scan of the per-agent records —
+which are authoritative — so a missing, corrupt, or valid-but-stale index
+(crash mid-attach, lost update) can never hide a live agent from scoped
+cleanup or double-list one that moved workflows.
 """
 
 from __future__ import annotations
@@ -136,8 +138,11 @@ class WorkflowStore(Protocol):
     def list_workflow(self, owner: str, workflow_id: str) -> list[WorkflowTaskRecord]:
         """All task records of ``(owner, workflow_id)``, created_at order.
 
-        Served from the index entry; falls back to scanning agent records
-        when the index is missing or undecodable.
+        The index entry is merged with a scan of the per-agent records —
+        which are authoritative — so even a valid-but-stale index (a crash
+        between the agent write and the index write, or a lost update on a
+        backend without read-modify-write) can never hide a live agent
+        from scoped cleanup.
         """
 
 
@@ -199,18 +204,30 @@ class _WorkflowStoreBase:
         return _decode(self._get_agent_raw(agent_id))
 
     def list_workflow(self, owner: str, workflow_id: str) -> list[WorkflowTaskRecord]:
+        by_agent: dict[str, WorkflowTaskRecord] = {}
+        # Per-agent records are authoritative. The scan runs first so a
+        # stale index slot can neither hide a live agent (a crash between
+        # the agent write and the index write, or a lost update on a
+        # backend without read-modify-write) nor double-list one whose
+        # binding moved to another workflow (a lost index removal).
+        known: set[str] = set()
+        try:
+            for record in (_decode(raw) for raw in self._iter_agent_raws()):
+                if record is None:
+                    continue
+                known.add(record.agent_id)
+                if record.owner == owner and record.workflow_id == workflow_id:
+                    by_agent[record.agent_id] = record
+        except Exception:
+            # Scan failed: index entries stand alone rather than the whole
+            # listing disappearing.
+            known = set()
         index = self._get_index_raw(owner, workflow_id)
         if isinstance(index, dict) and isinstance(index.get("tasks"), dict):
-            return _index_records(index)
-        # Index missing/corrupt: scan agent records so a damaged index can
-        # never hide live agents from scoped cleanup. The next attach
-        # rewrites the index entry.
-        records = [
-            r
-            for r in (_decode(raw) for raw in self._iter_agent_raws())
-            if r is not None and r.owner == owner and r.workflow_id == workflow_id
-        ]
-        return sorted(records, key=lambda r: (r.created_at, r.agent_id))
+            for record in _index_records(index):
+                if record.agent_id not in known and record.agent_id not in by_agent:
+                    by_agent[record.agent_id] = record
+        return sorted(by_agent.values(), key=lambda r: (r.created_at, r.agent_id))
 
 
 class InMemoryWorkflowStore(_WorkflowStoreBase):
