@@ -21,7 +21,8 @@ from __future__ import annotations
 from typing import Any
 
 from control.config import TERMINAL_STATUSES
-from control.run_store import TERMINAL_RUN_STATUSES, default_artifact_refs
+from control.run_errors import run_error_for_run
+from control.run_store import TERMINAL_RUN_STATUSES, UNKNOWN_RUN_STATUS, default_artifact_refs
 from control.service import release_lease
 from control.workflow_store import WorkflowStore, WorkflowTaskRecord
 
@@ -178,8 +179,27 @@ class WorkflowService:
         """
         n = int(getattr(record, "n", 0) or 0)
         status = str(getattr(record, "status", "UNKNOWN"))
+        error = getattr(record, "error", None)
         if status not in TERMINAL_RUN_STATUSES and n in self._cancelled(agent_id):
             status = "CANCELLED"
+        if (
+            status not in TERMINAL_RUN_STATUSES
+            and status != UNKNOWN_RUN_STATUS
+            and rec is not None
+            and rec.status in TERMINAL_STATUSES
+        ):
+            # The session died (reap/lose/timeout) with this run still open
+            # in the ledger — derive the same honest terminal status the run
+            # route reports instead of claiming RUNNING forever.
+            if rec.status == "closed":
+                status = "CANCELLED"
+            elif rec.status == "timed_out":
+                status = "EXPIRED"
+            else:
+                status = UNKNOWN_RUN_STATUS
+            if error is None:
+                derived = run_error_for_run(status, agent_status=str(rec.status))
+                error = derived.public() if derived is not None else None
         refs = list(getattr(record, "artifact_refs", None) or default_artifact_refs(n))
         result_text = getattr(record, "result_text", None)
         view: dict[str, Any] = {
@@ -192,7 +212,7 @@ class WorkflowService:
             "started_at": getattr(record, "started_at", None),
             "finished_at": getattr(record, "finished_at", None),
             "result": {"text": result_text} if result_text else None,
-            "error": getattr(record, "error", None),
+            "error": error,
             "provider": getattr(record, "provider", None),
             "account_id": getattr(record, "account_id", None),
             "model": getattr(record, "model", None),

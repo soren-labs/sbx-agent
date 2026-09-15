@@ -399,6 +399,16 @@ class TestCredentialForbiddenValues:
         assert b"secret-REDACTED" in values
         assert not any(b"/bin" == v for v in values)
 
+    def test_provider_api_key_is_forbidden(self) -> None:
+        """``SBX_PROVIDER_API_KEY`` is forwarded into codex sandboxes — a
+        workspace file that captured it must fail the snapshot closed."""
+        values = credential_forbidden_values(
+            None,
+            env={"SBX_PROVIDER_API_KEY": "sk-provider-REDACTED", "PATH": "/bin"},
+        )
+        assert b"sk-provider-REDACTED" in values
+        assert not any(b"/bin" == v for v in values)
+
 
 class TestWrongBase:
     def test_snapshot_base_is_checkout_not_head(

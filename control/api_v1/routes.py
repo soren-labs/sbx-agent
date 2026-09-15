@@ -1067,7 +1067,10 @@ def get_workspace(
     """Durable workspace record: declared base, actual checkout/head, and
     the sha an independent reviewer pinned (``reviewed_head_sha``)."""
     _require_agent(plane, agent_id)
-    record = workspaces.get(agent_id)
+    try:
+        record = workspaces.get(agent_id)
+    except WorkspaceError as exc:
+        raise _workspace_error(exc) from exc
     if record is None:
         raise not_found("workspace not found")
     return {"workspace": workspace_record_to_dict(record)}
@@ -1507,9 +1510,11 @@ async def stream_run(
                     if kind == "eof":
                         break
                     raw = payload or ""
+                    # Contract: id is the events.jsonl 1-based line number —
+                    # a blank/torn line still consumes one (``/api/*`` parity).
+                    lineno += 1
                     if not raw.strip():
                         continue
-                    lineno += 1
                     obj = _parse_event_line(raw)
                     emit, current_turn = _belongs_to_run(obj, n, current_turn)
                     if emit and lineno >= start_line:
@@ -1532,9 +1537,9 @@ async def stream_run(
                     lines = text.splitlines()
             lineno = 0
             for raw in lines:
+                lineno += 1
                 if not raw.strip():
                     continue
-                lineno += 1
                 obj = _parse_event_line(raw)
                 emit, current_turn = _belongs_to_run(obj, n, current_turn)
                 if emit and lineno >= start_line:
@@ -1639,14 +1644,18 @@ def create_account(
         models=tuple(body.models),
         created_at=_iso_now(),
     )
-    registry.put(account)
+    files: Any = None
     if body.credential is not None:
         files = body.credential.get("files")
         if files is not None and (
             not isinstance(files, dict)
             or any(not isinstance(k, str) or not isinstance(v, str) for k, v in files.items())
         ):
+            # Validate before any write: a refused create must not leave an
+            # active, credential-less account the scheduler can pick.
             raise V1ApiError(400, "invalid_provider", "credential.files must be a string map")
+    registry.put(account)
+    if body.credential is not None:
         registry.put_credential_blob(
             account.id,
             {"provider": body.provider, "files": dict(files or {})},

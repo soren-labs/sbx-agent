@@ -93,6 +93,32 @@ class TestWorkflowQueryRoute:
         assert record.workflow_id == "wf-fu"
         assert record.task_id == "t-2"  # re-bound by the follow-up
 
+    def test_reaped_agent_open_run_reports_terminal_not_running(self, client, auth, v1_env) -> None:
+        """The reaper marks a session terminal without finalizing its open
+        ledger runs; the workflow view must derive the same honest terminal
+        status the run route reports — not claim RUNNING forever."""
+        agent = create_agent(client, auth, metadata=_meta("wf-reap", "t-1"))["agent"]
+        wait_run(client, auth, agent["id"], "run-1")
+        # Simulate a reaper pass mid-run-2: the session record goes terminal
+        # while the ledger still holds an open record for run-2.
+        v1_env.app.state.run_states.begin(agent["id"], 2, prompt="lost turn", status="RUNNING")
+        rec = v1_env.store.get(agent["id"])
+        rec.status = "timed_out"
+        rec.ended_at = datetime.now(UTC)
+        rec.updated_at = rec.ended_at
+        v1_env.store.put(rec)
+
+        view = client.get("/v1/workflows/wf-reap", headers=auth).json()
+        (entry,) = [a for a in view["agents"] if a["agent_id"] == agent["id"]]
+        latest = entry["latest_run"]
+        assert latest["id"] == "run-2"
+        assert latest["status"] == "EXPIRED"
+        assert latest["error"]["code"] == "timeout"
+        assert view["progress"]["all_terminal"] is True
+        # The run route and the workflow view agree.
+        run = client.get(f"/v1/agents/{agent['id']}/runs/run-2", headers=auth).json()
+        assert run["status"] == "EXPIRED"
+
 
 class TestWorkflowCleanupRoute:
     def test_scoped_cleanup_only_target_workflow(self, client, auth, v1_env) -> None:

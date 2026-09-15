@@ -55,7 +55,7 @@ prepare 顺序：clone → resolve `base_ref` → 比对 `base_sha` → 不一�
 `git add -N` 也不会触碰内嵌 repo 边界。
 
 另外 `forbidden_values`（账号 credential blob 内容 + 环境里的
-`SBX_ACCOUNT_CREDENTIAL` / `CODEX_AUTH_JSON`）在任何允许文件或 payload
+`SBX_ACCOUNT_CREDENTIAL` / `CODEX_AUTH_JSON` / `SBX_PROVIDER_API_KEY`）在任何允许文件或 payload
 中出现即整个快照失败：**`artifact_secret`，不落库、不脱敏后照发**。
 
 ## 4. 交接（HandoffRef）

@@ -75,6 +75,25 @@ class TestAccounts:
         )
         assert resp.status_code == 400
 
+    def test_malformed_credential_leaves_no_orphan_account(self, client, admin_auth) -> None:
+        """A refused credential must not persist an active, credential-less
+        account the scheduler could pick."""
+        before = [
+            a["id"] for a in client.get("/v1/accounts", headers=admin_auth).json()["accounts"]
+        ]
+        resp = client.post(
+            "/v1/accounts",
+            json={
+                "provider": "grok",
+                "label": "x",
+                "credential": {"files": "not-a-string-map"},
+            },
+            headers=admin_auth,
+        )
+        assert resp.status_code == 400
+        after = [a["id"] for a in client.get("/v1/accounts", headers=admin_auth).json()["accounts"]]
+        assert after == before
+
     def test_get_missing_is_404(self, client, admin_auth) -> None:
         resp = client.get("/v1/accounts/nope", headers=admin_auth)
         assert resp.status_code == 404

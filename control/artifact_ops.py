@@ -225,7 +225,10 @@ def credential_forbidden_values(
         if isinstance(files, Mapping):
             for content in files.values():
                 values.append(str(content).encode("utf-8"))
-    for name in ("SBX_ACCOUNT_CREDENTIAL", "CODEX_AUTH_JSON"):
+    # ``SBX_PROVIDER_API_KEY`` is credential material forwarded into codex
+    # sandboxes (sandbox_io._PROVIDER_ENV_KEYS); a file that captured it must
+    # fail the snapshot like any other leaked secret.
+    for name in ("SBX_ACCOUNT_CREDENTIAL", "CODEX_AUTH_JSON", "SBX_PROVIDER_API_KEY"):
         raw = env.get(name)
         if raw:
             values.append(raw.encode("utf-8"))

@@ -151,6 +151,23 @@ class TestWorkspaceDeclaration:
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "artifact_not_found"
 
+    def test_corrupt_workspace_record_is_workspace_invalid(
+        self, client: TestClient, auth: dict[str, str], v1_env: V1Env
+    ) -> None:
+        """An undecodable stored record maps to ``workspace_invalid`` — a
+        canonical error body, never a bare 500."""
+        agent = create_agent(client, auth)["agent"]
+        store = v1_env.app.state.workspace_store
+        if hasattr(store, "_items"):
+            store._items[agent["id"]] = {"agent_id": agent["id"]}
+        else:
+            path = Path(store._root) / agent["id"] / "workspace.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{not json", encoding="utf-8")
+        resp = client.get(f"/v1/agents/{agent['id']}/workspace", headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "workspace_invalid"
+
 
 class TestArtifactLifecycle:
     def test_snapshot_list_detail_download_and_teardown(

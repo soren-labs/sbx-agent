@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import httpx
 from tests.unit.api_v1.conftest import create_agent, wait_run
@@ -123,6 +124,37 @@ class TestRunStream:
         agent = create_agent(client, auth)["agent"]
         resp = client.get(f"/v1/agents/{agent['id']}/runs/run-9/stream", headers=auth)
         assert resp.status_code == 404
+
+    def test_event_ids_are_physical_events_jsonl_lines(
+        self, client, auth, live_base, v1_env
+    ) -> None:
+        """Contract: ``id`` is the events.jsonl 1-based line number — a
+        torn/blank line still consumes one, matching ``/api/*`` semantics."""
+        agent = create_agent(client, auth)["agent"]
+        wait_run(client, auth, agent["id"], "run-1")
+        rec = v1_env.store.get(agent["id"])
+        events_file = Path(rec.handle().root) / "events.jsonl"
+        physical = len(events_file.read_text(encoding="utf-8").splitlines())
+        with events_file.open("a", encoding="utf-8") as fh:
+            fh.write("\n")  # a blank line occupies line `physical + 1`
+            fh.write(json.dumps({"type": "sbx.test_marker"}) + "\n")
+
+        url = f"/v1/agents/{agent['id']}/runs/run-1/stream"
+        with httpx.Client(base_url=live_base, timeout=10.0) as http:
+            events, _ = _read_events(http, url, auth, stop_at="sbx.test_marker")
+            marker = [e for e in events if e[1] == "sbx.test_marker"]
+            assert marker, "appended event never streamed"
+            assert marker[0][0] == physical + 2
+
+            # Resume at the last pre-blank line: the marker is the only
+            # event after it, still carrying its physical line number.
+            resumed, _ = _read_events(
+                http,
+                url,
+                {**auth, "Last-Event-ID": str(physical)},
+                stop_at="sbx.test_marker",
+            )
+            assert [e[0] for e in resumed] == [physical + 2]
 
     def test_stream_closed_agent_replays_history(self, client, auth, live_base) -> None:
         agent = create_agent(client, auth)["agent"]

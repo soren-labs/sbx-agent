@@ -216,7 +216,14 @@ class InMemoryWorkspaceStore:
     def get(self, agent_id: str) -> WorkspaceRecord | None:
         with self._lock:
             raw = self._items.get(agent_id)
-        return record_from_dict(raw) if raw is not None else None
+        if raw is None:
+            return None
+        try:
+            return record_from_dict(raw)
+        except ValueError as exc:
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"stored workspace record for {agent_id} is corrupt: {exc}"
+            ) from exc
 
     def put(self, record: WorkspaceRecord) -> None:
         with self._lock:
@@ -285,7 +292,14 @@ class ModalDictWorkspaceStore:
 
     def get(self, agent_id: str) -> WorkspaceRecord | None:
         raw = self._d().get(agent_id)
-        return record_from_dict(raw) if raw is not None else None
+        if raw is None:
+            return None
+        try:
+            return record_from_dict(raw)
+        except ValueError as exc:
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"stored workspace record for {agent_id} is corrupt: {exc}"
+            ) from exc
 
     def put(self, record: WorkspaceRecord) -> None:
         self._d().put(record.agent_id, record_to_dict(record))

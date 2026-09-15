@@ -157,6 +157,16 @@ class TestStores:
             store.get("a1")
         assert exc.value.code == WORKSPACE_INVALID
 
+    def test_memory_store_corrupt_is_explicit(self) -> None:
+        """Same contract as the file store: an undecodable stored payload
+        surfaces as ``WorkspaceError(workspace_invalid)``, not a bare
+        ``ValueError`` that escapes as a 500."""
+        store = InMemoryWorkspaceStore()
+        store._items["a1"] = {"agent_id": "a1"}  # undecodable: missing fields
+        with pytest.raises(WorkspaceError) as exc:
+            store.get("a1")
+        assert exc.value.code == WORKSPACE_INVALID
+
 
 class TestPrepare:
     def test_clone_checkout_records_actual(
