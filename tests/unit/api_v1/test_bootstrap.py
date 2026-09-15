@@ -8,7 +8,12 @@ import time
 from pathlib import Path
 
 import pytest
-from control.api_v1.bootstrap import BootstrapScheduler, configure_v1_bootstrap
+from control.api_v1.bootstrap import (
+    BootstrapScheduler,
+    ProviderPool,
+    SingleAccountPool,
+    configure_v1_bootstrap,
+)
 from control.app import create_app
 from control.backend import LocalProcessBackend
 from control.devin_pool import DevinAccountPool, ScheduleRefused
@@ -263,6 +268,139 @@ def test_v1_named_account_and_slot_cap(monkeypatch, stub_runner) -> None:
             assert unknown.status_code == 409
             assert unknown.json()["error"]["code"] == "account_unavailable"
             assert client.delete(f"/v1/agents/{agent_id}", headers=auth).status_code == 200
+    finally:
+        for handle in list(backend.list()):
+            backend.terminate(handle)
+
+
+def test_bootstrap_multi_account_json_seeds_provider_pool(monkeypatch) -> None:
+    """``SBX_<PROVIDER>_ACCOUNTS`` JSON → registry + ProviderPool (SOR-63/D2)."""
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "3" * 40)
+    monkeypatch.setenv(
+        "SBX_ANTIGRAVITY_ACCOUNTS",
+        json.dumps(
+            [
+                {"id": "agy-a", "slots": 1, "models": ["gemini-3.8-flash-low"]},
+                {"id": "agy-b", "slots": 1, "label": "AGY second"},
+                {"id": "agy-c", "slots": 1, "secret_name": "sbx-acct-agy-c"},
+            ]
+        ),
+    )
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+
+    registry = app.state.account_registry
+    seeded = [a.id for a in registry.list("antigravity")]
+    assert seeded == ["agy-a", "agy-b", "agy-c"]
+    assert registry.get("agy-a").max_concurrent == 1
+    assert registry.get("agy-a").models == ("gemini-3.8-flash-low",)
+    assert registry.get("agy-b").label == "AGY second"
+    assert registry.get("agy-b").secret_name == "sbx-acct-agy-b"
+    assert registry.get("agy-c").secret_name == "sbx-acct-agy-c"
+    # Other providers keep their single-account pools.
+    assert isinstance(app.state.scheduler.pools["codex"], SingleAccountPool)
+
+    agy = app.state.scheduler.pools["antigravity"]
+    assert isinstance(agy, ProviderPool)
+    # auto rotates across members as slots fill; exhaustion is structured.
+    leases = [agy.acquire(provider="antigravity") for _ in range(3)]
+    assert {lease.account.id for lease in leases} == {"agy-a", "agy-b", "agy-c"}
+    with pytest.raises(ScheduleRefused) as excinfo:
+        agy.acquire(provider="antigravity")
+    assert excinfo.value.error == "provider_exhausted"
+    for lease in leases:
+        lease.release()
+    assert agy.active_count == 0
+
+
+def test_bootstrap_multi_account_malformed_json_fails(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "4" * 40)
+    monkeypatch.setenv("SBX_GROK_ACCOUNTS", "not json")
+    with pytest.raises(ValueError, match="SBX_GROK_ACCOUNTS"):
+        configure_v1_bootstrap(FastAPI())
+    monkeypatch.setenv("SBX_GROK_ACCOUNTS", "[]")
+    with pytest.raises(ValueError, match="non-empty"):
+        configure_v1_bootstrap(FastAPI())
+    monkeypatch.setenv("SBX_GROK_ACCOUNTS", json.dumps([{"slots": 1}]))
+    with pytest.raises(ValueError, match="non-empty 'id'"):
+        configure_v1_bootstrap(FastAPI())
+
+
+def test_bootstrap_scheduler_report_failure_routes_to_account(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "5" * 40)
+    monkeypatch.setenv("SBX_GROK_ACCOUNTS", json.dumps([{"id": "grok-a"}, {"id": "grok-b"}]))
+    app = FastAPI()
+    configure_v1_bootstrap(app)
+    scheduler = app.state.scheduler
+
+    account = scheduler.report_failure("rate_limited", account_id="grok-a", retry_after=30.0)
+    assert account.id == "grok-a"
+    assert account.status == "cooling"
+    # auto skips the cooling member; grok-b still serves.
+    lease = scheduler.acquire(provider="grok")
+    assert lease.account.id == "grok-b"
+    lease.release()
+    # Unknown account → KeyError (the reporter treats it as a no-op).
+    with pytest.raises(KeyError):
+        scheduler.report_failure("rate_limited", account_id="grok-zzz")
+
+
+def test_v1_multi_account_grok_gate(monkeypatch, stub_runner) -> None:
+    """End-to-end: a 2-account Grok pool serves auto creates across members
+    and refuses structurally once both slots are held (SOR-63/D2 seam)."""
+    token = "sbx_" + "6" * 40
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", token)
+    monkeypatch.setenv(
+        "SBX_GROK_ACCOUNTS",
+        json.dumps([{"id": "grok-a", "slots": 1}, {"id": "grok-b", "slots": 1}]),
+    )
+    backend = LocalProcessBackend()
+    app = create_app(
+        backend=backend,
+        store=InMemoryStore(),
+        runner_cmd=[sys.executable, str(stub_runner)],
+        max_concurrent=16,
+    )
+    auth = {"Authorization": f"Bearer {token}"}
+    try:
+        with TestClient(app) as client:
+            picked = set()
+            agents = []
+            for _ in range(2):
+                resp = client.post(
+                    "/v1/agents",
+                    json={"prompt": {"text": "ping"}, "agent": {"provider": "grok"}},
+                    headers=auth,
+                )
+                assert resp.status_code == 201, resp.text
+                agent = resp.json()["agent"]
+                assert agent["provider"] == "grok"
+                picked.add(agent["account_id"])
+                agents.append(agent["id"])
+            assert picked == {"grok-a", "grok-b"}
+
+            exhausted = client.post(
+                "/v1/agents",
+                json={"prompt": {"text": "again"}, "agent": {"provider": "grok"}},
+                headers=auth,
+            )
+            assert exhausted.status_code == 429
+            assert exhausted.json()["error"]["code"] == "provider_exhausted"
+
+            busy = client.post(
+                "/v1/agents",
+                json={
+                    "prompt": {"text": "named"},
+                    "agent": {"provider": "grok", "account_id": "grok-a"},
+                },
+                headers=auth,
+            )
+            assert busy.status_code == 409
+            assert busy.json()["error"]["code"] == "account_busy"
+
+            for agent_id in agents:
+                assert client.delete(f"/v1/agents/{agent_id}", headers=auth).status_code == 200
+            assert app.state.scheduler.pools["grok"].active_count == 0
     finally:
         for handle in list(backend.list()):
             backend.terminate(handle)

@@ -26,12 +26,14 @@ from fastapi.responses import Response
 from control.api_v1 import router
 from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
 from control.api_v1.deps import (
+    RunFailureReporter,
     admin_key,
     agents_key,
     api_key,
     get_key_store,
     get_plane,
     get_registry,
+    get_run_reporter,
     get_run_states,
     get_scheduler,
     get_v1_state,
@@ -225,6 +227,38 @@ def _run_public(
     cancelled: set[int],
     meta: Any = None,
     run_states: RunStateStore | None = None,
+    *,
+    scheduler: Any = None,
+    reporter: Any = None,
+) -> dict[str, Any]:
+    """Render the run, then feed terminal provider errors to the scheduler.
+
+    Reporting is the /v1 cooldown/failover seam (SOR-63/D2): a rendered
+    terminal provider error (``rate_limited``, ``auth_invalid``, …) marks
+    the run's account via ``RunFailureReporter``, deduped per run. Both
+    knobs default off so every existing call site keeps its shape.
+    """
+    run = _render_run(plane, pub, rec, n, cancelled, meta, run_states)
+    if reporter is not None and scheduler is not None:
+        reporter.report(
+            scheduler=scheduler,
+            agent_id=rec.id,
+            n=n,
+            account_id=run.get("account_id"),
+            status=run.get("status"),
+            error=run.get("error"),
+        )
+    return run
+
+
+def _render_run(
+    plane: Any,
+    pub: dict[str, Any],
+    rec: Any,
+    n: int,
+    cancelled: set[int],
+    meta: Any = None,
+    run_states: RunStateStore | None = None,
 ) -> dict[str, Any]:
     """Cursor-shaped Run; the durable ledger is authoritative once written.
 
@@ -400,13 +434,29 @@ def _run_public(
 
 
 def _runs(
-    plane: Any, rec: Any, v1: V1State, run_states: RunStateStore | None = None
+    plane: Any,
+    rec: Any,
+    v1: V1State,
+    run_states: RunStateStore | None = None,
+    *,
+    scheduler: Any = None,
+    reporter: Any = None,
 ) -> list[dict[str, Any]]:
     pub = plane.public(rec)
     cancelled = v1.cancelled(rec.id)
     meta = _meta_for(v1, rec)
     return [
-        _run_public(plane, pub, rec, n, cancelled, meta, run_states)
+        _run_public(
+            plane,
+            pub,
+            rec,
+            n,
+            cancelled,
+            meta,
+            run_states,
+            scheduler=scheduler,
+            reporter=reporter,
+        )
         for n in sorted(_known_run_ns(rec, _ledger(plane), run_states))
     ]
 
@@ -424,13 +474,26 @@ def _require_run(
     run_id: str,
     v1: V1State,
     run_states: RunStateStore | None = None,
+    *,
+    scheduler: Any = None,
+    reporter: Any = None,
 ) -> dict[str, Any]:
     n = _run_n(run_id)
     known = _known_run_ns(rec, _ledger(plane), run_states)
     if n is None or n not in known:
         raise not_found("run not found")
     pub = plane.public(rec)
-    return _run_public(plane, pub, rec, n, v1.cancelled(rec.id), _meta_for(v1, rec), run_states)
+    return _run_public(
+        plane,
+        pub,
+        rec,
+        n,
+        v1.cancelled(rec.id),
+        _meta_for(v1, rec),
+        run_states,
+        scheduler=scheduler,
+        reporter=reporter,
+    )
 
 
 # ---------------------------------------------------------------- agents
@@ -510,6 +573,7 @@ def create_agent(
     scheduler: Scheduler = Depends(get_scheduler),
     v1: V1State = Depends(get_v1_state),
     run_states: RunStateStore = Depends(get_run_states),
+    reporter: RunFailureReporter = Depends(get_run_reporter),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Create an agent and queue its first run (SOR-82 A2).
@@ -555,7 +619,17 @@ def create_agent(
             meta = _meta_for(v1, prior)
             result = {
                 "agent": agent_public(pub, meta),
-                "run": _run_public(plane, pub, prior, 1, v1.cancelled(prior.id), meta, run_states),
+                "run": _run_public(
+                    plane,
+                    pub,
+                    prior,
+                    1,
+                    v1.cancelled(prior.id),
+                    meta,
+                    run_states,
+                    scheduler=scheduler,
+                    reporter=reporter,
+                ),
             }
             v1.idempotency.complete(key.id, idempotency_key, entry, agent_id=prior.id, body=result)
             v1.idempotency.settle(key.id, idempotency_key, entry)
@@ -579,6 +653,7 @@ def create_agent(
             scheduler,
             v1,
             run_states,
+            reporter=reporter,
             idempotency_key=idempotency_key,
             idempotency_fingerprint=fingerprint,
             on_provisioned=on_provisioned,
@@ -608,6 +683,7 @@ def _create_agent_once(
     v1: V1State,
     run_states: RunStateStore,
     *,
+    reporter: RunFailureReporter | None = None,
     idempotency_key: str | None = None,
     idempotency_fingerprint: str | None = None,
     on_provisioned: Any = None,
@@ -712,7 +788,17 @@ def _create_agent_once(
     rec = _require_agent(plane, session_id)
     pub = plane.public(rec)
     agent = agent_public(pub, _meta_for(v1, rec))
-    run = _run_public(plane, pub, rec, 1, v1.cancelled(session_id), _meta_for(v1, rec), run_states)
+    run = _run_public(
+        plane,
+        pub,
+        rec,
+        1,
+        v1.cancelled(session_id),
+        _meta_for(v1, rec),
+        run_states,
+        scheduler=scheduler,
+        reporter=reporter,
+    )
     return {"agent": agent, "run": run}
 
 
@@ -786,6 +872,8 @@ def create_run(
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
     run_states: RunStateStore = Depends(get_run_states),
+    scheduler: Scheduler = Depends(get_scheduler),
+    reporter: RunFailureReporter = Depends(get_run_reporter),
 ) -> dict[str, Any]:
     _require_agent(plane, agent_id)
     try:
@@ -799,7 +887,17 @@ def create_run(
     run_states.begin(agent_id, n, prompt=body.prompt.text, status="RUNNING")
     rec = _require_agent(plane, agent_id)
     pub = plane.public(rec)
-    return _run_public(plane, pub, rec, n, v1.cancelled(agent_id), _meta_for(v1, rec), run_states)
+    return _run_public(
+        plane,
+        pub,
+        rec,
+        n,
+        v1.cancelled(agent_id),
+        _meta_for(v1, rec),
+        run_states,
+        scheduler=scheduler,
+        reporter=reporter,
+    )
 
 
 @router.get("/agents/{agent_id}/runs")
@@ -809,9 +907,11 @@ def list_runs(
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
     run_states: RunStateStore = Depends(get_run_states),
+    scheduler: Scheduler = Depends(get_scheduler),
+    reporter: RunFailureReporter = Depends(get_run_reporter),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
-    return {"runs": _runs(plane, rec, v1, run_states)}
+    return {"runs": _runs(plane, rec, v1, run_states, scheduler=scheduler, reporter=reporter)}
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}")
@@ -822,9 +922,11 @@ def get_run(
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
     run_states: RunStateStore = Depends(get_run_states),
+    scheduler: Scheduler = Depends(get_scheduler),
+    reporter: RunFailureReporter = Depends(get_run_reporter),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
-    return _require_run(plane, rec, run_id, v1, run_states)
+    return _require_run(plane, rec, run_id, v1, run_states, scheduler=scheduler, reporter=reporter)
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/cancel")
@@ -835,6 +937,8 @@ def cancel_run(
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
     run_states: RunStateStore = Depends(get_run_states),
+    scheduler: Scheduler = Depends(get_scheduler),
+    reporter: RunFailureReporter = Depends(get_run_reporter),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
     n = _run_n(run_id)
@@ -865,7 +969,7 @@ def cancel_run(
         v1.mark_cancelled(agent_id, n)
         run_states.transition(agent_id, n, "CANCELLED")
         rec = _require_agent(plane, agent_id)
-    return _require_run(plane, rec, run_id, v1, run_states)
+    return _require_run(plane, rec, run_id, v1, run_states, scheduler=scheduler, reporter=reporter)
 
 
 # ------------------------------------------------------------------- SSE

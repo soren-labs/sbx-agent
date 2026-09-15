@@ -7,13 +7,14 @@ inject real implementations; absent attributes get in-memory defaults from
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
 from control.api_v1.errors import V1ApiError
-from control.api_v1.lifecycle import RunStateStore
+from control.api_v1.lifecycle import RUN_TERMINAL, RunStateStore
 from control.api_v1.state import (
     InMemoryAccountRegistry,
     InMemoryApiKeyStore,
@@ -68,6 +69,80 @@ def get_key_store(request: Request) -> ApiKeyStore:
         store = InMemoryApiKeyStore()
         request.app.state.api_key_store = store
     return store
+
+
+# Structured run-error codes (SOR-82 taxonomy) that mark an account for
+# cooldown/failover, mapped to the scheduler's ``report_failure`` kinds.
+# ``auth_invalid`` is permanent (credential re-import needed); the others
+# cool the account for ``retry_after`` / the pool's cooldown window.
+# Control-side codes (``cancelled``, ``timeout``, ``runtime_error``,
+# ``event_parse_error``, ``model_unavailable``) are not account health.
+_RUN_FAILURE_KINDS = {
+    "auth_invalid": "auth_invalid",
+    "rate_limited": "rate_limited",
+    "quota_exhausted": "provider_error",
+    "provider_unavailable": "provider_error",
+    "model_capacity": "provider_error",
+}
+
+
+class RunFailureReporter:
+    """Feeds terminal provider run-errors back into the scheduler.
+
+    The /v1 read path is where a finished turn's structured error first
+    surfaces to the control plane; reportable provider failures
+    (``rate_limited`` → cooling, ``auth_invalid`` → invalid, …) mark the
+    run's account for cooldown/failover exactly once per run. No-ops when
+    the scheduler lacks ``report_failure`` — the frozen ``Scheduler``
+    protocol only requires ``decide``.
+    """
+
+    def __init__(self) -> None:
+        self._reported: set[tuple[str, int]] = set()
+        self._lock = threading.Lock()
+
+    def report(
+        self,
+        *,
+        scheduler: Any,
+        agent_id: str,
+        n: int,
+        account_id: str | None,
+        status: str | None,
+        error: Any,
+    ) -> None:
+        if status not in RUN_TERMINAL or not isinstance(error, dict):
+            return
+        kind = _RUN_FAILURE_KINDS.get(error.get("code"))
+        if kind is None or not account_id or account_id == "auto":
+            return
+        key = (agent_id, n)
+        with self._lock:
+            if key in self._reported:
+                return
+            self._reported.add(key)
+        report = getattr(scheduler, "report_failure", None)
+        if not callable(report):
+            return
+        retry_after = error.get("retry_after")
+        try:
+            report(kind, account_id=account_id, retry_after=retry_after)
+        except TypeError:
+            # Single-account pools take report_failure without account_id.
+            try:
+                report(kind, retry_after=retry_after)
+            except Exception:
+                pass
+        except Exception:
+            pass  # feedback is best-effort; never mask the API response
+
+
+def get_run_reporter(request: Request) -> RunFailureReporter:
+    reporter = getattr(request.app.state, "run_failure_reporter", None)
+    if reporter is None:
+        reporter = RunFailureReporter()
+        request.app.state.run_failure_reporter = reporter
+    return reporter
 
 
 def api_key(
