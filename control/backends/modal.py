@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -84,32 +84,79 @@ def _codex_secrets(modal: Any) -> list[Any]:
     return [modal.Secret.from_name(CODEX_SECRET_NAME)]
 
 
-def _account_secret_env(provider: str) -> dict[str, str]:
-    """Ephemeral credential blob for the P2.1 local control path.
+def _ambient_account_blob(provider: str) -> str | None:
+    """Ambient ``SBX_ACCOUNT_CREDENTIAL`` valid for ``provider``, else ``None``.
 
-    A host ``SBX_ACCOUNT_CREDENTIAL`` blob passes through untouched (it already
-    carries its own ``provider``); ``SBX_ACCOUNT_CREDENTIAL_FILE`` is wrapped
-    into a blob under the provider's credential relpath.
+    The ambient blob is the single-account local-gate fallback; a blob whose
+    ``provider`` field names a different provider belongs to another
+    provider's gate and must not be attached (it would fail ``runner init``
+    on the provider check). ``SBX_ACCOUNT_CREDENTIAL_FILE`` is wrapped under
+    the provider's credential relpath when no valid blob is present.
     """
-    blob = os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
-    if not blob:
-        credential_file = os.environ.get(_ACCOUNT_CREDENTIAL_FILE_ENV)
-        if credential_file:
-            content = Path(credential_file).read_text(encoding="utf-8")
-            blob = json.dumps(
-                {
-                    "provider": provider,
-                    "files": {_ACCOUNT_CREDENTIAL_FILE_REL[provider]: content},
-                }
-            )
-    return {_ACCOUNT_CREDENTIAL_ENV: blob} if blob else {}
+    raw = os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
+    if raw:
+        try:
+            blob = json.loads(raw)
+        except json.JSONDecodeError:
+            blob = None
+        if isinstance(blob, dict) and blob.get("provider") == provider:
+            return raw
+        # Wrong-provider / malformed ambient blob is not scoped to this
+        # sandbox — fall through to the explicit credential file only.
+    credential_file = os.environ.get(_ACCOUNT_CREDENTIAL_FILE_ENV)
+    if credential_file:
+        content = Path(credential_file).read_text(encoding="utf-8")
+        return json.dumps(
+            {
+                "provider": provider,
+                "files": {_ACCOUNT_CREDENTIAL_FILE_REL[provider]: content},
+            }
+        )
+    return None
 
 
-def _account_secrets(modal: Any, provider: str) -> list[Any]:
-    """Ephemeral single-account credential Secret for non-Devin providers."""
+def _devin_aux_secret_env() -> dict[str, str]:
+    """Opt-in non-credential bridges for Devin sandboxes (GitHub / Linear MCP).
+
+    These stack alongside the authoritative credential source (named Secret
+    or ambient blob) because they never carry ``SBX_ACCOUNT_CREDENTIAL``.
+    """
+    env: dict[str, str] = {}
+    if os.environ.get("SBX_GITHUB_EPHEMERAL") == "1":
+        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            env["GH_TOKEN"] = github_token
+            env["GITHUB_TOKEN"] = github_token
+    if os.environ.get(_LINEAR_MCP_GATE_ENV) == "1":
+        linear_key = next(
+            (os.environ.get(name) for name in _LINEAR_HOST_KEY_ENVS if os.environ.get(name)),
+            None,
+        )
+        if linear_key:
+            env[_LINEAR_API_KEY_ENV] = linear_key
+    return env
+
+
+def _account_secret_env(provider: str, *, credential: bool = True) -> dict[str, str]:
+    """Ephemeral credential env for the P2.1 local control path.
+
+    ``credential=False`` skips the ambient account blob so a named per-account
+    Secret stays authoritative; provider-validated ambient blob and the
+    Devin-only opt-in bridges are otherwise included.
+    """
+    env: dict[str, str] = {}
+    if credential:
+        blob = _ambient_account_blob(provider)
+        if blob:
+            env[_ACCOUNT_CREDENTIAL_ENV] = blob
     if provider == DEVIN_PROVIDER:
-        return _devin_secrets(modal)
-    env = _account_secret_env(provider)
+        env.update(_devin_aux_secret_env())
+    return env
+
+
+def _account_secrets(modal: Any, provider: str, *, credential: bool = True) -> list[Any]:
+    """Ephemeral single-account credential Secret for account providers."""
+    env = _account_secret_env(provider, credential=credential)
     return [modal.Secret.from_dict(env)] if env else []
 
 
@@ -120,22 +167,7 @@ def _devin_secrets(modal: Any) -> list[Any]:
     is populated.  This fallback lets a local gate process inject its own
     credential blob without persisting that blob in Modal.
     """
-    secret_env: dict[str, str] = _account_secret_env(DEVIN_PROVIDER)
-    if os.environ.get("SBX_GITHUB_EPHEMERAL") == "1":
-        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-        if github_token:
-            secret_env["GH_TOKEN"] = github_token
-            secret_env["GITHUB_TOKEN"] = github_token
-    if os.environ.get(_LINEAR_MCP_GATE_ENV) == "1":
-        linear_key = next(
-            (os.environ.get(name) for name in _LINEAR_HOST_KEY_ENVS if os.environ.get(name)),
-            None,
-        )
-        if linear_key:
-            secret_env[_LINEAR_API_KEY_ENV] = linear_key
-    if not secret_env:
-        return []
-    return [modal.Secret.from_dict(secret_env)]
+    return _account_secrets(modal, DEVIN_PROVIDER)
 
 
 def _spec_provider(spec: SandboxSpec) -> str:
@@ -143,21 +175,29 @@ def _spec_provider(spec: SandboxSpec) -> str:
     return spec.tags.get("provider", "codex")
 
 
-def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
-    """Secrets for ``Sandbox.create`` / ``exec``.
+def _secrets_for(modal: Any, provider: str, secret_names: Iterable[str]) -> list[Any]:
+    """Secrets for ``Sandbox.create`` / ``exec`` / the kill exec.
 
-    ``spec.secrets`` names per-account Secrets (P2: ``sbx-acct-<account_id>``,
-    carrying the ``SBX_ACCOUNT_CREDENTIAL`` blob). Account-provider sandboxes
-    (devin / antigravity / grok) never get the Codex auth Secret; anything else
-    keeps the P1 Codex path unchanged.
+    Named per-account Secrets (``sbx-acct-<account_id>``, carrying the
+    ``SBX_ACCOUNT_CREDENTIAL`` blob) are authoritative: when present, the
+    ambient account blob is never stacked on top, so one account's local-gate
+    credential cannot shadow another account's Secret (SOR-80). Without a
+    named Secret the provider-validated ambient blob remains the explicit
+    single-account local-gate fallback. Account-provider sandboxes never get
+    the Codex auth Secret; anything else keeps the P1 Codex path unchanged.
     """
-    provider = _spec_provider(spec)
-    named = [modal.Secret.from_name(name) for name in spec.secrets]
+    names = list(secret_names)
+    named = [modal.Secret.from_name(name) for name in names]
     if provider in ACCOUNT_PROVIDERS:
-        return [*named, *_account_secrets(modal, provider)]
+        return [*named, *_account_secrets(modal, provider, credential=not named)]
     if named:
         return named
     return _codex_secrets(modal)
+
+
+def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
+    """Secrets for ``Sandbox.create``: see :func:`_secrets_for`."""
+    return _secrets_for(modal, _spec_provider(spec), spec.secrets)
 
 
 def _create_env(spec: SandboxSpec) -> dict[str, str]:
@@ -281,12 +321,7 @@ class ModalProcess:
             raise
 
     def _exec_secrets(self, modal: Any) -> list[Any]:
-        named = [modal.Secret.from_name(name) for name in self._secret_names]
-        if self._provider in ACCOUNT_PROVIDERS:
-            return [*named, *_account_secrets(modal, self._provider)]
-        if named:
-            return named
-        return _codex_secrets(modal)
+        return _secrets_for(modal, self._provider, self._secret_names)
 
 
 def _close_stdin(proc: Any) -> None:
@@ -359,13 +394,8 @@ class ModalBackend:
 
     def _exec_secrets(self, modal: Any, handle: SandboxHandle) -> list[Any]:
         names = self._secrets_by_sandbox.get(handle.id) or []
-        named = [modal.Secret.from_name(name) for name in names]
         provider = handle.tags.get("provider", "codex")
-        if provider in ACCOUNT_PROVIDERS:
-            return [*named, *_account_secrets(modal, provider)]
-        if named:
-            return named
-        return _codex_secrets(modal)
+        return _secrets_for(modal, provider, names)
 
     def terminate(self, handle: SandboxHandle) -> None:
         modal = _load_modal()

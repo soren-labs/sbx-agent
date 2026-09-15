@@ -38,6 +38,7 @@ from control.service import (
     ControlPlane,
     SessionConflict,
     format_sse,
+    release_lease,
 )
 from control.store import InMemoryStore, SessionStore
 
@@ -256,6 +257,9 @@ def create_app(
             rec = plane.close(sid)
         except KeyError:
             raise _http_error(404, "not_found") from None
+        # SOR-80: sessions may hold a /v1 scheduler lease even when closed
+        # through the internal API — release it idempotently.
+        release_lease(getattr(app.state, "v1_state", None), sid)
         return plane.public(rec)
 
     @app.get("/api/sessions/{sid}/events")

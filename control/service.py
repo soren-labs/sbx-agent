@@ -58,6 +58,29 @@ class ConcurrencyLimit(Exception):
         self.code = 429
 
 
+def release_lease(v1_state: Any, session_id: str | None) -> None:
+    """Idempotently release a ``/v1`` scheduler lease held for ``session_id``.
+
+    The lease surface lives on ``app.state.v1_state`` (owned by api_v1); the
+    control plane coordinates through ``pop_lease`` + ``release()`` — the same
+    calls ``/v1`` uses — without importing the routes module.
+    """
+    if v1_state is None or not session_id:
+        return
+    pop = getattr(v1_state, "pop_lease", None)
+    if not callable(pop):
+        return
+    lease = pop(session_id)
+    release = getattr(lease, "release", None)
+    if callable(release):
+        release()
+
+
+def release_lease_for_action(v1_state: Any, action: Any) -> None:
+    """Release the ``/v1`` lease for a reaper action's session, if any."""
+    release_lease(v1_state, getattr(action, "session_id", None))
+
+
 class ControlPlane:
     def __init__(
         self,
@@ -138,7 +161,6 @@ class ControlPlane:
             if provider != "codex" or account_id != "auto":
                 tags.update({"provider": provider, "account_id": account_id})
             secrets = [secret_name] if secret_name else []
-            handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
             now = self.clock()
             rec = SessionRecord(
                 id=session_id,
@@ -151,11 +173,21 @@ class ControlPlane:
                 usage=empty_usage(),
                 messages=[],
                 owner=owner,
-                sandbox_id=handle.id,
-                sandbox_root=str(handle.root),
                 sandbox_tags=tags,
                 last_activity_at=now,
             )
+            # Publish the record before the sandbox exists: the reaper
+            # distinguishes an in-flight create from an orphan sandbox via
+            # this record (SOR-80), so ``backend.create`` cannot race it.
+            self.store.put(rec)
+            try:
+                handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
+            except Exception:
+                self._mark_create_failed(rec)
+                raise
+            rec.sandbox_id = handle.id
+            rec.sandbox_root = str(handle.root)
+            rec.updated_at = self.clock()
             self.store.put(rec)
 
         try:
@@ -175,19 +207,42 @@ class ControlPlane:
             if code != 0:
                 raise RuntimeError(f"runner init exited {code}")
         except Exception:
-            self.backend.terminate(handle)
-            rec.status = "lost"
-            rec.ended_at = self.clock()
-            rec.updated_at = rec.ended_at
-            self.store.put(rec)
+            # Mark the record lost *before* terminating: even if terminate
+            # fails, the record stays terminal with sandbox_id bound so the
+            # reaper can retry cleanup (SOR-80).
+            self._mark_create_failed(rec)
+            try:
+                self.backend.terminate(handle)
+            except Exception:
+                pass
             raise
 
-        now = self.clock()
-        rec.status = "idle"
-        rec.updated_at = now
-        rec.last_activity_at = now
-        self.store.put(rec)
+        with self._lock:
+            stored = self.store.get(session_id)
+            if stored is not None and stored.status in TERMINAL_STATUSES:
+                # Closed concurrently while init ran — do not resurrect it.
+                try:
+                    self.backend.terminate(handle)
+                except Exception:
+                    pass
+                raise SessionConflict("session_not_runnable")
+            rec.status = "idle"
+            now = self.clock()
+            rec.updated_at = now
+            rec.last_activity_at = now
+            self.store.put(rec)
         return session_id
+
+    def _mark_create_failed(self, rec: SessionRecord) -> None:
+        """Terminal ``lost`` transition for a failed create; keeps sandbox_id."""
+        with self._lock:
+            stored = self.store.get(rec.id) or rec
+            if stored.status in TERMINAL_STATUSES:
+                return
+            stored.status = "lost"
+            stored.ended_at = self.clock()
+            stored.updated_at = stored.ended_at
+            self.store.put(stored)
 
     def post_message(self, session_id: str, text: str) -> str:
         with self._lock:
@@ -198,6 +253,9 @@ class ControlPlane:
                 raise SessionConflict("session_not_runnable")
             if rec.status == "running" or rec.current_turn_id is not None:
                 raise SessionConflict("turn_in_progress")
+            if rec.status != "idle":
+                # ``creating`` (or anything else non-idle) is not runnable.
+                raise SessionConflict("session_not_runnable")
             handle = rec.handle()
             if handle is None:
                 raise SessionConflict("session_not_runnable")
@@ -212,20 +270,24 @@ class ControlPlane:
             self.store.put(rec)
 
         rel = f"_prompt_{n}.md"
-        write_file(self.backend, handle, rel, text)
-        proc = self.backend.exec(
-            handle,
-            self.runner(
-                "turn",
-                "--n",
-                str(n),
-                "--message-file",
-                str(handle.root / rel),
-                "--max-seconds",
-                str(self.turn_max_seconds),
-            ),
-            env=sandbox_env(handle),
-        )
+        try:
+            write_file(self.backend, handle, rel, text)
+            proc = self.backend.exec(
+                handle,
+                self.runner(
+                    "turn",
+                    "--n",
+                    str(n),
+                    "--message-file",
+                    str(handle.root / rel),
+                    "--max-seconds",
+                    str(self.turn_max_seconds),
+                ),
+                env=sandbox_env(handle),
+            )
+        except Exception:
+            self._rollback_turn(session_id, turn_id, handle)
+            raise
         with self._lock:
             self._live[session_id] = LiveTurn(turn_id=turn_id, n=n, proc=proc)
         thread = threading.Thread(
@@ -236,6 +298,32 @@ class ControlPlane:
         )
         thread.start()
         return turn_id
+
+    def _rollback_turn(self, session_id: str, turn_id: str, handle: Any) -> None:
+        """Undo a queued turn whose write/exec never started (SOR-80).
+
+        Deterministic end state: ``idle`` when the sandbox is still alive
+        (runnable again) or ``lost`` when it is gone (terminal); the pending
+        user message and turn markers are rolled back either way.
+        """
+        with self._lock:
+            rec = self.store.get(session_id)
+            if rec is None or rec.current_turn_id != turn_id:
+                return
+            try:
+                alive = bool(self.backend.poll(handle).alive)
+            except Exception:
+                alive = False
+            now = self.clock()
+            rec.messages = [m for m in rec.messages if m.get("turn_id") != turn_id]
+            rec.current_turn_id = None
+            rec.current_turn_n = None
+            rec.status = "idle" if alive else "lost"
+            if not alive:
+                rec.ended_at = now
+            rec.updated_at = now
+            rec.last_activity_at = now
+            self.store.put(rec)
 
     def _watch_turn(self, session_id: str, turn_id: str, n: int, proc: Process) -> None:
         try:
@@ -317,7 +405,13 @@ class ControlPlane:
         if live is not None:
             live.proc.kill()
         if handle is not None:
-            self.backend.terminate(handle)
+            try:
+                self.backend.terminate(handle)
+            except Exception:
+                # The record is already terminal and keeps sandbox_id/root/
+                # tags, so the reaper retries the terminate (SOR-80) while the
+                # caller can still release capacity (slots, leases).
+                pass
         stored = self.store.get(session_id)
         assert stored is not None
         return stored

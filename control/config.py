@@ -9,6 +9,9 @@ from pathlib import Path
 DEFAULT_MODEL = "gpt-5.6-luna"
 MAX_CONCURRENT = 2
 IDLE_TIMEOUT_S = 1800
+# SOR-80: a ``creating`` record without ``sandbox_id`` is an in-flight create;
+# the reaper leaves it alone for this long before declaring it ``lost``.
+CREATE_GRACE_S = 300
 SANDBOX_TIMEOUT_S = 14400  # 4h hard cap
 SSE_KEEPALIVE_S = 15.0
 TURN_MAX_SECONDS = 900

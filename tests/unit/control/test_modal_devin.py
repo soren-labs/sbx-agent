@@ -73,17 +73,20 @@ def test_sandbox_secrets_devin_without_spec_gets_none(monkeypatch) -> None:
     assert _sandbox_secrets(_FakeModal, spec) == []
 
 
+def _blob(provider: str = "devin", files: dict | None = None) -> str:
+    return json.dumps({"provider": provider, "files": files or {"cred": "REDACTED"}})
+
+
 def test_devin_ephemeral_secret_from_local_blob(monkeypatch) -> None:
-    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
-    assert _devin_secrets(_FakeModal) == [("dict", {"SBX_ACCOUNT_CREDENTIAL": "REDACTED_BLOB"})]
+    blob = _blob()
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", blob)
+    assert _devin_secrets(_FakeModal) == [("dict", {"SBX_ACCOUNT_CREDENTIAL": blob})]
     spec = SandboxSpec(tags={"provider": "devin"})
-    assert _sandbox_secrets(_FakeModal, spec) == [
-        ("dict", {"SBX_ACCOUNT_CREDENTIAL": "REDACTED_BLOB"})
-    ]
+    assert _sandbox_secrets(_FakeModal, spec) == [("dict", {"SBX_ACCOUNT_CREDENTIAL": blob})]
 
 
 def test_devin_github_token_requires_explicit_gate_flag(monkeypatch) -> None:
-    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", _blob())
     monkeypatch.setenv("GH_TOKEN", "REDACTED_GITHUB")
     monkeypatch.delenv("SBX_GITHUB_EPHEMERAL", raising=False)
     payload = _devin_secrets(_FakeModal)[0][1]
@@ -111,7 +114,7 @@ def test_named_devin_secret_can_stack_ephemeral_github(monkeypatch) -> None:
 
 
 def test_devin_linear_key_requires_explicit_gate_flag(monkeypatch) -> None:
-    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
+    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", _blob())
     monkeypatch.setenv("LINEAR_API_KEY", "REDACTED_LINEAR")
     monkeypatch.delenv("SBX_LINEAR_MCP_EPHEMERAL", raising=False)
     payload = _devin_secrets(_FakeModal)[0][1]

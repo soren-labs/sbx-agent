@@ -27,38 +27,95 @@ def is_local_root(handle: SandboxHandle) -> bool:
 
 # Control-plane env vars explicitly forwarded to sandbox children. Required
 # since LocalProcessBackend.exec no longer inherits os.environ (SOR-56).
-_FORWARD_ENV_KEYS = (
-    "CODEX_BIN",
-    "SBX_ACCOUNT_CREDENTIAL",
-    "SBX_ACCOUNT_ID",
-    "SBX_PROVIDER_API_KEY",
-    "SBX_PROVIDER_BASE_URL",
-    "PYTHONPATH",
-    "FAKE_CODEX_SCENARIO",
-    "FAKE_CODEX_THREAD_ID",
-    "FAKE_CODEX_SLOW_SECONDS",
-    "FAKE_AGY_SCENARIO",
-    "FAKE_GROK_SCENARIO",
-    "FAKE_OPENCODE_SCENARIO",
-    "FAKE_DEVIN_SCENARIO",
-)
+# SOR-80: forwarding is scoped by the sandbox's provider/account tags so
+# control-only credential variables never reach a foreign provider's exec.
+_SHARED_ENV_KEYS = ("PYTHONPATH",)
+
+_PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "codex": (
+        "CODEX_BIN",
+        "SBX_PROVIDER_API_KEY",
+        "SBX_PROVIDER_BASE_URL",
+        "FAKE_CODEX_SCENARIO",
+        "FAKE_CODEX_THREAD_ID",
+        "FAKE_CODEX_SLOW_SECONDS",
+    ),
+    "antigravity": ("FAKE_AGY_SCENARIO", "FAKE_AGY_SLOW_SECONDS"),
+    "grok": ("FAKE_GROK_SCENARIO", "FAKE_GROK_SLOW_SECONDS"),
+    "opencode": ("FAKE_OPENCODE_SCENARIO", "FAKE_OPENCODE_SLOW_SECONDS"),
+    "devin": ("FAKE_DEVIN_SCENARIO", "FAKE_DEVIN_SLOW_SECONDS"),
+}
+
+_ACCOUNT_ID_ENV = "SBX_ACCOUNT_ID"
+_ACCOUNT_CREDENTIAL_ENV = "SBX_ACCOUNT_CREDENTIAL"
+
+
+def handle_provider(handle: SandboxHandle) -> str:
+    """Provider tag on a sandbox handle (default ``codex``, as in the spec)."""
+    return (handle.tags or {}).get("provider", "codex")
+
+
+def parse_credential_blob(raw: str | None) -> dict[str, Any] | None:
+    """Parse a ``SBX_ACCOUNT_CREDENTIAL`` blob; ``None`` when malformed."""
+    if not raw:
+        return None
+    try:
+        blob = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return blob if isinstance(blob, dict) else None
+
+
+def _account_scoped(account_id: str | None) -> bool:
+    """Whether the ambient account blob may be forwarded to this sandbox.
+
+    The ambient ``SBX_ACCOUNT_ID`` identifies which account the control-plane
+    credential blob belongs to: a mismatch (or a credential bound to a named
+    account on an untagged sandbox) must not shadow the sandbox's own account
+    credentials. An unset ``SBX_ACCOUNT_ID`` is the unscoped single-account
+    local-gate fallback and forwards on provider match alone.
+    """
+    ambient = os.environ.get(_ACCOUNT_ID_ENV)
+    if ambient is None:
+        return True
+    return account_id is not None and ambient == account_id
+
+
+def _credential_for(provider: str, account_id: str | None) -> str | None:
+    """Ambient ``SBX_ACCOUNT_CREDENTIAL`` scoped to this provider/account."""
+    blob = parse_credential_blob(os.environ.get(_ACCOUNT_CREDENTIAL_ENV))
+    if blob is None or blob.get("provider") != provider:
+        return None
+    if not _account_scoped(account_id):
+        return None
+    return os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
 
 
 def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    provider = handle_provider(handle)
+    account_id = (handle.tags or {}).get("account_id")
     env = {
         "SBX_WORK": str(handle.root),
         "CODEX_HOME": str(handle.root / ".codex"),
         "PYTHONUNBUFFERED": "1",
     }
     # Modal ``exec(..., env=)`` replaces the process env and can hide a named
-    # Secret. Forward the control-plane copy when present so Codex still auth'd.
-    auth_json = os.environ.get("CODEX_AUTH_JSON")
-    if auth_json:
-        env["CODEX_AUTH_JSON"] = auth_json
-    for key in _FORWARD_ENV_KEYS:
+    # Secret. Forward the control-plane copy when present so Codex still
+    # auth'd — Codex sandboxes only (SOR-80).
+    if provider == "codex":
+        auth_json = os.environ.get("CODEX_AUTH_JSON")
+        if auth_json:
+            env["CODEX_AUTH_JSON"] = auth_json
+    for key in _SHARED_ENV_KEYS + _PROVIDER_ENV_KEYS.get(provider, ()):
         value = os.environ.get(key)
         if value is not None:
             env[key] = value
+    ambient_account = os.environ.get(_ACCOUNT_ID_ENV)
+    if ambient_account is not None and ambient_account == account_id:
+        env[_ACCOUNT_ID_ENV] = ambient_account
+    credential = _credential_for(provider, account_id)
+    if credential is not None:
+        env[_ACCOUNT_CREDENTIAL_ENV] = credential
     if extra:
         env.update(extra)
     return env

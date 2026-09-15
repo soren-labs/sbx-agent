@@ -19,6 +19,7 @@ from control.config import (
     V1_BOOTSTRAP_SECRET_NAME,
 )
 from control.reaper import reap
+from control.service import release_lease_for_action
 
 app = modal.App(os.environ.get("SBX_MODAL_APP_NAME", MODAL_APP_NAME))
 
@@ -51,4 +52,12 @@ def reap_cron() -> None:
     os.environ.setdefault("SBX_BACKEND", "modal")
     web = create_app()
     plane = web.state.plane
-    reap(plane.store, plane.backend, datetime.now(UTC), idle_timeout_s=plane.idle_timeout_s)
+    v1_state = getattr(web.state, "v1_state", None)
+    reap(
+        plane.store,
+        plane.backend,
+        datetime.now(UTC),
+        idle_timeout_s=plane.idle_timeout_s,
+        # SOR-80: timed_out / lost sessions must drop any held /v1 lease.
+        on_action=lambda action: release_lease_for_action(v1_state, action),
+    )
