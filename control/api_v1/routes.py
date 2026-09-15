@@ -205,10 +205,35 @@ def _raise_schedule_error(
     )
 
 
-def _release_agent_lease(v1: V1State, agent_id: str) -> None:
-    lease = v1.pop_lease(agent_id)
+def _release_lease(lease: Any) -> None:
+    """Release one scheduler lease; idempotent and never raises."""
     if lease is not None:
-        lease.release()
+        try:
+            lease.release()
+        except Exception:
+            pass
+
+
+def _release_agent_lease(v1: V1State, agent_id: str) -> None:
+    """Pop and release the lease stored for ``agent_id`` (no-op when absent)."""
+    _release_lease(v1.pop_lease(agent_id))
+
+
+def _discard_agent(plane: Any, v1: V1State, agent_id: str, lease: Any = None) -> None:
+    """Best-effort teardown of a half-created agent.
+
+    Closes the session and frees the scheduler lease; secondary failures are
+    swallowed so the original route error is never masked. Reaper / internal
+    ``/api`` cleanup belongs to the control plane (P2-C), not this route.
+    """
+    try:
+        plane.close(agent_id)
+    except Exception:
+        pass
+    stored = v1.pop_lease(agent_id)
+    _release_lease(stored)
+    if lease is not None and lease is not stored:
+        _release_lease(lease)
 
 
 def _default_model(provider: str, account: Account | None) -> str | None:
@@ -279,50 +304,44 @@ def create_agent(
             secret_name=secret_name,
         )
     except ConcurrencyLimit as exc:
-        if lease is not None:
-            lease.release()
+        _release_lease(lease)
         raise V1ApiError(
             429, "concurrency_limit", "per-key concurrent sandbox cap reached"
         ) from exc
     except Exception:
-        if lease is not None:
-            lease.release()
+        _release_lease(lease)
         raise
 
-    if lease is not None:
-        v1.set_lease(session_id, lease)
-    v1.set_meta(
-        session_id,
-        AgentMeta(
-            provider=provider,
-            account_id=resolved,
-            name=body.name,
-            idle_timeout_s=body.idle_timeout_s,
-        ),
-    )
-    if account is not None:
-        try:
-            registry.touch(account.id, _iso_now())
-        except KeyError:
-            pass
     try:
-        turn_id = plane.post_message(session_id, body.prompt.text)
-    except SessionConflict as exc:
+        if lease is not None:
+            v1.set_lease(session_id, lease)
+        v1.set_meta(
+            session_id,
+            AgentMeta(
+                provider=provider,
+                account_id=resolved,
+                name=body.name,
+                idle_timeout_s=body.idle_timeout_s,
+            ),
+        )
+        if account is not None:
+            try:
+                registry.touch(account.id, _iso_now())
+            except KeyError:
+                pass
         try:
-            plane.close(session_id)
-        finally:
-            _release_agent_lease(v1, session_id)
-        raise V1ApiError(exc.code, exc.error, exc.error) from exc
-    except KeyError as exc:
-        try:
-            plane.close(session_id)
-        finally:
-            _release_agent_lease(v1, session_id)
-        raise not_found("agent not found after create") from exc
-    n = _turn_n(turn_id) or 1
-    rec = _require_agent(plane, session_id)
-    agent = agent_public(plane.public(rec), v1.get_meta(session_id))
-    run = _run_public(plane, plane.public(rec), rec, n, v1.cancelled(session_id))
+            turn_id = plane.post_message(session_id, body.prompt.text)
+        except SessionConflict as exc:
+            raise V1ApiError(exc.code, exc.error, exc.error) from exc
+        except KeyError as exc:
+            raise not_found("agent not found after create") from exc
+        n = _turn_n(turn_id) or 1
+        rec = _require_agent(plane, session_id)
+        agent = agent_public(plane.public(rec), v1.get_meta(session_id))
+        run = _run_public(plane, plane.public(rec), rec, n, v1.cancelled(session_id))
+    except Exception:
+        _discard_agent(plane, v1, session_id, lease)
+        raise
     return {"agent": agent, "run": run}
 
 
@@ -378,7 +397,10 @@ def delete_agent(
         rec = plane.close(agent_id)
     except KeyError:
         raise not_found("agent not found") from None
-    _release_agent_lease(v1, agent_id)
+    finally:
+        # The account slot is freed even when close/terminate fails; deeper
+        # sandbox cleanup stays with the control plane / reaper (P2-C).
+        _release_agent_lease(v1, agent_id)
     return agent_public(plane.public(rec), v1.get_meta(agent_id))
 
 
@@ -729,8 +751,10 @@ def verify_account(
 ) -> dict[str, Any]:
     """Probe the stored credential in a throwaway sandbox.
 
-    Runs ``runner init`` with ``SBX_ACCOUNT_CREDENTIAL`` / ``SBX_ACCOUNT_ID``
-    injected: the blob is restored under ``$SBX_WORK/home`` and a non-zero init
+    Runs ``runner init --provider <account.provider>`` with the account's
+    credential attached: the named Modal Secret when ``secret_name`` is set,
+    else the local registry blob via ``SBX_ACCOUNT_CREDENTIAL`` /
+    ``SBX_ACCOUNT_ID`` (restored under ``$SBX_WORK/home``). A non-zero init
     marks the account ``invalid``. When the plane exposes no usable backend the
     account is simply marked ``active`` (real per-provider CLI probes land with
     the P2-B adapters).
@@ -750,18 +774,38 @@ def verify_account(
     try:
         from control.backend import SandboxSpec
 
+        # Secret-only accounts carry their credential in the named Modal
+        # Secret; a local registry blob travels via SBX_ACCOUNT_CREDENTIAL.
+        secrets = [account.secret_name] if account.secret_name else []
         handle = backend.create(
-            SandboxSpec(tags={"purpose": _VERIFY_TAG, "account_id": account_id})
+            SandboxSpec(
+                tags={"purpose": _VERIFY_TAG, "account_id": account_id},
+                secrets=secrets,
+            )
         )
-        env = sandbox_env(
-            handle,
-            {
-                "SBX_ACCOUNT_ID": account_id,
-                "SBX_ACCOUNT_CREDENTIAL": json.dumps(blob or {}),
-            },
+        verify_env: dict[str, str] = {"SBX_ACCOUNT_ID": account_id}
+        if blob:
+            verify_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(blob)
+        env = sandbox_env(handle, verify_env)
+        if not blob:
+            # An empty or unrelated blob would shadow the named Secret.
+            env.pop("SBX_ACCOUNT_CREDENTIAL", None)
+        model = (
+            _default_model(account.provider, account)
+            or getattr(plane, "default_model", None)
+            or "gpt-5.6-luna"
         )
-        model = getattr(plane, "default_model", None) or "gpt-5.6-luna"
-        argv = runner("init", "--auth", "auth_json", "--model", model)
+        argv = runner(
+            "init",
+            "--auth",
+            "auth_json",
+            "--model",
+            model,
+            "--provider",
+            account.provider,
+            "--account-id",
+            account_id,
+        )
         proc = backend.exec(handle, argv, env=env)
         for _ in proc.stdout:
             pass
