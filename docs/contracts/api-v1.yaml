@@ -114,6 +114,8 @@ x-canonical:
     - GET /v1/agents/{id}/runs/{runId}/stream
     - POST /v1/agents/{id}/runs/{runId}/cancel
     - GET /v1/agents/{id}/usage
+    - GET /v1/workflows/{id}
+    - DELETE /v1/workflows/{id}
     - GET /v1/models
     - GET /v1/me
     - GET /v1/accounts
@@ -191,6 +193,14 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/AgentStatus"
+        - name: workflow_id
+          in: query
+          required: false
+          description: |
+            SOR-84 workflow scope filter: only agents whose persisted
+            ``metadata.workflow_id`` binding (under the caller's key) matches.
+          schema:
+            type: string
         - name: cursor
           in: query
           required: false
@@ -583,6 +593,60 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/workflows/{id}:
+    get:
+      tags: [agents]
+      summary: Workflow query / recover read (SOR-84)
+      description: |
+        Low-cost recovery view keyed by ``(caller key id, workflow_id)``:
+        bound agents, their latest runs and artifact refs, plus aggregate
+        progress — everything a fresh client process needs to resume
+        polling/streaming after losing local state. Served from persisted
+        records only; no sandbox I/O.
+      operationId: getWorkflow
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workflow view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [agents]
+      summary: Scoped workflow cleanup (SOR-84)
+      description: |
+        Close exactly the agents bound to ``(caller key id, workflow_id)`` —
+        other workflows and other principals' sessions are never touched
+        (the session owner is re-checked before close). Idempotent: a repeat
+        call reports ``already_terminal`` instead of re-closing.
+      operationId: deleteWorkflow
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cleanup outcome per scoped agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowCleanupResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/models:
     get:
       tags: [meta]
@@ -892,6 +956,8 @@ components:
           $ref: "#/components/schemas/WorkspaceDecl"
         handoff:
           $ref: "#/components/schemas/HandoffRef"
+        metadata:
+          $ref: "#/components/schemas/WorkflowMetadata"
     WorkspaceDecl:
       type: object
       required: [repo, base_ref, base_sha]
@@ -1081,6 +1147,33 @@ components:
       properties:
         prompt:
           $ref: "#/components/schemas/Prompt"
+        metadata:
+          $ref: "#/components/schemas/WorkflowMetadata"
+    WorkflowMetadata:
+      type: object
+      required: [workflow_id, task_id, role]
+      description: |
+        SOR-84 caller workflow binding. Persisted per agent, keyed by
+        ``(api key id, workflow_id)``, so a fresh client can recover a
+        workflow from nothing but its API key + ``workflow_id``.
+      properties:
+        workflow_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        task_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        role:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Free-form label (``worker`` / ``reviewer`` / ...).
+        parent_task_id:
+          type: string
+          maxLength: 256
+          nullable: true
     Agent:
       type: object
       required:
@@ -1113,8 +1206,16 @@ components:
           format: date-time
         usage:
           $ref: "#/components/schemas/Usage"
+          nullable: true
+          description: |
+            Token usage measured by runs; ``null`` while unmeasured —
+            unavailable, never fabricated zeros (SOR-84).
         cost_estimate_usd:
           type: number
+        metadata:
+          $ref: "#/components/schemas/WorkflowMetadata"
+          nullable: true
+          description: The persisted workflow binding, when attached.
     AgentList:
       type: object
       required: [agents]
@@ -1221,10 +1322,114 @@ components:
       properties:
         usage:
           $ref: "#/components/schemas/Usage"
+          nullable: true
+          description: "``null`` while no usage was ever measured (SOR-84)."
         cost_estimate_usd:
           type: number
         sandbox_seconds:
           type: number
+    WorkflowAgent:
+      type: object
+      required: [agent_id, task_id, role, status, runs, latest_run]
+      description: One bound agent inside a workflow view (SOR-84).
+      properties:
+        agent_id:
+          type: string
+        task_id:
+          type: string
+        role:
+          type: string
+        parent_task_id:
+          type: string
+          nullable: true
+        attached_at:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/AgentStatus"
+          description: Session status; ``missing`` when the record is gone.
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+          nullable: true
+        account_id:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        agent_created_at:
+          type: string
+          format: date-time
+          nullable: true
+        runs:
+          type: integer
+        latest_run:
+          $ref: "#/components/schemas/Run"
+          nullable: true
+    Workflow:
+      type: object
+      required: [workflow_id, agents, progress]
+      properties:
+        workflow_id:
+          type: string
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowAgent"
+        progress:
+          type: object
+          required: [tasks, agents, open_agents, runs, latest_runs_by_status, all_terminal]
+          properties:
+            tasks:
+              type: integer
+            agents:
+              type: integer
+            open_agents:
+              type: integer
+            runs:
+              type: integer
+            latest_runs_by_status:
+              type: object
+              additionalProperties:
+                type: integer
+            all_terminal:
+              type: boolean
+    WorkflowCleanupResult:
+      type: object
+      required:
+        - workflow_id
+        - matched
+        - closed
+        - already_terminal
+        - missing
+        - skipped
+        - errors
+      properties:
+        workflow_id:
+          type: string
+        matched:
+          type: integer
+        closed:
+          type: array
+          items:
+            type: string
+        already_terminal:
+          type: array
+          items:
+            type: string
+        missing:
+          type: array
+          items:
+            type: string
+        skipped:
+          type: array
+          items:
+            type: string
+          description: Agents whose session owner differs — never closed.
+        errors:
+          type: object
+          additionalProperties:
+            type: string
     Model:
       type: object
       required: [provider, model, accounts_available]

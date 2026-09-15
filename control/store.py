@@ -22,7 +22,10 @@ class SessionRecord:
     updated_at: datetime
     model: str
     turns: int
-    usage: dict[str, int]
+    # None = no usage ever reported; /v1 surfaces that as "unavailable"
+    # rather than fabricated zeros (SOR-84). /api keeps the zero-filled
+    # shape its contract requires.
+    usage: dict[str, int] | None
     messages: list[dict[str, Any]]
     owner: str
     sandbox_id: str | None = None
@@ -65,10 +68,10 @@ def empty_usage() -> dict[str, int]:
     return {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
 
 
-def merge_usage(dst: dict[str, int], src: dict[str, Any] | None) -> dict[str, int]:
+def merge_usage(dst: dict[str, int] | None, src: dict[str, Any] | None) -> dict[str, int] | None:
     if not src:
         return dst
-    out = dict(dst)
+    out = dict(dst or {})
     for key in (
         "input_tokens",
         "cached_input_tokens",

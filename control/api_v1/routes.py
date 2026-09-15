@@ -492,6 +492,30 @@ def _require_agent(plane: Any, agent_id: str) -> Any:
     return rec
 
 
+def _agent_payload(plane: Any, v1: V1State, workflows: WorkflowService, rec: Any) -> dict[str, Any]:
+    """Agent view: contract fields + workflow binding + honest usage.
+
+    ``usage`` comes from the session record — ``None`` (never measured)
+    serializes as ``null``, never fabricated zeros (SOR-84). ``metadata``
+    echoes the durable workflow/task binding when one is attached.
+    """
+    try:
+        task = workflows.for_agent(rec.id)
+    except Exception:
+        task = None
+    metadata = (
+        {
+            "workflow_id": task.workflow_id,
+            "task_id": task.task_id,
+            "role": task.role,
+            "parent_task_id": task.parent_task_id,
+        }
+        if task is not None
+        else None
+    )
+    return agent_public(plane.public(rec), _meta_for(v1, rec), usage=rec.usage, metadata=metadata)
+
+
 def _require_run(
     plane: Any,
     rec: Any,
@@ -714,7 +738,7 @@ def create_agent(
             pub = plane.public(prior)
             meta = _meta_for(v1, prior)
             result = {
-                "agent": agent_public(pub, meta),
+                "agent": _agent_payload(plane, v1, workflows, prior),
                 "run": _run_public(
                     plane,
                     pub,
@@ -895,7 +919,7 @@ def _create_agent_once(
 
     rec = _require_agent(plane, session_id)
     pub = plane.public(rec)
-    agent = agent_public(pub, _meta_for(v1, rec))
+    agent = _agent_payload(plane, v1, workflows, rec)
     run = _run_public(
         plane,
         pub,
@@ -915,10 +939,12 @@ def list_agents(
     provider: ProviderId | None = None,
     account_id: str | None = None,
     status: str | None = None,
+    workflow_id: str | None = None,
     cursor: str | None = None,
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     start = 0
     if cursor:
@@ -926,7 +952,13 @@ def list_agents(
             start = max(0, int(cursor))
         except ValueError:
             raise V1ApiError(400, "invalid_provider", "malformed cursor") from None
-    agents = [agent_public(plane.public(rec), _meta_for(v1, rec)) for rec in plane.store.list_all()]
+    records = plane.store.list_all()
+    if workflow_id is not None:
+        # SOR-84: index-backed scope — only agents whose durable binding
+        # matches (caller key id, workflow_id) are listed.
+        scoped = workflows.agent_ids(key.id, workflow_id)
+        records = [rec for rec in records if rec.id in scoped]
+    agents = [_agent_payload(plane, v1, workflows, rec) for rec in records]
     agents = [
         a
         for a in agents
@@ -946,9 +978,10 @@ def get_agent(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
-    return agent_public(plane.public(rec), _meta_for(v1, rec))
+    return _agent_payload(plane, v1, workflows, rec)
 
 
 @router.delete("/agents/{agent_id}")
@@ -957,6 +990,7 @@ def delete_agent(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     try:
         rec = plane.close(agent_id)
@@ -966,7 +1000,45 @@ def delete_agent(
         # The account slot is freed even when close/terminate fails; deeper
         # sandbox cleanup stays with the control plane / reaper (P2-C).
         _release_agent_lease(v1, agent_id)
-    return agent_public(plane.public(rec), _meta_for(v1, rec))
+    return _agent_payload(plane, v1, workflows, rec)
+
+
+# -------------------------------------------------------------- workflows
+
+
+@router.get("/workflows/{workflow_id}")
+def get_workflow(
+    workflow_id: str,
+    key: ApiKey = Depends(agents_key),
+    workflows: WorkflowService = Depends(get_workflow_service),
+) -> dict[str, Any]:
+    """Workflow query / recover read (SOR-84).
+
+    Agents + latest runs + progress for ``(caller key id, workflow_id)``,
+    served from persisted records only — cheap enough to poll while a fresh
+    client process re-attaches after losing local state.
+    """
+    view = workflows.lookup(key.id, workflow_id)
+    if view is None:
+        raise not_found("workflow not found")
+    return view
+
+
+@router.delete("/workflows/{workflow_id}")
+def delete_workflow(
+    workflow_id: str,
+    key: ApiKey = Depends(agents_key),
+    workflows: WorkflowService = Depends(get_workflow_service),
+) -> dict[str, Any]:
+    """Scoped cleanup: close exactly this workflow's agents (idempotent).
+
+    Other workflows — and other principals' same-named workflows — are
+    never touched; the per-agent owner is re-checked before close.
+    """
+    result = workflows.cleanup(key.id, workflow_id)
+    if result is None:
+        raise not_found("workflow not found")
+    return result
 
 
 # --------------------------------------------- workspaces + artifacts (SOR-83)
@@ -1203,6 +1275,7 @@ def create_run(
     run_states: RunStateStore = Depends(get_run_states),
     scheduler: Scheduler = Depends(get_scheduler),
     reporter: RunFailureReporter = Depends(get_run_reporter),
+    workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     _require_agent(plane, agent_id)
     try:
@@ -1211,6 +1284,10 @@ def create_run(
         raise not_found("agent not found") from None
     except SessionConflict as exc:
         raise V1ApiError(exc.code, exc.error, exc.error) from exc
+    if body.metadata is not None:
+        # SOR-84: a follow-up may re-bind the agent's workflow task; the
+        # run is already queued, so a refused message never re-binds.
+        workflows.attach(owner=key.id, agent_id=agent_id, metadata=body.metadata)
     n = _turn_n(turn_id) or 0
     # Dispatched at once, so the run is born RUNNING (SOR-82 A2 seam).
     run_states.begin(agent_id, n, prompt=body.prompt.text, status="RUNNING")
@@ -1495,7 +1572,9 @@ def get_agent_usage(
     rec = _require_agent(plane, agent_id)
     pub = plane.public(rec)
     return {
-        "usage": usage_public(pub.get("usage")),
+        # None (never measured) serializes as null — unavailable, not
+        # fabricated zeros (SOR-84).
+        "usage": usage_public(rec.usage),
         "cost_estimate_usd": pub.get("cost_estimate_usd", 0.0),
         "sandbox_seconds": pub.get("sandbox_seconds", 0.0),
     }

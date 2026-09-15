@@ -82,6 +82,11 @@ class WorkflowService:
         """The workflow binding for one agent, or None when untagged."""
         return self._store.for_agent(agent_id)
 
+    def agent_ids(self, owner: str, workflow_id: str) -> set[str]:
+        """Ids bound to ``(owner, workflow_id)`` — the ``GET /v1/agents``
+        ``workflow_id`` filter."""
+        return {task.agent_id for task in self._store.list_workflow(owner, workflow_id)}
+
     # ------------------------------------------------------------ query
 
     def lookup(self, owner: str, workflow_id: str) -> dict[str, Any] | None:

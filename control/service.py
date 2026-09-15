@@ -21,7 +21,7 @@ from control.config import (
 )
 from control.run_store import RunLedger, outcome_from_turn_payload
 from control.sandbox_io import drain, read_json, sandbox_env, write_file
-from control.store import SessionRecord, SessionStore, empty_usage, merge_usage
+from control.store import SessionRecord, SessionStore, merge_usage
 
 Clock = Callable[[], datetime]
 
@@ -137,7 +137,7 @@ class ControlPlane:
         else:
             end = now
         sandbox_seconds = max(0.0, (end - rec.created_at).total_seconds())
-        usage = dict(rec.usage)
+        usage = dict(rec.usage or {})
         usage.setdefault("input_tokens", 0)
         usage.setdefault("cached_input_tokens", 0)
         usage.setdefault("output_tokens", 0)
@@ -265,7 +265,7 @@ class ControlPlane:
                 updated_at=now,
                 model=model or self.default_model,
                 turns=0,
-                usage=empty_usage(),
+                usage=None,
                 messages=messages,
                 owner=owner,
                 sandbox_tags=tags,
