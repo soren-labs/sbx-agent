@@ -19,10 +19,12 @@ Notable real-CLI behaviours handled here:
   reported ``conversation_id`` differs, so ``runner turn`` can detect the
   mismatch and fail the turn instead of forking the session.
 - Recognised native lines that carry no canonical event (``system_message``
-  steps, buffered deltas, usage-only DONE steps) return
-  ``{"type": NOOP_EVENT_TYPE}`` — dropped by ``runner turn`` before
-  ``events.jsonl`` and never counted as bad JSON. Only ``[]`` means
-  "unrecognised line" (runner counts it bad, per events.md).
+  steps, buffered deltas, usage-only DONE steps) — and any parseable JSON
+  object of an unknown ``event`` kind (forward compatibility, SOR-80) —
+  return ``{"type": NOOP_EVENT_TYPE}``: dropped by ``runner turn`` before
+  ``events.jsonl`` and never counted as bad JSON. ``[]`` is returned only
+  for lines with no JSON object (unparseable / non-object), which the
+  runner counts as a bad line (events.md rule 5).
 """
 
 from __future__ import annotations
@@ -222,11 +224,15 @@ class AntigravityAdapter:
             return self._on_init(obj)
         if kind == "step_update":
             step = obj.get("step_update")
-            return self._on_step(step) if isinstance(step, dict) else []
+            return self._on_step(step) if isinstance(step, dict) else [_NOOP]
         if kind == "result":
             result = obj.get("result")
-            return self._on_result(result) if isinstance(result, dict) else []
-        return []
+            return self._on_result(result) if isinstance(result, dict) else [_NOOP]
+        # Forward compatibility: a parseable object of an unknown event
+        # kind is acknowledged as NOOP, never a bad line. ``[]`` is
+        # reserved for lines with no JSON object (unparseable /
+        # non-object), which the runner counts as bad JSON.
+        return [_NOOP]
 
     def extract_session_id(self, events: Iterable[dict[str, Any]]) -> str | None:
         for ev in events:
@@ -259,7 +265,7 @@ class AntigravityAdapter:
         inner = obj.get("init")
         conv = _conversation_id(obj, inner if isinstance(inner, dict) else None)
         if not conv:
-            return []
+            return [_NOOP]
         if self._expected_id is not None and conv != self._expected_id:
             # Stale --conversation id: the CLI warned on stderr and opened a
             # new conversation with rc=0. Emit an error but no thread.started

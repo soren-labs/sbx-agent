@@ -1,0 +1,11 @@
+{"type": "available_commands", "tools": ["run_terminal_command", "read_file", "write"], "commands": ["compact"]}
+{"type": "plan", "entries": [{"content": "Inspect the workspace", "priority": "high", "status": "completed"}, {"content": "Write marker.txt", "priority": "high", "status": "in_progress"}, {"content": "Verify the output", "priority": "medium", "status": "pending"}]}
+{"type": "thought", "data": "The"}
+{"type": "thought", "data": " plan"}
+{"type": "thought", "data": " is"}
+{"type": "thought", "data": " set."}
+{"type": "session_metrics", "elapsed_ms": 1200, "turns": 1}
+{"type": "plan", "entries": [{"content": "Inspect the workspace", "priority": "high", "status": "completed"}, {"content": "Write marker.txt", "priority": "high", "status": "completed"}, {"content": "Verify the output", "priority": "medium", "status": "completed"}]}
+{"type": "text", "data": "DONE"}
+{"type": "usage", "usage": {"input_tokens": 380, "output_tokens": 26, "cache_read_input_tokens": 16768, "cache_creation_input_tokens": 0, "reasoning_tokens": 21}, "signature": "REDACTED"}
+{"type": "end", "stopReason": "end_turn", "sessionId": "01a0a2d7-87bc-7192-b642-ad17e2cb3b55", "requestId": "08eae5d3-5f7b-45f8-b575-bcc0f547a479", "usage": {"input_tokens": 17255, "cache_read_input_tokens": 16768, "cache_creation_input_tokens": 0, "output_tokens": 142, "reasoning_tokens": 66}}

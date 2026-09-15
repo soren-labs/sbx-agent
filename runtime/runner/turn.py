@@ -4,6 +4,11 @@ P2 (SOR-62/SOR-72): provider dispatch through ``AgentAdapter``. Native stdout
 lines go to ``events.raw.jsonl``; ``adapter.translate`` output (canonical
 events, Codex shape) goes to ``events.jsonl`` and runner stdout. Codex is the
 identity translation, so its stream is unchanged.
+
+Bad-line rule (SOR-80): only a non-empty line that carries no JSON object
+(unparseable text or non-object JSON) counts as bad JSON. Parseable objects
+of unknown/non-terminal kinds translate to ``sbx.noop`` and are dropped
+here — forward-compatible provider events never fail a turn.
 """
 
 from __future__ import annotations
@@ -32,7 +37,13 @@ from runtime.runner.constants import (
     STATUS_TIMEOUT,
     TERM_GRACE_S,
 )
-from runtime.runner.events import TurnState, redact_line, redact_obj, redact_text
+from runtime.runner.events import (
+    TurnState,
+    parse_event_line,
+    redact_line,
+    redact_obj,
+    redact_text,
+)
 from runtime.runner.workspace import (
     atomic_write,
     codex_home,
@@ -217,8 +228,16 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
             emit_native(root, safe)
         events = adapter.translate(line)
         if not events and line.strip():
-            state.bad_json_lines += 1
-            emit(root, {"type": "sbx.error", "message": "bad json in event stream"})
+            # Adapter contract: ``[]`` means the line carried no JSON
+            # object event (unparseable text or non-object JSON) — that is
+            # a bad line. A parseable object always translates to >=1
+            # event (``sbx.noop`` for unknown/non-terminal kinds); the
+            # parse check here keeps even a non-compliant adapter from
+            # mistaking a forward-compatible event for bad JSON.
+            obj, bad = parse_event_line(line)
+            if bad or obj is None:
+                state.bad_json_lines += 1
+                emit(root, {"type": "sbx.error", "message": "bad json in event stream"})
         for event in events:
             if not isinstance(event, dict) or event.get("type") == NOOP_EVENT_TYPE:
                 continue

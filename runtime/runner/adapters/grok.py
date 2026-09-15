@@ -16,6 +16,9 @@ Native ``streaming-json`` line kinds handled (real 1.0.24 shape plus the
 WP0 hand-written fixture shape):
 
 - ``available_commands`` -> NOOP (repeats several times per run).
+- ``plan`` -> NOOP (real 1.0.24 emits
+  ``{"type":"plan","entries":[{"content","priority","status"}]}``
+  progress blocks mid-turn; non-terminal, no canonical event).
 - ``thought`` / ``text`` -> ``data`` deltas (real) or whole ``text``
   strings (WP0 fake); concatenated per contiguous segment into
   ``reasoning`` / ``agent_message`` ``item.completed`` events.
@@ -58,6 +61,11 @@ fallback format): ``system.init`` -> ``thread.started``; ``assistant``
 content blocks -> ``reasoning``/``agent_message``/``item.started``;
 ``user`` ``tool_result`` blocks -> ``item.completed``; ``result`` ->
 ``turn.completed``/``turn.failed``; ``stream_event`` -> NOOP.
+
+Forward compatibility (SOR-80): any parseable JSON object of an unknown
+kind also yields NOOP — ``translate`` only returns ``[]`` when the line
+carries no JSON object (unparseable text or non-object JSON), which is
+what ``runner turn`` counts as a bad line (events.md rule 5).
 """
 
 from __future__ import annotations
@@ -254,7 +262,10 @@ class GrokAdapter:
         if bad or obj is None:
             return []
         kind = obj.get("type")
-        if kind == "available_commands":
+        if kind in ("available_commands", "plan"):
+            # ``plan`` is the real 1.0.24 progress block
+            # (``entries:[{content, priority, status}]``): non-terminal
+            # bookkeeping with no canonical event -> NOOP.
             return [_NOOP]
         if kind in ("thought", "text"):
             return self._on_text_delta(obj, "reasoning" if kind == "thought" else "agent_message")
@@ -280,7 +291,11 @@ class GrokAdapter:
             return [_NOOP]
         if kind == "error":
             return self._on_error(obj)
-        return []
+        # Forward compatibility: a parseable object of an unknown kind is
+        # acknowledged as NOOP, never a bad line. ``[]`` is reserved for
+        # lines with no JSON object (unparseable / non-object), which the
+        # runner counts as bad JSON (events.md rule 5).
+        return [_NOOP]
 
     def extract_session_id(self, events: Iterable[dict[str, Any]]) -> str | None:
         for ev in events:
@@ -372,7 +387,8 @@ class GrokAdapter:
         events = self._thread_or_stale(self._session_marker(obj))
         if self._stale:
             return events
-        return events + self._ensure_turn_started()
+        events += self._ensure_turn_started()
+        return events or [_NOOP]
 
     def _tool_identity(self, obj: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
         name = str(obj.get("toolName") or obj.get("name") or obj.get("title") or "")
