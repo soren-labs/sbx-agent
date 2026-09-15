@@ -8,15 +8,11 @@ import time
 from pathlib import Path
 
 import pytest
-from control.api_v1.bootstrap import (
-    BootstrapScheduler,
-    ProviderPool,
-    SingleAccountPool,
-    configure_v1_bootstrap,
-)
+from control.accounts import PersistentAccountRegistry
+from control.api_v1.bootstrap import configure_v1_bootstrap
 from control.app import create_app
 from control.backend import LocalProcessBackend
-from control.devin_pool import DevinAccountPool, ScheduleRefused
+from control.scheduler import AccountScheduler, ScheduleRefused
 from control.store import InMemoryStore
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -31,13 +27,11 @@ def test_bootstrap_is_disabled_without_secret_env(monkeypatch) -> None:
     assert not hasattr(app.state, "api_key_store")
 
 
-def test_bootstrap_seeds_hash_only_key_and_devin_pool(monkeypatch) -> None:
+def test_bootstrap_seeds_hash_only_key_and_devin_account(monkeypatch) -> None:
     token = "sbx_" + "a" * 40
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", token)
     monkeypatch.setenv("SBX_DEVIN_ACCOUNT_ID", "devin-gate")
     monkeypatch.setenv("SBX_DEVIN_SECRET_NAME", "sbx-acct-devin-gate")
-    monkeypatch.setenv("SBX_DEVIN_NORMAL_SLOTS", "4")
-    monkeypatch.setenv("SBX_DEVIN_SOFT_CEILING", "5")
     monkeypatch.setenv("SBX_DEVIN_BURST_SLOTS", "8")
     app = FastAPI()
 
@@ -46,17 +40,13 @@ def test_bootstrap_seeds_hash_only_key_and_devin_pool(monkeypatch) -> None:
     assert record is not None
     assert record.scopes == ("agents", "admin")
     assert token not in repr(record)
-    account = app.state.account_registry.get("devin-gate")
+    registry = app.state.account_registry
+    assert isinstance(registry, PersistentAccountRegistry)
+    account = registry.get("devin-gate")
     assert account is not None
     assert account.secret_name == "sbx-acct-devin-gate"
     assert account.max_concurrent == 8
-    scheduler = app.state.scheduler
-    assert isinstance(scheduler, BootstrapScheduler)
-    devin = scheduler.pools["devin"]
-    assert isinstance(devin, DevinAccountPool)
-    assert devin.normal_slots == 4
-    assert devin.soft_ceiling == 5
-    assert devin.burst_slots == 8
+    assert isinstance(app.state.scheduler, AccountScheduler)
 
 
 def test_bootstrap_allows_explicit_ephemeral_secret(monkeypatch) -> None:
@@ -84,7 +74,10 @@ def test_bootstrap_seeds_all_four_providers(monkeypatch) -> None:
     assert by_provider["antigravity"].secret_name == "sbx-acct-antigravity-1"
     assert by_provider["grok"].secret_name == "sbx-acct-grok-1"
     assert all(a.status == "active" for a in by_provider.values())
-    assert set(app.state.scheduler.pools) == set(P2_CORE_PROVIDERS)
+    scheduler = app.state.scheduler
+    assert isinstance(scheduler, AccountScheduler)
+    for provider in P2_CORE_PROVIDERS:
+        assert scheduler.decide(provider=provider).account is not None
 
 
 def test_scheduler_decides_each_provider(monkeypatch) -> None:
@@ -194,7 +187,8 @@ def test_v1_agents_schedule_all_four_providers(monkeypatch, stub_runner) -> None
                 agent = resp.json()["agent"]
                 assert agent["provider"] == provider
                 assert agent["account_id"] == f"{provider}-1"
-                assert scheduler.pools[provider].active_count == 1
+                assert scheduler.active_count == 1
+                assert scheduler.running_count(f"{provider}-1") == 1
 
                 # SOR-82 A2: provisioning is async — wait for runner init.
                 deadline = time.monotonic() + 15
@@ -212,7 +206,7 @@ def test_v1_agents_schedule_all_four_providers(monkeypatch, stub_runner) -> None
 
                 deleted = client.delete(f"/v1/agents/{agent['id']}", headers=auth)
                 assert deleted.status_code == 200
-                assert scheduler.pools[provider].active_count == 0
+                assert scheduler.active_count == 0
 
             refused = client.post(
                 "/v1/agents",
@@ -273,8 +267,8 @@ def test_v1_named_account_and_slot_cap(monkeypatch, stub_runner) -> None:
             backend.terminate(handle)
 
 
-def test_bootstrap_multi_account_json_seeds_provider_pool(monkeypatch) -> None:
-    """``SBX_<PROVIDER>_ACCOUNTS`` JSON → registry + ProviderPool (SOR-63/D2)."""
+def test_bootstrap_multi_account_json_seeds_fleet(monkeypatch) -> None:
+    """``SBX_<PROVIDER>_ACCOUNTS`` JSON → registry + AccountScheduler fleet."""
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "3" * 40)
     monkeypatch.setenv(
         "SBX_ANTIGRAVITY_ACCOUNTS",
@@ -297,20 +291,18 @@ def test_bootstrap_multi_account_json_seeds_provider_pool(monkeypatch) -> None:
     assert registry.get("agy-b").label == "AGY second"
     assert registry.get("agy-b").secret_name == "sbx-acct-agy-b"
     assert registry.get("agy-c").secret_name == "sbx-acct-agy-c"
-    # Other providers keep their single-account pools.
-    assert isinstance(app.state.scheduler.pools["codex"], SingleAccountPool)
 
-    agy = app.state.scheduler.pools["antigravity"]
-    assert isinstance(agy, ProviderPool)
+    scheduler = app.state.scheduler
+    assert isinstance(scheduler, AccountScheduler)
     # auto rotates across members as slots fill; exhaustion is structured.
-    leases = [agy.acquire(provider="antigravity") for _ in range(3)]
+    leases = [scheduler.acquire(provider="antigravity") for _ in range(3)]
     assert {lease.account.id for lease in leases} == {"agy-a", "agy-b", "agy-c"}
     with pytest.raises(ScheduleRefused) as excinfo:
-        agy.acquire(provider="antigravity")
+        scheduler.acquire(provider="antigravity")
     assert excinfo.value.error == "provider_exhausted"
     for lease in leases:
         lease.release()
-    assert agy.active_count == 0
+    assert scheduler.active_count == 0
 
 
 def test_bootstrap_multi_account_malformed_json_fails(monkeypatch) -> None:
@@ -333,7 +325,7 @@ def test_bootstrap_scheduler_report_failure_routes_to_account(monkeypatch) -> No
     configure_v1_bootstrap(app)
     scheduler = app.state.scheduler
 
-    account = scheduler.report_failure("rate_limited", account_id="grok-a", retry_after=30.0)
+    account = scheduler.report_failure("grok-a", "rate_limited", retry_after=30.0)
     assert account.id == "grok-a"
     assert account.status == "cooling"
     # auto skips the cooling member; grok-b still serves.
@@ -342,7 +334,7 @@ def test_bootstrap_scheduler_report_failure_routes_to_account(monkeypatch) -> No
     lease.release()
     # Unknown account → KeyError (the reporter treats it as a no-op).
     with pytest.raises(KeyError):
-        scheduler.report_failure("rate_limited", account_id="grok-zzz")
+        scheduler.report_failure("grok-zzz", "rate_limited")
 
 
 def test_v1_multi_account_grok_gate(monkeypatch, stub_runner) -> None:
@@ -400,7 +392,7 @@ def test_v1_multi_account_grok_gate(monkeypatch, stub_runner) -> None:
 
             for agent_id in agents:
                 assert client.delete(f"/v1/agents/{agent_id}", headers=auth).status_code == 200
-            assert app.state.scheduler.pools["grok"].active_count == 0
+            assert app.state.scheduler.active_count == 0
     finally:
         for handle in list(backend.list()):
             backend.terminate(handle)

@@ -14,9 +14,9 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from control.api_v1.bootstrap import BootstrapScheduler, ProviderPool, SingleAccountPool
 from control.devin_pool import DevinAccountPool
 from control.reaper import reap
+from control.scheduler import AccountScheduler
 from control.service import release_lease_for_action
 from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run, wait_sandbox
 
@@ -38,17 +38,13 @@ def _devin_pool(v1_env) -> DevinAccountPool:
     return pool
 
 
-def _codex_pool(v1_env) -> ProviderPool:
-    """Two codex accounts behind the D2 ProviderPool composition seam."""
-    member = {}
+def _codex_scheduler(v1_env) -> AccountScheduler:
+    """Two codex accounts behind the real AccountScheduler (SOR-63/D1)."""
     for account_id in ("acct-pool-a", "acct-pool-b"):
         seed_account(v1_env, account_id, provider="codex", models=("gpt-5.6-luna",))
-        member[account_id] = SingleAccountPool(
-            v1_env.registry, provider="codex", account_id=account_id, slots=1
-        )
-    pool = ProviderPool(member)
-    v1_env.app.state.scheduler = BootstrapScheduler({"codex": pool}, account_pools=member)
-    return pool
+    scheduler = AccountScheduler(v1_env.registry)
+    v1_env.app.state.scheduler = scheduler
+    return scheduler
 
 
 def _v1_state(v1_env) -> Any:
@@ -183,16 +179,16 @@ class TestReaperReleasesLease:
         assert pool.active_count == 0
 
     def test_pool_lease_released_by_reaper(self, client, auth, v1_env) -> None:
-        """Same wiring through ProviderPool (the D2 multi-account seam)."""
-        pool = _codex_pool(v1_env)
+        """Same wiring through the multi-account AccountScheduler (D1)."""
+        scheduler = _codex_scheduler(v1_env)
         agent = create_agent(client, auth)["agent"]
         wait_run(client, auth, agent["id"], "run-1")
         rec = v1_env.store.get(agent["id"])
-        assert pool.active_count == 1
+        assert scheduler.active_count == 1
         v1_env.backend.terminate(rec.handle())
         _reap(v1_env, datetime.now(UTC) + timedelta(seconds=5))
         assert v1_env.store.get(agent["id"]).status == "timed_out"
-        assert pool.active_count == 0
+        assert scheduler.active_count == 0
 
 
 class TestInternalApiClose:

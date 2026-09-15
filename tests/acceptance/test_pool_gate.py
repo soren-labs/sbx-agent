@@ -8,8 +8,9 @@ invoked directly:
         SBX_V1_BASE_URL=https://... uv run pytest tests/acceptance -k real
 
 Fake mode (default) is the offline contract: ``LocalProcessBackend`` +
-``stub_runner`` behind ``ProviderPool``, no credentials. Real mode drives
-the deployed pool (Antigravity 4 accounts, then Grok 2) and skips unless
+``stub_runner`` behind the real ``AccountScheduler`` /
+``PersistentAccountRegistry``, no credentials. Real mode drives the
+deployed pool (Antigravity 4 accounts, then Grok 2) and skips unless
 ``SBX_POOL_GATE_REAL=1`` plus a base URL and bearer key are present.
 """
 

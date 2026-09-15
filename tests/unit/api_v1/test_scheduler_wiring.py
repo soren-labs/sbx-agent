@@ -1,12 +1,10 @@
-"""SOR-63/D2: ``/v1`` scheduler-wiring contract over a multi-account pool.
+"""SOR-63: ``/v1`` scheduler-wiring contract over the real multi-account core.
 
-``ProviderPool`` — the bootstrap seam composing pinned per-account slot
-pools — stands in for D1's persistent scheduler behind the same surface the
-routes consume: frozen ``decide``, atomic ``acquire`` → ``SlotLease``, and
-``report_failure`` health feedback. These tests pin the API-level contract
-— named/auto selection, structured scheduling errors, cooldown/failover,
-and terminal run errors marking accounts — for whatever implementation
-lands on ``app.state.scheduler``.
+``AccountScheduler`` (SOR-63/D1) is what lands on ``app.state.scheduler`` —
+in bootstrap and as the ``deps.get_scheduler`` default. These tests pin the
+API-level contract — named/auto selection, structured scheduling errors,
+cooldown/failover, terminal run errors marking accounts, and the global
+concurrency cap — over the fake-port registry and ``stub_runner``.
 """
 
 from __future__ import annotations
@@ -18,12 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from control.api_v1.bootstrap import (
-    BootstrapScheduler,
-    ProviderPool,
-    SingleAccountPool,
-)
-from control.devin_pool import ScheduleRefused
+from control.scheduler import AccountScheduler, ScheduleRefused
 from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run, wait_sandbox
 
 _AGENT = {"provider": "codex"}
@@ -43,33 +36,34 @@ def _multi_codex(
     *,
     slots: int = 1,
     clock: Any = None,
-) -> ProviderPool:
-    """Two+ codex accounts behind one ProviderPool on app.state.scheduler."""
-    member = {}
+    **scheduler_kw: Any,
+) -> AccountScheduler:
+    """A multi-account codex fleet behind the real AccountScheduler."""
+    # The conftest's default codex account is not part of this fleet.
+    v1_env.registry.remove("acct-codex-1")
     for account_id in accounts:
-        seed_account(v1_env, account_id, provider="codex", models=("gpt-5.6-luna",))
-        member[account_id] = SingleAccountPool(
-            v1_env.registry,
+        seed_account(
+            v1_env,
+            account_id,
             provider="codex",
-            account_id=account_id,
-            slots=slots,
-            clock=clock,
+            max_concurrent=slots,
+            models=("gpt-5.6-luna",),
         )
-    pool = ProviderPool(member)
-    v1_env.app.state.scheduler = BootstrapScheduler({"codex": pool}, account_pools=member)
-    return pool
+    scheduler = AccountScheduler(v1_env.registry, clock=clock, **scheduler_kw)
+    v1_env.app.state.scheduler = scheduler
+    return scheduler
 
 
 class _SpyScheduler:
     """Duck-typed scheduler wrapper: same surface, counts report_failure.
 
     Proves the /v1 seam works through any object exposing decide/acquire/
-    report_failure — the shape D1's persistent scheduler will implement.
+    report_failure in the D1 shape ``report_failure(account_id, kind, ...)``.
     """
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
-        self.reports: list[tuple[str, dict[str, Any]]] = []
+        self.reports: list[tuple[str, str, dict[str, Any]]] = []
 
     def decide(self, **kwargs: Any) -> Any:
         return self.inner.decide(**kwargs)
@@ -77,34 +71,34 @@ class _SpyScheduler:
     def acquire(self, **kwargs: Any) -> Any:
         return self.inner.acquire(**kwargs)
 
-    def report_failure(self, kind: str, **kwargs: Any) -> Any:
-        self.reports.append((kind, kwargs))
-        return self.inner.report_failure(kind, **kwargs)
+    def report_failure(self, account_id: str, kind: str, **kwargs: Any) -> Any:
+        self.reports.append((account_id, kind, kwargs))
+        return self.inner.report_failure(account_id, kind, **kwargs)
 
 
 class TestMultiAccountSelection:
     def test_auto_rotates_when_slots_held(self, client, auth, v1_env) -> None:
-        pool = _multi_codex(v1_env)
+        scheduler = _multi_codex(v1_env)
         first = create_agent(client, auth)["agent"]
         second = create_agent(client, auth)["agent"]
         # Per-account slot held → auto fails over to the next account.
         assert first["account_id"] == "acct-codex-a"
         assert second["account_id"] == "acct-codex-b"
-        assert pool.active_count == 2
+        assert scheduler.active_count == 2
         rec = wait_sandbox(v1_env, second["id"])
         assert rec.sandbox_tags["account_id"] == "acct-codex-b"
         session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
         assert session["account_id"] == "acct-codex-b"
         client.delete(f"/v1/agents/{first['id']}", headers=auth)
         client.delete(f"/v1/agents/{second['id']}", headers=auth)
-        assert pool.active_count == 0
+        assert scheduler.active_count == 0
 
     def test_auto_lru_prefers_never_used_over_freed(self, client, auth, v1_env) -> None:
-        pool = _multi_codex(v1_env)
+        scheduler = _multi_codex(v1_env)
         first = create_agent(client, auth)["agent"]
         assert first["account_id"] == "acct-codex-a"
         client.delete(f"/v1/agents/{first['id']}", headers=auth)
-        assert pool.active_count == 0
+        assert scheduler.active_count == 0
         # acct-codex-b was never used; LRU picks it over the freed account.
         second = create_agent(client, auth)["agent"]
         assert second["account_id"] == "acct-codex-b"
@@ -133,18 +127,33 @@ class TestMultiAccountSelection:
         client.delete(f"/v1/agents/{second['id']}", headers=auth)
 
     def test_provider_exhausted_429_shape(self, client, auth, v1_env) -> None:
-        pool = _multi_codex(v1_env)
+        scheduler = _multi_codex(v1_env)
         agents = [create_agent(client, auth)["agent"] for _ in range(2)]
-        assert pool.active_count == 2
+        assert scheduler.active_count == 2
 
         refused = _post(client, auth)
         assert refused.status_code == 429
         error = refused.json()["error"]
         assert error["code"] == "provider_exhausted"
         assert error["message"]
-        assert error["retry_after"] > 0  # member pool retry hint survives
+        assert error["retry_after"] > 0  # busy-slot retry hint survives
         for agent in agents:
             client.delete(f"/v1/agents/{agent['id']}", headers=auth)
+
+    def test_global_cap_429_concurrency_limit(self, client, auth, v1_env) -> None:
+        """The global SBX_MAX_CONCURRENT cap is canonical ``concurrency_limit``."""
+        _multi_codex(v1_env, max_global=1)
+        v1_env.app.state.plane.max_concurrent = 8
+        first = create_agent(client, auth)["agent"]
+        refused = _post(client, auth)
+        assert refused.status_code == 429
+        error = refused.json()["error"]
+        assert error["code"] == "concurrency_limit"
+        assert error["retry_after"] > 0
+        client.delete(f"/v1/agents/{first['id']}", headers=auth)
+        # Cap freed → a retry lands.
+        second = create_agent(client, auth)["agent"]
+        client.delete(f"/v1/agents/{second['id']}", headers=auth)
 
     def test_named_unavailable_409_variants(self, client, auth, v1_env) -> None:
         _multi_codex(v1_env)
@@ -152,8 +161,8 @@ class TestMultiAccountSelection:
         missing = _post(client, auth, {"provider": "codex", "account_id": "acct-zzz"})
         assert missing.status_code == 409
         assert missing.json()["error"]["code"] == "account_unavailable"
-        # The conftest codex account exists in the registry but is not part
-        # of this pool's fleet — the pool is authoritative for its provider.
+        # The conftest codex account was removed from this registry — the
+        # registry is authoritative for what the scheduler may pick.
         outside = _post(client, auth, {"provider": "codex", "account_id": "acct-codex-1"})
         assert outside.status_code == 409
         assert outside.json()["error"]["code"] == "account_unavailable"
@@ -195,9 +204,8 @@ class TestMultiAccountSelection:
 
 class TestCooldownFailover:
     def test_cooling_account_skipped_by_auto(self, client, auth, v1_env) -> None:
-        pool = _multi_codex(v1_env)
-        scheduler = v1_env.app.state.scheduler
-        account = scheduler.report_failure("rate_limited", account_id="acct-codex-a")
+        scheduler = _multi_codex(v1_env)
+        account = scheduler.report_failure("acct-codex-a", "rate_limited")
         assert account.status == "cooling"
         assert account.cooldown_until is not None
         assert account.last_error == "rate_limited"
@@ -208,14 +216,13 @@ class TestCooldownFailover:
 
         agent = create_agent(client, auth)["agent"]
         assert agent["account_id"] == "acct-codex-b"
-        assert pool.active_count == 1
+        assert scheduler.active_count == 1
         client.delete(f"/v1/agents/{agent['id']}", headers=auth)
 
     def test_all_cooling_exhausts_with_retry_after(self, client, auth, v1_env) -> None:
-        _multi_codex(v1_env)
-        scheduler = v1_env.app.state.scheduler
+        scheduler = _multi_codex(v1_env)
         for account_id in ("acct-codex-a", "acct-codex-b"):
-            scheduler.report_failure("rate_limited", account_id=account_id, retry_after=45.0)
+            scheduler.report_failure(account_id, "rate_limited", retry_after=45.0)
 
         refused = _post(client, auth)
         assert refused.status_code == 429
@@ -229,9 +236,8 @@ class TestCooldownFailover:
         def clock() -> datetime:
             return now[0]
 
-        _multi_codex(v1_env, clock=clock)
-        scheduler = v1_env.app.state.scheduler
-        scheduler.report_failure("rate_limited", account_id="acct-codex-a", retry_after=30.0)
+        scheduler = _multi_codex(v1_env, clock=clock)
+        scheduler.report_failure("acct-codex-a", "rate_limited", retry_after=30.0)
 
         agent = create_agent(client, auth)["agent"]
         assert agent["account_id"] == "acct-codex-b"
@@ -245,9 +251,8 @@ class TestCooldownFailover:
         client.delete(f"/v1/agents/{recovered['id']}", headers=auth)
 
     def test_auth_invalid_marks_invalid_and_fails_over(self, client, auth, v1_env) -> None:
-        _multi_codex(v1_env)
-        scheduler = v1_env.app.state.scheduler
-        account = scheduler.report_failure("auth_invalid", account_id="acct-codex-a")
+        scheduler = _multi_codex(v1_env)
+        account = scheduler.report_failure("acct-codex-a", "auth_invalid")
         assert account.status == "invalid"
         assert account.cooldown_until is None  # permanent: no auto-recovery
 
@@ -286,7 +291,7 @@ class TestRunFailureFeedback:
         assert run["error"]["code"] == "auth_invalid"
         assert run["account_id"] == "acct-codex-a"
         assert v1_env.registry.get("acct-codex-a").status == "invalid"
-        assert [kind for kind, _ in spy.reports] == ["auth_invalid"]
+        assert [kind for _aid, kind, _kw in spy.reports] == ["auth_invalid"]
 
         # Rendering the same terminal run again does not re-report.
         client.get(f"/v1/agents/{bad['id']}/runs/run-1", headers=auth)
@@ -300,6 +305,32 @@ class TestRunFailureFeedback:
         assert wait_run(client, auth, healthy["id"], "run-1")["status"] == "FINISHED"
         client.delete(f"/v1/agents/{bad['id']}", headers=auth)
         client.delete(f"/v1/agents/{healthy['id']}", headers=auth)
+
+    def test_reporter_passes_canonical_codes_to_scheduler(self, v1_env) -> None:
+        """``quota_exhausted`` / ``provider_unavailable`` / ``model_capacity``
+        reach the D1 scheduler verbatim — no ``provider_error`` remapping."""
+        from control.api_v1.deps import RunFailureReporter
+
+        scheduler = _multi_codex(v1_env)
+        reporter = RunFailureReporter()
+        for code in ("quota_exhausted", "provider_unavailable", "model_capacity"):
+            reporter.report(
+                scheduler=scheduler,
+                agent_id=f"agent-{code}",
+                n=1,
+                account_id="acct-codex-a",
+                status="ERROR",
+                error={
+                    "code": code,
+                    "source": "provider",
+                    "message": code,
+                    "retryable": True,
+                    "retry_after": 30.0,
+                },
+            )
+        account = v1_env.registry.get("acct-codex-a")
+        assert account.status == "cooling"
+        assert account.last_error == "model_capacity"
 
     def test_runtime_error_does_not_mark_account(self, client, auth, v1_env, monkeypatch) -> None:
         _multi_codex(v1_env)
@@ -329,22 +360,11 @@ class TestRunFailureFeedback:
         client.delete(f"/v1/agents/{agent['id']}", headers=auth)
 
 
-class TestProviderPoolUnit:
-    """Pool-shape contract the /v1 seam relies on (no HTTP)."""
-
-    def test_empty_and_mixed_provider_rejected(self, v1_env) -> None:
-        with pytest.raises(ValueError):
-            ProviderPool({})
-        seed_account(v1_env, "acct-g", provider="grok")
-        other = SingleAccountPool(v1_env.registry, provider="grok", account_id="acct-g", slots=1)
-        seed_account(v1_env, "acct-c", provider="codex")
-        member = SingleAccountPool(v1_env.registry, provider="codex", account_id="acct-c", slots=1)
-        with pytest.raises(ValueError):
-            ProviderPool({"acct-g": other, "acct-c": member})
+class TestSchedulerUnit:
+    """Scheduler-shape contract the /v1 seam relies on (no HTTP)."""
 
     def test_decide_mirrors_acquire_pick(self, v1_env) -> None:
-        _multi_codex(v1_env)
-        scheduler = v1_env.app.state.scheduler
+        scheduler = _multi_codex(v1_env)
         assert scheduler.decide(provider="codex").account.id == "acct-codex-a"
         lease = scheduler.acquire(provider="codex")
         assert lease.account.id == "acct-codex-a"
@@ -354,11 +374,16 @@ class TestProviderPoolUnit:
         assert scheduler.decide(provider="codex").account.id == "acct-codex-b"
 
     def test_provider_mismatch_and_bad_account(self, v1_env) -> None:
-        pool = _multi_codex(v1_env)
-        assert pool.decide(provider="grok").error == "invalid_provider"
+        scheduler = _multi_codex(v1_env)
+        # Unknown provider id → invalid_provider; a valid provider with no
+        # seeded accounts is exhausted, not invalid.
+        assert scheduler.decide(provider="bogus").error == "invalid_provider"
         with pytest.raises(ScheduleRefused) as excinfo:
-            pool.acquire(provider="grok")
+            scheduler.acquire(provider="bogus")
         assert excinfo.value.error == "invalid_provider"
         with pytest.raises(ScheduleRefused) as excinfo:
-            pool.acquire(provider="codex", account="acct-zzz")
+            scheduler.acquire(provider="grok")
+        assert excinfo.value.error == "provider_exhausted"
+        with pytest.raises(ScheduleRefused) as excinfo:
+            scheduler.acquire(provider="codex", account="acct-zzz")
         assert excinfo.value.error == "account_unavailable"

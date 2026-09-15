@@ -1,8 +1,8 @@
-"""SOR-63/D2 acceptance gate: multi-account /v1 scheduling pool.
+"""SOR-63 acceptance gate: multi-account /v1 scheduling pool.
 
 Validates the P2 Core scheduling contract end-to-end through the product
 ``/v1`` surface — the shape the Antigravity-4 / Grok-2 real pools must
-satisfy once D1's persistent scheduler lands:
+satisfy on D1's persistent scheduler:
 
     fleet shape -> cooldown/failover -> auto rotation across accounts ->
     slot exhaustion -> named-account errors -> terminal runs ->
@@ -11,8 +11,9 @@ satisfy once D1's persistent scheduler lands:
 Two modes, one check matrix:
 
 * ``fake`` (default): in-process app (``LocalProcessBackend`` +
-  ``stub_runner``) fronted by ``ProviderPool`` — the bootstrap seam standing
-  in for D1's scheduler. Runs the full matrix including injected
+  ``stub_runner``) fronted by the real ``AccountScheduler`` over a
+  ``PersistentAccountRegistry`` — the D1 implementation, same classes the
+  Modal bootstrap installs. Runs the full matrix including injected
   ``report_failure`` cooldowns and reaper lease release. No credentials.
 * ``real``: ``httpx`` against a deployed control plane seeded with
   ``SBX_<PROVIDER>_ACCOUNTS``. Explicitly opt-in (``--real`` or
@@ -129,9 +130,10 @@ def leak_reason(text: str, secrets: list[str]) -> str | None:
 class FakeTransport:
     """In-process /v1 app over ``LocalProcessBackend`` + ``stub_runner``.
 
-    The scheduler seam is ``ProviderPool`` — the same composition the
-    Modal bootstrap installs per provider — so the gate exercises real
-    atomic acquire/LRU/cooldown behaviour without a deployed control plane.
+    The scheduler is the real SOR-63/D1 stack — ``AccountScheduler`` over a
+    ``PersistentAccountRegistry`` (in-memory store) — the same classes the
+    Modal bootstrap installs, so the gate exercises real atomic
+    acquire/LRU/cooldown behaviour without a deployed control plane.
     A mutable clock lets the gate expire cooldowns deterministically.
     """
 
@@ -146,16 +148,13 @@ class FakeTransport:
         runner: Path,
         slots: int = 1,
     ) -> None:
-        from control.api_v1.bootstrap import (
-            BootstrapScheduler,
-            ProviderPool,
-            SingleAccountPool,
-        )
-        from control.api_v1.state import InMemoryAccountRegistry, InMemoryApiKeyStore
+        from control.accounts import InMemoryAccountStore, PersistentAccountRegistry
+        from control.api_v1.state import InMemoryApiKeyStore
         from control.app import create_app
         from control.backend import LocalProcessBackend
         from control.ports import Account
         from control.run_store import InMemoryRunStore
+        from control.scheduler import AccountScheduler
         from control.store import InMemoryStore
         from fastapi.testclient import TestClient
 
@@ -177,9 +176,8 @@ class FakeTransport:
             max_concurrent=accounts * slots + 4,
         )
 
-        self.registry = InMemoryAccountRegistry()
+        self.registry = PersistentAccountRegistry(InMemoryAccountStore())
         self.keys = InMemoryApiKeyStore()
-        member = {}
         created_at = self.now[0].isoformat()
         for i in range(1, accounts + 1):
             account_id = f"{provider}-pool-{i}"
@@ -195,15 +193,13 @@ class FakeTransport:
                     created_at=created_at,
                 )
             )
-            member[account_id] = SingleAccountPool(
-                self.registry,
-                provider=provider,
-                account_id=account_id,
-                slots=slots,
-                clock=lambda: self.now[0],
-            )
-        self.pool = ProviderPool(member)
-        self.scheduler = BootstrapScheduler({provider: self.pool}, account_pools=member)
+        self.scheduler = AccountScheduler(
+            self.registry,
+            # Match the plane's headroom: the gate fills the whole fleet, so
+            # the global cap must not mask per-account slot exhaustion.
+            max_global=accounts * slots + 4,
+            clock=lambda: self.now[0],
+        )
         self.app.state.account_registry = self.registry
         self.app.state.scheduler = self.scheduler
         self.app.state.api_key_store = self.keys
@@ -267,7 +263,7 @@ class FakeTransport:
 
     def inject_failure(self, kind: str, account_id: str, retry_after: float | None) -> bool:
         try:
-            self.scheduler.report_failure(kind, account_id=account_id, retry_after=retry_after)
+            self.scheduler.report_failure(account_id, kind, retry_after=retry_after)
         except KeyError:
             return False
         return True
@@ -296,7 +292,7 @@ class FakeTransport:
         )
 
     def active_count(self) -> int | None:
-        return self.pool.active_count
+        return self.scheduler.active_count
 
     def session_status(self, agent_id: str) -> str | None:
         rec = self.store.get(agent_id)

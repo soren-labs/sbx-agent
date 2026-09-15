@@ -512,6 +512,14 @@ def _raise_schedule_error(
         raise V1ApiError(400, "invalid_provider", f"unknown provider {provider!r}")
     if error in ("account_busy", "account_unavailable"):
         raise V1ApiError(409, error, f"account {requested!r} cannot take the run")
+    if error == "concurrency_limit":
+        # Global cap (SBX_MAX_CONCURRENT), not a provider-pool refusal.
+        raise V1ApiError(
+            429,
+            "concurrency_limit",
+            "global concurrent-agent cap reached",
+            retry_after=retry_after,
+        )
     raise V1ApiError(
         429,
         "provider_exhausted",

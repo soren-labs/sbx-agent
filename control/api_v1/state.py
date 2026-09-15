@@ -33,13 +33,23 @@ def _iso_now() -> str:
 
 
 class InMemoryAccountRegistry:
-    """Dict-backed ``ports.AccountRegistry`` fallback (mirrors the WP0 fake)."""
+    """Dict-backed ``ports.AccountRegistry`` fallback (mirrors the WP0 fake).
+
+    ``bind_running`` lets an installed ``AccountScheduler`` report live
+    lease counts through ``running_count`` (SOR-63); without a bound source
+    the local ``set_running`` counter answers.
+    """
 
     def __init__(self) -> None:
         self._accounts: dict[str, Account] = {}
         self._blobs: dict[str, dict[str, Any]] = {}
         self._running: dict[str, int] = {}
+        self._running_src: Any = None
         self._lock = threading.Lock()
+
+    def bind_running(self, source: Any) -> None:
+        """Use ``source`` (``account_id -> live count``) for ``running_count``."""
+        self._running_src = source
 
     def list(self, provider: str | None = None) -> list[Account]:
         with self._lock:
@@ -91,6 +101,8 @@ class InMemoryAccountRegistry:
             self._running.pop(account_id, None)
 
     def running_count(self, account_id: str) -> int:
+        if self._running_src is not None:
+            return self._running_src(account_id)
         with self._lock:
             return self._running.get(account_id, 0)
 

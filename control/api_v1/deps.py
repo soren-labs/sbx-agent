@@ -18,11 +18,11 @@ from control.api_v1.lifecycle import RUN_TERMINAL, RunStateStore
 from control.api_v1.state import (
     InMemoryAccountRegistry,
     InMemoryApiKeyStore,
-    InMemoryScheduler,
     V1State,
 )
 from control.auth_bearer import bearer_scheme, bearer_token, has_scope, lookup_key
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
+from control.scheduler import AccountScheduler
 
 
 def get_plane(request: Request) -> Any:
@@ -58,7 +58,9 @@ def get_registry(request: Request) -> AccountRegistry:
 def get_scheduler(request: Request) -> Scheduler:
     scheduler = getattr(request.app.state, "scheduler", None)
     if scheduler is None:
-        scheduler = InMemoryScheduler(get_registry(request))
+        # SOR-63/D1 is the default scheduler even without bootstrap: atomic
+        # acquire + cooldown/failover over whatever registry is installed.
+        scheduler = AccountScheduler(get_registry(request))
         request.app.state.scheduler = scheduler
     return scheduler
 
@@ -72,18 +74,21 @@ def get_key_store(request: Request) -> ApiKeyStore:
 
 
 # Structured run-error codes (SOR-82 taxonomy) that mark an account for
-# cooldown/failover, mapped to the scheduler's ``report_failure`` kinds.
-# ``auth_invalid`` is permanent (credential re-import needed); the others
-# cool the account for ``retry_after`` / the pool's cooldown window.
-# Control-side codes (``cancelled``, ``timeout``, ``runtime_error``,
-# ``event_parse_error``, ``model_unavailable``) are not account health.
-_RUN_FAILURE_KINDS = {
-    "auth_invalid": "auth_invalid",
-    "rate_limited": "rate_limited",
-    "quota_exhausted": "provider_error",
-    "provider_unavailable": "provider_error",
-    "model_capacity": "provider_error",
-}
+# cooldown/failover — reported verbatim to the scheduler's
+# ``report_failure`` kind. ``auth_invalid`` is permanent (credential
+# re-import needed); the others cool the account for ``retry_after`` / the
+# scheduler's cooldown window. Control-side codes (``cancelled``,
+# ``timeout``, ``runtime_error``, ``event_parse_error``,
+# ``model_unavailable``) are not account health.
+_ACCOUNT_HEALTH_CODES = frozenset(
+    {
+        "auth_invalid",
+        "rate_limited",
+        "quota_exhausted",
+        "provider_unavailable",
+        "model_capacity",
+    }
+)
 
 
 class RunFailureReporter:
@@ -113,8 +118,8 @@ class RunFailureReporter:
     ) -> None:
         if status not in RUN_TERMINAL or not isinstance(error, dict):
             return
-        kind = _RUN_FAILURE_KINDS.get(error.get("code"))
-        if kind is None or not account_id or account_id == "auto":
+        kind = error.get("code")
+        if kind not in _ACCOUNT_HEALTH_CODES or not account_id or account_id == "auto":
             return
         key = (agent_id, n)
         with self._lock:
@@ -126,7 +131,8 @@ class RunFailureReporter:
             return
         retry_after = error.get("retry_after")
         try:
-            report(kind, account_id=account_id, retry_after=retry_after)
+            # AccountScheduler (SOR-63/D1): report_failure(account_id, kind, ...).
+            report(account_id, kind, retry_after=retry_after)
         except TypeError:
             # Single-account pools take report_failure without account_id.
             try:
