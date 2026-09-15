@@ -9,6 +9,10 @@
 set -euo pipefail
 
 export SBX_WORK="${SBX_WORK:-/work}"
+# filesystem.md: sandbox HOME is fixed at $SBX_WORK/home (credential-blob
+# restore root). Image env already pins the same value; export here too so
+# every entrypoint child sees the contract layout regardless of image env.
+export HOME="${SBX_WORK}/home"
 export CODEX_HOME="${CODEX_HOME:-${SBX_WORK}/.codex}"
 export PYTHONPATH="${PYTHONPATH:-/opt/sbx}"
 

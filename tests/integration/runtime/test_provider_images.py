@@ -24,9 +24,15 @@ from runtime.image import (
     GROK_IMAGE_NAME,
     IMAGE_BUILDERS,
     IMAGE_NAME,
+    OPENCODE_IMAGE_NAME,
+    _assert_host_cli_version,
     _cli_image,
     _host_cli_bin,
     agent_home_env,
+    cli_version_check,
+    image_for,
+    load_packages,
+    sbx_opencode_image,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -60,11 +66,24 @@ def test_image_names_are_provider_scoped() -> None:
 
 
 def test_image_builders_cover_all_fast_path_providers() -> None:
-    assert sorted(IMAGE_BUILDERS) == ["antigravity", "codex", "devin", "grok"]
+    assert sorted(IMAGE_BUILDERS) == ["antigravity", "codex", "devin", "grok", "opencode"]
     assert IMAGE_BUILDERS["antigravity"][1] == AGY_IMAGE_NAME
     assert IMAGE_BUILDERS["grok"][1] == GROK_IMAGE_NAME
+    assert IMAGE_BUILDERS["opencode"][1] == OPENCODE_IMAGE_NAME
     for builder, _name in IMAGE_BUILDERS.values():
         assert callable(builder)
+
+
+def test_image_for_is_the_explicit_provider_mapping() -> None:
+    assert image_for("codex") == IMAGE_NAME
+    assert image_for("devin") == "sbx-runtime-devin"
+    assert image_for("antigravity") == AGY_IMAGE_NAME
+    assert image_for("grok") == GROK_IMAGE_NAME
+    assert image_for("opencode") == OPENCODE_IMAGE_NAME
+    for provider in IMAGE_BUILDERS:
+        assert image_for(provider) == IMAGE_BUILDERS[provider][1]
+    with pytest.raises(KeyError):
+        image_for("claude")
 
 
 def test_control_config_image_names_in_sync() -> None:
@@ -110,6 +129,62 @@ def test_cli_image_layers_binary_chmod_and_env(tmp_path: Path) -> None:
     ]
 
 
+def test_cli_image_appends_version_gate_when_expect_given(tmp_path: Path) -> None:
+    host = tmp_path / "agy"
+    host.write_bytes(b"bin")
+    base = _RecordingImage()
+    _cli_image(base, host, AGY_BIN_REMOTE, agent_home_env(), version_expect="1.2.2")
+    assert base.calls[-1] == (
+        "run_commands",
+        ("/usr/local/bin/agy --version 2>&1 | grep -F 1.2.2",),
+    )
+
+
+def test_host_cli_version_gate(tmp_path: Path) -> None:
+    ok = tmp_path / "grok"
+    ok.write_text("#!/bin/sh\necho 'grok 1.0.24 (68e414c661e3) [stable]'\n", encoding="utf-8")
+    ok.chmod(0o755)
+    out = _assert_host_cli_version(ok, "grok", "1.0.24")
+    assert "1.0.24" in out
+
+    wrong = tmp_path / "agy-old"
+    wrong.write_text("#!/bin/sh\necho 1.1.0\n", encoding="utf-8")
+    wrong.chmod(0o755)
+    with pytest.raises(SystemExit) as exc:
+        _assert_host_cli_version(wrong, "agy", "1.2.2")
+    assert "1.2.2" in str(exc.value)
+
+    broken = tmp_path / "agy-broken"
+    broken.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    broken.chmod(0o755)
+    with pytest.raises(SystemExit):
+        _assert_host_cli_version(broken, "agy", "1.2.2")
+
+
+def test_cli_version_check_shell_command() -> None:
+    assert cli_version_check("opencode", "1.18.29") == ("opencode --version 2>&1 | grep -F 1.18.29")
+    quoted = cli_version_check("codex", "codex-cli 0.153.0")
+    assert quoted.startswith("codex --version")
+    assert "grep -F 'codex-cli 0.153.0'" in quoted
+
+
+def test_opencode_image_layers_pinned_npm_cli() -> None:
+    spec = load_packages()
+    base = _RecordingImage()
+    out = sbx_opencode_image(base=base, spec=spec)
+    assert out is base
+    assert base.calls == [
+        (
+            "run_commands",
+            (
+                f"npm i -g {spec.opencode_npm_spec}",
+                f"opencode --version 2>&1 | grep -F {spec.opencode_version}",
+            ),
+        ),
+        ("env", {"HOME": "/work/home"}),
+    ]
+
+
 def test_image_py_defines_provider_builders() -> None:
     assert "def sbx_antigravity_image" in IMAGE_PY
     assert "def sbx_grok_image" in IMAGE_PY
@@ -137,6 +212,11 @@ def test_makefile_exposes_provider_image_targets() -> None:
     assert "image-grok:" in MAKEFILE
     assert "--provider antigravity" in MAKEFILE
     assert "--provider grok" in MAKEFILE
+    # Release 0.1 OpenCode seam + doctor manifest.
+    assert "image-opencode:" in MAKEFILE
+    assert "--provider opencode" in MAKEFILE
+    assert "image-manifest:" in MAKEFILE
+    assert "--manifest" in MAKEFILE
     # Codex / devin targets unchanged.
     assert "python -m runtime.image\n" in MAKEFILE or "\truntime.image\n" in MAKEFILE
     assert "--devin" in MAKEFILE

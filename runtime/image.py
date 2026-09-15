@@ -1,23 +1,31 @@
 """Named Modal Image ``sbx-runtime`` (slim, no browser) + provider variants.
 
 Package versions live in ``runtime/packages.txt``. ``Dockerfile.local`` (and
-``Dockerfile.devin.local`` for the Devin fast path, SOR-74) are generated from
-the same file so local docker verification stays in lockstep with the Modal
-images. Sandbox lifetime and hardware (``idle_timeout``, ``timeout``, ``cpu``,
-``memory``, ``workdir``, ``tags``, ``secrets``) are **not** set here — the
-control plane passes them to ``Sandbox.create``.
+``Dockerfile.devin.local`` / ``Dockerfile.opencode.local`` for the provider
+fast paths) are generated from the same file so local docker verification
+stays in lockstep with the Modal images. Sandbox lifetime and hardware
+(``idle_timeout``, ``timeout``, ``cpu``, ``memory``, ``workdir``, ``tags``,
+``secrets``) are **not** set here — the control plane passes them to
+``Sandbox.create``.
 
-Provider fast paths (SOR-74 devin; SOR-62/SOR-80 antigravity + grok): each
-named image is ``sbx-runtime`` plus the provider CLI. The Devin CLI is a
-pinned, sha256-verified download; ``agy`` / ``grok`` are proprietary host
-binaries taken from the building machine (never committed to the repo) — the
-same derivation the SOR-62 e2e gates verified.
+Provider fast paths (SOR-74 devin; SOR-62/SOR-80 antigravity + grok; Release
+0.1 opencode): each named image is ``sbx-runtime`` plus the provider CLI. The
+Devin CLI is a pinned, sha256-verified download; ``opencode`` is a pinned npm
+package; ``agy`` / ``grok`` are proprietary host binaries taken from the
+building machine (never committed to the repo) — the same derivation the
+SOR-62 e2e gates verified, gated by the ``agy_version`` / ``grok_version``
+pins. ``image_for(provider)`` is the explicit provider → image-name mapping;
+``image_manifest()`` emits the machine-readable release metadata doctor and
+release-evidence tooling consume (``python -m runtime.image --manifest``).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shlex
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,18 +44,35 @@ DEVIN_IMAGE_NAME = "sbx-runtime-devin"
 # CLI binary from the build host (see sbx_antigravity_image / sbx_grok_image).
 AGY_IMAGE_NAME = "sbx-runtime-antigravity"
 GROK_IMAGE_NAME = "sbx-runtime-grok"
+# Release 0.1 OpenCode seam: sbx-runtime + pinned opencode-ai npm package.
+OPENCODE_IMAGE_NAME = "sbx-runtime-opencode"
 AGY_BIN_ENV = "SBX_AGY_BIN"
 GROK_BIN_ENV = "SBX_GROK_BIN"
+CODEX_BIN_REMOTE = "/usr/local/bin/codex"
+DEVIN_BIN_REMOTE = "/usr/local/bin/devin"
 AGY_BIN_REMOTE = "/usr/local/bin/agy"
 GROK_BIN_REMOTE = "/usr/local/bin/grok"
+OPENCODE_BIN_REMOTE = "/usr/local/bin/opencode"
 DEFAULT_AGY_BIN = Path.home() / ".local" / "bin" / "agy"
 DEFAULT_GROK_BIN = Path.home() / ".local" / "bin" / "grok"
+CLI_VERSION_TIMEOUT_S = 15.0
 ENTRYPOINT_REMOTE = "/opt/sbx/entrypoint.sh"
 RUNTIME_REMOTE = "/opt/sbx/runtime"
 INSTALL_DEVIN_REMOTE = f"{RUNTIME_REMOTE}/install-devin.sh"
 PYTHONPATH_REMOTE = "/opt/sbx"
 MODAL_WORKSPACE = "sorenlab2026"
 DOCKERFILE_DEVIN_LOCAL = REPO_ROOT / "Dockerfile.devin.local"
+DOCKERFILE_OPENCODE_LOCAL = REPO_ROOT / "Dockerfile.opencode.local"
+
+# Credential relpaths under $HOME (docs/contracts/filesystem.md). Recorded in
+# the manifest so doctor can verify the release credential-path contract.
+PROVIDER_CREDENTIAL_FILES: dict[str, tuple[str, ...]] = {
+    "codex": (".codex/auth.json",),
+    "antigravity": (".gemini/antigravity-cli/antigravity-oauth-token",),
+    "grok": (".grok/auth.json",),
+    "opencode": (".local/share/opencode/auth.json",),
+    "devin": (".local/share/devin/credentials.toml",),
+}
 
 REQUIRED_APT = (
     "curl",
@@ -72,6 +97,10 @@ class PackageSpec:
     devin_base_url: str
     devin_sha256_x86_64: str
     devin_sha256_aarch64: str
+    opencode_npm: str
+    opencode_version: str
+    agy_version: str
+    grok_version: str
     apt: tuple[str, ...]
 
     @property
@@ -81,6 +110,14 @@ class PackageSpec:
     @property
     def codex_npm_spec(self) -> str:
         return f"{self.codex_npm}@{self.codex_version}"
+
+    @property
+    def opencode_npm_spec(self) -> str:
+        return f"{self.opencode_npm}@{self.opencode_version}"
+
+    @property
+    def codex_version_expect(self) -> str:
+        return f"codex-cli {self.codex_version}"
 
 
 def load_packages(path: Path | None = None) -> PackageSpec:
@@ -116,6 +153,10 @@ def load_packages(path: Path | None = None) -> PackageSpec:
             "devin_base_url",
             "devin_sha256_x86_64",
             "devin_sha256_aarch64",
+            "opencode_npm",
+            "opencode_version",
+            "agy_version",
+            "grok_version",
         )
         if not keys.get(k)
     ]
@@ -139,6 +180,10 @@ def load_packages(path: Path | None = None) -> PackageSpec:
         devin_base_url=keys["devin_base_url"],
         devin_sha256_x86_64=keys["devin_sha256_x86_64"],
         devin_sha256_aarch64=keys["devin_sha256_aarch64"],
+        opencode_npm=keys["opencode_npm"],
+        opencode_version=keys["opencode_version"],
+        agy_version=keys["agy_version"],
+        grok_version=keys["grok_version"],
         apt=apt_tuple,
     )
 
@@ -172,28 +217,53 @@ def devin_install_command(spec: PackageSpec | None = None) -> str:
     )
 
 
-def render_dockerfile_local(spec: PackageSpec | None = None, *, devin: bool = False) -> str:
+def cli_version_check(cli: str, expect: str) -> str:
+    """Image build-step command: ``<cli> --version`` must report ``expect``.
+
+    Runs at image-build time (no cold-start cost). Fails the build when the
+    installed CLI is missing, broken, or a different version than the
+    packages.txt pin.
+    """
+    return f"{cli} --version 2>&1 | grep -F {shlex.quote(expect)}"
+
+
+def render_dockerfile_local(
+    spec: PackageSpec | None = None, *, devin: bool = False, opencode: bool = False
+) -> str:
     """Dockerfile used for no-cloud docker verification; values from packages.txt.
 
     ``devin=True`` renders ``Dockerfile.devin.local`` (SOR-74): the same base
     recipe plus the pinned standalone Devin CLI and HOME/XDG pointed at
-    ``/work/home``.
+    ``/work/home``. ``opencode=True`` renders ``Dockerfile.opencode.local``
+    (Release 0.1): base recipe plus the pinned ``opencode-ai`` npm package.
     """
+    if devin and opencode:
+        raise ValueError("devin and opencode variants are mutually exclusive")
     spec = spec or load_packages()
     apt = " ".join(spec.apt)
-    env_lines = f"""\
-ENV DEBIAN_FRONTEND=noninteractive \\
-    SBX_WORK=/work \\
-    PYTHONPATH={PYTHONPATH_REMOTE}"""
+    env = {
+        "DEBIAN_FRONTEND": "noninteractive",
+        "SBX_WORK": "/work",
+        "PYTHONPATH": PYTHONPATH_REMOTE,
+        "HOME": "/work/home",
+    }
     if devin:
-        env_lines += "".join(
-            f" \\\n    {key}={value}" for key, value in devin_runtime_env().items()
-        )
+        env.update(devin_runtime_env())
+    elif opencode:
+        env.update(agent_home_env())
+    env_lines = "ENV " + " \\\n    ".join(f"{key}={value}" for key, value in env.items())
     extra_run = ""
-    mkdirs = "/work/inbox /work/turns /work/.codex"
+    mkdirs = "/work/inbox /work/turns /work/.codex /work/home"
     if devin:
-        mkdirs += " /work/home"
-        extra_run = f"\nRUN {devin_install_command(spec)}\n"
+        extra_run = (
+            f"\nRUN {devin_install_command(spec)}\n"
+            f"RUN {cli_version_check('devin', spec.devin_version)}\n"
+        )
+    elif opencode:
+        extra_run = (
+            f"\nRUN npm i -g {spec.opencode_npm_spec}\n"
+            f"RUN {cli_version_check('opencode', spec.opencode_version)}\n"
+        )
     header = """\
 # GENERATED FROM runtime/packages.txt — do not edit by hand.
 # Regenerate: python -m runtime.image --write-dockerfile
@@ -202,6 +272,8 @@ ENV DEBIAN_FRONTEND=noninteractive \\
 # the control plane passes them to Sandbox.create."""
     if devin:
         header += "\n# Devin fast path (SOR-74): base recipe + pinned standalone Devin CLI."
+    elif opencode:
+        header += "\n# OpenCode fast path (Release 0.1): base recipe + pinned opencode-ai npm CLI."
     return f"""\
 {header}
 FROM python:{spec.python_version}-slim-bookworm
@@ -213,6 +285,7 @@ RUN apt-get update \\
  && curl -fsSL {spec.nodesource_setup_url} | bash - \\
  && apt-get install -y --no-install-recommends nodejs \\
  && npm i -g {spec.codex_npm_spec} \\
+ && {cli_version_check("codex", spec.codex_version_expect)} \\
  && apt-get clean \\
  && rm -rf /var/lib/apt/lists/*
 
@@ -239,6 +312,12 @@ def write_dockerfile_devin_local(path: Path | None = None) -> Path:
     return dest
 
 
+def write_dockerfile_opencode_local(path: Path | None = None) -> Path:
+    dest = path or DOCKERFILE_OPENCODE_LOCAL
+    dest.write_text(render_dockerfile_local(opencode=True), encoding="utf-8")
+    return dest
+
+
 def sbx_runtime_image():
     """Build the Modal Image object (no network). Caller may ``.build(app)``."""
     import modal
@@ -251,25 +330,40 @@ def sbx_runtime_image():
             f"curl -fsSL {spec.nodesource_setup_url} | bash -",
             "apt-get install -y nodejs",
             f"npm i -g {spec.codex_npm_spec}",
-            "codex --version",
+            cli_version_check("codex", spec.codex_version_expect),
         )
         .add_local_file(str(ENTRYPOINT_SH), ENTRYPOINT_REMOTE, copy=True)
         .add_local_dir(RUNTIME_DIR, RUNTIME_REMOTE, copy=True)
         .run_commands(f"chmod +x {ENTRYPOINT_REMOTE}")
-        .env({"SBX_WORK": "/work", "PYTHONPATH": PYTHONPATH_REMOTE})
+        .env(
+            {
+                "SBX_WORK": "/work",
+                "PYTHONPATH": PYTHONPATH_REMOTE,
+                "HOME": "/work/home",
+            }
+        )
         .entrypoint([ENTRYPOINT_REMOTE])
     )
 
 
-def sbx_devin_image():
+def sbx_devin_image(spec: PackageSpec | None = None):
     """Named Modal Image ``sbx-runtime-devin`` (SOR-74 Devin-only fast path).
 
     ``sbx-runtime`` plus the pinned standalone Devin CLI bundle (sha256-verified
     by ``runtime/install-devin.sh``) and HOME/XDG rooted at ``$SBX_WORK/home``
     so the restored ``credentials.toml`` is the only auth source. No Devin
-    Desktop, no ACP bridge, no ``DEVIN_*`` key env is baked in.
+    Desktop, no ACP bridge, no ``DEVIN_*`` key env is baked in. The build fails
+    if ``devin --version`` does not report the packages.txt pin.
     """
-    return sbx_runtime_image().run_commands(devin_install_command()).env(devin_runtime_env())
+    spec = spec or load_packages()
+    return (
+        sbx_runtime_image()
+        .run_commands(
+            devin_install_command(spec),
+            cli_version_check("devin", spec.devin_version),
+        )
+        .env(devin_runtime_env())
+    )
 
 
 def agent_home_env(work: str = "/work") -> dict[str, str]:
@@ -300,37 +394,118 @@ def _host_cli_bin(env_var: str, default: Path, cli: str) -> Path:
     return resolved
 
 
-def _cli_image(image: Any, host_bin: Path, remote: str, env: dict[str, str]) -> Any:
-    """``image`` + one host CLI binary at ``remote`` (755) + env overlay."""
-    return (
+def _cli_version_output(bin_path: Path) -> str:
+    """``<bin> --version`` combined output (build-host probe, never in-image)."""
+    try:
+        proc = subprocess.run(
+            [str(bin_path), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=CLI_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"{bin_path} --version timed out after {CLI_VERSION_TIMEOUT_S}s") from None
+    except OSError as exc:
+        raise SystemExit(f"{bin_path} --version failed: {exc}") from exc
+    out = (proc.stdout + proc.stderr).strip()
+    if proc.returncode != 0:
+        raise SystemExit(f"{bin_path} --version exited {proc.returncode}: {out[:200]}")
+    return out
+
+
+def _assert_host_cli_version(host: Path, cli: str, expected: str) -> str:
+    """Fail the build unless the host CLI reports the packages.txt pin."""
+    out = _cli_version_output(host)
+    if expected not in out:
+        raise SystemExit(
+            f"{cli} --version reports {out!r}; packages.txt pins {expected}. "
+            f"Install the pinned {cli} CLI on the build host or update the pin."
+        )
+    return out
+
+
+def _cli_image(
+    image: Any,
+    host_bin: Path,
+    remote: str,
+    env: dict[str, str],
+    *,
+    version_expect: str | None = None,
+) -> Any:
+    """``image`` + one host CLI binary at ``remote`` (755) + env overlay.
+
+    ``version_expect`` adds a build-time ``<remote> --version`` gate so the
+    published image provably carries the packages.txt pin.
+    """
+    layered = (
         image.add_local_file(str(host_bin), remote, copy=True)
         .run_commands(f"chmod 755 {remote}")
         .env(env)
     )
+    if version_expect:
+        layered = layered.run_commands(cli_version_check(remote, version_expect))
+    return layered
 
 
-def sbx_antigravity_image(agy_bin: Path | None = None):
+def sbx_antigravity_image(agy_bin: Path | None = None, spec: PackageSpec | None = None):
     """Named Modal Image ``sbx-runtime-antigravity`` (SOR-62/SOR-80 fast path).
 
     ``sbx-runtime`` plus the host ``agy`` binary at ``/usr/local/bin/agy`` —
     the exact derivation the SOR-62 gate verified — with ``HOME`` rooted at
     ``$SBX_WORK/home`` so the restored ``antigravity-oauth-token`` is the only
-    auth source. No credential material is baked into the image.
+    auth source. No credential material is baked into the image. The build
+    rejects a host binary whose ``--version`` misses the ``agy_version`` pin.
     """
+    spec = spec or load_packages()
     host = agy_bin or _host_cli_bin(AGY_BIN_ENV, DEFAULT_AGY_BIN, "agy")
-    return _cli_image(sbx_runtime_image(), host, AGY_BIN_REMOTE, agent_home_env())
+    _assert_host_cli_version(host, "agy", spec.agy_version)
+    return _cli_image(
+        sbx_runtime_image(),
+        host,
+        AGY_BIN_REMOTE,
+        agent_home_env(),
+        version_expect=spec.agy_version,
+    )
 
 
-def sbx_grok_image(grok_bin: Path | None = None):
+def sbx_grok_image(grok_bin: Path | None = None, spec: PackageSpec | None = None):
     """Named Modal Image ``sbx-runtime-grok`` (SOR-62/SOR-80 fast path).
 
     ``sbx-runtime`` plus the host ``grok`` binary at ``/usr/local/bin/grok`` —
     the exact derivation the SOR-62 gate verified — with ``HOME`` rooted at
     ``$SBX_WORK/home`` so the restored ``.grok/auth.json`` is the only auth
-    source. No credential material is baked into the image.
+    source. No credential material is baked into the image. The build rejects
+    a host binary whose ``--version`` misses the ``grok_version`` pin.
     """
+    spec = spec or load_packages()
     host = grok_bin or _host_cli_bin(GROK_BIN_ENV, DEFAULT_GROK_BIN, "grok")
-    return _cli_image(sbx_runtime_image(), host, GROK_BIN_REMOTE, agent_home_env())
+    _assert_host_cli_version(host, "grok", spec.grok_version)
+    return _cli_image(
+        sbx_runtime_image(),
+        host,
+        GROK_BIN_REMOTE,
+        agent_home_env(),
+        version_expect=spec.grok_version,
+    )
+
+
+def sbx_opencode_image(base: Any | None = None, spec: PackageSpec | None = None):
+    """Named Modal Image ``sbx-runtime-opencode`` (Release 0.1 seam).
+
+    ``sbx-runtime`` plus the pinned ``opencode-ai`` npm package — fully
+    reproducible from ``packages.txt``, no host artifact — with ``HOME``
+    rooted at ``$SBX_WORK/home`` so the restored
+    ``.local/share/opencode/auth.json`` is the only auth source. The OpenCode
+    adapter lands with its own package; this image is the runtime seam.
+    ``base``/``spec`` exist for no-cloud tests.
+    """
+    spec = spec or load_packages()
+    image = base if base is not None else sbx_runtime_image()
+    return image.run_commands(
+        f"npm i -g {spec.opencode_npm_spec}",
+        cli_version_check("opencode", spec.opencode_version),
+    ).env(agent_home_env())
 
 
 def invoke_control_deploy() -> None:
@@ -407,16 +582,138 @@ IMAGE_BUILDERS: dict[str, tuple[Any, str]] = {
     "devin": (sbx_devin_image, DEVIN_IMAGE_NAME),
     "antigravity": (sbx_antigravity_image, AGY_IMAGE_NAME),
     "grok": (sbx_grok_image, GROK_IMAGE_NAME),
+    "opencode": (sbx_opencode_image, OPENCODE_IMAGE_NAME),
 }
+
+
+def image_for(provider: str) -> str:
+    """Explicit provider → published-image-name mapping (Release 0.1).
+
+    The control plane resolves the same names via ``control.config``
+    constants; the sync is covered by tests.
+    """
+    try:
+        return IMAGE_BUILDERS[provider][1]
+    except KeyError:
+        raise KeyError(
+            f"unknown image provider {provider!r}; known: {sorted(IMAGE_BUILDERS)}"
+        ) from None
+
+
+def _provider_cli_meta(provider: str, spec: PackageSpec) -> dict[str, Any]:
+    """Install source + expected ``--version`` evidence for one provider."""
+    if provider == "codex":
+        return {
+            "cli": "codex",
+            "cli_path": CODEX_BIN_REMOTE,
+            "install": {"kind": "npm", "package": spec.codex_npm_spec},
+            "version": spec.codex_version,
+            "expect": spec.codex_version_expect,
+        }
+    if provider == "devin":
+        return {
+            "cli": "devin",
+            "cli_path": DEVIN_BIN_REMOTE,
+            "install": {
+                "kind": "bundle",
+                "base_url": spec.devin_base_url,
+                "version": spec.devin_version,
+                "sha256": {
+                    "x86_64": spec.devin_sha256_x86_64,
+                    "aarch64": spec.devin_sha256_aarch64,
+                },
+            },
+            "version": spec.devin_version,
+            "expect": spec.devin_version,
+        }
+    if provider == "opencode":
+        return {
+            "cli": "opencode",
+            "cli_path": OPENCODE_BIN_REMOTE,
+            "install": {"kind": "npm", "package": spec.opencode_npm_spec},
+            "version": spec.opencode_version,
+            "expect": spec.opencode_version,
+        }
+    host_specs = {
+        "antigravity": (AGY_BIN_ENV, "~/.local/bin/agy", AGY_BIN_REMOTE, spec.agy_version),
+        "grok": (GROK_BIN_ENV, "~/.local/bin/grok", GROK_BIN_REMOTE, spec.grok_version),
+    }
+    env_var, default, remote, version = host_specs[provider]
+    return {
+        "cli": remote.rsplit("/", 1)[-1],
+        "cli_path": remote,
+        "install": {
+            "kind": "host-binary",
+            "env": env_var,
+            "default": default,
+        },
+        "version": version,
+        "expect": version,
+    }
+
+
+def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
+    """Release metadata for every named runtime image (doctor / evidence).
+
+    Pure function of ``packages.txt`` + the ``IMAGE_BUILDERS`` registry: no
+    Modal, no network, no host-CLI probe. ``python -m runtime.image
+    --manifest`` prints it as JSON. Doctor (SOR-98) uses ``providers.*.image``
+    to detect missing named images and ``providers.*.version_check`` to
+    verify a sandbox reports the pinned CLI version; the layout block pins
+    the HOME/work contract.
+    """
+    spec = spec or load_packages()
+    home_env = {
+        "codex": {},
+        "devin": devin_runtime_env(),
+        "antigravity": agent_home_env(),
+        "grok": agent_home_env(),
+        "opencode": agent_home_env(),
+    }
+    providers: dict[str, dict[str, Any]] = {}
+    for provider in sorted(IMAGE_BUILDERS):
+        meta = _provider_cli_meta(provider, spec)
+        providers[provider] = {
+            "image": image_for(provider),
+            "cli": meta["cli"],
+            "cli_path": meta["cli_path"],
+            "install": meta["install"],
+            "version": meta["version"],
+            "version_check": {
+                "argv": [meta["cli_path"], "--version"],
+                "expect": meta["expect"],
+            },
+            "env": home_env[provider],
+            "credential_files": list(PROVIDER_CREDENTIAL_FILES[provider]),
+        }
+    return {
+        "schema": "sbx-runtime/manifest@1",
+        "app": APP_NAME,
+        "source": "runtime/packages.txt",
+        "base": {
+            "python_version": spec.python_version,
+            "node_major": spec.node_major,
+            "apt": list(spec.apt),
+        },
+        "layout": {
+            "work": "/work",
+            "home": "/work/home",
+            "codex_home": "/work/.codex",
+            "dirs": ["inbox", "turns", "home", ".codex"],
+            "runtime": RUNTIME_REMOTE,
+            "entrypoint": ENTRYPOINT_REMOTE,
+        },
+        "providers": providers,
+    }
 
 
 def build_named_image(*, provider: str = "codex") -> None:
     """``modal image build`` equivalent: build + publish a named runtime image.
 
     ``provider`` selects the variant (``sbx-runtime`` for codex; the SOR-74 /
-    SOR-80 fast-path images otherwise). Requires Modal credentials and, for
-    agy / grok, the provider CLI on the build host. Never called from
-    ``make test``.
+    SOR-80 / Release-0.1 fast-path images otherwise). Requires Modal
+    credentials and, for agy / grok, the provider CLI on the build host.
+    Never called from ``make test``.
     """
     import modal
 
@@ -432,7 +729,13 @@ def build_named_image(*, provider: str = "codex") -> None:
         publish = getattr(built, "publish", None)
         if callable(publish):
             publish(name)
-    extra = f", devin {spec.devin_version}" if provider == "devin" else ""
+    cli_versions = {
+        "devin": spec.devin_version,
+        "antigravity": spec.agy_version,
+        "grok": spec.grok_version,
+        "opencode": spec.opencode_version,
+    }
+    extra = f", {provider} {cli_versions[provider]}" if provider in cli_versions else ""
     print(
         f"named image {name} ready "
         f"(python {spec.python_version}, node {spec.node_major}, {spec.codex_npm_spec}{extra})"
@@ -444,7 +747,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--write-dockerfile",
         action="store_true",
-        help="Regenerate Dockerfile.local + Dockerfile.devin.local from packages.txt (no Modal)",
+        help="Regenerate Dockerfile.local + Dockerfile.devin.local + "
+        "Dockerfile.opencode.local from packages.txt (no Modal)",
+    )
+    parser.add_argument(
+        "--manifest",
+        action="store_true",
+        help="Print the provider-image manifest as JSON (doctor/evidence input; no Modal)",
     )
     parser.add_argument(
         "--provider",
@@ -459,8 +768,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.write_dockerfile:
-        for write in (write_dockerfile_local, write_dockerfile_devin_local):
+        for write in (
+            write_dockerfile_local,
+            write_dockerfile_devin_local,
+            write_dockerfile_opencode_local,
+        ):
             print(f"wrote {write()}")
+        return 0
+    if args.manifest:
+        print(json.dumps(image_manifest(), indent=2, sort_keys=True))
         return 0
     build_named_image(provider="devin" if args.devin else args.provider)
     return 0
