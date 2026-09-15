@@ -10,6 +10,8 @@ host-executed gate (``make image-antigravity`` / ``make image-grok``).
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -136,7 +138,7 @@ def test_cli_image_appends_version_gate_when_expect_given(tmp_path: Path) -> Non
     _cli_image(base, host, AGY_BIN_REMOTE, agent_home_env(), version_expect="1.2.2")
     assert base.calls[-1] == (
         "run_commands",
-        ("/usr/local/bin/agy --version 2>&1 | grep -F 1.2.2",),
+        (cli_version_check(AGY_BIN_REMOTE, "1.2.2"),),
     )
 
 
@@ -154,6 +156,19 @@ def test_host_cli_version_gate(tmp_path: Path) -> None:
         _assert_host_cli_version(wrong, "agy", "1.2.2")
     assert "1.2.2" in str(exc.value)
 
+    # A pin must not match as a prefix of a different version: 1.2.20 and
+    # 11.0.24 both contain the pins as substrings but are not the pins.
+    for version_out, cli, pin in (
+        ("1.2.20", "agy", "1.2.2"),
+        ("11.0.24", "grok", "1.0.24"),
+        ("1.2.2.1", "agy", "1.2.2"),
+    ):
+        prefixed = tmp_path / f"{cli}-{version_out}"
+        prefixed.write_text(f"#!/bin/sh\necho '{version_out}'\n", encoding="utf-8")
+        prefixed.chmod(0o755)
+        with pytest.raises(SystemExit):
+            _assert_host_cli_version(prefixed, cli, pin)
+
     broken = tmp_path / "agy-broken"
     broken.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     broken.chmod(0o755)
@@ -162,10 +177,38 @@ def test_host_cli_version_gate(tmp_path: Path) -> None:
 
 
 def test_cli_version_check_shell_command() -> None:
-    assert cli_version_check("opencode", "1.18.29") == ("opencode --version 2>&1 | grep -F 1.18.29")
+    assert cli_version_check("opencode", "1.18.29") == (
+        r"opencode --version 2>&1 | grep -E '(^|[^0-9.])1\.18\.29([^0-9.]|$)'"
+    )
     quoted = cli_version_check("codex", "codex-cli 0.153.0")
     assert quoted.startswith("codex --version")
-    assert "grep -F 'codex-cli 0.153.0'" in quoted
+    assert "grep -E '(^|[^0-9.])" in quoted
+    assert "0\\.153\\.0" in quoted
+
+
+def test_cli_version_check_gate_rejects_prefixed_versions(tmp_path: Path) -> None:
+    """The rendered in-image gate fails on versions the pin is a prefix of."""
+    fake_cli = tmp_path / "fake-cli"
+    script = '#!/bin/sh\necho "$FAKE_VERSION_OUT"\n'
+    fake_cli.write_text(script, encoding="utf-8")
+    fake_cli.chmod(0o755)
+
+    def run_gate(version_out: str, pin: str) -> int:
+        command = cli_version_check(str(fake_cli), pin)
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            env={**os.environ, "FAKE_VERSION_OUT": version_out},
+            capture_output=True,
+        )
+        return proc.returncode
+
+    assert run_gate("grok 1.0.24 (68e414c) [stable]", "1.0.24") == 0
+    assert run_gate("1.2.2", "1.2.2") == 0
+    assert run_gate("codex-cli 0.153.0", "codex-cli 0.153.0") == 0
+    assert run_gate("1.2.20", "1.2.2") != 0
+    assert run_gate("11.0.24", "1.0.24") != 0
+    assert run_gate("1.2.3", "1.2.2") != 0
+    assert run_gate("codex-cli 0.153.01", "codex-cli 0.153.0") != 0
 
 
 def test_opencode_image_layers_pinned_npm_cli() -> None:
@@ -178,7 +221,7 @@ def test_opencode_image_layers_pinned_npm_cli() -> None:
             "run_commands",
             (
                 f"npm i -g {spec.opencode_npm_spec}",
-                f"opencode --version 2>&1 | grep -F {spec.opencode_version}",
+                cli_version_check("opencode", spec.opencode_version),
             ),
         ),
         ("env", {"HOME": "/work/home"}),

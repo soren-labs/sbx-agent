@@ -18,6 +18,7 @@ import pytest
 from runtime.image import (
     DOCKERFILE_OPENCODE_LOCAL,
     OPENCODE_IMAGE_NAME,
+    cli_version_check,
     image_for,
     load_packages,
     render_dockerfile_local,
@@ -48,7 +49,7 @@ def test_dockerfile_opencode_local_is_generated() -> None:
     assert "# OpenCode fast path (Release 0.1)" in on_disk
     spec = load_packages()
     assert f"npm i -g {spec.opencode_npm_spec}" in on_disk
-    assert f"opencode --version 2>&1 | grep -F {spec.opencode_version}" in on_disk
+    assert cli_version_check("opencode", spec.opencode_version) in on_disk
     assert "HOME=/work/home" in on_disk
     instructions = [
         line for line in on_disk.splitlines() if line.strip() and not line.lstrip().startswith("#")

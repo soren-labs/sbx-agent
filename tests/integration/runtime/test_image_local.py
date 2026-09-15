@@ -28,6 +28,7 @@ from runtime.image import (
     REQUIRED_APT,
     RUNTIME_DIR,
     RUNTIME_REMOTE,
+    cli_version_check,
     invoke_control_deploy,
     load_packages,
     render_dockerfile_local,
@@ -104,7 +105,7 @@ def test_dockerfile_local_is_generated_from_packages_txt() -> None:
     for pkg in spec.apt:
         assert pkg in on_disk
     assert "HOME=/work/home" in on_disk
-    assert f"codex --version 2>&1 | grep -F 'codex-cli {spec.codex_version}'" in on_disk
+    assert cli_version_check("codex", spec.codex_version_expect) in on_disk
     instructions = [
         line for line in on_disk.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]

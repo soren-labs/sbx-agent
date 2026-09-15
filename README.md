@@ -74,7 +74,7 @@ P2 把单 Codex 会话扩展为 Cursor Cloud Agent 式的多 provider 平台：
 | `opencode` | `sbx-runtime-opencode` | npm `opencode-ai` | `opencode_version` |
 
 - 所有镜像统一 `HOME=$SBX_WORK/home`（`filesystem.md` 凭证 blob 还原根）；devin 另固定 XDG。镜像与 entrypoint **不**内置任何账号 / auth / token。
-- agy / grok 是构建机产物（专有 CLI 无可复现下载）；镜像构建先在本机断言 `--version` 命中 pin，镜像内再跑一次 `<cli> --version | grep -F <pin>`。
+- agy / grok 是构建机产物（专有 CLI 无可复现下载）；镜像构建先在本机断言 `--version` 命中 pin，镜像内再跑一次 `<cli> --version | grep -E <边界 pin>`（整版本号匹配，`1.2.20` 不会误过 `1.2.2`）。
 - 本地生成物：`Dockerfile.local`（codex）、`Dockerfile.devin.local`、`Dockerfile.opencode.local`，均由 `python -m runtime.image --write-dockerfile` 从 packages.txt 再生成。
 - **`python -m runtime.image --manifest`（`make image-manifest`）** 输出 JSON 清单：provider → 镜像名 / CLI 路径 / 安装来源 / pin / `version_check` / credential relpaths / HOME-work 布局。这是 doctor（SOR-98）与 release evidence 的机器可读输入，不需 Modal 凭证。
 

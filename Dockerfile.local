@@ -15,7 +15,7 @@ RUN apt-get update \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && npm i -g @openai/codex@0.153.0 \
- && codex --version 2>&1 | grep -F 'codex-cli 0.153.0' \
+ && codex --version 2>&1 | grep -E '(^|[^0-9.])codex\-cli\ 0\.153\.0([^0-9.]|$)' \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 

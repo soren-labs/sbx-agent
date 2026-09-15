@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -217,6 +218,17 @@ def devin_install_command(spec: PackageSpec | None = None) -> str:
     )
 
 
+def _version_grep_pattern(expect: str) -> str:
+    """ERE matching ``expect`` as a whole token, not a version prefix.
+
+    Plain substring matching (``grep -F``) false-passes pins that are a
+    prefix of a different version — ``1.2.2`` inside ``1.2.20`` or
+    ``1.0.24`` inside ``11.0.24``. Boundaries are ``[^0-9.]`` so a match
+    cannot be part of a longer version number on either side.
+    """
+    return r"(^|[^0-9.])" + re.escape(expect) + r"([^0-9.]|$)"
+
+
 def cli_version_check(cli: str, expect: str) -> str:
     """Image build-step command: ``<cli> --version`` must report ``expect``.
 
@@ -224,7 +236,7 @@ def cli_version_check(cli: str, expect: str) -> str:
     installed CLI is missing, broken, or a different version than the
     packages.txt pin.
     """
-    return f"{cli} --version 2>&1 | grep -F {shlex.quote(expect)}"
+    return f"{cli} --version 2>&1 | grep -E {shlex.quote(_version_grep_pattern(expect))}"
 
 
 def render_dockerfile_local(
@@ -401,6 +413,7 @@ def _cli_version_output(bin_path: Path) -> str:
             [str(bin_path), "--version"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=CLI_VERSION_TIMEOUT_S,
             check=False,
         )
@@ -417,7 +430,7 @@ def _cli_version_output(bin_path: Path) -> str:
 def _assert_host_cli_version(host: Path, cli: str, expected: str) -> str:
     """Fail the build unless the host CLI reports the packages.txt pin."""
     out = _cli_version_output(host)
-    if expected not in out:
+    if not re.search(_version_grep_pattern(expected), out):
         raise SystemExit(
             f"{cli} --version reports {out!r}; packages.txt pins {expected}. "
             f"Install the pinned {cli} CLI on the build host or update the pin."
@@ -589,8 +602,10 @@ IMAGE_BUILDERS: dict[str, tuple[Any, str]] = {
 def image_for(provider: str) -> str:
     """Explicit provider → published-image-name mapping (Release 0.1).
 
-    The control plane resolves the same names via ``control.config``
-    constants; the sync is covered by tests.
+    The control plane mirrors the devin / antigravity / grok names as
+    ``control.config`` constants (sync covered by tests). The opencode
+    control-plane resolution lands with its adapter package; this mapping is
+    the runtime seam it should consume.
     """
     try:
         return IMAGE_BUILDERS[provider][1]

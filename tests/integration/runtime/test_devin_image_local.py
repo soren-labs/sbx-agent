@@ -23,6 +23,7 @@ from runtime.image import (
     INSTALL_DEVIN_REMOTE,
     PACKAGES_TXT,
     RUNTIME_DIR,
+    cli_version_check,
     devin_install_command,
     devin_runtime_env,
     load_packages,
@@ -86,7 +87,7 @@ def test_dockerfile_devin_local_is_generated() -> None:
     assert "install-devin.sh" in on_disk
     spec = load_packages()
     assert spec.devin_sha256_x86_64 in on_disk
-    assert f"devin --version 2>&1 | grep -F {spec.devin_version}" in on_disk
+    assert cli_version_check("devin", spec.devin_version) in on_disk
     instructions = [
         line for line in on_disk.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
