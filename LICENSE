@@ -1,0 +1,29 @@
+================================================================================
+LICENSE — NO LICENSE SELECTED YET (OWNER DECISION REQUIRED)
+================================================================================
+
+This file is a placeholder, not a license grant.
+
+The open-source license for sbx-browser has NOT been chosen. Per the
+release plan, license selection is an explicit Owner decision and must be
+made before v0.1.0-alpha is tagged and published. Do not assume MIT,
+Apache-2.0, or any other terms.
+
+Until the Owner replaces this file with a real license text:
+
+  * All rights are reserved by the copyright holder(s).
+  * You may view and build the code for evaluation within the project.
+  * You may NOT redistribute, sublicense, or reuse this code under any
+    open-source terms — none have been granted yet.
+
+TODO before public release (Owner action required):
+
+  1. Choose the license (candidates discussed: Apache-2.0, MIT — the
+     choice is the Owner's, not delegated).
+  2. Replace this file with the full license text.
+  3. Update the "License" section of README.md and any package metadata
+     (pyproject.toml `license`/`classifiers`) to match.
+  4. Record the decision in CHANGELOG.md under the release entry.
+
+Blocking: this placeholder must be resolved before the public repo goes
+live; a published repo without a license is not open source.

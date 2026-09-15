@@ -22,6 +22,7 @@ playwright-report-modal/
 # Local env & secrets (never commit)
 .env
 .env.*
+!.env.example
 *.pem
 auth.json
 .modal.toml

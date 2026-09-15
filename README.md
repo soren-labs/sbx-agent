@@ -1,128 +1,259 @@
 # sbx-browser
 
-Cursor Cloud Agent 式的 Codex 云端会话：网页新建会话 → 一台按会话创建的 Modal Sandbox 内运行 Codex CLI，多轮对话 → 空闲自动回收。浏览器 + noVNC 实时画面作为 P2 叠加。
+**Self-hosted orchestration for cloud coding agents.** One `POST /v1/agents`
+call creates an isolated [Modal](https://modal.com) Sandbox that runs the
+official provider CLI you already pay for (Codex, Devin, Antigravity, Grok) —
+multi-turn, streaming, with durable runs, artifacts and workflow recovery.
 
-## 任务与设计的唯一来源
+> **Status: `v0.1.0-alpha` (public alpha).** Self-hosted bring-your-own-everything
+> release. The `/v1` API may still change; see [Known limitations](#known-limitations).
 
-所有需求、设计、任务拆分与状态都在 Linear 项目 **sbx-browser**（团队 Sorenforge，Issue 前缀 `SOR-`）：
+## What it is — and what it is not
 
-- 项目概述与「已决定」表：Linear 项目描述
-- 设计方案 v1（顶部有 v1.1 范围收敛说明）：Linear 项目文档
-- 开发任务分配与并发计划 v1：Linear 项目文档
-- 当前起点：P1 `SOR-39` WP0 已合入。P2 进行中：`SOR-59` WP0 冻结 v2 契约（五 provider 多账号）与跨包 Protocol 壳；P0 spike（`SOR-28`）结论见 `spike/README.md`。
+sbx-browser gives you a single REST API (`/v1`, Bearer-authenticated) in front
+of per-agent Modal Sandboxes. Each agent is a long-lived sandbox running an
+official provider CLI under your own accounts; the control plane schedules
+turns across accounts, streams canonical events over SSE, persists run state,
+and hands work between agents via artifacts.
 
-仓库内的 `AGENTS.md`、`docs/contracts/` 是代码层面的规范来源。
+**Boundary — read this before deploying:**
 
-## P2 概览（多 provider / 多账号）
+- **BYO Modal**: the control plane and all sandboxes run in *your* Modal
+  workspace, billed to you. There is no hosted service.
+- **BYO subscriptions**: agents authenticate with *your* official provider
+  accounts and subscriptions. sbx-browser does **not** resell, proxy, or
+  convert subscription quota into a model API — tasks execute inside the
+  provider's own CLI/harness, under that provider's terms.
+- **No hosted accounts**: sbx-browser does not host user accounts, store
+  model weights, or call provider model APIs directly. Credentials you import
+  live in your Modal workspace (as Secrets / Dict blobs) and are injected
+  into your sandboxes only.
 
-P2 把单 Codex 会话扩展为 Cursor Cloud Agent 式的多 provider 平台：
-
-- **Provider 集合**：`codex` / `antigravity` / `grok` / `opencode` / `devin`，由 `runtime/runner/adapter.py` 的 `AgentAdapter` Protocol + 注册表统一驱动；Codex 行为保持不变，其余 provider 的 Adapter 在 `SOR-62` / `SOR-72` 实现。
-- **多账号凭证**：每个 provider 可挂多个账号；凭证以 blob `{provider, files:{relpath: content}}` 经 `SBX_ACCOUNT_CREDENTIAL` 注入，还原到沙箱 `HOME=$SBX_WORK/home`（权限 600）。`runner export-credentials` 把可能刷新的凭证以同一 blob 形式写回控制面。
-- **账号注册与调度**：`control/ports.py` 定义 `AccountRegistry` / `Scheduler` / `ApiKeyStore` / `SessionService` Protocol 与 `Account` / `ApiKey` / `ScheduleDecision` 数据类；`SOR-63` 实现（`modal.Dict` + 每账号 Secret），支持 `account_id` 指定或 `"auto"` LRU 选择。
-- **API 两层**：内部 `/api/*`（HTTP Basic，`docs/contracts/api.yaml`）供 web 看板；公开 `/v1/*`（Bearer `sbx_<key>`，`docs/contracts/api-v1.yaml`，`agent ≙ session`、`run ≙ turn`）由 `control/api_v1/`（`SOR-64`）实现。
-- **事件**：CLI 原生行原样落 `events.raw.jsonl`，Adapter 翻译为 canonical 事件写 `events.jsonl`；新增 `sbx.session_meta{provider, model, account_id}`，非 Codex usage 映射见 `docs/contracts/events.md`。
-- **测试隔离**：`tests/conftest.py` 剥离宿主凭证并隔离 HOME/XDG；`LocalProcessBackend.exec` 只继承白名单（`PATH` `HOME` `LANG`）+ `SandboxSpec.env` + 显式 `env=`；`tests/fakes/` 提供五个 provider 的可执行假件与 `tests/fakes/fake_ports.py` 内存版端口实现。
-
-## 架构（P1 MVP）
+## Architecture
 
 ```
- 你（浏览器）                              Modal
- ┌──────────────┐  HTTPS + Basic Auth   ┌──────────────────────────────────────────┐
- │ web/ 聊天页  │ ────────────────────▶ │ control/ sbx-control（FastAPI，可缩容到 0） │
- │  会话列表    │                       │  会话 API · modal.Dict 状态机 · SSE        │
- │  流式事件    │                       │  reaper 只做 Dict 对账                      │
- └──────────────┘                       └────────────┬─────────────────────────────┘
-                                                     │ Sandbox.create(
-                                                     │   image=sbx-runtime,
-                                                     │   idle_timeout, timeout,
-                                                     │   cpu, memory, workdir,
-                                                     │   tags, secrets)
-                                                     ▼
-                                        ┌── Sandbox（一会话一台，常驻多轮）─────────┐
-                                        │ entrypoint.sh                            │
-                                        │   $SBX_WORK/{inbox,turns,.codex}         │
-                                        │   exec sleep infinity（或控制面传入的命令）│
-                                        │ 控制面 sb.exec → runner（WP1-B）         │
-                                        │   codex exec --json / resume …           │
-                                        │ Secret: CODEX_AUTH_JSON（写入 .codex/）  │
-                                        └──────────────────────────────────────────┘
+ you (client / CI)                     your Modal workspace
+ ┌─────────────────┐   HTTPS +        ┌──────────────────────────────────────┐
+ │ sbx_client.py   │   Bearer sbx_*   │ sbx-control (FastAPI, scales to 0)   │
+ │ curl / your app │ ───────────────▶ │  /v1 API · run ledger · scheduler    │
+ └─────────────────┘                  │  account pool · reaper (5 min cron)  │
+                                      │  state: modal.Dict sbx-sessions/-    │
+                                      │    runs/-accounts/-workflows         │
+                                      └───────────────┬──────────────────────┘
+                                                      │ Sandbox.create(
+                                                      │   image, idle_timeout,
+                                                      │   cpu/mem, secrets)
+                                                      ▼
+                                        ┌── 1 agent = 1 Modal Sandbox ──────┐
+                                        │ entrypoint → runner               │
+                                        │  init · turn · stop · export-     │
+                                        │  credentials                      │
+                                        │ official provider CLI             │
+                                        │  (codex / devin / agy / grok)     │
+                                        │ credential files only — no        │
+                                        │  Modal or platform keys inside    │
+                                        └───────────────────────────────────┘
 ```
 
-核心不变量：
+- **One agent = one sandbox.** Idle reclamation uses Modal's native
+  `idle_timeout`; a hard `timeout` (4 h default) is the backstop.
+- **The sandbox is the only security boundary.** Provider CLIs run with
+  approvals bypassed *inside* the sandbox; no Modal token or platform
+  credential exists inside it.
+- **Durable by design.** Run terminal states, workflow bindings and artifacts
+  persist in `modal.Dict` and survive sandbox teardown and control-plane
+  restarts.
 
-1. **一台会话 = 一台 Sandbox**；空闲回收用 `Sandbox.create(idle_timeout=…)` 原生能力（P0 实测 90 s 窗口约 96 s 后自行结束），`timeout` 作硬兜底。
-2. **Sandbox 是唯一安全边界**：容器内没有 Modal token，也没有 GitHub / 云厂商凭证。
-3. **镜像不含 Chrome**（P2 再加 `sbx-runtime-browser`）。硬件与生命周期参数不写进镜像，由控制面传入。
+Deep dive: [docs/architecture.md](docs/architecture.md). Frozen interface
+contracts (filesystem, events, runner CLI, `/v1` OpenAPI):
+[docs/contracts/](docs/contracts/README.md).
 
-## 镜像 `sbx-runtime`
+## Quick Start
 
-配方与 P0 实测同源（构建约 52 s，冷启动约 3.5 s）：`Image.debian_slim(python_version="3.12")` + apt（`curl git ca-certificates ripgrep jq procps build-essential python3-pip`）+ NodeSource Node 22 + `npm i -g @openai/codex@0.153.0`。
-
-包列表的唯一来源是 `runtime/packages.txt`。`runtime/image.py` 读取它构造 Modal Image；`Dockerfile.local` 由同一文件生成，供无云 `docker build` 验证。
+Prerequisites: Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), a Modal
+account, and at least one provider CLI logged in locally.
 
 ```bash
-make image        # python -m runtime.image → 构建并 publish 命名镜像 sbx-runtime（需要 Modal 凭证）
-make image-devin  # python -m runtime.image --devin → publish sbx-runtime-devin（SOR-74）
-make deploy       # 占位调用 control 的 deploy；WP1-C 未合入时打印提示
-make test         # pytest unit + integration；禁止连 Modal、禁止云凭证
-make lint
+git clone <this-repo> && cd sbx-browser
+uv sync                          # install control-plane + client deps
+modal token new                  # authenticate YOUR Modal workspace
 ```
 
-无云验证：`docker build -f Dockerfile.local` 后断言 `codex --version` 为 `codex-cli 0.153.0`、`node --version` 为 v22、entrypoint 收到 SIGTERM 后 5 s 内退出（见 `tests/integration/runtime/test_image_local.py`）。真实 `modal run` / `sb.exec("codex --version")` 由编排者在 WSL 执行。
-
-### Devin-only 快速通道（SOR-74）
-
-命名镜像 **`sbx-runtime-devin`**：`sbx-runtime` 之上叠加 pin 的 Devin CLI standalone bundle（`3000.10.21`，sha256 校验，见 `runtime/install-devin.sh` 与 `packages.txt` 的 `devin_*` 键），镜像 env 把 `HOME`/XDG 固定到 `$SBX_WORK/home`。`Dockerfile.devin.local` 是同一配方的本地生成物。
-
-- `provider=devin` 的 `SandboxSpec`（`tags["provider"]="devin"` + `secrets=["sbx-acct-<id>"]`）让 `ModalBackend` 选择该镜像与每账号凭证 Secret；Codex 默认路径不变。
-- `runner init --provider devin` 把 `SBX_ACCOUNT_CREDENTIAL` blob 还原到 `$SBX_WORK/home` 下（权限 600），如 `home/.local/share/devin/credentials.toml`；`provider` 不匹配则 init 失败。
-- 子进程环境剔除 `ACP_BACKEND` 与 `DEVIN_API_KEY` / `DEVIN_V3_API_KEY` / `DEVIN_LEGACY_API_KEY` / `DEVIN_ORG_ID`（`runtime/runner/credentials.py` + `entrypoint.sh`），auth 只来自凭证 blob，不依赖 Devin Desktop。
-
-## 为什么用 `--dangerously-bypass-approvals-and-sandbox`
-
-官方把该开关标注为「只在外部已经加固的环境使用」。本项目的安全边界是 **Modal Sandbox**，不是 Codex 自带的 Landlock / seccomp 沙箱：后者在 gVisor 下往往不可用。Sandbox 内只有会话工作目录和注入的 Codex 凭证，没有平台密钥；审批策略由 runner 写成 `approval_policy = "never"` + `sandbox_mode = "danger-full-access"`（见 `docs/contracts/filesystem.md`）。因此 CLI 使用该 flag（P0 已在 0.153.0 上验证 `codex exec` / `exec resume`）。
-
-配套约束（P0 实测，runner / 控制面必须遵守，镜像不处理）：
-
-- 调用 `codex exec` 必须关闭 stdin（`</dev/null` 或 `stdin=DEVNULL`），否则会等到 EOF 挂死。
-- 控制面 `sb.exec(..., bufsize=1)`，按行消费 JSONL。
-
-## Modal Secret 初始化
-
-在**本机可信环境**创建 Secret，不要把凭证写入仓库、fixture、日志、PR 或 Linear。
-
-### `CODEX_AUTH_JSON`（ChatGPT 订阅 `auth.json`）
-
-1. 在可信机器上执行 `codex login`（ChatGPT 账号），得到 `~/.codex/auth.json`。
-2. 把 JSON **作为 Secret 的值**交给 Modal（不要提交该文件）：
-
-   ```bash
-   modal secret create sbx-codex-auth \
-     CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
-   ```
-
-   控制面创建 Sandbox 时传入 `secrets=[…]`，runner 写入 `$CODEX_HOME/auth.json`（权限 600）。镜像与 entrypoint **不**内置任何 auth。
-3. 同一份 `auth.json` 可被少量 Sandbox 并发使用（P0：2 台同时 rc=0）；MVP 并发上限为 2。token 刷新后若文件被回写，按「有则回写」处理（WP1-B / WP1-C）。
-
-MVP 默认认证模式是 `auth_json`。第三方 Responses 网关（DisTokens 等）记为 P3，不在本镜像接入。
-
-### HTTP Basic Auth（控制面看板）
+The release ships a bootstrap CLI (`sbx`, SOR-98) that performs init →
+credential import → deploy → health check in one pass:
 
 ```bash
-modal secret create sbx-basic-auth \
-  SBX_BASIC_USER='<username>' \
-  SBX_BASIC_PASSWORD='<long-random-password>'
+sbx init                         # check env, write local config, pick Modal profile
+sbx accounts import --provider codex --from ~/.codex/auth.json
+sbx deploy                       # build images, init Dicts/Secrets, deploy control
+sbx doctor                       # verify auth, secrets, /v1 auth, providers
+sbx smoke                        # minimal real run through /v1
 ```
 
-所有 `/api/sessions*` 端点走 HTTP Basic（见 `docs/contracts/api.yaml`）。本地假服务口令只用于 mock，不是生产凭证。
+It prints your `SBX_BASE_URL` and a `sbx_<key>` API key (shown once).
 
-## 分层（P1 MVP）
+> `sbx` is the 0.1 bootstrap interface and lands with the release candidate.
+> If it is not present in your checkout, the equivalent manual steps —
+> `modal secret create …`, `make image && make deploy`, key bootstrap via the
+> `sbx-v1-bootstrap` Secret, and `python -m control.accounts --modal import` —
+> are documented in [docs/deployment.md](docs/deployment.md).
 
+Then run your first agent:
+
+```bash
+export SBX_BASE_URL=<printed by sbx deploy / doctor>
+export SBX_API_KEY=sbx_<key>
+python examples/sbx_client.py "Write hello.txt containing hi"
 ```
-web/      单页聊天看板（无构建步骤）
-control/  sbx-control：FastAPI on Modal，会话 API / modal.Dict 状态机 / SSE / reaper
-runtime/  Sandbox 内：镜像定义、entrypoint、runner（Codex 会话驱动）
-tests/    unit / integration / e2e / fakes / fixtures —— 全部不依赖云凭证
-spike/    P0 验证脚本（WSL 本机执行）
+
+## Provider Support Matrix
+
+| Provider | Status in 0.1 | CLI / version | Auth material | Multi-turn | Cancel | Multi-account | Real-E2E evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **codex** | **Stable** | `@openai/codex` 0.153.0 (pinned in image) | `~/.codex/auth.json` (ChatGPT login) | ✅ `exec resume` | ✅ | ✅ | Real-Modal suite `tests/e2e_modal/` + committed `timings.json`; P0 spike |
+| **devin** | Experimental | Devin CLI 3000.10.21 (sha256-pinned) | `~/.local/share/devin/credentials.toml` | ✅ via ACP | ✅ | ✅ | Modal clean-room credential + 8-way concurrency PASS, 2026-09-14 (`spike/p2/`); full `/v1` gate pending |
+| **antigravity** | Experimental | your `agy` binary | OAuth token file | ✅ `--conversation` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/agy_gate.py`; SOR-68 fleet matrix pending |
+| **grok** | Experimental | your `grok` binary (verified 1.0.24) | `~/.grok/auth.json` | ✅ `--resume` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/grok_gate.py`; SOR-68 fleet matrix pending |
+| **opencode** | Not supported at this tag | — | — | — | — | — | Provider id reserved; scheduling refuses (`provider_exhausted`). Production adapter in flight (SOR-96) |
+| **claude** | Not supported | — | — | — | — | — | No adapter in this release |
+
+**Evidence policy.** *Stable* requires a passing real-account E2E on the
+release tag, not fakes or replays. *Experimental* means the production adapter,
+image and credential path are merged and some real-account evidence exists,
+but the full release-gate matrix has not completed for that provider. The
+matrix is re-verified at each release; rows never claim support that was not
+exercised against a real account. Details:
+[docs/providers.md](docs/providers.md).
+
+## Deploying
+
+Everything deploys into your Modal workspace. The deployment creates:
+
+| Resource | Name | Purpose |
+| --- | --- | --- |
+| Modal App | `sbx-control` (`SBX_MODAL_APP_NAME` to rename) | `/v1` + `/api` ASGI app, reaper cron |
+| Named Images | `sbx-runtime` (+ `-devin` / `-antigravity` / `-grok`) | per-provider sandbox images |
+| Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows` | durable state |
+| Secrets | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<id>` | credentials — never committed |
+
+```bash
+sbx deploy         # idempotent: builds images, seeds Dicts/Secrets, deploys
+sbx upgrade        # re-deploy keeping durable runs/accounts/artifacts
+sbx uninstall      # stop app + sandboxes; keeps durable data unless --purge
 ```
+
+Manual equivalent (`modal secret create`, `make image*`, `make deploy`),
+custom app names, the optional Cloudflare Worker edge (`deploy/sbx-edge`),
+and uninstall verification are in
+[docs/deployment.md](docs/deployment.md).
+
+## Credentials
+
+Provider credentials are imported as file blobs — the same files the official
+CLIs write on `login`:
+
+| Provider | Login locally | File imported |
+| --- | --- | --- |
+| codex | `codex login` | `~/.codex/auth.json` |
+| devin | `devin` (interactive login) | `~/.local/share/devin/credentials.toml` |
+| antigravity | `agy` (OAuth login) | `~/.gemini/antigravity-cli/antigravity-oauth-token` |
+| grok | `grok` login | `~/.grok/auth.json` |
+
+```bash
+sbx accounts import --provider <p> --from <path-or-home>   # bootstrap CLI
+# or: python -m control.accounts --modal import --provider <p> --from <path>
+# or: POST /v1/accounts {provider, label, credential:{files:{...}}} (admin key)
+```
+
+Rules enforced everywhere: blobs travel only over HTTPS into your workspace;
+files are restored at `0600` inside the sandbox; the runner strips the blob
+env var from the CLI child process; `runner export-credentials` writes
+refreshed credentials back to the account Secret; **never paste a token into
+an issue, log, PR, or fixture** (`REDACTED` placeholders only). See
+[SECURITY.md](SECURITY.md) and [docs/providers.md](docs/providers.md).
+
+## API / SDK examples
+
+`examples/sbx_client.py` is a dependency-free (`httpx` only) reference client
+for the whole surface:
+
+```python
+from examples.sbx_client import SbxClient
+
+client = SbxClient()                                   # SBX_BASE_URL + SBX_API_KEY
+
+created = client.create("Add a /health endpoint", provider="codex")
+agent, run = created["agent"], created["run"]
+
+for ev in client.watch(agent["id"], run["id"]):        # SSE with Last-Event-ID resume
+    print(ev.type)
+
+final = client.wait(agent["id"], run["id"])            # persisted terminal status
+follow = client.followup(agent["id"], "Now add tests")
+client.cancel(agent["id"], follow["id"])
+
+results = client.wait_many([(agent["id"], run["id"]), (agent2, run2)])
+
+recovery = client.recover("wf-123")                    # re-attach after process restart
+patch = client.artifacts.download(agent_id, artifact_id, dest="patch.diff")
+client.close_workflow("wf-123")                        # scoped cleanup
+```
+
+The full OpenAPI contract is [docs/contracts/api-v1.yaml](docs/contracts/api-v1.yaml);
+the Cursor Cloud Agents field mapping is in [examples/README.md](examples/README.md).
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+| --- | --- |
+| `sbx deploy` can't reach Modal | Not authenticated: `modal token new`, or wrong `MODAL_PROFILE`. `sbx doctor` reports presence/status, never values. |
+| `401 unauthorized` on `/v1` | Missing/wrong `SBX_API_KEY`, or key revoked (`DELETE /v1/api-keys/{id}` earlier). Verify with `GET /v1/me`. |
+| Run `ERROR` with `error.code=auth_invalid` | Provider credential expired/invalid. Re-import (`sbx accounts import`) or probe it: `POST /v1/accounts/{id}/verify`. |
+| `429 provider_exhausted` / `concurrency_limit` | No free account slot or global cap. Honor `error.retry_after`, add accounts (`SBX_<PROVIDER>_ACCOUNTS`) or raise `max_concurrent`. |
+| Agent stuck `creating` then `lost` | Sandbox create failed (image missing, Secret missing). Re-run `make image*` / `sbx deploy`, then `sbx doctor`. |
+| Agent `timed_out` / `lost` | Idle timeout or reaper sweep — expected lifecycle. History stays read-only; create a new agent. |
+| Event stream stalls | `watch` reconnects with `Last-Event-ID` (bounded); after it ends, `wait`/`get_run` is the durable fallback — never retry forever. |
+| Leftover sandboxes | `DELETE /v1/agents/{id}` or `client.close_workflow(id)`; reaper cron sweeps stale records. Verify `modal sandbox list` is empty. |
+
+`sbx doctor` checks Modal auth, required Secrets, control URL, `/v1` auth,
+provider availability and cleanup capability — output is presence/hash-prefix
+only, never secret material.
+
+## Known limitations
+
+- **Alpha.** `/v1` responses may change before 1.0; contracts live in
+  `docs/contracts/` and are versioned with the release.
+- **Self-hosted only.** No hosted SaaS, no multi-tenant control plane, no
+  billing. `cost_estimate_usd` is a Modal list-price *estimate*, not real
+  billing.
+- **No browser layer.** The noVNC/browser-execution tier is out of scope
+  for 0.1.
+- **Provider coverage.** Only codex is Stable in this tag; devin /
+  antigravity / grok are Experimental; opencode and claude are **not**
+  supported (see the matrix — nothing is claimed without real-account
+  evidence).
+- **Single workspace.** One deployment = one Modal workspace; API keys are
+  deployment-scoped (`sbx_<key>`, stored as `sha256` only).
+- **Lifecycle caps.** 30 min idle reclaim (configurable), 4 h hard sandbox
+  cap, 15 min per-turn soft cap.
+- **Sandbox-local files are ephemeral.** `events.jsonl`, `inbox/`, `turns/`
+  live in the sandbox; durable outcomes are the run ledger and artifacts —
+  export artifacts before closing an agent if you need the patch.
+
+## Development
+
+```bash
+make lint      # ruff check + format
+make test      # unit + integration — no cloud credentials needed
+make test-e2e  # Playwright against the local mock
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the provider adapter
+contract, and the rules for real-credential tests.
+
+## License & security
+
+License selection is **pending Owner decision** — see [LICENSE](LICENSE)
+(it is an explicit placeholder, not a grant). Report vulnerabilities
+privately per [SECURITY.md](SECURITY.md); never file credentials, tokens, or
+credential blobs in issues or PRs.
