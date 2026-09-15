@@ -19,7 +19,8 @@ BYO Modal workspace + BYO official provider subscriptions behind one
   `EXPIRED`) persist across sandbox teardown and restarts; structured
   `RunError` (`code`/`source`/`retryable`/`retry_after`).
 - Multi-provider runner: `AgentAdapter` protocol + adapters for codex
-  (Stable), devin / antigravity / grok (Experimental). Provider matrix and
+  (Stable), devin / antigravity / grok (Experimental), opencode (Preview —
+  production path merged, real-account gate deferred). Provider matrix and
   evidence policy: `docs/providers.md`.
 - Multi-account scheduling: account registry, `account_id:"auto"` LRU pick,
   per-account slots, cooldown/failover on `auth_invalid`/`rate_limited`;
@@ -50,5 +51,7 @@ BYO Modal workspace + BYO official provider subscriptions behind one
 
 - Alpha: `/v1` may change before 1.0. No hosted SaaS, no browser/noVNC
   layer, no real billing (cost is a Modal list-price estimate).
-- OpenCode and Claude Code are not supported at this tag — see
-  `docs/providers.md` for the honest per-provider status.
+- OpenCode is Preview (merged, replay-only evidence — real-account gate
+  deferred); Claude Code is not supported (experimental adapter seam merged
+  but unregistered) — see `docs/providers.md` for the honest per-provider
+  status.
