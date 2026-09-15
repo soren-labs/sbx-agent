@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from control.accounts import InMemoryAccountStore, PersistentAccountRegistry
 from control.backend import LocalProcessBackend, SandboxSpec
+from control.ports import Account
 from control.reaper import reap
 from control.store import InMemoryStore, SessionRecord, empty_usage
 
@@ -213,3 +215,63 @@ def test_closed_records_are_not_reaped() -> None:
     assert rec is not None
     assert rec.status == "closed"
     assert actions == []
+
+
+class TestAccountSweep:
+    """SOR-63: expired account cooldowns recover proactively on the sweep."""
+
+    def _registry(self) -> PersistentAccountRegistry:
+        return PersistentAccountRegistry(InMemoryAccountStore())
+
+    def test_expired_cooldown_recovers_to_active(self) -> None:
+        backend = LocalProcessBackend()
+        store = InMemoryStore()
+        registry = self._registry()
+        registry.put(
+            Account(
+                id="agy-1",
+                provider="antigravity",
+                label="agy-1",
+                status="cooling",
+                cooldown_until="2026-09-13T11:30:00+00:00",
+                last_error="rate_limited",
+            )
+        )
+        actions = reap(store, backend, _now(), account_registry=registry)
+        acct = registry.get("agy-1")
+        assert acct is not None and acct.status == "active"
+        assert acct.cooldown_until is None
+        assert any(a.kind == "account_recovered" and a.account_id == "agy-1" for a in actions)
+
+    def test_unexpired_cooldown_left_alone(self) -> None:
+        backend = LocalProcessBackend()
+        store = InMemoryStore()
+        registry = self._registry()
+        registry.put(
+            Account(
+                id="grok-1",
+                provider="grok",
+                label="grok-1",
+                status="cooling",
+                cooldown_until="2026-09-13T13:00:00+00:00",
+            )
+        )
+        actions = reap(store, backend, _now(), account_registry=registry)
+        acct = registry.get("grok-1")
+        assert acct is not None and acct.status == "cooling"
+        assert not any(a.kind == "account_recovered" for a in actions)
+
+    def test_non_cooling_statuses_untouched(self) -> None:
+        backend = LocalProcessBackend()
+        store = InMemoryStore()
+        registry = self._registry()
+        for account_id, status in (("a1", "active"), ("a2", "invalid"), ("a3", "disabled")):
+            registry.put(Account(id=account_id, provider="grok", label=account_id, status=status))
+        actions = reap(store, backend, _now(), account_registry=registry)
+        assert not any(a.kind == "account_recovered" for a in actions)
+        assert registry.get("a2").status == "invalid"  # type: ignore[union-attr]
+
+    def test_no_registry_keeps_prior_behavior(self) -> None:
+        backend = LocalProcessBackend()
+        store = InMemoryStore()
+        assert reap(store, backend, _now()) == []

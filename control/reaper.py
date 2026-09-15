@@ -6,8 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+from control.accounts import cooldown_expired
 from control.backend import SandboxBackend, SandboxHandle
 from control.config import CREATE_GRACE_S, IDLE_TIMEOUT_S, TERMINAL_STATUSES
+from control.ports import AccountRegistry
 from control.store import SessionRecord, SessionStore
 
 
@@ -16,6 +18,7 @@ class ReapAction:
     kind: str
     session_id: str | None
     sandbox_id: str | None
+    account_id: str | None = None
 
 
 def reap(
@@ -25,6 +28,7 @@ def reap(
     *,
     idle_timeout_s: int = IDLE_TIMEOUT_S,
     create_grace_s: int = CREATE_GRACE_S,
+    account_registry: AccountRegistry | None = None,
     on_action: Callable[[ReapAction], None] | None = None,
 ) -> list[ReapAction]:
     """Reconcile Dict records with live sandboxes.
@@ -43,17 +47,36 @@ def reap(
     * sandbox exists with no Dict record → terminate (``orphan_terminate``)
     * sandbox tagged with a session whose record is still in-flight
       (``creating`` + unbound) → leave alone; the binding lands shortly
+    * ``account_registry`` sweep (SOR-63): a ``cooling`` account whose
+      ``cooldown_until`` passed → ``active`` (``account_recovered``). Slot
+      accounting stays lazy — the scheduler recovers on pick; this sweep
+      makes recovery visible without waiting for traffic.
 
     ``on_action`` (optional) is invoked once per emitted action — the
     production cron wires it to ``/v1`` lease release (SOR-80).
     """
     actions: list[ReapAction] = []
 
-    def emit(kind: str, session_id: str | None, sandbox_id: str | None) -> None:
-        action = ReapAction(kind, session_id, sandbox_id)
+    def emit(
+        kind: str,
+        session_id: str | None,
+        sandbox_id: str | None,
+        account_id: str | None = None,
+    ) -> None:
+        action = ReapAction(kind, session_id, sandbox_id, account_id)
         actions.append(action)
         if on_action is not None:
             on_action(action)
+
+    if account_registry is not None:
+        for acct in account_registry.list():
+            if not cooldown_expired(acct, now):
+                continue
+            try:
+                account_registry.mark_status(acct.id, "active")
+            except KeyError:
+                continue
+            emit("account_recovered", None, None, account_id=acct.id)
 
     for rec in store.list_all():
         if rec.status in TERMINAL_STATUSES:

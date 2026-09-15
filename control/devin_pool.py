@@ -33,8 +33,14 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from control.accounts import iso_utc as _iso
+from control.accounts import parse_iso as _parse_iso
 from control.config import env_float, env_int
 from control.ports import Account, AccountRegistry, ScheduleDecision
+
+# Shared refusal shape + failure→status taxonomy (SOR-63/D1). Re-exported so
+# existing ``from control.devin_pool import ScheduleRefused`` keep working.
+from control.scheduler import ScheduleRefused, failure_status
 
 DEVIN_PROVIDER = "devin"
 
@@ -46,51 +52,9 @@ DEFAULT_RETRY_HINT_S = 60.0
 
 Clock = Callable[[], datetime]
 
-# HTTP status per canonical subcode (api.yaml ErrorBody / api-v1.yaml).
-_ERROR_HTTP_CODE = {
-    "invalid_provider": 400,
-    "account_unavailable": 409,
-    "account_busy": 409,
-    "provider_exhausted": 429,
-    "concurrency_limit": 429,
-}
-
-# Failure kind → AccountStatus (design v2 §3.3 health feedback). ``kind``
-# takes the AgentAdapter ``Health`` values plus ``provider_error``.
-_FAILURE_STATUS = {
-    "rate_limited": "cooling",
-    "provider_error": "cooling",
-    "unknown": "cooling",
-    "auth_invalid": "invalid",
-}
-
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-def _iso(ts: datetime) -> str:
-    return ts.isoformat()
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
-
-
-class ScheduleRefused(Exception):
-    """``acquire`` refusal carrying a frozen canonical error subcode."""
-
-    def __init__(self, error: str, *, retry_after: float | None = None) -> None:
-        super().__init__(error)
-        self.error = error
-        self.code = _ERROR_HTTP_CODE.get(error, 429)
-        self.retry_after = retry_after
 
 
 class SlotLease:
@@ -266,7 +230,7 @@ class DevinAccountPool:
             acct = self._resolve_locked()
             if acct is None:
                 raise KeyError("no devin account configured")
-            new_status = status or _FAILURE_STATUS.get(kind, "cooling")
+            new_status = status or failure_status(kind) or "cooling"
             cooldown_until = None
             if new_status == "cooling":
                 delay = retry_after if retry_after is not None else self._cooldown_s

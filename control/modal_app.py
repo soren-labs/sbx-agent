@@ -58,6 +58,9 @@ def reap_cron() -> None:
         plane.backend,
         datetime.now(UTC),
         idle_timeout_s=plane.idle_timeout_s,
+        # SOR-63: expired cooldowns return accounts to rotation; absent on
+        # app.state until the registry is wired (P2-D bootstrap).
+        account_registry=getattr(web.state, "account_registry", None),
         # SOR-80: timed_out / lost sessions must drop any held /v1 lease.
         on_action=lambda action: release_lease_for_action(v1_state, action),
     )
