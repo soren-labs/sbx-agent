@@ -61,11 +61,32 @@ P2 把单 Codex 会话扩展为 Cursor Cloud Agent 式的多 provider 平台：
 
 包列表的唯一来源是 `runtime/packages.txt`。`runtime/image.py` 读取它构造 Modal Image；`Dockerfile.local` 由同一文件生成，供无云 `docker build` 验证。
 
+### Provider 镜像族（Release 0.1 / SOR-61）
+
+不做单一大镜像：每个 provider 一个命名镜像，均为 `sbx-runtime` + 该 provider CLI，`image_for(provider)`（`runtime/image.py`）是显式映射。每个镜像构建期都会执行 provider `--version` 并与 packages.txt 的 pin 比对——装错/装不上直接构建失败，不占冷启动。
+
+| provider | 命名镜像 | CLI 来源 | pin |
+| --- | --- | --- | --- |
+| `codex` | `sbx-runtime` | npm `@openai/codex` | `0.153.0` |
+| `devin` | `sbx-runtime-devin` | static.devin.ai bundle（sha256 校验） | `3000.10.21` |
+| `antigravity` | `sbx-runtime-antigravity` | 构建机 host binary（`SBX_AGY_BIN`，不入库） | `agy_version`（`--version` 校验） |
+| `grok` | `sbx-runtime-grok` | 构建机 host binary（`SBX_GROK_BIN`，不入库） | `grok_version`（`--version` 校验） |
+| `opencode` | `sbx-runtime-opencode` | npm `opencode-ai` | `opencode_version` |
+
+- 所有镜像统一 `HOME=$SBX_WORK/home`（`filesystem.md` 凭证 blob 还原根）；devin 另固定 XDG。镜像与 entrypoint **不**内置任何账号 / auth / token。
+- agy / grok 是构建机产物（专有 CLI 无可复现下载）；镜像构建先在本机断言 `--version` 命中 pin，镜像内再跑一次 `<cli> --version | grep -E <边界 pin>`（整版本号匹配，`1.2.20` 不会误过 `1.2.2`）。
+- 本地生成物：`Dockerfile.local`（codex）、`Dockerfile.devin.local`、`Dockerfile.opencode.local`，均由 `python -m runtime.image --write-dockerfile` 从 packages.txt 再生成。
+- **`python -m runtime.image --manifest`（`make image-manifest`）** 输出 JSON 清单：provider → 镜像名 / CLI 路径 / 安装来源 / pin / `version_check` / credential relpaths / HOME-work 布局。这是 doctor（SOR-98）与 release evidence 的机器可读输入，不需 Modal 凭证。
+
 ```bash
-make image        # python -m runtime.image → 构建并 publish 命名镜像 sbx-runtime（需要 Modal 凭证）
-make image-devin  # python -m runtime.image --devin → publish sbx-runtime-devin（SOR-74）
-make deploy       # 占位调用 control 的 deploy；WP1-C 未合入时打印提示
-make test         # pytest unit + integration；禁止连 Modal、禁止云凭证
+make image             # python -m runtime.image → 构建并 publish 命名镜像 sbx-runtime（需要 Modal 凭证）
+make image-devin       # python -m runtime.image --devin → publish sbx-runtime-devin（SOR-74）
+make image-antigravity # publish sbx-runtime-antigravity（需构建机上的 agy CLI）
+make image-grok        # publish sbx-runtime-grok（需构建机上的 grok CLI）
+make image-opencode    # publish sbx-runtime-opencode（npm pin，无 host 依赖）
+make image-manifest    # 打印 provider 镜像清单 JSON（doctor / evidence）
+make deploy            # 占位调用 control 的 deploy；WP1-C 未合入时打印提示
+make test              # pytest unit + integration；禁止连 Modal、禁止云凭证
 make lint
 ```
 

@@ -28,6 +28,7 @@ from runtime.image import (
     REQUIRED_APT,
     RUNTIME_DIR,
     RUNTIME_REMOTE,
+    cli_version_check,
     invoke_control_deploy,
     load_packages,
     render_dockerfile_local,
@@ -78,6 +79,18 @@ def test_packages_txt_pins_p0_recipe() -> None:
         assert not any(lower == p or lower.startswith(f"{p}-") for p in FORBIDDEN_APT_PREFIXES)
 
 
+def test_packages_txt_pins_provider_cli_versions() -> None:
+    """Release 0.1: every provider CLI version is pinned in packages.txt."""
+    spec = load_packages(PACKAGES_TXT)
+    assert spec.opencode_npm == "opencode-ai"
+    assert spec.opencode_npm_spec == f"opencode-ai@{spec.opencode_version}"
+    assert spec.codex_version_expect == f"codex-cli {spec.codex_version}"
+    # SOR-60 spike-validated host-binary pins.
+    assert spec.agy_version == "1.2.2"
+    assert spec.grok_version == "1.0.24"
+    assert spec.devin_version == "3000.10.21"
+
+
 def test_dockerfile_local_is_generated_from_packages_txt() -> None:
     rendered = render_dockerfile_local()
     on_disk = DOCKERFILE_LOCAL.read_text(encoding="utf-8")
@@ -91,6 +104,8 @@ def test_dockerfile_local_is_generated_from_packages_txt() -> None:
     assert spec.nodesource_setup_url in on_disk
     for pkg in spec.apt:
         assert pkg in on_disk
+    assert "HOME=/work/home" in on_disk
+    assert cli_version_check("codex", spec.codex_version_expect) in on_disk
     instructions = [
         line for line in on_disk.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
@@ -164,6 +179,21 @@ def test_makefile_test_does_not_build_modal_image() -> None:
     assert "write_local_secrets" in secrets_joined
     assert "echo" not in secrets_joined
     assert "cat " not in secrets_joined
+
+
+def test_entrypoint_exports_contract_home(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    env = os.environ.copy()
+    env["SBX_WORK"] = str(work)
+    proc = subprocess.run(
+        ["bash", str(ENTRYPOINT_SH), "printenv", "HOME"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    assert proc.stdout.strip() == f"{work}/home"
 
 
 def test_entrypoint_creates_layout_and_exits_on_sigterm(tmp_path: Path) -> None:

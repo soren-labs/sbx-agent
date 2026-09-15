@@ -23,6 +23,7 @@ from runtime.image import (
     INSTALL_DEVIN_REMOTE,
     PACKAGES_TXT,
     RUNTIME_DIR,
+    cli_version_check,
     devin_install_command,
     devin_runtime_env,
     load_packages,
@@ -86,6 +87,7 @@ def test_dockerfile_devin_local_is_generated() -> None:
     assert "install-devin.sh" in on_disk
     spec = load_packages()
     assert spec.devin_sha256_x86_64 in on_disk
+    assert cli_version_check("devin", spec.devin_version) in on_disk
     instructions = [
         line for line in on_disk.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
@@ -100,8 +102,12 @@ def test_dockerfile_devin_local_is_generated() -> None:
 def test_dockerfile_local_unchanged_by_devin_variant() -> None:
     base = render_dockerfile_local()
     assert "install-devin" not in base
-    assert "HOME=/work/home" not in base
     assert "SBX_DEVIN" not in base
+    assert "XDG_DATA_HOME" not in base
+    # Release 0.1: HOME=$SBX_WORK/home is pinned in the base env for every
+    # provider (filesystem.md), not only in the devin variant.
+    assert "HOME=/work/home" in base
+    assert "/work/home" in base  # mkdir'd at build, not only by the entrypoint
 
 
 def test_image_py_exposes_devin_image_builder() -> None:

@@ -20,6 +20,7 @@ RUN apt-get update \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && npm i -g @openai/codex@0.153.0 \
+ && codex --version 2>&1 | grep -E '(^|[^0-9.])codex\-cli\ 0\.153\.0([^0-9.]|$)' \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
@@ -30,6 +31,7 @@ RUN chmod +x /opt/sbx/entrypoint.sh \
  && mkdir -p /work/inbox /work/turns /work/.codex /work/home
 
 RUN SBX_DEVIN_VERSION=3000.10.21 SBX_DEVIN_BASE_URL=https://static.devin.ai/cli SBX_DEVIN_SHA256_X86_64=7cac6f5739ba3a3e5542f3b7fa07ed902d6dfb96ca22e4c63ae84c03bb7db47c SBX_DEVIN_SHA256_AARCH64=a63124ed2f8406a5d44a162fa2eb05b9c0f218a6b131e2ca1335d4a335c70a6c bash /opt/sbx/runtime/install-devin.sh
+RUN devin --version 2>&1 | grep -E '(^|[^0-9.])3000\.10\.21([^0-9.]|$)'
 
 WORKDIR /work
 ENTRYPOINT ["/opt/sbx/entrypoint.sh"]

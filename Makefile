@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e image image-devin image-antigravity image-grok deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -32,6 +32,16 @@ image-antigravity:
 
 image-grok:
 	uv run python -m runtime.image --provider grok
+
+# Release 0.1 OpenCode seam: sbx-runtime + pinned opencode-ai npm package
+# (packages.txt opencode_*). Reproducible — no host artifact needed.
+image-opencode:
+	uv run python -m runtime.image --provider opencode
+
+# Doctor / release-evidence input: provider → image/CLI/pin manifest as JSON.
+# No Modal credentials required.
+image-manifest:
+	uv run python -m runtime.image --manifest
 
 # WP1-C owns the real control-plane deploy. Sandbox params stay out of the image.
 deploy:
