@@ -120,11 +120,21 @@ def test_sandbox_env_fake_scenarios_scoped_per_provider(monkeypatch) -> None:
     assert "FAKE_GROK_SCENARIO" not in codex_env
 
 
+def test_sandbox_env_opencode_bin_scoped(monkeypatch) -> None:
+    """``OPENCODE_BIN`` (local fast-path binary override) forwards only to
+    opencode sandboxes."""
+    monkeypatch.setenv("OPENCODE_BIN", "/opt/fakes/fake_opencode.py")
+    env = sandbox_env(_handle("opencode", "opencode-1"))
+    assert env["OPENCODE_BIN"] == "/opt/fakes/fake_opencode.py"
+    for provider in ("codex", "grok", "devin"):
+        assert "OPENCODE_BIN" not in sandbox_env(_handle(provider))
+
+
 # ------------------------------------------------------- modal secret rule
 
 
 def test_named_secret_authoritative_over_ambient_blob(monkeypatch) -> None:
-    for provider in ("devin", "antigravity", "grok"):
+    for provider in ("devin", "antigravity", "grok", "opencode"):
         monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", _blob(provider))
         spec = SandboxSpec(tags={"provider": provider}, secrets=["sbx-acct-1"])
         assert _sandbox_secrets(_FakeModal, spec) == [("secret", "sbx-acct-1")]

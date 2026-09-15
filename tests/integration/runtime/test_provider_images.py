@@ -24,9 +24,12 @@ from runtime.image import (
     GROK_IMAGE_NAME,
     IMAGE_BUILDERS,
     IMAGE_NAME,
+    OPENCODE_IMAGE_NAME,
     _cli_image,
     _host_cli_bin,
     agent_home_env,
+    devin_runtime_env,
+    opencode_install_command,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -56,13 +59,15 @@ class _RecordingImage:
 def test_image_names_are_provider_scoped() -> None:
     assert AGY_IMAGE_NAME == "sbx-runtime-antigravity"
     assert GROK_IMAGE_NAME == "sbx-runtime-grok"
+    assert OPENCODE_IMAGE_NAME == "sbx-runtime-opencode"
     assert IMAGE_NAME == "sbx-runtime"
 
 
 def test_image_builders_cover_all_fast_path_providers() -> None:
-    assert sorted(IMAGE_BUILDERS) == ["antigravity", "codex", "devin", "grok"]
+    assert sorted(IMAGE_BUILDERS) == ["antigravity", "codex", "devin", "grok", "opencode"]
     assert IMAGE_BUILDERS["antigravity"][1] == AGY_IMAGE_NAME
     assert IMAGE_BUILDERS["grok"][1] == GROK_IMAGE_NAME
+    assert IMAGE_BUILDERS["opencode"][1] == OPENCODE_IMAGE_NAME
     for builder, _name in IMAGE_BUILDERS.values():
         assert callable(builder)
 
@@ -70,9 +75,11 @@ def test_image_builders_cover_all_fast_path_providers() -> None:
 def test_control_config_image_names_in_sync() -> None:
     from control.config import ANTIGRAVITY_IMAGE_NAME
     from control.config import GROK_IMAGE_NAME as CFG_GROK
+    from control.config import OPENCODE_IMAGE_NAME as CFG_OPENCODE
 
     assert ANTIGRAVITY_IMAGE_NAME == AGY_IMAGE_NAME
     assert CFG_GROK == GROK_IMAGE_NAME
+    assert CFG_OPENCODE == OPENCODE_IMAGE_NAME
 
 
 def test_agent_home_env_roots_home_under_work() -> None:
@@ -110,9 +117,46 @@ def test_cli_image_layers_binary_chmod_and_env(tmp_path: Path) -> None:
     ]
 
 
+def test_opencode_install_command_pins_npm_version() -> None:
+    """SOR-96: the opencode image layers ``npm i -g opencode-ai@<pin>`` — a
+    public registry artifact, so no host binary is needed."""
+    from runtime.image import load_packages
+
+    spec = load_packages()
+    assert spec.opencode_npm == "opencode-ai"
+    assert spec.opencode_version
+    cmd = opencode_install_command()
+    assert f"npm i -g opencode-ai@{spec.opencode_version}" in cmd
+    assert "opencode --version" in cmd
+
+
+def test_opencode_image_layers_npm_and_xdg_env() -> None:
+    """``sbx_opencode_image`` = base + npm pin + HOME/XDG pinning (auth.json
+    is an XDG data file); no add_local_file and no secrets."""
+    import runtime.image as runtime_image
+
+    base = _RecordingImage()
+    original = runtime_image.sbx_runtime_image
+    runtime_image.sbx_runtime_image = lambda: base
+    try:
+        out = runtime_image.sbx_opencode_image()
+    finally:
+        runtime_image.sbx_runtime_image = original
+    assert out is base
+    kinds = [call[0] for call in base.calls]
+    assert "add_local_file" not in kinds
+    assert kinds == ["run_commands", "env"]
+    run_cmds = base.calls[0][1]
+    assert any("npm i -g opencode-ai@" in cmd for cmd in run_cmds)
+    env = base.calls[1][1]
+    assert env == devin_runtime_env()
+    assert env["XDG_DATA_HOME"].endswith("/.local/share")
+
+
 def test_image_py_defines_provider_builders() -> None:
     assert "def sbx_antigravity_image" in IMAGE_PY
     assert "def sbx_grok_image" in IMAGE_PY
+    assert "def sbx_opencode_image" in IMAGE_PY
     assert "sbx_runtime_image()" in IMAGE_PY  # layers on the codex base
     assert AGY_BIN_REMOTE in IMAGE_PY
     assert GROK_BIN_REMOTE in IMAGE_PY
@@ -135,8 +179,10 @@ def test_cli_supports_provider_flag_and_devin_alias() -> None:
 def test_makefile_exposes_provider_image_targets() -> None:
     assert "image-antigravity:" in MAKEFILE
     assert "image-grok:" in MAKEFILE
+    assert "image-opencode:" in MAKEFILE
     assert "--provider antigravity" in MAKEFILE
     assert "--provider grok" in MAKEFILE
+    assert "--provider opencode" in MAKEFILE
     # Codex / devin targets unchanged.
     assert "python -m runtime.image\n" in MAKEFILE or "\truntime.image\n" in MAKEFILE
     assert "--devin" in MAKEFILE
@@ -158,3 +204,4 @@ def test_make_test_does_not_build_provider_images() -> None:
     assert "runtime.image" not in joined
     assert "image-antigravity" not in joined
     assert "image-grok" not in joined
+    assert "image-opencode" not in joined

@@ -15,6 +15,12 @@ devin_base_url=https://static.devin.ai/cli
 devin_sha256_x86_64=7cac6f5739ba3a3e5542f3b7fa07ed902d6dfb96ca22e4c63ae84c03bb7db47c
 devin_sha256_aarch64=a63124ed2f8406a5d44a162fa2eb05b9c0f218a6b131e2ca1335d4a335c70a6c
 
+# OpenCode fast path (SOR-96): npm package opencode-ai (bun-compiled binary),
+# installed onto sbx-runtime like the codex CLI pin. Pinned to a release at
+# least 7 days old; bump only after a real gate re-verify.
+opencode_npm=opencode-ai
+opencode_version=1.18.29
+
 [apt]
 curl
 git

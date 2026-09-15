@@ -79,6 +79,15 @@ make lint
 - `runner init --provider devin` 把 `SBX_ACCOUNT_CREDENTIAL` blob 还原到 `$SBX_WORK/home` 下（权限 600），如 `home/.local/share/devin/credentials.toml`；`provider` 不匹配则 init 失败。
 - 子进程环境剔除 `ACP_BACKEND` 与 `DEVIN_API_KEY` / `DEVIN_V3_API_KEY` / `DEVIN_LEGACY_API_KEY` / `DEVIN_ORG_ID`（`runtime/runner/credentials.py` + `entrypoint.sh`），auth 只来自凭证 blob，不依赖 Devin Desktop。
 
+### OpenCode 快速通道（SOR-96）
+
+命名镜像 **`sbx-runtime-opencode`**：`sbx-runtime` 之上叠加 pin 的 `opencode-ai` npm 包（`packages.txt` 的 `opencode_npm`/`opencode_version`；公开 registry 产物，无需宿主二进制），`make image-opencode` 发布。镜像 env 与 devin 相同（`HOME`+XDG 固定到 `$SBX_WORK/home`），因为凭证 `~/.local/share/opencode/auth.json` 是 XDG 数据文件。
+
+- `runner init --provider opencode` 还原 `SBX_ACCOUNT_CREDENTIAL` blob 到 `$SBX_WORK/home/.local/share/opencode/auth.json`（权限 600）；`prepare_home` 只建目录并收紧权限，不改写内容。
+- 每 turn 执行 `opencode run <PROMPT> --format json -m <provider/model> --dir $SBX_WORK --auto`；续跑加 `--session <sessionID>`。
+- 子进程环境剔除 `OPENCODE_CONFIG` / `OPENCODE_CONFIG_CONTENT` / `OPENCODE_SERVER_*`（`OPENCODE_ENV_EXCLUDE`），auth 只来自还原的 `auth.json`。
+- 真实凭证/Modal gate 状态见 `docs/reviews/SOR-96.md`（CREDENTIAL_DEFERRED）。
+
 ## 为什么用 `--dangerously-bypass-approvals-and-sandbox`
 
 官方把该开关标注为「只在外部已经加固的环境使用」。本项目的安全边界是 **Modal Sandbox**，不是 Codex 自带的 Landlock / seccomp 沙箱：后者在 gVisor 下往往不可用。Sandbox 内只有会话工作目录和注入的 Codex 凭证，没有平台密钥；审批策略由 runner 写成 `approval_policy = "never"` + `sandbox_mode = "danger-full-access"`（见 `docs/contracts/filesystem.md`）。因此 CLI 使用该 flag（P0 已在 0.153.0 上验证 `codex exec` / `exec resume`）。

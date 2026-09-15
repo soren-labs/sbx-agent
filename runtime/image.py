@@ -36,6 +36,9 @@ DEVIN_IMAGE_NAME = "sbx-runtime-devin"
 # CLI binary from the build host (see sbx_antigravity_image / sbx_grok_image).
 AGY_IMAGE_NAME = "sbx-runtime-antigravity"
 GROK_IMAGE_NAME = "sbx-runtime-grok"
+# SOR-96: named image = sbx-runtime + the pinned ``opencode-ai`` npm package
+# (public registry artifact, no host binary needed — unlike agy/grok).
+OPENCODE_IMAGE_NAME = "sbx-runtime-opencode"
 AGY_BIN_ENV = "SBX_AGY_BIN"
 GROK_BIN_ENV = "SBX_GROK_BIN"
 AGY_BIN_REMOTE = "/usr/local/bin/agy"
@@ -72,6 +75,8 @@ class PackageSpec:
     devin_base_url: str
     devin_sha256_x86_64: str
     devin_sha256_aarch64: str
+    opencode_npm: str
+    opencode_version: str
     apt: tuple[str, ...]
 
     @property
@@ -81,6 +86,10 @@ class PackageSpec:
     @property
     def codex_npm_spec(self) -> str:
         return f"{self.codex_npm}@{self.codex_version}"
+
+    @property
+    def opencode_npm_spec(self) -> str:
+        return f"{self.opencode_npm}@{self.opencode_version}"
 
 
 def load_packages(path: Path | None = None) -> PackageSpec:
@@ -116,6 +125,8 @@ def load_packages(path: Path | None = None) -> PackageSpec:
             "devin_base_url",
             "devin_sha256_x86_64",
             "devin_sha256_aarch64",
+            "opencode_npm",
+            "opencode_version",
         )
         if not keys.get(k)
     ]
@@ -139,6 +150,8 @@ def load_packages(path: Path | None = None) -> PackageSpec:
         devin_base_url=keys["devin_base_url"],
         devin_sha256_x86_64=keys["devin_sha256_x86_64"],
         devin_sha256_aarch64=keys["devin_sha256_aarch64"],
+        opencode_npm=keys["opencode_npm"],
+        opencode_version=keys["opencode_version"],
         apt=apt_tuple,
     )
 
@@ -270,6 +283,24 @@ def sbx_devin_image():
     Desktop, no ACP bridge, no ``DEVIN_*`` key env is baked in.
     """
     return sbx_runtime_image().run_commands(devin_install_command()).env(devin_runtime_env())
+
+
+def opencode_install_command(spec: PackageSpec | None = None) -> str:
+    """Shell command that installs the pinned OpenCode CLI inside an image."""
+    spec = spec or load_packages()
+    return f"npm i -g {spec.opencode_npm_spec} && opencode --version"
+
+
+def sbx_opencode_image():
+    """Named Modal Image ``sbx-runtime-opencode`` (SOR-96 fast path).
+
+    ``sbx-runtime`` plus ``npm i -g opencode-ai@<pin>`` — the CLI is a
+    public npm artifact (bun-compiled), so no host binary is needed. HOME
+    and XDG are rooted at ``$SBX_WORK/home`` so the restored
+    ``.local/share/opencode/auth.json`` is the only auth source. No
+    credential material is baked into the image.
+    """
+    return sbx_runtime_image().run_commands(opencode_install_command()).env(devin_runtime_env())
 
 
 def agent_home_env(work: str = "/work") -> dict[str, str]:
@@ -407,6 +438,7 @@ IMAGE_BUILDERS: dict[str, tuple[Any, str]] = {
     "devin": (sbx_devin_image, DEVIN_IMAGE_NAME),
     "antigravity": (sbx_antigravity_image, AGY_IMAGE_NAME),
     "grok": (sbx_grok_image, GROK_IMAGE_NAME),
+    "opencode": (sbx_opencode_image, OPENCODE_IMAGE_NAME),
 }
 
 

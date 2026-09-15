@@ -1,0 +1,2 @@
+{"type": "step_start", "timestamp": 1789200002000, "sessionID": "ses_01a0a2d787bc7192b642ad17", "part": {"id": "prt_step1", "sessionID": "ses_01a0a2d787bc7192b642ad17", "messageID": "msg_1", "type": "step-start", "snapshot": "snap0"}}
+{"type": "error", "timestamp": 1789200002100, "sessionID": "ses_01a0a2d787bc7192b642ad17", "error": {"name": "UnknownError", "data": {"message": "Provider returned error"}}}

@@ -18,7 +18,7 @@ from control.store import InMemoryStore, SessionRecord, empty_usage
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-P2_CORE_PROVIDERS = ("codex", "devin", "antigravity", "grok")
+P2_CORE_PROVIDERS = ("codex", "devin", "antigravity", "grok", "opencode")
 
 
 def test_bootstrap_is_disabled_without_secret_env(monkeypatch) -> None:
@@ -61,7 +61,7 @@ def test_bootstrap_allows_explicit_ephemeral_secret(monkeypatch) -> None:
     assert account.secret_name == ""
 
 
-def test_bootstrap_seeds_all_four_providers(monkeypatch) -> None:
+def test_bootstrap_seeds_all_providers(monkeypatch) -> None:
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "c" * 40)
     app = FastAPI()
     assert configure_v1_bootstrap(app) is True
@@ -74,6 +74,12 @@ def test_bootstrap_seeds_all_four_providers(monkeypatch) -> None:
     assert by_provider["devin"].secret_name == "sbx-acct-devin-1"
     assert by_provider["antigravity"].secret_name == "sbx-acct-antigravity-1"
     assert by_provider["grok"].secret_name == "sbx-acct-grok-1"
+    assert by_provider["opencode"].secret_name == "sbx-acct-opencode-1"
+    # SOR-96: opencode advertises provider/model-qualified defaults.
+    assert by_provider["opencode"].models == (
+        "anthropic/claude-sonnet-4.5",
+        "openai/gpt-5.3-codex",
+    )
     assert all(a.status == "active" for a in by_provider.values())
     scheduler = app.state.scheduler
     assert isinstance(scheduler, AccountScheduler)
@@ -122,17 +128,23 @@ def test_scheduler_unseeded_and_unknown_providers(monkeypatch) -> None:
     configure_v1_bootstrap(app)
     scheduler = app.state.scheduler
 
-    # opencode is contract-valid but deferred: exhausted, not invalid.
-    exhausted = scheduler.decide(provider="opencode", account="auto")
-    assert exhausted.error == "provider_exhausted"
-    assert exhausted.retry_after is not None and exhausted.retry_after > 0
-    with pytest.raises(ScheduleRefused) as excinfo:
-        scheduler.acquire(provider="opencode")
-    assert excinfo.value.error == "provider_exhausted"
+    # SOR-96: opencode seeds like the other core providers — auto resolves
+    # and named selection pins the seeded account.
+    auto = scheduler.decide(provider="opencode", account="auto")
+    assert auto.error is None
+    assert auto.account is not None and auto.account.id == "opencode-1"
     named = scheduler.decide(provider="opencode", account="opencode-1")
-    assert named.error == "account_unavailable"
+    assert named.error is None
+    assert named.account is not None and named.account.id == "opencode-1"
+    lease = scheduler.acquire(provider="opencode")
+    assert lease.account.id == "opencode-1"
+    lease.release()
+
+    # A named account that was never seeded stays unavailable.
+    missing = scheduler.decide(provider="opencode", account="opencode-zzz")
+    assert missing.error == "account_unavailable"
     with pytest.raises(ScheduleRefused) as excinfo:
-        scheduler.acquire(provider="opencode", account="opencode-1")
+        scheduler.acquire(provider="opencode", account="opencode-zzz")
     assert excinfo.value.error == "account_unavailable"
 
     assert scheduler.decide(provider="bogus", account="auto").error == "invalid_provider"
@@ -161,7 +173,7 @@ def test_provider_env_overrides(monkeypatch) -> None:
     assert codex.secret_name == "sbx-acct-codex-9"
 
 
-def test_v1_agents_schedule_all_four_providers(monkeypatch, stub_runner) -> None:
+def test_v1_agents_schedule_all_providers(monkeypatch, stub_runner) -> None:
     """End-to-end through the product API: each provider creates an agent,
     holds its slot lease, and releases on delete."""
     token = "sbx_" + "1" * 40
@@ -211,11 +223,11 @@ def test_v1_agents_schedule_all_four_providers(monkeypatch, stub_runner) -> None
 
             refused = client.post(
                 "/v1/agents",
-                json={"prompt": {"text": "hi"}, "agent": {"provider": "opencode"}},
+                json={"prompt": {"text": "hi"}, "agent": {"provider": "bogus"}},
                 headers=auth,
             )
-            assert refused.status_code == 429
-            assert refused.json()["error"]["code"] == "provider_exhausted"
+            assert refused.status_code == 400
+            assert refused.json()["error"]["code"] == "invalid_provider"
     finally:
         for handle in list(backend.list()):
             backend.terminate(handle)

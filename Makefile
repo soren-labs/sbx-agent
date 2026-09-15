@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e image image-devin image-antigravity image-grok deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e image image-devin image-antigravity image-grok image-opencode deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -32,6 +32,12 @@ image-antigravity:
 
 image-grok:
 	uv run python -m runtime.image --provider grok
+
+# SOR-96 OpenCode fast path: named Image sbx-runtime-opencode (sbx-runtime +
+# pinned npm opencode-ai). No host binary needed; same Modal credentials
+# requirement as `image`.
+image-opencode:
+	uv run python -m runtime.image --provider opencode
 
 # WP1-C owns the real control-plane deploy. Sandbox params stay out of the image.
 deploy:

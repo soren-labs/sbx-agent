@@ -1,4 +1,4 @@
-"""SOR-62/SOR-80: provider=antigravity / grok select named CLI images."""
+"""SOR-62/SOR-80/SOR-96: provider=antigravity / grok / opencode select named CLI images."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from control.config import (
     ANTIGRAVITY_IMAGE_NAME,
     DEVIN_IMAGE_NAME,
     GROK_IMAGE_NAME,
+    OPENCODE_IMAGE_NAME,
     RUNTIME_IMAGE_NAME,
 )
 
@@ -64,6 +65,13 @@ def test_resolve_image_grok_uses_named_image() -> None:
     assert _FakeImage.calls == ["sbx-runtime-grok"]
 
 
+def test_resolve_image_opencode_uses_named_image() -> None:
+    _FakeImage.calls.clear()
+    image = _resolve_image(_FakeModal, "opencode")
+    assert image == ("image", OPENCODE_IMAGE_NAME)
+    assert _FakeImage.calls == ["sbx-runtime-opencode"]
+
+
 def test_resolve_image_codex_and_devin_unchanged() -> None:
     _FakeImage.calls.clear()
     assert _resolve_image(_FakeModal, "codex") == ("image", RUNTIME_IMAGE_NAME)
@@ -72,7 +80,7 @@ def test_resolve_image_codex_and_devin_unchanged() -> None:
 
 
 def test_sandbox_secrets_per_account_no_codex_fallback() -> None:
-    for provider in ("antigravity", "grok"):
+    for provider in ("antigravity", "grok", "opencode"):
         spec = SandboxSpec(tags={"provider": provider}, secrets=["sbx-acct-1"])
         secrets = _sandbox_secrets(_FakeModal, spec)
         assert secrets[0] == ("secret", "sbx-acct-1")
@@ -82,13 +90,13 @@ def test_sandbox_secrets_per_account_no_codex_fallback() -> None:
 def test_sandbox_secrets_account_provider_without_spec_gets_none(monkeypatch) -> None:
     monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
     monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL_FILE", raising=False)
-    for provider in ("antigravity", "grok"):
+    for provider in ("antigravity", "grok", "opencode"):
         spec = SandboxSpec(tags={"provider": provider})
         assert _sandbox_secrets(_FakeModal, spec) == []
 
 
 def test_account_ephemeral_blob_passthrough(monkeypatch) -> None:
-    for provider in ("antigravity", "grok"):
+    for provider in ("antigravity", "grok", "opencode"):
         blob = json.dumps({"provider": provider, "files": {"cred": "REDACTED"}})
         monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", blob)
         spec = SandboxSpec(tags={"provider": provider})
@@ -103,6 +111,7 @@ def test_credential_file_wrapped_with_provider_relpath(monkeypatch, tmp_path) ->
     expected = {
         "antigravity": ".gemini/antigravity-cli/antigravity-oauth-token",
         "grok": ".grok/auth.json",
+        "opencode": ".local/share/opencode/auth.json",
     }
     for provider, relpath in expected.items():
         spec = SandboxSpec(tags={"provider": provider})
@@ -121,6 +130,15 @@ def test_create_env_account_providers_set_home() -> None:
         assert "XDG_DATA_HOME" not in env
 
 
+def test_create_env_opencode_pins_home_and_xdg() -> None:
+    """SOR-96: opencode auth.json is an XDG data file, so the sandbox gets
+    the same HOME+XDG pinning as devin."""
+    env = _create_env(SandboxSpec(tags={"provider": "opencode"}))
+    assert env["HOME"] == "/work/home"
+    assert env["XDG_DATA_HOME"] == "/work/home/.local/share"
+    assert env["XDG_CONFIG_HOME"] == "/work/home/.config"
+
+
 def test_exec_secrets_follow_account_provider(monkeypatch) -> None:
     monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
     monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL_FILE", raising=False)
@@ -136,6 +154,8 @@ def test_exec_secrets_follow_account_provider(monkeypatch) -> None:
 def test_image_name_constants_in_sync() -> None:
     from runtime.image import AGY_IMAGE_NAME
     from runtime.image import GROK_IMAGE_NAME as RT_GROK
+    from runtime.image import OPENCODE_IMAGE_NAME as RT_OPENCODE
 
     assert ANTIGRAVITY_IMAGE_NAME == AGY_IMAGE_NAME == "sbx-runtime-antigravity"
     assert GROK_IMAGE_NAME == RT_GROK == "sbx-runtime-grok"
+    assert OPENCODE_IMAGE_NAME == RT_OPENCODE == "sbx-runtime-opencode"
