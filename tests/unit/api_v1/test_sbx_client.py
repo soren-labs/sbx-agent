@@ -44,8 +44,9 @@ def test_sbx_client_flow(sbx: SbxClient) -> None:
 
     types = set()
     for event in sbx.stream_run(agent["id"], run["id"]):
-        types.add(event.get("type"))
-        if event.get("type") == "sbx.turn_finished":
+        types.add(event.type)
+        assert event.id is not None  # SseEvent preserves the SSE id field
+        if event.type == "sbx.turn_finished":
             break
     assert "sbx.turn_finished" in types
 
