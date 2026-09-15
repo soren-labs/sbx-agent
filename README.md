@@ -180,23 +180,23 @@ for the whole surface:
 ```python
 from examples.sbx_client import SbxClient
 
-client = SbxClient()                                   # SBX_BASE_URL + SBX_API_KEY
+client = SbxClient()  # SBX_BASE_URL + SBX_API_KEY
 
 created = client.create("Add a /health endpoint", provider="codex")
 agent, run = created["agent"], created["run"]
 
-for ev in client.watch(agent["id"], run["id"]):        # SSE with Last-Event-ID resume
+for ev in client.watch(agent["id"], run["id"]):  # SSE with Last-Event-ID resume
     print(ev.type)
 
-final = client.wait(agent["id"], run["id"])            # persisted terminal status
+final = client.wait(agent["id"], run["id"])  # persisted terminal status
 follow = client.followup(agent["id"], "Now add tests")
 client.cancel(agent["id"], follow["id"])
 
 results = client.wait_many([(agent["id"], run["id"]), (agent2, run2)])
 
-recovery = client.recover("wf-123")                    # re-attach after process restart
+recovery = client.recover("wf-123")  # re-attach after process restart
 patch = client.artifacts.download(agent_id, artifact_id, dest="patch.diff")
-client.close_workflow("wf-123")                        # scoped cleanup
+client.close_workflow("wf-123")  # scoped cleanup
 ```
 
 The full OpenAPI contract is [docs/contracts/api-v1.yaml](docs/contracts/api-v1.yaml);

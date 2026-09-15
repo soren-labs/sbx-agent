@@ -45,12 +45,14 @@ Each provider implements the frozen `AgentAdapter` Protocol
 
 ```python
 provider: str
-credential_files: tuple[str, ...]        # relative to $HOME, restored @0600
-def prepare_home(home, model): ...       # config/instructions before turn 1
+credential_files: tuple[str, ...]  # relative to $HOME, restored @0600
+
+
+def prepare_home(home, model): ...  # config/instructions before turn 1
 def first_turn_argv(prompt, model): ...  # argv for turn 1
-def resume_argv(prompt, session_id): ... # argv for follow-ups
-def translate(raw_line): ...             # native line -> 0..n canonical events
-def extract_session_id(events): ...      # native session id, if seen
+def resume_argv(prompt, session_id): ...  # argv for follow-ups
+def translate(raw_line): ...  # native line -> 0..n canonical events
+def extract_session_id(events): ...  # native session id, if seen
 def health_from(exit_code, stderr_tail): ...  # ok|auth_invalid|rate_limited|unknown
 ```
 

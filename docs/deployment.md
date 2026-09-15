@@ -15,6 +15,10 @@ sbx doctor     # verifies auth, secrets, control URL, /v1 auth, providers
 sbx smoke      # one minimal real run through /v1
 ```
 
+If `sbx` is not present in your checkout (it lands with the release
+candidate), use the [manual path](#manual-path-what-sbx-deploy-wraps) below —
+it is exactly what the CLI wraps.
+
 It is idempotent — re-running `deploy`/`doctor` never damages state — and it
 prints the two values clients need: `SBX_BASE_URL` and a `sbx_<key>` API key
 (plaintext shown exactly once; the control plane stores `sha256(key)` only).
