@@ -88,12 +88,11 @@ def test_sandbox_secrets_account_provider_without_spec_gets_none(monkeypatch) ->
 
 
 def test_account_ephemeral_blob_passthrough(monkeypatch) -> None:
-    monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", "REDACTED_BLOB")
     for provider in ("antigravity", "grok"):
+        blob = json.dumps({"provider": provider, "files": {"cred": "REDACTED"}})
+        monkeypatch.setenv("SBX_ACCOUNT_CREDENTIAL", blob)
         spec = SandboxSpec(tags={"provider": provider})
-        assert _sandbox_secrets(_FakeModal, spec) == [
-            ("dict", {"SBX_ACCOUNT_CREDENTIAL": "REDACTED_BLOB"})
-        ]
+        assert _sandbox_secrets(_FakeModal, spec) == [("dict", {"SBX_ACCOUNT_CREDENTIAL": blob})]
 
 
 def test_credential_file_wrapped_with_provider_relpath(monkeypatch, tmp_path) -> None:
