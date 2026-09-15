@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e image image-devin deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e image image-devin image-antigravity image-grok deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -24,6 +24,14 @@ image:
 # standalone Devin CLI). Same Modal credentials requirement as `image`.
 image-devin:
 	uv run python -m runtime.image --devin
+
+# SOR-62/SOR-80 provider fast path: named Images carrying the host CLI binary
+# (never committed). SBX_AGY_BIN / SBX_GROK_BIN override ~/.local/bin defaults.
+image-antigravity:
+	uv run python -m runtime.image --provider antigravity
+
+image-grok:
+	uv run python -m runtime.image --provider grok
 
 # WP1-C owns the real control-plane deploy. Sandbox params stay out of the image.
 deploy:

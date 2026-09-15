@@ -15,10 +15,12 @@ from typing import Any
 
 from control.backend import Process, SandboxHandle, SandboxPoll, SandboxSpec
 from control.config import (
+    ANTIGRAVITY_IMAGE_NAME,
     CODEX_HOME,
     CODEX_SECRET_NAME,
     CPU,
     DEVIN_IMAGE_NAME,
+    GROK_IMAGE_NAME,
     IDLE_TIMEOUT_S,
     MEMORY_MIB,
     MODAL_APP_NAME,
@@ -32,6 +34,22 @@ _GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
 # SOR-74: ``SandboxSpec.tags["provider"] == "devin"`` selects the Devin image
 # and per-account credential Secrets; anything else keeps the P1 Codex path.
 DEVIN_PROVIDER = "devin"
+# SOR-62/SOR-80: provider tags that resolve to named provider-CLI images and
+# per-account credential Secrets (never the Codex auth Secret).
+ANTIGRAVITY_PROVIDER = "antigravity"
+GROK_PROVIDER = "grok"
+ACCOUNT_PROVIDERS = frozenset({DEVIN_PROVIDER, ANTIGRAVITY_PROVIDER, GROK_PROVIDER})
+_PROVIDER_IMAGE_NAMES = {
+    ANTIGRAVITY_PROVIDER: ANTIGRAVITY_IMAGE_NAME,
+    GROK_PROVIDER: GROK_IMAGE_NAME,
+}
+# ``SBX_ACCOUNT_CREDENTIAL_FILE`` wrap target per provider (the file's relpath
+# inside the credential blob, relative to the sandbox $HOME).
+_ACCOUNT_CREDENTIAL_FILE_REL = {
+    DEVIN_PROVIDER: ".local/share/devin/credentials.toml",
+    ANTIGRAVITY_PROVIDER: ".gemini/antigravity-cli/antigravity-oauth-token",
+    GROK_PROVIDER: ".grok/auth.json",
+}
 _ACCOUNT_CREDENTIAL_ENV = "SBX_ACCOUNT_CREDENTIAL"
 _ACCOUNT_CREDENTIAL_FILE_ENV = "SBX_ACCOUNT_CREDENTIAL_FILE"
 # SOR-77: task-scoped Linear MCP. ``SBX_LINEAR_MCP_EPHEMERAL=1`` on the
@@ -66,12 +84,12 @@ def _codex_secrets(modal: Any) -> list[Any]:
     return [modal.Secret.from_name(CODEX_SECRET_NAME)]
 
 
-def _devin_secrets(modal: Any) -> list[Any]:
-    """Ephemeral single-account credential for the P2.1 local control path.
+def _account_secret_env(provider: str) -> dict[str, str]:
+    """Ephemeral credential blob for the P2.1 local control path.
 
-    Named per-account Secrets remain authoritative when ``SandboxSpec.secrets``
-    is populated.  This fallback lets a local gate process inject its own
-    credential blob without persisting that blob in Modal.
+    A host ``SBX_ACCOUNT_CREDENTIAL`` blob passes through untouched (it already
+    carries its own ``provider``); ``SBX_ACCOUNT_CREDENTIAL_FILE`` is wrapped
+    into a blob under the provider's credential relpath.
     """
     blob = os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
     if not blob:
@@ -80,13 +98,29 @@ def _devin_secrets(modal: Any) -> list[Any]:
             content = Path(credential_file).read_text(encoding="utf-8")
             blob = json.dumps(
                 {
-                    "provider": "devin",
-                    "files": {".local/share/devin/credentials.toml": content},
+                    "provider": provider,
+                    "files": {_ACCOUNT_CREDENTIAL_FILE_REL[provider]: content},
                 }
             )
-    secret_env: dict[str, str] = {}
-    if blob:
-        secret_env[_ACCOUNT_CREDENTIAL_ENV] = blob
+    return {_ACCOUNT_CREDENTIAL_ENV: blob} if blob else {}
+
+
+def _account_secrets(modal: Any, provider: str) -> list[Any]:
+    """Ephemeral single-account credential Secret for non-Devin providers."""
+    if provider == DEVIN_PROVIDER:
+        return _devin_secrets(modal)
+    env = _account_secret_env(provider)
+    return [modal.Secret.from_dict(env)] if env else []
+
+
+def _devin_secrets(modal: Any) -> list[Any]:
+    """Ephemeral single-account credential for the P2.1 local control path.
+
+    Named per-account Secrets remain authoritative when ``SandboxSpec.secrets``
+    is populated.  This fallback lets a local gate process inject its own
+    credential blob without persisting that blob in Modal.
+    """
+    secret_env: dict[str, str] = _account_secret_env(DEVIN_PROVIDER)
     if os.environ.get("SBX_GITHUB_EPHEMERAL") == "1":
         github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if github_token:
@@ -113,12 +147,14 @@ def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
     """Secrets for ``Sandbox.create`` / ``exec``.
 
     ``spec.secrets`` names per-account Secrets (P2: ``sbx-acct-<account_id>``,
-    carrying the ``SBX_ACCOUNT_CREDENTIAL`` blob). Devin sandboxes never get
-    the Codex auth Secret; anything else keeps the P1 Codex path unchanged.
+    carrying the ``SBX_ACCOUNT_CREDENTIAL`` blob). Account-provider sandboxes
+    (devin / antigravity / grok) never get the Codex auth Secret; anything else
+    keeps the P1 Codex path unchanged.
     """
+    provider = _spec_provider(spec)
     named = [modal.Secret.from_name(name) for name in spec.secrets]
-    if _spec_provider(spec) == DEVIN_PROVIDER:
-        return [*named, *_devin_secrets(modal)]
+    if provider in ACCOUNT_PROVIDERS:
+        return [*named, *_account_secrets(modal, provider)]
     if named:
         return named
     return _codex_secrets(modal)
@@ -126,10 +162,23 @@ def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
 
 def _create_env(spec: SandboxSpec) -> dict[str, str]:
     env = {"CODEX_HOME": CODEX_HOME, "SBX_WORK": WORK_DIR}
-    if _spec_provider(spec) == DEVIN_PROVIDER:
+    provider = _spec_provider(spec)
+    if provider == DEVIN_PROVIDER:
         env.update(_devin_home_env())
+    elif provider in _PROVIDER_IMAGE_NAMES:
+        env.update(_agent_home_env())
     env.update(spec.env)
     return env
+
+
+def _agent_home_env() -> dict[str, str]:
+    """``HOME=$SBX_WORK/home`` for provider-CLI sandboxes (agy / grok)."""
+    try:
+        from runtime.image import agent_home_env
+
+        return agent_home_env(WORK_DIR)
+    except ImportError:
+        return {"HOME": f"{WORK_DIR}/home"}
 
 
 def _devin_home_env() -> dict[str, str]:
@@ -160,6 +209,14 @@ def _resolve_image(modal: Any, provider: str = "codex") -> Any:
             pass
         else:
             return sbx_devin_image()
+        return modal.Image.debian_slim(python_version="3.12")
+    provider_image = _PROVIDER_IMAGE_NAMES.get(provider)
+    if provider_image is not None:
+        # SOR-62/SOR-80: named image published from the build host (the CLI
+        # binary is a host artifact; there is no in-band source build).
+        from_name = getattr(modal.Image, "from_name", None)
+        if callable(from_name):
+            return from_name(provider_image)
         return modal.Image.debian_slim(python_version="3.12")
     try:
         import runtime.image as runtime_image
@@ -225,8 +282,8 @@ class ModalProcess:
 
     def _exec_secrets(self, modal: Any) -> list[Any]:
         named = [modal.Secret.from_name(name) for name in self._secret_names]
-        if self._provider == DEVIN_PROVIDER:
-            return [*named, *_devin_secrets(modal)]
+        if self._provider in ACCOUNT_PROVIDERS:
+            return [*named, *_account_secrets(modal, self._provider)]
         if named:
             return named
         return _codex_secrets(modal)
@@ -303,8 +360,9 @@ class ModalBackend:
     def _exec_secrets(self, modal: Any, handle: SandboxHandle) -> list[Any]:
         names = self._secrets_by_sandbox.get(handle.id) or []
         named = [modal.Secret.from_name(name) for name in names]
-        if handle.tags.get("provider") == DEVIN_PROVIDER:
-            return [*named, *_devin_secrets(modal)]
+        provider = handle.tags.get("provider", "codex")
+        if provider in ACCOUNT_PROVIDERS:
+            return [*named, *_account_secrets(modal, provider)]
         if named:
             return named
         return _codex_secrets(modal)

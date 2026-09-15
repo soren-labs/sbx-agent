@@ -26,6 +26,11 @@ RUNTIME_IMAGE_NAME = "sbx-runtime"
 # standalone Devin CLI, HOME=$SBX_WORK/home). Keep in sync with
 # runtime.image.DEVIN_IMAGE_NAME.
 DEVIN_IMAGE_NAME = "sbx-runtime-devin"
+# SOR-62/SOR-80: provider=antigravity / grok sandboxes use these named images
+# (sbx-runtime + the provider CLI at /usr/local/bin). Keep in sync with
+# runtime.image.AGY_IMAGE_NAME / GROK_IMAGE_NAME.
+ANTIGRAVITY_IMAGE_NAME = "sbx-runtime-antigravity"
+GROK_IMAGE_NAME = "sbx-runtime-grok"
 
 # Modal Starter sandbox list price (P0): billed at the request floor.
 CPU_USD_PER_CORE_S = 0.00003942

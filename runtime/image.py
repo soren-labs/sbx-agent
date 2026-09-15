@@ -1,4 +1,4 @@
-"""Named Modal Image ``sbx-runtime`` (slim, no browser) + ``sbx-runtime-devin``.
+"""Named Modal Image ``sbx-runtime`` (slim, no browser) + provider variants.
 
 Package versions live in ``runtime/packages.txt``. ``Dockerfile.local`` (and
 ``Dockerfile.devin.local`` for the Devin fast path, SOR-74) are generated from
@@ -6,6 +6,12 @@ the same file so local docker verification stays in lockstep with the Modal
 images. Sandbox lifetime and hardware (``idle_timeout``, ``timeout``, ``cpu``,
 ``memory``, ``workdir``, ``tags``, ``secrets``) are **not** set here — the
 control plane passes them to ``Sandbox.create``.
+
+Provider fast paths (SOR-74 devin; SOR-62/SOR-80 antigravity + grok): each
+named image is ``sbx-runtime`` plus the provider CLI. The Devin CLI is a
+pinned, sha256-verified download; ``agy`` / ``grok`` are proprietary host
+binaries taken from the building machine (never committed to the repo) — the
+same derivation the SOR-62 e2e gates verified.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 RUNTIME_DIR = Path(__file__).resolve().parent
 REPO_ROOT = RUNTIME_DIR.parent
@@ -25,6 +32,16 @@ DOCKERFILE_LOCAL = REPO_ROOT / "Dockerfile.local"
 APP_NAME = "sbx-runtime"
 IMAGE_NAME = "sbx-runtime"
 DEVIN_IMAGE_NAME = "sbx-runtime-devin"
+# SOR-62/SOR-80 provider fast path: named images = sbx-runtime + the provider
+# CLI binary from the build host (see sbx_antigravity_image / sbx_grok_image).
+AGY_IMAGE_NAME = "sbx-runtime-antigravity"
+GROK_IMAGE_NAME = "sbx-runtime-grok"
+AGY_BIN_ENV = "SBX_AGY_BIN"
+GROK_BIN_ENV = "SBX_GROK_BIN"
+AGY_BIN_REMOTE = "/usr/local/bin/agy"
+GROK_BIN_REMOTE = "/usr/local/bin/grok"
+DEFAULT_AGY_BIN = Path.home() / ".local" / "bin" / "agy"
+DEFAULT_GROK_BIN = Path.home() / ".local" / "bin" / "grok"
 ENTRYPOINT_REMOTE = "/opt/sbx/entrypoint.sh"
 RUNTIME_REMOTE = "/opt/sbx/runtime"
 INSTALL_DEVIN_REMOTE = f"{RUNTIME_REMOTE}/install-devin.sh"
@@ -255,6 +272,67 @@ def sbx_devin_image():
     return sbx_runtime_image().run_commands(devin_install_command()).env(devin_runtime_env())
 
 
+def agent_home_env(work: str = "/work") -> dict[str, str]:
+    """``HOME=$SBX_WORK/home`` for provider-CLI images (agy / grok).
+
+    Unlike the Devin bundle these CLIs resolve credentials relative to
+    ``$HOME`` only (``.gemini/`` / ``.grok/``), so no XDG pinning is needed.
+    """
+    return {"HOME": f"{work}/home"}
+
+
+def _host_cli_bin(env_var: str, default: Path, cli: str) -> Path:
+    """Resolve the host CLI binary baked into a provider image.
+
+    The binary is a build-host artifact (never committed): ``env_var``
+    overrides the well-known ``~/.local/bin`` default. Symlinks resolve to the
+    real file so ``add_local_file`` uploads a regular binary (``grok`` is a
+    symlink chain under ``~/.grok``).
+    """
+    raw = os.environ.get(env_var)
+    path = Path(raw).expanduser() if raw else default
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise SystemExit(
+            f"{cli} binary not found at {path}; install the {cli} CLI on the "
+            f"build host or set {env_var} to its path"
+        )
+    return resolved
+
+
+def _cli_image(image: Any, host_bin: Path, remote: str, env: dict[str, str]) -> Any:
+    """``image`` + one host CLI binary at ``remote`` (755) + env overlay."""
+    return (
+        image.add_local_file(str(host_bin), remote, copy=True)
+        .run_commands(f"chmod 755 {remote}")
+        .env(env)
+    )
+
+
+def sbx_antigravity_image(agy_bin: Path | None = None):
+    """Named Modal Image ``sbx-runtime-antigravity`` (SOR-62/SOR-80 fast path).
+
+    ``sbx-runtime`` plus the host ``agy`` binary at ``/usr/local/bin/agy`` —
+    the exact derivation the SOR-62 gate verified — with ``HOME`` rooted at
+    ``$SBX_WORK/home`` so the restored ``antigravity-oauth-token`` is the only
+    auth source. No credential material is baked into the image.
+    """
+    host = agy_bin or _host_cli_bin(AGY_BIN_ENV, DEFAULT_AGY_BIN, "agy")
+    return _cli_image(sbx_runtime_image(), host, AGY_BIN_REMOTE, agent_home_env())
+
+
+def sbx_grok_image(grok_bin: Path | None = None):
+    """Named Modal Image ``sbx-runtime-grok`` (SOR-62/SOR-80 fast path).
+
+    ``sbx-runtime`` plus the host ``grok`` binary at ``/usr/local/bin/grok`` —
+    the exact derivation the SOR-62 gate verified — with ``HOME`` rooted at
+    ``$SBX_WORK/home`` so the restored ``.grok/auth.json`` is the only auth
+    source. No credential material is baked into the image.
+    """
+    host = grok_bin or _host_cli_bin(GROK_BIN_ENV, DEFAULT_GROK_BIN, "grok")
+    return _cli_image(sbx_runtime_image(), host, GROK_BIN_REMOTE, agent_home_env())
+
+
 def invoke_control_deploy() -> None:
     """``make deploy``: WP1-C ``control.deploy.deploy()`` if present (SOR-47 / SOR-53).
 
@@ -322,24 +400,39 @@ def write_local_secrets(
     print(f"wrote {auth_path}")
 
 
-def build_named_image(*, devin: bool = False) -> None:
-    """``modal image build`` equivalent: build + publish the named runtime image.
+# provider tag -> (image builder, published name). ``codex`` keeps the P1
+# base image; the others are the fast-path variants layered on top of it.
+IMAGE_BUILDERS: dict[str, tuple[Any, str]] = {
+    "codex": (sbx_runtime_image, IMAGE_NAME),
+    "devin": (sbx_devin_image, DEVIN_IMAGE_NAME),
+    "antigravity": (sbx_antigravity_image, AGY_IMAGE_NAME),
+    "grok": (sbx_grok_image, GROK_IMAGE_NAME),
+}
 
-    ``devin=True`` builds ``sbx-runtime-devin`` (SOR-74). Requires Modal
-    credentials. Never called from ``make test``.
+
+def build_named_image(*, provider: str = "codex") -> None:
+    """``modal image build`` equivalent: build + publish a named runtime image.
+
+    ``provider`` selects the variant (``sbx-runtime`` for codex; the SOR-74 /
+    SOR-80 fast-path images otherwise). Requires Modal credentials and, for
+    agy / grok, the provider CLI on the build host. Never called from
+    ``make test``.
     """
     import modal
 
     spec = load_packages()
     app = modal.App.lookup(APP_NAME, create_if_missing=True)
-    image = sbx_devin_image() if devin else sbx_runtime_image()
-    name = DEVIN_IMAGE_NAME if devin else IMAGE_NAME
+    try:
+        builder, name = IMAGE_BUILDERS[provider]
+    except KeyError:
+        raise SystemExit(f"unknown image provider {provider!r}") from None
+    image = builder()
     with modal.enable_output():
         built = image.build(app)
         publish = getattr(built, "publish", None)
         if callable(publish):
             publish(name)
-    extra = f", devin {spec.devin_version}" if devin else ""
+    extra = f", devin {spec.devin_version}" if provider == "devin" else ""
     print(
         f"named image {name} ready "
         f"(python {spec.python_version}, node {spec.node_major}, {spec.codex_npm_spec}{extra})"
@@ -354,16 +447,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Regenerate Dockerfile.local + Dockerfile.devin.local from packages.txt (no Modal)",
     )
     parser.add_argument(
+        "--provider",
+        choices=sorted(IMAGE_BUILDERS),
+        default="codex",
+        help="Which named image to build/publish (default: codex -> sbx-runtime)",
+    )
+    parser.add_argument(
         "--devin",
         action="store_true",
-        help="Build/publish sbx-runtime-devin instead of sbx-runtime (SOR-74)",
+        help="Alias for --provider devin (SOR-74)",
     )
     args = parser.parse_args(argv)
     if args.write_dockerfile:
         for write in (write_dockerfile_local, write_dockerfile_devin_local):
             print(f"wrote {write()}")
         return 0
-    build_named_image(devin=args.devin)
+    build_named_image(provider="devin" if args.devin else args.provider)
     return 0
 
 
