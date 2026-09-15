@@ -1,10 +1,21 @@
-"""Opt-in production bootstrap for the P2.1 real /v1 gate."""
+"""Opt-in production bootstrap for the P2 real /v1 gate."""
 
 from __future__ import annotations
 
-from control.api_v1.bootstrap import configure_v1_bootstrap
-from control.devin_pool import DevinAccountPool
+import json
+import sys
+from pathlib import Path
+
+import pytest
+from control.api_v1.bootstrap import BootstrapScheduler, configure_v1_bootstrap
+from control.app import create_app
+from control.backend import LocalProcessBackend
+from control.devin_pool import DevinAccountPool, ScheduleRefused
+from control.store import InMemoryStore
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+P2_CORE_PROVIDERS = ("codex", "devin", "antigravity", "grok")
 
 
 def test_bootstrap_is_disabled_without_secret_env(monkeypatch) -> None:
@@ -33,10 +44,13 @@ def test_bootstrap_seeds_hash_only_key_and_devin_pool(monkeypatch) -> None:
     assert account is not None
     assert account.secret_name == "sbx-acct-devin-gate"
     assert account.max_concurrent == 8
-    assert isinstance(app.state.scheduler, DevinAccountPool)
-    assert app.state.scheduler.normal_slots == 4
-    assert app.state.scheduler.soft_ceiling == 5
-    assert app.state.scheduler.burst_slots == 8
+    scheduler = app.state.scheduler
+    assert isinstance(scheduler, BootstrapScheduler)
+    devin = scheduler.pools["devin"]
+    assert isinstance(devin, DevinAccountPool)
+    assert devin.normal_slots == 4
+    assert devin.soft_ceiling == 5
+    assert devin.burst_slots == 8
 
 
 def test_bootstrap_allows_explicit_ephemeral_secret(monkeypatch) -> None:
@@ -48,3 +62,199 @@ def test_bootstrap_allows_explicit_ephemeral_secret(monkeypatch) -> None:
     account = app.state.account_registry.get("devin-gate")
     assert account is not None
     assert account.secret_name == ""
+
+
+def test_bootstrap_seeds_all_four_providers(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "c" * 40)
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+
+    by_provider = {a.provider: a for a in app.state.account_registry.list()}
+    assert set(by_provider) == set(P2_CORE_PROVIDERS)
+    assert by_provider["codex"].id == "codex-1"
+    # Codex keeps the default CODEX_AUTH_JSON credential path (no named Secret).
+    assert by_provider["codex"].secret_name == ""
+    assert by_provider["devin"].secret_name == "sbx-acct-devin-1"
+    assert by_provider["antigravity"].secret_name == "sbx-acct-antigravity-1"
+    assert by_provider["grok"].secret_name == "sbx-acct-grok-1"
+    assert all(a.status == "active" for a in by_provider.values())
+    assert set(app.state.scheduler.pools) == set(P2_CORE_PROVIDERS)
+
+
+def test_scheduler_decides_each_provider(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "d" * 40)
+    app = FastAPI()
+    configure_v1_bootstrap(app)
+    scheduler = app.state.scheduler
+
+    for provider in P2_CORE_PROVIDERS:
+        decision = scheduler.decide(provider=provider, account="auto")
+        assert decision.error is None
+        assert decision.account is not None
+        assert decision.account.provider == provider
+        named = scheduler.decide(provider=provider, account=decision.account.id)
+        assert named.error is None
+        assert named.account is not None
+        assert named.account.id == decision.account.id
+
+
+def test_scheduler_acquire_enforces_flat_slot_cap(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "e" * 40)
+    monkeypatch.setenv("SBX_GROK_SLOTS", "2")
+    app = FastAPI()
+    configure_v1_bootstrap(app)
+    scheduler = app.state.scheduler
+
+    leases = [scheduler.acquire(provider="grok") for _ in range(2)]
+    assert [lease.account.provider for lease in leases] == ["grok", "grok"]
+    with pytest.raises(ScheduleRefused) as excinfo:
+        scheduler.acquire(provider="grok")
+    assert excinfo.value.error == "provider_exhausted"
+    leases[0].release()
+    scheduler.acquire(provider="grok").release()
+    for lease in leases[1:]:
+        lease.release()
+
+
+def test_scheduler_unseeded_and_unknown_providers(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "f" * 40)
+    app = FastAPI()
+    configure_v1_bootstrap(app)
+    scheduler = app.state.scheduler
+
+    # opencode is contract-valid but deferred: exhausted, not invalid.
+    exhausted = scheduler.decide(provider="opencode", account="auto")
+    assert exhausted.error == "provider_exhausted"
+    assert exhausted.retry_after is not None and exhausted.retry_after > 0
+    with pytest.raises(ScheduleRefused) as excinfo:
+        scheduler.acquire(provider="opencode")
+    assert excinfo.value.error == "provider_exhausted"
+    named = scheduler.decide(provider="opencode", account="opencode-1")
+    assert named.error == "account_unavailable"
+    with pytest.raises(ScheduleRefused) as excinfo:
+        scheduler.acquire(provider="opencode", account="opencode-1")
+    assert excinfo.value.error == "account_unavailable"
+
+    assert scheduler.decide(provider="bogus", account="auto").error == "invalid_provider"
+    with pytest.raises(ScheduleRefused) as excinfo:
+        scheduler.acquire(provider="bogus")
+    assert excinfo.value.error == "invalid_provider"
+
+
+def test_provider_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "0" * 40)
+    monkeypatch.setenv("SBX_GROK_ACCOUNT_ID", "grok-gate")
+    monkeypatch.setenv("SBX_ANTIGRAVITY_SECRET_NAME", "sbx-acct-custom-agy")
+    monkeypatch.setenv("SBX_ANTIGRAVITY_SLOTS", "6")
+    monkeypatch.setenv("SBX_CODEX_SECRET_NAME", "sbx-acct-codex-9")
+    app = FastAPI()
+    configure_v1_bootstrap(app)
+
+    registry = app.state.account_registry
+    assert registry.get("grok-gate") is not None
+    agy = registry.get("antigravity-1")
+    assert agy is not None
+    assert agy.secret_name == "sbx-acct-custom-agy"
+    assert agy.max_concurrent == 6
+    codex = registry.get("codex-1")
+    assert codex is not None
+    assert codex.secret_name == "sbx-acct-codex-9"
+
+
+def test_v1_agents_schedule_all_four_providers(monkeypatch, stub_runner) -> None:
+    """End-to-end through the product API: each provider creates an agent,
+    holds its slot lease, and releases on delete."""
+    token = "sbx_" + "1" * 40
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", token)
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    app = create_app(
+        backend=backend,
+        store=store,
+        runner_cmd=[sys.executable, str(stub_runner)],
+        max_concurrent=16,
+    )
+    auth = {"Authorization": f"Bearer {token}"}
+    try:
+        with TestClient(app) as client:
+            scheduler = app.state.scheduler
+            for provider in P2_CORE_PROVIDERS:
+                resp = client.post(
+                    "/v1/agents",
+                    json={"prompt": {"text": "ping"}, "agent": {"provider": provider}},
+                    headers=auth,
+                )
+                assert resp.status_code == 201, resp.text
+                agent = resp.json()["agent"]
+                assert agent["provider"] == provider
+                assert agent["account_id"] == f"{provider}-1"
+                assert scheduler.pools[provider].active_count == 1
+
+                rec = store.get(agent["id"])
+                assert rec is not None
+                assert rec.sandbox_tags["provider"] == provider
+                session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
+                assert session["provider"] == provider
+                assert session["account_id"] == f"{provider}-1"
+
+                deleted = client.delete(f"/v1/agents/{agent['id']}", headers=auth)
+                assert deleted.status_code == 200
+                assert scheduler.pools[provider].active_count == 0
+
+            refused = client.post(
+                "/v1/agents",
+                json={"prompt": {"text": "hi"}, "agent": {"provider": "opencode"}},
+                headers=auth,
+            )
+            assert refused.status_code == 429
+            assert refused.json()["error"]["code"] == "provider_exhausted"
+    finally:
+        for handle in list(backend.list()):
+            backend.terminate(handle)
+
+
+def test_v1_named_account_and_slot_cap(monkeypatch, stub_runner) -> None:
+    token = "sbx_" + "2" * 40
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", token)
+    monkeypatch.setenv("SBX_ANTIGRAVITY_SLOTS", "1")
+    backend = LocalProcessBackend()
+    app = create_app(
+        backend=backend,
+        store=InMemoryStore(),
+        runner_cmd=[sys.executable, str(stub_runner)],
+        max_concurrent=16,
+    )
+    auth = {"Authorization": f"Bearer {token}"}
+    try:
+        with TestClient(app) as client:
+            body = {
+                "prompt": {"text": "ping"},
+                "agent": {"provider": "antigravity", "account_id": "antigravity-1"},
+            }
+            resp = client.post("/v1/agents", json=body, headers=auth)
+            assert resp.status_code == 201, resp.text
+            agent_id = resp.json()["agent"]["id"]
+            busy = client.post("/v1/agents", json=body, headers=auth)
+            assert busy.status_code == 409
+            assert busy.json()["error"]["code"] == "account_busy"
+            exhausted = client.post(
+                "/v1/agents",
+                json={"prompt": {"text": "hi"}, "agent": {"provider": "antigravity"}},
+                headers=auth,
+            )
+            assert exhausted.status_code == 429
+            assert exhausted.json()["error"]["code"] == "provider_exhausted"
+            unknown = client.post(
+                "/v1/agents",
+                json={
+                    "prompt": {"text": "hi"},
+                    "agent": {"provider": "grok", "account_id": "grok-missing"},
+                },
+                headers=auth,
+            )
+            assert unknown.status_code == 409
+            assert unknown.json()["error"]["code"] == "account_unavailable"
+            assert client.delete(f"/v1/agents/{agent_id}", headers=auth).status_code == 200
+    finally:
+        for handle in list(backend.list()):
+            backend.terminate(handle)
