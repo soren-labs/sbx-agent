@@ -25,8 +25,12 @@ B requires a workspace standing exactly on artifact A's head.
 from __future__ import annotations
 
 import base64
+import binascii
+import json
 import os
+import re
 import shlex
+import tomllib
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -207,6 +211,66 @@ def collect_sandbox_workspace(
     return files, members, warnings, excluded
 
 
+# Keys whose string values are credential material (JSON auth stores, TOML
+# credential files). Values shorter than _MIN_SECRET_LEN are placeholders
+# like "REDACTED", not tokens.
+_SECRET_KEY_RE = re.compile(r"(token|secret|key|password|credential|signature)", re.IGNORECASE)
+_MIN_SECRET_LEN = 16
+
+
+def _secret_strings(node: Any, out: list[str]) -> None:
+    """Collect string values stored under secret-shaped keys (recursive).
+
+    Strings that themselves parse as JSON objects/arrays are descended into —
+    ``SBX_ACCOUNT_CREDENTIAL`` files are JSON text inside a JSON blob, so a
+    token two layers down still becomes its own forbidden value (a workdir
+    file holding just the token must fail the snapshot, not only a byte-exact
+    copy of the whole credential file).
+    """
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            if isinstance(value, str) and _SECRET_KEY_RE.search(str(key)):
+                if len(value) >= _MIN_SECRET_LEN:
+                    out.append(value)
+            _secret_strings(value, out)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _secret_strings(item, out)
+    elif isinstance(node, str):
+        try:
+            nested = json.loads(node)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if isinstance(nested, (Mapping, list)):
+            _secret_strings(nested, out)
+
+
+def _extract_secret_values(content: str) -> list[str]:
+    """Token/secret fields inside a credential document (JSON or TOML)."""
+    out: list[str] = []
+    _secret_strings(content, out)
+    try:
+        _secret_strings(tomllib.loads(content), out)
+    except (tomllib.TOMLDecodeError, ValueError):
+        pass
+    return out
+
+
+def _blob_file_content(content: Any) -> tuple[str | None, bytes | None]:
+    """``(text, bytes)`` view of one ``SBX_ACCOUNT_CREDENTIAL`` file entry."""
+    if isinstance(content, str):
+        return content, None
+    if isinstance(content, Mapping):
+        if "content" in content:
+            return str(content["content"]), None
+        if "content_b64" in content:
+            try:
+                return None, base64.b64decode(str(content["content_b64"]), validate=True)
+            except (binascii.Error, ValueError):
+                return None, None
+    return str(content), None
+
+
 def credential_forbidden_values(
     blob: Mapping[str, Any] | None,
     env: Mapping[str, str] | None = None,
@@ -215,23 +279,37 @@ def credential_forbidden_values(
 
     The account credential blob's file contents (provider auth stores) plus
     the ambient credential env values that could have leaked into the
-    workdir. A file (or payload) containing any of these fails the snapshot
+    workdir — both as whole documents AND as the individual token/secret
+    fields inside them, so a file that copied just a token fails the snapshot
     closed — ``ArtifactSecretError`` — never redact-and-ship.
     """
     env = os.environ if env is None else env
     values: list[bytes] = []
+
+    def _add_text(text: str | None) -> None:
+        if not text:
+            return
+        values.append(text.encode("utf-8"))
+        for secret in _extract_secret_values(text):
+            values.append(secret.encode("utf-8"))
+
     if isinstance(blob, Mapping):
         files = blob.get("files")
         if isinstance(files, Mapping):
             for content in files.values():
-                values.append(str(content).encode("utf-8"))
+                text, data = _blob_file_content(content)
+                if data is not None:
+                    values.append(data)
+                    try:
+                        text = data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = None
+                _add_text(text)
     # ``SBX_PROVIDER_API_KEY`` is credential material forwarded into codex
     # sandboxes (sandbox_io._PROVIDER_ENV_KEYS); a file that captured it must
     # fail the snapshot like any other leaked secret.
     for name in ("SBX_ACCOUNT_CREDENTIAL", "CODEX_AUTH_JSON", "SBX_PROVIDER_API_KEY"):
-        raw = env.get(name)
-        if raw:
-            values.append(raw.encode("utf-8"))
+        _add_text(env.get(name))
     return tuple(values)
 
 

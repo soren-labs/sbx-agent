@@ -21,6 +21,18 @@ def live_env(
     monkeypatch: pytest.MonkeyPatch, fake_codex: Path
 ) -> Iterator[tuple[object, LocalProcessBackend, InMemoryStore]]:
     """Control plane wired to the real runner; Codex is fake_codex (no cloud)."""
+    # SOR-55/SOR-101: belt-and-suspenders — the runner/sandbox env must never
+    # carry host provider credentials, even if the root autouse scrub list
+    # regresses.
+    for key in (
+        "CODEX_AUTH_JSON",
+        "CODEX_API_KEY",
+        "SBX_ACCOUNT_CREDENTIAL",
+        "SBX_ACCOUNT_ID",
+        "SBX_PROVIDER_API_KEY",
+        "SBX_PROVIDER_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("SBX_BACKEND", "local")
     monkeypatch.setenv("CODEX_BIN", str(fake_codex))
     monkeypatch.setenv("FAKE_CODEX_SCENARIO", "success")

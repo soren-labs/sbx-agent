@@ -69,6 +69,34 @@ def test_restore_writes_files_mode_600(tmp_path: Path) -> None:
     assert stat.S_IMODE((home / "notes.txt").stat().st_mode) == 0o600
 
 
+def test_restore_credential_dir_mode_700(tmp_path: Path) -> None:
+    """Credential-containing dirs are restricted, not just the files (SOR-101)."""
+    env = {
+        CREDENTIAL_ENV: _blob(
+            {".local/share/devin/credentials.toml": DEVIN_CRED_TOML, "notes.txt": "hi"}
+        )
+    }
+    home = tmp_path / "home"
+    restore_credential_blob(home, provider="devin", env=env)
+    cred_dir = home / ".local" / "share" / "devin"
+    assert stat.S_IMODE(cred_dir.stat().st_mode) == 0o700
+    # A blob file restored directly under $HOME restricts home too.
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
+def test_restore_overwrite_enforces_mode_600(tmp_path: Path) -> None:
+    """A pre-existing 0644 file is rewritten 0600 — no window, no stale mode."""
+    env = {CREDENTIAL_ENV: _blob({"cred.toml": DEVIN_CRED_TOML})}
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    dest = home / "cred.toml"
+    dest.write_text("stale\n", encoding="utf-8")
+    dest.chmod(0o644)
+    restore_credential_blob(home, provider="devin", env=env)
+    assert dest.read_text(encoding="utf-8") == DEVIN_CRED_TOML
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+
+
 def test_restore_no_env_is_noop(tmp_path: Path) -> None:
     home = tmp_path / "sbx" / "home"  # not the conftest-isolated $HOME
     assert restore_credential_blob(home, provider="devin", env={}) == []

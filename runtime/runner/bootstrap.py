@@ -29,6 +29,7 @@ from runtime.runner.credentials import (
     credential_target,
     load_credential_blob,
     restore_credential_blob,
+    write_secret_file,
 )
 from runtime.runner.workspace import (
     atomic_write,
@@ -83,16 +84,14 @@ def _write_auth_json(home: Path, auth: str, root: Path) -> None:
     work_auth = root / "auth.json"
     if auth == "auth_json" and raw:
         text = raw if raw.endswith("\n") else raw + "\n"
-        dest.write_text(text, encoding="utf-8")
+        content = text.encode("utf-8")
     elif auth == "auth_json" and work_auth.is_file():
-        dest.write_bytes(work_auth.read_bytes())
+        content = work_auth.read_bytes()
     elif auth == "auth_json":
-        dest.write_text(json.dumps(PLACEHOLDER_AUTH_JSON, indent=2) + "\n", encoding="utf-8")
+        content = (json.dumps(PLACEHOLDER_AUTH_JSON, indent=2) + "\n").encode("utf-8")
     else:
-        dest.write_text(
-            json.dumps(PLACEHOLDER_PROVIDER_AUTH_JSON, indent=2) + "\n", encoding="utf-8"
-        )
-    dest.chmod(0o600)
+        content = (json.dumps(PLACEHOLDER_PROVIDER_AUTH_JSON, indent=2) + "\n").encode("utf-8")
+    write_secret_file(dest, content)
 
 
 def _credential_relpaths(provider: str) -> list[str]:

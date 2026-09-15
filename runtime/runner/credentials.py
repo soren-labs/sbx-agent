@@ -168,11 +168,26 @@ def restore_credential_blob(
 
     written: list[Path] = []
     for dest, content in pending:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(content)
-        dest.chmod(0o600)
+        write_secret_file(dest, content)
         written.append(dest)
     return written
+
+
+def write_secret_file(dest: Path, content: bytes) -> None:
+    """Write ``content`` mode 0600 from ``open`` — no umask-readable window.
+
+    The containing directory is restricted to 0700 so credential material is
+    not group/other-traversable even before the file lands.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.parent.chmod(0o700)
+    except OSError:
+        pass
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(content)
+    dest.chmod(0o600)  # a pre-existing file may carry wider bits
 
 
 def _check_relpath(relpath: Any) -> None:
