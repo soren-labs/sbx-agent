@@ -24,6 +24,7 @@ from fastapi import Depends, Header, Request
 from fastapi.responses import Response
 
 from control.api_v1 import router
+from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
 from control.api_v1.deps import (
     admin_key,
     agents_key,
@@ -210,6 +211,19 @@ def _release_agent_lease(v1: V1State, agent_id: str) -> None:
         lease.release()
 
 
+def _default_model(provider: str, account: Account | None) -> str | None:
+    """Omitted ``AgentSpec.model`` → a valid provider/account default.
+
+    The resolved account's first advertised model wins; otherwise the
+    provider's seeded default. ``None`` defers to the plane's configured
+    default (``gpt-5.6-luna``, codex backward compatibility).
+    """
+    if account is not None and account.models:
+        return account.models[0]
+    defaults = PROVIDER_DEFAULT_MODELS.get(provider) or ()
+    return defaults[0] if defaults else None
+
+
 @router.post("/agents", status_code=201)
 def create_agent(
     body: CreateAgentRequest,
@@ -253,12 +267,13 @@ def create_agent(
     secret_name = None
     if account is not None:
         secret_name = account.secret_name or None
+    model = body.agent.model or _default_model(provider, account)
 
     try:
         session_id = plane.create_session(
             owner=key.id,
             title=body.name,
-            model=body.agent.model,
+            model=model,
             provider=provider,
             account_id=resolved,
             secret_name=secret_name,

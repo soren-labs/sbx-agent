@@ -31,16 +31,20 @@ _DEFAULT_PROVIDER_SLOTS = 4
 
 # Default advertised models per provider; ``SBX_<PROVIDER>_MODELS`` overrides
 # (comma-separated). Informational only — scheduling does not gate on models.
-_DEFAULT_MODELS = {
-    "codex": "gpt-5.6-luna",
-    "devin": "swe-2-high,swe-2-medium",
-    "antigravity": "gemini-3.8-flash-low",
-    "grok": "grok-4.6",
+# ``/v1`` also uses the first entry as the default model when the resolved
+# account advertises none and ``AgentSpec.model`` is omitted.
+PROVIDER_DEFAULT_MODELS = {
+    "codex": ("gpt-5.6-luna",),
+    "devin": ("swe-2-high", "swe-2-medium"),
+    "antigravity": ("gemini-3.8-flash-low",),
+    "grok": ("grok-4.6",),
 }
 
 
 def _models(provider: str) -> tuple[str, ...]:
-    raw = os.environ.get(f"SBX_{provider.upper()}_MODELS", _DEFAULT_MODELS[provider])
+    raw = os.environ.get(f"SBX_{provider.upper()}_MODELS")
+    if raw is None:
+        return PROVIDER_DEFAULT_MODELS[provider]
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from control.devin_pool import DevinAccountPool
 from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run
 
@@ -166,6 +167,66 @@ class TestCreateAgent:
         )
         assert resp.status_code == 429
         assert resp.json()["error"]["code"] == "concurrency_limit"
+
+
+class TestModelDefaults:
+    """Omitted ``AgentSpec.model`` resolves per provider/account; explicit wins."""
+
+    @pytest.mark.parametrize(
+        ("provider", "account_id", "models", "expected"),
+        [
+            ("codex", "acct-codex-1", None, "gpt-5.6-luna"),  # conftest seed
+            ("devin", "acct-devin-1", ("swe-2-high", "swe-2-medium"), "swe-2-high"),
+            ("antigravity", "acct-agy-1", ("gemini-3.8-flash-low",), "gemini-3.8-flash-low"),
+            ("grok", "acct-grok-1", ("grok-4.6",), "grok-4.6"),
+        ],
+    )
+    def test_omitted_model_uses_account_default(
+        self, client, auth, v1_env, provider, account_id, models, expected
+    ) -> None:
+        if models is not None:
+            seed_account(v1_env, account_id, provider=provider, models=models)
+        body = create_agent(client, auth, agent={"provider": provider})
+        agent = body["agent"]
+        assert agent["model"] == expected
+        rec = v1_env.store.get(agent["id"])
+        session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
+        assert session["model"] == expected
+
+    @pytest.mark.parametrize(
+        ("provider", "account_id", "models", "explicit"),
+        [
+            ("codex", "acct-codex-1", None, "gpt-5.3-codex"),
+            ("devin", "acct-devin-1", ("swe-2-high", "swe-2-medium"), "swe-2-medium"),
+            ("antigravity", "acct-agy-1", ("gemini-3.8-flash-low",), "gemini-3.8-pro"),
+            ("grok", "acct-grok-1", ("grok-4.6",), "grok-4.7"),
+        ],
+    )
+    def test_explicit_model_is_preserved(
+        self, client, auth, v1_env, provider, account_id, models, explicit
+    ) -> None:
+        if models is not None:
+            seed_account(v1_env, account_id, provider=provider, models=models)
+        body = create_agent(client, auth, agent={"provider": provider, "model": explicit})
+        agent = body["agent"]
+        assert agent["model"] == explicit
+        rec = v1_env.store.get(agent["id"])
+        session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
+        assert session["model"] == explicit
+
+    def test_omitted_model_falls_back_to_provider_default(self, client, auth, v1_env) -> None:
+        # Accounts that advertise no models get the provider seed default;
+        # codex keeps the gpt-5.6-luna backward-compatible default.
+        seed_account(v1_env, "acct-devin-bare", provider="devin")
+        seed_account(v1_env, "acct-codex-bare", provider="codex")
+        devin = create_agent(
+            client, auth, agent={"provider": "devin", "account_id": "acct-devin-bare"}
+        )
+        codex = create_agent(
+            client, auth, agent={"provider": "codex", "account_id": "acct-codex-bare"}
+        )
+        assert devin["agent"]["model"] == "swe-2-high"
+        assert codex["agent"]["model"] == "gpt-5.6-luna"
 
 
 class TestAgentReadDelete:
