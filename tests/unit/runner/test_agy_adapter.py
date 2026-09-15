@@ -1,7 +1,7 @@
 """AntigravityAdapter unit tests: argv, prepare_home, translate, health (SOR-62).
 
 Translate coverage uses both the staged real SOR-60 captures
-(``spike/p2/fixtures/antigravity/*.jsonl`` — top-level ``conversation_id``,
+(``tests/unit/runner/fixtures/antigravity/*.jsonl`` — top-level ``conversation_id``,
 ``step_type`` user_input/agent_response/tool/system_message, string
 ``result.error``) and the WP0 hand-written fixtures
 (``tests/fixtures/events/antigravity/`` — nested ``init.conversation_id``,
@@ -21,7 +21,7 @@ from runtime.runner.adapters.antigravity import OAUTH_TOKEN_REL, AntigravityAdap
 from runtime.runner.constants import NOOP_EVENT_TYPE
 
 ROOT = Path(__file__).resolve().parents[3]
-SPIKE_FIXTURES = ROOT / "spike" / "p2" / "fixtures" / "antigravity"
+REAL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "antigravity"
 WP0_FIXTURES = ROOT / "tests" / "fixtures" / "events" / "antigravity"
 
 MODEL = "gemini-3.8-flash-low"
@@ -135,7 +135,7 @@ def test_prepare_home_without_token(tmp_path: Path) -> None:
 
 
 def test_translate_real_success_fixture() -> None:
-    events = _translate_all(_lines(SPIKE_FIXTURES / "success.jsonl"))
+    events = _translate_all(_lines(REAL_FIXTURES / "success.jsonl"))
     types = [e["type"] for e in events]
     assert types[0] == "thread.started"
     assert events[0]["thread_id"] == REAL_ID
@@ -183,7 +183,7 @@ def test_translate_real_success_fixture() -> None:
 
 
 def test_translate_real_resume_fixture() -> None:
-    events = _translate_all(_lines(SPIKE_FIXTURES / "resume.jsonl"))
+    events = _translate_all(_lines(REAL_FIXTURES / "resume.jsonl"))
     assert events[0] == {"type": "thread.started", "thread_id": REAL_ID}
     messages = [
         e["item"]
@@ -198,13 +198,13 @@ def test_translate_real_resume_fixture() -> None:
 
 
 def test_translate_real_nonzero_fixture() -> None:
-    events = _translate_all(_lines(SPIKE_FIXTURES / "nonzero.jsonl"))
+    events = _translate_all(_lines(REAL_FIXTURES / "nonzero.jsonl"))
     assert events[-1]["type"] == "turn.failed"
     assert events[-1]["error"]["message"].startswith("invalid model selection")
 
 
 def test_translate_real_auth_invalid_fixture() -> None:
-    events = _translate_all(_lines(SPIKE_FIXTURES / "auth_invalid.jsonl"))
+    events = _translate_all(_lines(REAL_FIXTURES / "auth_invalid.jsonl"))
     assert events[-1]["type"] == "turn.failed"
     assert events[-1]["error"]["message"] == "authentication failed or timed out"
 
@@ -301,7 +301,7 @@ def test_translate_stale_resume_mismatch() -> None:
 def test_translate_matching_resume_id() -> None:
     adapter = AntigravityAdapter()
     adapter.resume_argv("next", REAL_ID)
-    events = _translate_all(_lines(SPIKE_FIXTURES / "resume.jsonl"), adapter)
+    events = _translate_all(_lines(REAL_FIXTURES / "resume.jsonl"), adapter)
     assert events[0] == {"type": "thread.started", "thread_id": REAL_ID}
     assert events[-1]["type"] == "turn.completed"
 
@@ -317,7 +317,7 @@ def test_translate_bad_lines_return_empty() -> None:
 
 def test_extract_session_id() -> None:
     adapter = AntigravityAdapter()
-    events = _translate_all(_lines(SPIKE_FIXTURES / "success.jsonl"), adapter)
+    events = _translate_all(_lines(REAL_FIXTURES / "success.jsonl"), adapter)
     assert adapter.extract_session_id(events) == REAL_ID
     assert adapter.extract_session_id([{"type": "turn.started"}]) is None
 

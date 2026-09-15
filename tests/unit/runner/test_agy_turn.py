@@ -2,7 +2,7 @@
 
 End-to-end through ``python -m runtime.runner`` with ``AGY_BIN`` pointed at
 ``tests/unit/runner/replay_agy.py``, which replays the staged real SOR-60
-captures (``spike/p2/fixtures/antigravity/*.jsonl``). Covers argv shape,
+captures (``tests/unit/runner/fixtures/antigravity/*.jsonl``). Covers argv shape,
 stdin closed, credential blob lifecycle, stale-resume detection, health →
 exit-code mapping, and events.raw.jsonl / events.jsonl separation.
 """
@@ -22,7 +22,7 @@ from tests.unit.runner.conftest import load_json, parsed_events, run_runner
 MODEL = "gemini-3.8-flash-low"
 CONV_ID = "4e9eadd6-eb70-442b-b24a-1660db079181"
 REPLAYER = Path(__file__).resolve().parent / "replay_agy.py"
-SPIKE_FIXTURES = Path(__file__).resolve().parents[3] / "spike" / "p2" / "fixtures" / "antigravity"
+REAL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "antigravity"
 WP0_FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "events" / "antigravity"
 TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
 TOKEN_JSON = '{"auth_method":"consumer","id_token":"REDACTED","token":"REDACTED"}\n'
@@ -41,7 +41,7 @@ def agy_env(work: Path, repo_root: Path) -> dict[str, str]:
         "PYTHONPATH": str(repo_root),
         "PYTHONUNBUFFERED": "1",
         "AGY_BIN": str(REPLAYER),
-        "AGY_REPLAY_FIXTURE": str(SPIKE_FIXTURES / "success.jsonl"),
+        "AGY_REPLAY_FIXTURE": str(REAL_FIXTURES / "success.jsonl"),
         "SBX_BACKEND": "local",
     }
 
@@ -173,7 +173,7 @@ def test_argv_exact_and_stdin_devnull(work: Path, agy_env: dict[str, str]) -> No
     assert spy["stdin_target"] == "/dev/null"
     assert spy["stdin_isatty"] is False
 
-    agy_env["AGY_REPLAY_FIXTURE"] = str(SPIKE_FIXTURES / "resume.jsonl")
+    agy_env["AGY_REPLAY_FIXTURE"] = str(REAL_FIXTURES / "resume.jsonl")
     code2, _, _ = turn(agy_env, work, 2)
     assert code2 == 0
     spy2 = json.loads(spy_out.read_text())
@@ -216,7 +216,7 @@ def test_resume_turn_keeps_conversation(work: Path, agy_env: dict[str, str]) -> 
     init_agy(agy_env)
     code1, doc1, _ = turn(agy_env, work, 1)
     assert code1 == 0
-    agy_env["AGY_REPLAY_FIXTURE"] = str(SPIKE_FIXTURES / "resume.jsonl")
+    agy_env["AGY_REPLAY_FIXTURE"] = str(REAL_FIXTURES / "resume.jsonl")
     code2, doc2, events2 = turn(agy_env, work, 2)
     assert code2 == 0
     assert doc2["native_session_id"] == doc1["native_session_id"] == CONV_ID
@@ -236,7 +236,7 @@ def test_stale_resume_fails_without_forking(work: Path, agy_env: dict[str, str])
     assert doc1["native_session_id"] == CONV_ID
     agy_env.update(
         {
-            "AGY_REPLAY_FIXTURE": str(SPIKE_FIXTURES / "success.jsonl"),
+            "AGY_REPLAY_FIXTURE": str(REAL_FIXTURES / "success.jsonl"),
             "AGY_REPLAY_STALE": "1",
             "AGY_REPLAY_SESSION_ID": "00000000-0000-0000-0000-000000000000",
         }
@@ -256,7 +256,7 @@ def test_stale_resume_fails_without_forking(work: Path, agy_env: dict[str, str])
 
 def test_nonzero_exits_2(work: Path, agy_env: dict[str, str]) -> None:
     init_agy(agy_env)
-    agy_env["AGY_REPLAY_FIXTURE"] = str(SPIKE_FIXTURES / "nonzero.jsonl")
+    agy_env["AGY_REPLAY_FIXTURE"] = str(REAL_FIXTURES / "nonzero.jsonl")
     agy_env["AGY_REPLAY_RC"] = "1"
     code, doc, events = turn(agy_env, work, 1)
     assert code == 2
@@ -267,7 +267,7 @@ def test_nonzero_exits_2(work: Path, agy_env: dict[str, str]) -> None:
 
 def test_auth_invalid_exits_5(work: Path, agy_env: dict[str, str]) -> None:
     init_agy(agy_env)
-    agy_env["AGY_REPLAY_FIXTURE"] = str(SPIKE_FIXTURES / "auth_invalid.jsonl")
+    agy_env["AGY_REPLAY_FIXTURE"] = str(REAL_FIXTURES / "auth_invalid.jsonl")
     agy_env["AGY_REPLAY_RC"] = "1"
     agy_env["AGY_REPLAY_STDERR"] = "Authentication required. Please visit the URL to log in:"
     code, doc, events = turn(agy_env, work, 1)

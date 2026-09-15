@@ -4,7 +4,8 @@
 Speaks the production argv contract (``agy -p <PROMPT> --output-format
 stream-json [--conversation <id>] [--model <m>] --dangerously-skip-permissions
 --disable-slash-commands``) and replays ``AGY_REPLAY_FIXTURE`` — a staged
-SOR-60 recording under ``spike/p2/fixtures/antigravity/``.
+SOR-60 recording under ``tests/unit/runner/fixtures/antigravity/``
+(or a WP0 fake fixture).
 
 Env knobs:
 - ``AGY_REPLAY_SESSION_ID``: rewrite every ``conversation_id`` (top level and
