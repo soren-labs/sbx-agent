@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 
+from runtime.runner import mcp
 from runtime.runner.constants import (
     EXIT_INTERNAL,
     EXIT_OK,
@@ -148,6 +149,9 @@ def cmd_init(
     session["provider"] = provider
     session["account_id"] = account_id or os.environ.get(ACCOUNT_ID_ENV)
     session["credential_files"] = credential_files
+    session["mcp_servers"] = (
+        [mcp.LINEAR_SERVER_NAME] if provider == "devin" and mcp.linear_mcp_enabled() else []
+    )
     save_session(root, session)
     return EXIT_OK
 
