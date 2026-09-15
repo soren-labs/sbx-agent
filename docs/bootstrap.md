@@ -1,0 +1,77 @@
+# Deployment bootstrap (`sbx` CLI) — SOR-98 / Release 0.1
+
+> Doc stub. The commands below are the stable surface; flags may grow but the
+> subcommand names and semantics are fixed for the 0.1 alpha.
+
+`sbx` takes a clean checkout to a callable `/v1` control plane on the user's
+own Modal workspace. Run it as `uv run sbx …`, `python -m sbx …`, or the
+`sbx` console script after install.
+
+## Flow
+
+```bash
+uv run sbx init --profile <modal-profile>      # checks toolchain, writes config
+modal secret create sbx-codex-auth \
+  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"  # your provider credential
+uv run sbx deploy                              # idempotent: secrets/dicts/image/app
+uv run sbx doctor                              # end-to-end verification
+uv run sbx smoke                               # minimal agent → terminal → cleanup
+uv run sbx upgrade                             # redeploy, durable stores preserved
+uv run sbx uninstall                           # stop app + terminate sbx sandboxes
+```
+
+## Configuration
+
+One file is the single source: `$SBX_CONFIG`, else
+`$XDG_CONFIG_HOME/sbx/config.toml`, else `~/.config/sbx/config.toml`. It holds
+Modal profile/app name, durable Dict names, Secret names, provider image
+pins, and `api.base_url`. Every value can be overridden by an env var
+(`SBX_MODAL_PROFILE`, `SBX_MODAL_APP_NAME`, `SBX_BASE_URL`, `SBX_*_DICT`,
+`SBX_*_SECRET_NAME`, `SBX_IMAGE_*`, `SBX_PROVIDERS`, …) — env wins over file,
+file wins over built-in defaults (which come from `control.config`).
+
+Local state lives under `$SBX_STATE_DIR` / `$XDG_STATE_HOME/sbx`:
+`bootstrap.key` (the `sbx_` API key, mode 0600), `basic-auth.json`
+(0600, for the internal `/api/*` board), and `deploy.json` (last deploy
+record). The control plane only stores `sha256` of the API key; the
+plaintext exists only locally.
+
+## Command semantics
+
+| Command | Behavior |
+| --- | --- |
+| `init` | Check Python/uv/git/Modal CLI; write config (idempotent; flags override file values). |
+| `config` | Print resolved non-sensitive config with per-value source (file/env/default). |
+| `status` | Print deploy record, base URL, key fingerprint (`sha256:` prefix), provider view. |
+| `deploy` | Preflight (Modal auth + `sbx-codex-auth` Secret) → bootstrap/basic Secrets → durable Dicts → runtime image(s) → `modal deploy` → `/v1/me` probe. Every step is check-then-act; reruns converge. |
+| `doctor` | Modal auth, required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability, sandbox-list capability. Never prints secret values. |
+| `smoke` | `POST /v1/agents` with a trivial prompt → poll the run to a terminal status → `DELETE` the agent. |
+| `upgrade` | Snapshot all durable Dicts → redeploy → verify each is still readable with no lost keys. Aborts before touching anything when a store is unreadable. |
+| `uninstall` | Terminate all sandboxes owned by the app, re-list to prove zero leftovers, stop the app. `--purge-data` also deletes Dicts; `--purge-credentials` also deletes Secrets (incl. `sbx-acct-*`) and local credential files. Defaults preserve both. |
+
+All commands accept `--json` (machine-readable output and error objects),
+`--config`, and `--state-dir`. Errors carry a stable `code` plus an
+actionable `hint` (`error[code]: message` on stderr, exit 1).
+
+## After deploy
+
+`deploy` prints the two exports `examples/sbx_client.py` needs:
+
+```bash
+export SBX_BASE_URL=<printed URL>
+export SBX_API_KEY=$(cat "$XDG_STATE_HOME/sbx/bootstrap.key")
+python examples/sbx_client.py "Write hello.txt containing hi"
+```
+
+## Key rotation
+
+The local key file and the `sbx-v1-bootstrap` Secret must stay in sync —
+control stores only the hash, so a lost local file means the remote value is
+unrecoverable. `sbx deploy` self-heals: mint a fresh local key (delete
+`bootstrap.key` first), and deploy rotates the Secret to match.
+
+## Tests
+
+`tests/unit/sbx/` covers the whole surface against `FakePlane` (in-memory
+Plane) and an `httpx.MockTransport` `/v1` — no Modal credentials, no
+network, fully deterministic.
