@@ -78,8 +78,13 @@ class TestTerminalStability:
         monkeypatch.setenv("FAKE_CODEX_SCENARIO", "slow")
         monkeypatch.setenv("FAKE_CODEX_SLOW_SECONDS", "30")
         agent_id, run_id = _create(recovery_env)
-        live = recovery_env.wait_run(agent_id, run_id, want=LIVE_RUN_STATUSES)
-        assert live["status"] in LIVE_RUN_STATUSES
+        # Wait for RUNNING specifically: cancelling a still-CREATING run
+        # leaves the session in "creating" until the provisioning worker
+        # settles it, and teardown during that window legitimately lands
+        # the agent in "lost" — a truthful transition, but a racy
+        # before/after snapshot for the restart identity check.
+        live = recovery_env.wait_run(agent_id, run_id, want=frozenset({"RUNNING"}))
+        assert live["status"] == "RUNNING"
         assert live["id"] == run_id and live["agent_id"] == agent_id
         assert live["created_at"]
 

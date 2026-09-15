@@ -311,7 +311,7 @@ class ControlPlane:
         try:
             handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
         except Exception:
-            self._mark_create_failed_unless_run_cancelled(rec)
+            self._mark_create_failed(rec)
             raise
 
         with self._lock:
@@ -349,7 +349,7 @@ class ControlPlane:
             # Mark the record lost *before* terminating: even if terminate
             # fails, the record stays terminal with sandbox_id bound so the
             # reaper can retry cleanup (SOR-80).
-            self._mark_create_failed_unless_run_cancelled(rec)
+            self._mark_create_failed(rec)
             try:
                 self.backend.terminate(handle)
             except Exception:
@@ -371,18 +371,6 @@ class ControlPlane:
             stored.last_activity_at = now
             self.store.put(stored)
 
-    def _mark_create_failed_unless_run_cancelled(self, rec: SessionRecord) -> None:
-        """``lost`` for a failed create — unless run-1 already went terminal.
-
-        A cancelled queued first run settles the session record
-        (``discard_queued_first_turn``); a provisioning failure landing later
-        is worker fallout, not a session-status change (SOR-82 A4).
-        """
-        run1 = self.run_ledger.get(rec.id, 1) if self.run_ledger is not None else None
-        if run1 is not None and run1.terminal:
-            return
-        self._mark_create_failed(rec)
-
     def _mark_create_failed(self, rec: SessionRecord) -> None:
         """Terminal ``lost`` transition for a failed create; keeps sandbox_id."""
         with self._lock:
@@ -398,20 +386,15 @@ class ControlPlane:
     def discard_queued_first_turn(self, session_id: str) -> None:
         """Drop a queued-but-undispatched first turn reservation (cancel path).
 
-        Also settles a still-``creating`` record to ``idle``: once run-1 is
-        cancelled its public status must be stable immediately — the
-        provisioning worker's late success or failure must not rewrite it
-        (SOR-82 A4 durability acceptance).
+        Only the reservation marker is dropped — the session status is left
+        alone. While provisioning is still in flight the record stays
+        ``creating`` (the truth); the worker settles it to ``idle`` or
+        ``lost`` when ``provision_session`` resolves. Reporting ``idle``
+        early would let a follow-up run dispatch into a half-provisioned
+        sandbox whose ``runner init`` is still blocked (SOR-82 review).
         """
         with self._lock:
             self._first_turn_pending.discard(session_id)
-            rec = self.store.get(session_id)
-            if rec is not None and rec.status == "creating":
-                rec.status = "idle"
-                now = self.clock()
-                rec.updated_at = now
-                rec.last_activity_at = now
-                self.store.put(rec)
 
     def _next_turn_n(self, rec: SessionRecord) -> int:
         """Next never-reused turn number for ``rec``.
@@ -694,8 +677,14 @@ class ControlPlane:
         if live is not None:
             live.proc.kill()
         if handle is not None:
-            stop = self.backend.exec(handle, self.runner("stop"), env=sandbox_env(handle))
-            drain(stop)
+            try:
+                stop = self.backend.exec(handle, self.runner("stop"), env=sandbox_env(handle))
+                drain(stop)
+            except Exception:
+                # Best-effort hook only: the ledger cancel + proc kill above
+                # are the real stop; a dead sandbox has nothing left to run
+                # it on and must not mask an already-persisted cancel.
+                pass
         with self._lock:
             self._live.pop(session_id, None)
             rec = self.store.get(session_id)

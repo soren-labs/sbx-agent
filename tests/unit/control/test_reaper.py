@@ -131,6 +131,60 @@ def test_missing_sandbox_while_running_is_lost() -> None:
     assert any(a.kind == "lost" and a.session_id == "s2" for a in actions)
 
 
+def test_stale_bound_creating_record_is_lost_and_sandbox_reclaimed() -> None:
+    """Provisioner gone mid-create (control-plane restart): a ``creating``
+    record with a live bound sandbox can never settle — past the create
+    grace window it must go ``lost`` and the orphan pass reclaims the
+    sandbox (SOR-82 review)."""
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    handle = backend.create(SandboxSpec(tags={"session_id": "s3", "owner": "sbx"}))
+    created = _now()
+    store.put(
+        _record(
+            session_id="s3",
+            status="creating",
+            handle_id=handle.id,
+            root=str(handle.root),
+            last=created,
+        )
+    )
+    actions = reap(store, backend, created + timedelta(seconds=301), create_grace_s=300)
+    rec = store.get("s3")
+    assert rec is not None
+    assert rec.status == "lost"
+    assert rec.ended_at == created + timedelta(seconds=301)
+    assert any(a.kind == "lost" and a.session_id == "s3" for a in actions)
+    # The same sweep reclaims the now-terminal record's sandbox.
+    assert backend.poll(handle).alive is False
+    assert any(a.kind == "terminal_cleanup" and a.sandbox_id == handle.id for a in actions)
+
+
+def test_young_bound_creating_record_is_left_alone() -> None:
+    """A bound ``creating`` record inside the grace window is an in-flight
+    provision — the reaper must not touch it or its sandbox."""
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    handle = backend.create(SandboxSpec(tags={"session_id": "s4", "owner": "sbx"}))
+    created = _now()
+    store.put(
+        _record(
+            session_id="s4",
+            status="creating",
+            handle_id=handle.id,
+            root=str(handle.root),
+            last=created,
+        )
+    )
+    actions = reap(store, backend, created + timedelta(seconds=60), create_grace_s=300)
+    rec = store.get("s4")
+    assert rec is not None
+    assert rec.status == "creating"
+    assert backend.poll(handle).alive is True
+    assert actions == []
+    backend.terminate(handle)
+
+
 def test_orphan_sandbox_terminated_when_dict_record_missing() -> None:
     backend = LocalProcessBackend()
     store = InMemoryStore()

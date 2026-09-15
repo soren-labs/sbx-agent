@@ -32,6 +32,10 @@ def reap(
     Rules (SOR-31 + P0 + SOR-80):
     * ``creating`` record without ``sandbox_id``: younger than
       ``create_grace_s`` → in-flight create, left alone; older → ``lost``
+    * ``creating`` record with a live sandbox that has not settled within
+      ``create_grace_s`` of its last update → ``lost`` (the provisioner is
+      gone — e.g. control-plane restart mid-create — so nothing will ever
+      finish it; the orphan pass then reclaims the sandbox)
     * idle longer than ``idle_timeout_s`` and sandbox still alive → terminate + ``timed_out``
     * record exists, sandbox gone, status was idle → ``timed_out`` (native idle_timeout)
     * record exists, sandbox gone, status was creating/running → ``lost``
@@ -79,6 +83,20 @@ def reap(
             rec.current_turn_n = None
             store.put(rec)
             emit(rec.status, rec.id, rec.sandbox_id)
+            continue
+
+        if rec.status == "creating":
+            # Bound but still ``creating`` past the create grace window: the
+            # provisioning worker is gone (control-plane restart/crash) or
+            # init is stuck — no one will ever settle the record, and the
+            # sandbox would bill forever. Mark ``lost``; the orphan pass
+            # below reclaims the sandbox and ``on_action`` frees the lease.
+            if (now - rec.updated_at).total_seconds() >= create_grace_s:
+                rec.status = "lost"
+                rec.ended_at = now
+                rec.updated_at = now
+                store.put(rec)
+                emit("lost", rec.id, rec.sandbox_id)
             continue
 
         if rec.status == "idle" and idle_expired and handle is not None:

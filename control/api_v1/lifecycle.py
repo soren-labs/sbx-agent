@@ -324,6 +324,20 @@ def _release_session_lease(v1: Any, session_id: str) -> None:
         pass
 
 
+def _persist_run1_terminal(
+    run_states: RunStateStore, session_id: str, status: str, error: dict[str, Any]
+) -> None:
+    """Best-effort terminal persist for run-1.
+
+    Never raises: the caller still owes the scheduler-lease release, and a
+    ledger/store failure must not wedge the worker before it runs.
+    """
+    try:
+        run_states.transition(session_id, 1, status, error=error)
+    except Exception:
+        pass
+
+
 def _first_run_worker(
     plane: Any,
     v1: Any,
@@ -345,19 +359,19 @@ def _first_run_worker(
             session_id, provider=provider, account_id=account_id, secret_name=secret_name
         )
     except KeyError:
-        run_states.transition(session_id, 1, "CANCELLED", error=_closed_error())
+        _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
         _release_session_lease(v1, session_id)
         return
     except SessionConflict as exc:
         rec = plane.get(session_id)
         if rec is not None and rec.status == "closed":
-            run_states.transition(session_id, 1, "CANCELLED", error=_closed_error())
+            _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
         else:
-            run_states.transition(session_id, 1, "ERROR", error=_runtime_error(exc))
+            _persist_run1_terminal(run_states, session_id, "ERROR", _runtime_error(exc))
         _release_session_lease(v1, session_id)
         return
     except Exception as exc:
-        run_states.transition(session_id, 1, "ERROR", error=_runtime_error(exc))
+        _persist_run1_terminal(run_states, session_id, "ERROR", _runtime_error(exc))
         _release_session_lease(v1, session_id)
         return
     finally:
@@ -367,20 +381,22 @@ def _first_run_worker(
             except Exception:
                 pass
 
-    # Provisioned → idle. A cancel/delete may have landed during cold start.
-    state = run_states.get(session_id, 1)
-    if state is not None and state.status in RUN_TERMINAL:
-        plane.discard_queued_first_turn(session_id)
-        return
+    # Provisioned → idle. A cancel/delete may have landed during cold start;
+    # the run-state read itself is guarded so a store hiccup cannot kill the
+    # worker with run-1 still open and the queued turn still reserved.
     try:
+        state = run_states.get(session_id, 1)
+        if state is not None and state.status in RUN_TERMINAL:
+            plane.discard_queued_first_turn(session_id)
+            return
         plane.post_queued_first_turn(session_id)
     except Exception as exc:
         rec = plane.get(session_id)
         live = rec is not None and rec.status not in TERMINAL_STATUSES
         if live:
-            run_states.transition(session_id, 1, "ERROR", error=_runtime_error(exc))
+            _persist_run1_terminal(run_states, session_id, "ERROR", _runtime_error(exc))
         else:
-            run_states.transition(session_id, 1, "CANCELLED", error=_closed_error())
+            _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
             _release_session_lease(v1, session_id)
         return
     dispatched = run_states.transition(session_id, 1, "RUNNING")

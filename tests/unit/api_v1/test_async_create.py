@@ -38,6 +38,34 @@ def _gate_backend_create(v1_env, monkeypatch) -> tuple[threading.Event, threadin
     return entered, release, calls
 
 
+def _gate_runner_init(
+    v1_env, monkeypatch, *, fail: bool = False
+) -> tuple[threading.Event, threading.Event, list]:
+    """Block ``runner init`` inside ``backend.exec`` until released.
+
+    Returns (entered, release, exec_argv_log). With ``fail=True`` the init
+    exec raises once released — a provisioning failure landing after a
+    cancel. The sandbox is already bound at this point, so this reproduces
+    the post-bind / pre-idle window deterministically.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    execs: list[list[str]] = []
+    orig = v1_env.backend.exec
+
+    def gated(handle, argv, env=None):
+        execs.append(list(argv))
+        if "init" in argv:
+            entered.set()
+            assert release.wait(timeout=30), "test never released runner init"
+            if fail:
+                raise RuntimeError("runner init exploded")
+        return orig(handle, argv, env)
+
+    monkeypatch.setattr(v1_env.backend, "exec", gated)
+    return entered, release, execs
+
+
 def _v1_state(v1_env):
     state = getattr(v1_env.app.state, "v1_state", None)
     assert state is not None
@@ -170,6 +198,88 @@ class TestAsyncCreate:
         assert follow.status_code == 201
         assert follow.json()["id"] == "run-2"
         assert wait_run(client, auth, agent_id, "run-2")["status"] == "FINISHED"
+
+    def test_cancel_during_init_blocks_followup_until_provisioned(
+        self, client, auth, v1_env, monkeypatch
+    ) -> None:
+        """Cancel run-1 while ``runner init`` is still blocked.
+
+        The session must not report ``idle`` early: a follow-up run posted
+        during init gets 409 and no ``runner turn`` exec may start inside
+        the half-provisioned sandbox (SOR-82 review regression).
+        """
+        entered, release, execs = _gate_runner_init(v1_env, monkeypatch)
+        agent_id = create_agent(client, auth)["agent"]["id"]
+        assert entered.wait(timeout=10), "runner init never started"
+
+        cancelled = client.post(f"/v1/agents/{agent_id}/runs/run-1/cancel", headers=auth)
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "CANCELLED"
+        # Still provisioning — the record must not claim idle yet.
+        assert v1_env.store.get(agent_id).status == "creating"
+
+        early = client.post(
+            f"/v1/agents/{agent_id}/runs",
+            json={"prompt": {"text": "too early"}},
+            headers=auth,
+        )
+        assert early.status_code == 409, early.text
+        assert not any("turn" in argv for argv in execs), (
+            "a turn exec started while runner init was still in flight"
+        )
+
+        release.set()
+        # Once provisioning settles the cancelled-run agent is usable.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            rec = v1_env.store.get(agent_id)
+            if rec is not None and rec.status == "idle":
+                break
+            time.sleep(0.05)
+        assert v1_env.store.get(agent_id).status == "idle"
+        follow = client.post(
+            f"/v1/agents/{agent_id}/runs",
+            json={"prompt": {"text": "second"}},
+            headers=auth,
+        )
+        assert follow.status_code == 201, follow.text
+        assert follow.json()["id"] == "run-2"
+        assert wait_run(client, auth, agent_id, "run-2")["status"] == "FINISHED"
+        # run-1 stayed CANCELLED through all of it.
+        assert (
+            client.get(f"/v1/agents/{agent_id}/runs/run-1", headers=auth).json()["status"]
+            == "CANCELLED"
+        )
+
+    def test_cancel_during_init_then_init_failure_marks_lost(
+        self, client, auth, v1_env, monkeypatch
+    ) -> None:
+        """Cancel run-1, then provisioning fails: the session must go
+        ``lost`` — a dead sandbox must not linger as a fake ``idle``."""
+        entered, release, _execs = _gate_runner_init(v1_env, monkeypatch, fail=True)
+        agent_id = create_agent(client, auth)["agent"]["id"]
+        assert entered.wait(timeout=10), "runner init never started"
+
+        cancelled = client.post(f"/v1/agents/{agent_id}/runs/run-1/cancel", headers=auth)
+        assert cancelled.status_code == 200, cancelled.text
+        release.set()
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            rec = v1_env.store.get(agent_id)
+            if rec is not None and rec.status != "creating":
+                break
+            time.sleep(0.05)
+        assert v1_env.store.get(agent_id).status == "lost"
+        run = client.get(f"/v1/agents/{agent_id}/runs/run-1", headers=auth).json()
+        assert run["status"] == "CANCELLED"
+        # A dead agent rejects follow-ups instead of pretending idle.
+        follow = client.post(
+            f"/v1/agents/{agent_id}/runs",
+            json={"prompt": {"text": "second"}},
+            headers=auth,
+        )
+        assert follow.status_code == 409
 
     def test_delete_during_provision_closes_and_releases_lease(
         self, client, auth, v1_env, monkeypatch

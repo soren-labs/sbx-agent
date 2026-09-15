@@ -689,22 +689,25 @@ def _create_agent_once(
         # attached, open_session already persisted run-1 as CREATING and this
         # is an idempotent no-op.
         run_states.begin(session_id, 1, prompt=body.prompt.text)
+
+        # The worker provisions the sandbox, runs ``runner init`` and
+        # dispatches run-1; failures land as persisted run ERROR and release
+        # the lease. If the thread itself cannot start, the discard below
+        # frees the lease — otherwise the session would sit ``creating``
+        # with a held lease until the reaper's create grace expires.
+        launch_first_run(
+            plane=plane,
+            v1=v1,
+            run_states=run_states,
+            session_id=session_id,
+            provider=provider,
+            account_id=resolved,
+            secret_name=secret_name,
+            on_provisioned=on_provisioned,
+        )
     except Exception:
         _discard_agent(plane, v1, session_id, lease)
         raise
-
-    # The worker provisions the sandbox, runs ``runner init`` and dispatches
-    # run-1; failures land as persisted run ERROR and release the lease.
-    launch_first_run(
-        plane=plane,
-        v1=v1,
-        run_states=run_states,
-        session_id=session_id,
-        provider=provider,
-        account_id=resolved,
-        secret_name=secret_name,
-        on_provisioned=on_provisioned,
-    )
 
     rec = _require_agent(plane, session_id)
     pub = plane.public(rec)
@@ -845,6 +848,15 @@ def cancel_run(
         run_states.transition(agent_id, n, "CANCELLED")
         v1.mark_cancelled(agent_id, n)
         rec = _require_agent(plane, agent_id)
+        if rec.current_turn_n == n and rec.status == "running":
+            # The worker dispatched between our read and the transition:
+            # the turn just started — stop it so a cancelled run does not
+            # keep executing billed work.
+            try:
+                plane.stop(agent_id)
+            except Exception:
+                pass
+            rec = _require_agent(plane, agent_id)
     elif rec.current_turn_n == n and rec.status == "running":
         try:
             plane.stop(agent_id)
