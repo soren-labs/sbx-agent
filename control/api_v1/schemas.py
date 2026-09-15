@@ -53,6 +53,20 @@ class HandoffRef(BaseModel):
     workspace: WorkspaceDecl | None = None
 
 
+class WorkflowMetadata(BaseModel):
+    """Caller workflow binding for an agent (SOR-84 C1).
+
+    ``task_id`` names the task inside ``workflow_id``; ``role`` is a
+    free-form label (``worker`` / ``reviewer`` / ...); ``parent_task_id``
+    optionally links a sub-task to its parent within the same workflow.
+    """
+
+    workflow_id: str = Field(min_length=1, max_length=256)
+    task_id: str = Field(min_length=1, max_length=256)
+    role: str = Field(min_length=1, max_length=64)
+    parent_task_id: str | None = Field(default=None, max_length=256)
+
+
 class CreateAgentRequest(BaseModel):
     prompt: Prompt
     agent: AgentSpec
@@ -60,6 +74,7 @@ class CreateAgentRequest(BaseModel):
     idle_timeout_s: int | None = Field(default=None, ge=1)
     workspace: WorkspaceDecl | None = None
     handoff: HandoffRef | None = None
+    metadata: WorkflowMetadata | None = None
 
 
 class CreateRunRequest(BaseModel):

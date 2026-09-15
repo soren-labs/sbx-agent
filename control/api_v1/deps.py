@@ -20,12 +20,14 @@ from control.api_v1.state import (
     InMemoryApiKeyStore,
     V1State,
 )
+from control.api_v1.workflows import WorkflowService
 from control.artifact_ops import HandoffStoreView
 from control.artifacts import InMemoryArtifactStore
 from control.auth_bearer import bearer_scheme, bearer_token, has_scope, lookup_key
 from control.handoff import HandoffService
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.scheduler import AccountScheduler, session_running_source
+from control.workflow_store import WorkflowStore
 from control.workspace import InMemoryWorkspaceStore, WorkspaceService
 
 
@@ -200,6 +202,31 @@ def get_handoffs(request: Request) -> HandoffService:
         )
         request.app.state.handoffs = service
     return service
+
+
+def get_workflow_store(request: Request) -> WorkflowStore:
+    """Workflow metadata index (SOR-84 C1): ``app.state.workflow_store`` when
+    a durable store is installed, else the ``V1State`` fallback — same seam
+    shape as :func:`get_run_states`."""
+    store = getattr(request.app.state, "workflow_store", None)
+    if store is None:
+        store = get_v1_state(request).workflows
+    return store
+
+
+def get_workflow_service(
+    request: Request,
+    plane: Any = Depends(get_plane),
+    v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
+) -> WorkflowService:
+    """Low-cost workflow seam: index-backed lookup + scoped cleanup.
+
+    Built per request — it is a thin binder over shared stores, and not
+    caching it on ``app.state`` keeps ``app.state.workflow_store``
+    swappable at any point (tests, P2-C durable wiring).
+    """
+    return WorkflowService(get_workflow_store(request), plane, v1=v1, run_states=run_states)
 
 
 def api_key(

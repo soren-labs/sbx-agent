@@ -43,6 +43,7 @@ from control.service import (
     release_lease,
 )
 from control.store import InMemoryStore, SessionStore
+from control.workflow_store import WorkflowStore
 
 security = HTTPBasic(auto_error=False)
 
@@ -175,6 +176,25 @@ def _select_workspace_store() -> Any:
     return FileWorkspaceStore(override or _xdg_state_dir("workspaces"))
 
 
+def _select_workflow_store() -> WorkflowStore:
+    """SOR-84 C1: the durable workflow/task metadata index.
+
+    Production keeps the ``(owner, workflow_id) → tasks`` index in a
+    ``modal.Dict`` (``sbx-workflows``) so it survives control-plane
+    restarts. Locally it lives on disk under ``$SBX_WORKFLOW_STORE_DIR``
+    (or ``$XDG_STATE_HOME/sbx-browser/workflows``) — same re-open
+    semantics as the run ledger.
+    """
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.workflow_store import ModalDictWorkflowStore
+
+        return ModalDictWorkflowStore()
+    from control.workflow_store import FileWorkflowStore
+
+    override = os.environ.get("SBX_WORKFLOW_STORE_DIR")
+    return FileWorkflowStore(override or _xdg_state_dir("workflows"))
+
+
 def create_app(
     *,
     backend: SandboxBackend | None = None,
@@ -182,6 +202,7 @@ def create_app(
     run_store: RunStore | None = None,
     artifact_store: Any | None = None,
     workspace_store: Any | None = None,
+    workflow_store: WorkflowStore | None = None,
     runner_cmd: list[str] | None = None,
     basic_user: str | None = None,
     basic_password: str | None = None,
@@ -197,6 +218,7 @@ def create_app(
     run_store = run_store or _select_run_store()
     artifact_store = artifact_store or _select_artifact_store()
     workspace_store = workspace_store or _select_workspace_store()
+    workflow_store = workflow_store or _select_workflow_store()
     runner_cmd = runner_cmd or default_runner_cmd(backend_kind=backend_kind)
     user_default, pass_default = basic_credentials()
     basic_user = basic_user if basic_user is not None else user_default
@@ -270,6 +292,7 @@ def create_app(
         )
 
     plane.snapshot_hook = _snapshot_on_close
+    app.state.workflow_store = workflow_store
     # SOR-82 integration: the durable run ledger is the source of truth, and
     # the /v1 run-state seam (begin/get/list/transition) binds to it by
     # default. Tests may still inject a substitute on app.state.run_states or

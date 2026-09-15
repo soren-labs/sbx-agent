@@ -39,6 +39,7 @@ from control.api_v1.deps import (
     get_run_states,
     get_scheduler,
     get_v1_state,
+    get_workflow_service,
     get_workspaces,
 )
 from control.api_v1.errors import V1ApiError, not_found
@@ -64,6 +65,7 @@ from control.api_v1.schemas import (
     usage_public,
 )
 from control.api_v1.state import AgentMeta, V1State
+from control.api_v1.workflows import WorkflowService
 from control.artifact_ops import credential_forbidden_values, snapshot_workspace_artifact
 from control.artifacts import (
     ArtifactCorruptError,
@@ -659,6 +661,7 @@ def create_agent(
     run_states: RunStateStore = Depends(get_run_states),
     reporter: RunFailureReporter = Depends(get_run_reporter),
     artifacts: Any = Depends(get_artifact_store),
+    workflows: WorkflowService = Depends(get_workflow_service),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Create an agent and queue its first run (SOR-82 A2).
@@ -704,6 +707,10 @@ def create_agent(
                     "idempotency_conflict",
                     "Idempotency-Key was already used with a different request body",
                 )
+            if body.metadata is not None:
+                # Idempotent upsert: covers the rare case where the first
+                # attempt died between open_session and attach.
+                workflows.attach(owner=key.id, agent_id=prior.id, metadata=body.metadata)
             pub = plane.public(prior)
             meta = _meta_for(v1, prior)
             result = {
@@ -742,6 +749,7 @@ def create_agent(
             scheduler,
             v1,
             run_states,
+            workflows,
             reporter=reporter,
             idempotency_key=idempotency_key,
             idempotency_fingerprint=fingerprint,
@@ -773,6 +781,7 @@ def _create_agent_once(
     scheduler: Scheduler,
     v1: V1State,
     run_states: RunStateStore,
+    workflows: WorkflowService,
     *,
     reporter: RunFailureReporter | None = None,
     idempotency_key: str | None = None,
@@ -854,6 +863,10 @@ def _create_agent_once(
                 registry.touch(account.id, _iso_now())
             except KeyError:
                 pass
+        if body.metadata is not None:
+            # SOR-84 C1: persist the caller's workflow/task binding before
+            # the worker starts so recovery never sees an untracked agent.
+            workflows.attach(owner=key.id, agent_id=session_id, metadata=body.metadata)
         # Backstop for ledger-less run-state seams: with the durable ledger
         # attached, open_session already persisted run-1 as CREATING and this
         # is an idempotent no-op.

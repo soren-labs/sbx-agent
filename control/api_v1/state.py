@@ -24,6 +24,7 @@ from typing import Any
 
 from control.api_v1.lifecycle import IdempotencyStore, InMemoryRunStates, RunStateStore
 from control.ports import Account, ApiKey, ScheduleDecision
+from control.workflow_store import InMemoryWorkflowStore, WorkflowStore
 
 PROVIDERS: tuple[str, ...] = ("codex", "antigravity", "grok", "opencode", "devin")
 
@@ -247,6 +248,9 @@ class V1State:
     leases: dict[str, Any] = field(default_factory=dict)
     run_states: RunStateStore = field(default_factory=InMemoryRunStates)
     idempotency: IdempotencyStore = field(default_factory=IdempotencyStore)
+    # SOR-84 C1 fallback workflow index; ``app.state.workflow_store`` wins
+    # when a durable store is installed (same seam shape as run_states).
+    workflows: WorkflowStore = field(default_factory=InMemoryWorkflowStore)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:
