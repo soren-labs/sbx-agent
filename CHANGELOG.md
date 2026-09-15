@@ -47,6 +47,16 @@ BYO Modal workspace + BYO official provider subscriptions behind one
 - `/v1` keys stored as `sha256` only; credential material never logged;
   artifact collection fails closed on suspected secrets.
 
+### Fixed
+
+- `sbx uninstall` no longer reports a clean teardown when Modal is
+  unreachable: `ModalPlane` raises `BootstrapError` on auth/network
+  failures instead of flattening them to "empty"/"absent" (clean-room
+  acceptance SOR-100).
+- `sbx uninstall` can actually stop the app: `modal app stop` now runs
+  with `--yes` instead of dying on the interactive `[y/N]` prompt
+  (SOR-100).
+
 ### Known limitations
 
 - Alpha: `/v1` may change before 1.0. No hosted SaaS, no browser/noVNC

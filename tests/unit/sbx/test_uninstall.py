@@ -78,6 +78,16 @@ def test_uninstall_leftover_sandbox_fails(tmp_path) -> None:
     assert exc.value.code == "uninstall_leftover"
 
 
+def test_uninstall_fails_loudly_when_sandbox_list_breaks(tmp_path) -> None:
+    """A plane that cannot enumerate sandboxes must not report a clean teardown."""
+    cfg, plane, env = _deployed(tmp_path)
+    plane.fail_on.add("list_sandboxes")
+    with pytest.raises(BootstrapError) as exc:
+        uninstall(cfg, plane, env=env)
+    assert exc.value.code == "fake_fail"
+    assert plane.sandboxes  # nothing claimed terminated
+
+
 def test_uninstall_nothing_deployed_is_clean(tmp_path) -> None:
     env = make_env(tmp_path)
     cfg = make_cfg(tmp_path, env=env)

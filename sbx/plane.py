@@ -47,13 +47,20 @@ class Plane(Protocol):
         """Create durable Dict ``name`` if absent; True when created."""
 
     def has_dict(self, name: str) -> bool:
-        """Dict ``name`` exists (no creation side effect)."""
+        """Dict ``name`` exists (no creation side effect).
+
+        Raises ``BootstrapError`` when the workspace cannot be queried —
+        "unknown" must never be reported as "absent".
+        """
 
     def dict_len(self, name: str) -> int:
         """Readable key count of Dict ``name`` (durable-state probe)."""
 
     def delete_dict(self, name: str) -> bool:
-        """Delete Dict ``name``; True when it existed."""
+        """Delete Dict ``name``; True when it existed.
+
+        Raises ``BootstrapError`` when the delete itself fails.
+        """
 
     def ensure_image(self, provider: str) -> None:
         """Build + publish the provider's named runtime image."""
@@ -65,10 +72,19 @@ class Plane(Protocol):
         """Deployed app base URL, or None when not deployed."""
 
     def stop_app(self, app_name: str) -> bool:
-        """Stop the deployed app; True when it was running."""
+        """Stop the deployed app; True when it was running.
+
+        Raises ``BootstrapError`` when deployed apps cannot be enumerated —
+        uninstall must never report "not running" for "couldn't check".
+        """
 
     def list_sandboxes(self, app_name: str) -> list[SandboxInfo]:
-        """Live sandboxes owned by the app."""
+        """Live sandboxes owned by the app.
+
+        Empty only when the app genuinely does not exist; raises
+        ``BootstrapError`` on auth/network failures so teardown fails
+        loudly instead of leaking compute.
+        """
 
     def terminate_sandbox(self, sandbox_id: str) -> None:
         """Terminate one sandbox; absent is a no-op."""
@@ -188,17 +204,27 @@ class ModalPlane:
     def has_dict(self, name: str) -> bool:
         try:
             return any(getattr(d, "name", None) == name for d in self._modal_dict().list())
-        except Exception:
-            return False
+        except Exception as exc:
+            raise BootstrapError(
+                f"cannot list Modal Dicts: {exc}",
+                hint="check Modal auth and workspace permissions, then retry",
+                code="modal_dict_failed",
+            ) from exc
 
     def dict_len(self, name: str) -> int:
         return int(self._modal().Dict.from_name(name).len())
 
     def delete_dict(self, name: str) -> bool:
+        if not self.has_dict(name):
+            return False
         try:
             self._modal_dict().delete(name)
-        except Exception:
-            return False
+        except Exception as exc:
+            raise BootstrapError(
+                f"cannot delete Modal Dict {name!r}: {exc}",
+                hint="check Modal auth and workspace permissions, then retry",
+                code="modal_dict_failed",
+            ) from exc
         return True
 
     def ensure_image(self, provider: str) -> None:
@@ -250,10 +276,7 @@ class ModalPlane:
         return f"https://{workspace}--{app_name}-fastapi-app.modal.run"
 
     def _apps(self) -> list[dict[str, Any]]:
-        try:
-            raw = self._cli(["app", "list", "--json"])
-        except BootstrapError:
-            return []
+        raw = self._cli(["app", "list", "--json"])
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -267,7 +290,7 @@ class ModalPlane:
             ) and self._is_deployed(entry):
                 app_id = entry.get("app_id") or entry.get("id")
                 if app_id:
-                    self._cli(["app", "stop", str(app_id)])
+                    self._cli(["app", "stop", str(app_id), "--yes"])
                     return True
         return False
 
@@ -275,16 +298,29 @@ class ModalPlane:
         modal = self._modal()
         try:
             app = modal.App.lookup(app_name)
-        except Exception:
+        except modal.exception.NotFoundError:
             return []
+        except Exception as exc:
+            raise BootstrapError(
+                f"cannot look up app {app_name!r}: {exc}",
+                hint="check Modal auth (`modal token new`) and MODAL_PROFILE, then retry",
+                code="sandbox_list_failed",
+            ) from exc
         app_id = getattr(app, "app_id", None)
-        found: list[SandboxInfo] = []
-        for sb in modal.Sandbox.list(app_id=app_id):
-            try:
-                tags = dict(sb.get_tags())
-            except Exception:
-                tags = {}
-            found.append(SandboxInfo(id=sb.object_id, tags=tags))
+        try:
+            found: list[SandboxInfo] = []
+            for sb in modal.Sandbox.list(app_id=app_id):
+                try:
+                    tags = dict(sb.get_tags())
+                except Exception:
+                    tags = {}
+                found.append(SandboxInfo(id=sb.object_id, tags=tags))
+        except Exception as exc:
+            raise BootstrapError(
+                f"cannot list sandboxes for app {app_name!r}: {exc}",
+                hint="check Modal auth and workspace permissions, then retry",
+                code="sandbox_list_failed",
+            ) from exc
         return found
 
     def terminate_sandbox(self, sandbox_id: str) -> None:
