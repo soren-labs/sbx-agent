@@ -66,7 +66,14 @@ def env_float(name: str, default: float) -> float:
 
 def basic_credentials() -> tuple[str, str]:
     user = os.environ.get("SBX_BASIC_USER") or os.environ.get("SBX_API_USER", "sbx")
-    password = os.environ.get("SBX_BASIC_PASS") or os.environ.get("SBX_API_PASSWORD", "sbx")
+    # SBX_BASIC_PASSWORD: pre-0.1 docs used this name; keep accepting it so a
+    # Secret written that way still reaches the app instead of silently
+    # falling back to the default password.
+    password = (
+        os.environ.get("SBX_BASIC_PASS")
+        or os.environ.get("SBX_BASIC_PASSWORD")
+        or os.environ.get("SBX_API_PASSWORD", "sbx")
+    )
     return user, password
 
 

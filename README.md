@@ -142,10 +142,25 @@ MVP 默认认证模式是 `auth_json`。第三方 Responses 网关（DisTokens �
 ```bash
 modal secret create sbx-basic-auth \
   SBX_BASIC_USER='<username>' \
-  SBX_BASIC_PASSWORD='<long-random-password>'
+  SBX_BASIC_PASS='<long-random-password>'
 ```
 
 所有 `/api/sessions*` 端点走 HTTP Basic（见 `docs/contracts/api.yaml`）。本地假服务口令只用于 mock，不是生产凭证。
+
+## 部署 bootstrap（SOR-98 / Release 0.1）
+
+`sbx` CLI 把干净检出带到可调用的 `/v1`：单一配置源（`config.toml` + env 覆盖）管理 Modal profile / app / durable Dict / Secret / 镜像 pin / base URL；bootstrap `sbx_` key 明文只落本地 0600 文件，控制面仅存 sha256。
+
+```bash
+uv run sbx init --profile <modal-profile>   # 检查工具链，写 config
+uv run sbx deploy                            # 幂等：Secrets → Dicts → 镜像 → app → /v1 探活
+uv run sbx doctor                            # 全链路验证（绝不打印 secret 值）
+uv run sbx smoke                             # 最小 agent → terminal → 清理
+uv run sbx upgrade                           # 重部署，durable stores 不丢
+uv run sbx uninstall                         # 停 app + 清空 sbx sandbox（默认保留凭证/数据）
+```
+
+详见 `docs/bootstrap.md`；命令输出可直接给 `examples/sbx_client.py` 用（`SBX_BASE_URL` + `SBX_API_KEY`）。
 
 ## 分层（P1 MVP）
 
@@ -153,6 +168,7 @@ modal secret create sbx-basic-auth \
 web/      单页聊天看板（无构建步骤）
 control/  sbx-control：FastAPI on Modal，会话 API / modal.Dict 状态机 / SSE / reaper
 runtime/  Sandbox 内：镜像定义、entrypoint、runner（Codex 会话驱动）
+sbx/      部署 bootstrap CLI（init/config/status/deploy/doctor/smoke/upgrade/uninstall）
 tests/    unit / integration / e2e / fakes / fixtures —— 全部不依赖云凭证
 spike/    P0 验证脚本（WSL 本机执行）
 ```

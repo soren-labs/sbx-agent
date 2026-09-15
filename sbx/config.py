@@ -1,0 +1,238 @@
+"""Single configuration source for the bootstrap CLI (SOR-98).
+
+One TOML file (``$SBX_CONFIG``, else ``$XDG_CONFIG_HOME/sbx/config.toml``,
+else ``~/.config/sbx/config.toml``) holds every deployment knob: Modal
+profile/app name, durable state names, Secret names, provider image pins,
+and the public API base URL. Environment variables override file values;
+defaults come from ``control.config`` so the names can never drift from the
+control plane's contract constants.
+
+The file never stores secrets — the ``sbx_`` bootstrap key and generated
+Basic credentials live in the state dir (``sbx.keys`` / ``sbx.deploy``),
+mode 0600.
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass, fields, replace
+from pathlib import Path
+from typing import Any
+
+from control.config import (
+    ACCOUNTS_DICT_NAME,
+    ANTIGRAVITY_IMAGE_NAME,
+    BASIC_SECRET_NAME,
+    CODEX_SECRET_NAME,
+    DEVIN_IMAGE_NAME,
+    GROK_IMAGE_NAME,
+    MODAL_APP_NAME,
+    RUNS_DICT_NAME,
+    RUNTIME_IMAGE_NAME,
+    SESSIONS_DICT_NAME,
+    V1_BOOTSTRAP_SECRET_NAME,
+    WORKFLOWS_DICT_NAME,
+)
+
+CONFIG_ENV = "SBX_CONFIG"
+STATE_DIR_ENV = "SBX_STATE_DIR"
+API_KEY_ENV = "SBX_API_KEY"
+
+_APP_DIR = "sbx"
+
+# field -> ((toml section, toml key), env override names in priority order)
+_FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
+    "modal_profile": (("modal", "profile"), ("SBX_MODAL_PROFILE", "MODAL_PROFILE")),
+    "modal_app_name": (("modal", "app_name"), ("SBX_MODAL_APP_NAME",)),
+    "api_base_url": (("api", "base_url"), ("SBX_BASE_URL",)),
+    "sessions_dict": (("state", "sessions_dict"), ("SBX_SESSIONS_DICT",)),
+    "runs_dict": (("state", "runs_dict"), ("SBX_RUNS_DICT",)),
+    "accounts_dict": (("state", "accounts_dict"), ("SBX_ACCOUNTS_DICT",)),
+    "workflows_dict": (("state", "workflows_dict"), ("SBX_WORKFLOWS_DICT",)),
+    "codex_secret": (("secrets", "codex"), ("SBX_CODEX_SECRET_NAME",)),
+    "basic_secret": (("secrets", "basic"), ("SBX_BASIC_SECRET_NAME",)),
+    "bootstrap_secret": (("secrets", "bootstrap"), ("SBX_V1_BOOTSTRAP_SECRET_NAME",)),
+    "image_codex": (("images", "codex"), ("SBX_IMAGE_CODEX",)),
+    "image_devin": (("images", "devin"), ("SBX_IMAGE_DEVIN",)),
+    "image_antigravity": (("images", "antigravity"), ("SBX_IMAGE_ANTIGRAVITY",)),
+    "image_grok": (("images", "grok"), ("SBX_IMAGE_GROK",)),
+    "providers": (("deploy", "providers"), ("SBX_PROVIDERS",)),
+}
+
+
+@dataclass(frozen=True)
+class BootstrapConfig:
+    """Resolved deployment config; ``providers`` selects images to build."""
+
+    modal_profile: str = ""
+    modal_app_name: str = MODAL_APP_NAME
+    api_base_url: str = ""
+    sessions_dict: str = SESSIONS_DICT_NAME
+    runs_dict: str = RUNS_DICT_NAME
+    accounts_dict: str = ACCOUNTS_DICT_NAME
+    workflows_dict: str = WORKFLOWS_DICT_NAME
+    codex_secret: str = CODEX_SECRET_NAME
+    basic_secret: str = BASIC_SECRET_NAME
+    bootstrap_secret: str = V1_BOOTSTRAP_SECRET_NAME
+    image_codex: str = RUNTIME_IMAGE_NAME
+    image_devin: str = DEVIN_IMAGE_NAME
+    image_antigravity: str = ANTIGRAVITY_IMAGE_NAME
+    image_grok: str = GROK_IMAGE_NAME
+    providers: tuple[str, ...] = ("codex",)
+
+    def image_name(self, provider: str) -> str:
+        """Published Modal image name for ``provider``."""
+        return str(getattr(self, f"image_{provider}"))
+
+    def secret_names(self) -> tuple[str, ...]:
+        """Managed Modal Secrets the control app requires."""
+        return (self.codex_secret, self.basic_secret, self.bootstrap_secret)
+
+    def dict_names(self) -> tuple[str, ...]:
+        """Durable stores an upgrade must preserve."""
+        return (
+            self.sessions_dict,
+            self.runs_dict,
+            self.accounts_dict,
+            self.workflows_dict,
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedConfig:
+    """A config plus where each value came from: file / env / default."""
+
+    config: BootstrapConfig
+    path: Path
+    sources: dict[str, str]
+    file_exists: bool
+
+
+def _xdg(env: Mapping[str, str], key: str, fallback: str) -> Path:
+    raw = env.get(key)
+    if raw:
+        return Path(raw)
+    return Path(env.get("HOME", str(Path.home()))) / fallback
+
+
+def config_path(env: Mapping[str, str] | None = None) -> Path:
+    env = os.environ if env is None else env
+    raw = env.get(CONFIG_ENV)
+    if raw:
+        return Path(raw)
+    return _xdg(env, "XDG_CONFIG_HOME", ".config") / _APP_DIR / "config.toml"
+
+
+def state_dir(env: Mapping[str, str] | None = None) -> Path:
+    env = os.environ if env is None else env
+    raw = env.get(STATE_DIR_ENV)
+    if raw:
+        return Path(raw)
+    return _xdg(env, "XDG_STATE_HOME", ".local/state") / _APP_DIR
+
+
+def key_path(env: Mapping[str, str] | None = None) -> Path:
+    return state_dir(env) / "bootstrap.key"
+
+
+def basic_auth_path(env: Mapping[str, str] | None = None) -> Path:
+    return state_dir(env) / "basic-auth.json"
+
+
+def deploy_state_path(env: Mapping[str, str] | None = None) -> Path:
+    return state_dir(env) / "deploy.json"
+
+
+def _field_names() -> tuple[str, ...]:
+    return tuple(f.name for f in fields(BootstrapConfig))
+
+
+def _toml_escape(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _serialize(config: BootstrapConfig) -> str:
+    sections: dict[str, list[str]] = {}
+    for name in _field_names():
+        (section, key), _envs = _FIELD_MAP[name]
+        value = getattr(config, name)
+        if isinstance(value, tuple):
+            rendered = "[" + ", ".join(_toml_escape(v) for v in value) + "]"
+        else:
+            rendered = _toml_escape(str(value))
+        sections.setdefault(section, []).append(f"{key} = {rendered}")
+    out = ["# sbx deployment config — env vars override file values (see AGENTS/docs)."]
+    for section, lines in sections.items():
+        out.append(f"\n[{section}]")
+        out.extend(lines)
+    return "\n".join(out) + "\n"
+
+
+def save(
+    config: BootstrapConfig, path: Path | None = None, *, env: Mapping[str, str] | None = None
+) -> Path:
+    path = path or config_path(env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_text(_serialize(config), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def _coerce(name: str, value: Any) -> Any:
+    if name == "providers":
+        if isinstance(value, str):
+            return tuple(p.strip() for p in value.split(",") if p.strip())
+        if isinstance(value, (list, tuple)):
+            return tuple(str(p).strip() for p in value if str(p).strip())
+        raise ValueError("providers must be a list or comma-separated string")
+    return str(value)
+
+
+def load_file_values(path: Path) -> BootstrapConfig:
+    """File values only (no env) — used by ``sbx init`` to rewrite config."""
+    if not path.is_file():
+        return BootstrapConfig()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    overrides: dict[str, Any] = {}
+    for name in _field_names():
+        (section, key), _envs = _FIELD_MAP[name]
+        raw = data.get(section, {})
+        if isinstance(raw, dict) and key in raw:
+            overrides[name] = _coerce(name, raw[key])
+    return replace(BootstrapConfig(), **overrides) if overrides else BootstrapConfig()
+
+
+def load(
+    path: Path | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> ResolvedConfig:
+    """Resolve file → env → default into a single config view."""
+    env = os.environ if env is None else env
+    path = path or config_path(env)
+    data: dict[str, Any] = {}
+    file_exists = path.is_file()
+    if file_exists:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+    config = BootstrapConfig()
+    sources = {name: "default" for name in _field_names()}
+    overrides: dict[str, Any] = {}
+    for name in _field_names():
+        (section, key), env_names = _FIELD_MAP[name]
+        raw = data.get(section, {})
+        if isinstance(raw, dict) and key in raw:
+            overrides[name] = _coerce(name, raw[key])
+            sources[name] = "file"
+        for env_name in env_names:
+            value = env.get(env_name)
+            if value:
+                overrides[name] = _coerce(name, value)
+                sources[name] = "env"
+                break
+    if overrides:
+        config = replace(config, **overrides)
+    return ResolvedConfig(config=config, path=path, sources=sources, file_exists=file_exists)
