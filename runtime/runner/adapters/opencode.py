@@ -49,6 +49,11 @@ turn (agy/grok precedent) instead of forking the session. The real CLI
 may also drop the terminal ``step_finish`` (anomalyco/opencode run.ts
 emits it only while the loop is still attached); the runner's
 ``sbx.turn_finished`` then remains the authoritative terminal record.
+
+``health_from`` scans stderr first, then the native ``error`` messages
+seen on the stream: under ``--format json`` the real CLI emits fatal
+errors (401/429/...) only as stdout ``error`` events — ``UI.error`` is
+skipped once ``emit`` succeeds — so stderr alone cannot classify them.
 """
 
 from __future__ import annotations
@@ -205,6 +210,8 @@ class OpencodeAdapter:
         self._open_tools: dict[str, dict[str, Any]] = {}
         self._done_tools: set[str] = set()
         self._usage_acc = _empty_usage()
+        # Native ``error``-line messages, for health_from's stream fallback.
+        self._stream_errors: list[str] = []
 
     def prepare_home(self, home: Path, model: str) -> None:
         """Create ``~/.local/share/opencode`` (700); keep ``auth.json`` at 600.
@@ -296,6 +303,11 @@ class OpencodeAdapter:
             return "auth_invalid"
         if any(needle in tail for needle in _RATE_NEEDLES):
             return "rate_limited"
+        stream = " ".join(self._stream_errors).lower()
+        if any(needle in stream for needle in _AUTH_NEEDLES):
+            return "auth_invalid"
+        if any(needle in stream for needle in _RATE_NEEDLES):
+            return "rate_limited"
         return "unknown"
 
     # -- internals ---------------------------------------------------------
@@ -325,7 +337,7 @@ class OpencodeAdapter:
     def _thread_or_stale(self, sid: str | None) -> list[dict[str, Any]]:
         """Emit thread.started for ``sid`` unless it contradicts a requested
         ``--session`` id (defensive; a real stale id errors on stderr)."""
-        if not sid or self._thread_seen:
+        if not sid or self._thread_seen or self._stale:
             return []
         if self._expected_id is not None and sid != self._expected_id:
             self._stale = True
@@ -515,6 +527,7 @@ class OpencodeAdapter:
     def _on_error(self, obj: dict[str, Any]) -> list[dict[str, Any]]:
         events = self._ensure_turn_started() + self._flush_parts()
         message = _error_message(obj)
+        self._stream_errors.append(message)
         events.append({"type": "error", "message": message})
         if not self._turn_terminal:
             self._turn_terminal = True

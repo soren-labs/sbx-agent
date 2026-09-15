@@ -308,16 +308,30 @@ def test_nonzero_exits_2(work: Path, opencode_env: dict[str, str]) -> None:
 
 
 def test_auth_invalid_exits_5(work: Path, opencode_env: dict[str, str]) -> None:
+    """Real ``--format json`` shape: the 401 arrives only as a stdout
+    ``error`` event (the CLI skips ``UI.error`` once ``emit`` succeeds),
+    stderr stays clean, rc=1 -> ``auth_invalid`` via the stream fallback."""
     init_opencode(opencode_env)
     opencode_env["OPENCODE_REPLAY_FIXTURE"] = str(REAL_FIXTURES / "auth_invalid.jsonl")
     opencode_env["OPENCODE_REPLAY_RC"] = "1"
-    opencode_env["OPENCODE_REPLAY_STDERR"] = "Error: Incorrect API key provided (401)"
     code, doc, events = turn(opencode_env, work, 1)
     assert code == 5
     assert doc["status"] == "auth_invalid"
     assert doc["health"] == "auth_invalid"
     finished = [e for e in events if e["type"] == "sbx.turn_finished"]
     assert finished[-1]["status"] == "auth_invalid"
+
+
+def test_auth_invalid_via_stderr_exits_5(work: Path, opencode_env: dict[str, str]) -> None:
+    """Defensive: an auth needle on stderr (e.g. ``--print-logs`` output or
+    a non-json code path) still classifies ``auth_invalid``."""
+    init_opencode(opencode_env)
+    opencode_env["OPENCODE_REPLAY_FIXTURE"] = str(REAL_FIXTURES / "auth_invalid.jsonl")
+    opencode_env["OPENCODE_REPLAY_RC"] = "1"
+    opencode_env["OPENCODE_REPLAY_STDERR"] = "Error: Incorrect API key provided (401)"
+    code, doc, _ = turn(opencode_env, work, 1)
+    assert code == 5
+    assert doc["status"] == "auth_invalid"
 
 
 def test_badjson_exits_4(work: Path, opencode_env: dict[str, str]) -> None:

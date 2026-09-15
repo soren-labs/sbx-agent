@@ -377,6 +377,53 @@ def test_extract_session_id() -> None:
     assert adapter.extract_session_id([{"type": "turn.started"}]) is None
 
 
+def test_health_from_stream_errors_when_stderr_clean() -> None:
+    """Real ``--format json`` shape: fatal errors land only on the stdout
+    ``error`` event; stderr has no needles. health_from must classify from
+    the translated stream (SOR-96 review fix)."""
+    adapter = OpencodeAdapter()
+    _translate_all(_lines(REAL_FIXTURES / "auth_invalid.jsonl"), adapter)
+    assert adapter.health_from(1, "") == "auth_invalid"
+
+    rate_limited = OpencodeAdapter()
+    _translate_all(
+        [
+            json.dumps(
+                {
+                    "type": "error",
+                    "sessionID": "s",
+                    "error": {"name": "APIError", "data": {"message": "429 rate limit"}},
+                }
+            )
+        ],
+        rate_limited,
+    )
+    assert rate_limited.health_from(1, "") == "rate_limited"
+    # Stream errors never override a clean exit.
+    assert rate_limited.health_from(0, "") == "ok"
+
+
+def test_health_from_stale_stream_stays_unknown() -> None:
+    """Adapter-generated stale-resume errors are not provider auth signals —
+    they must not feed the stream fallback."""
+    adapter = OpencodeAdapter()
+    adapter.resume_argv("next", "ses_requested")
+    _translate_all(
+        [
+            json.dumps({"type": "step_start", "sessionID": "ses_other"}),
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "sessionID": "ses_other",
+                    "part": {"reason": "stop", "tokens": {}},
+                }
+            ),
+        ],
+        adapter,
+    )
+    assert adapter.health_from(1, "") == "unknown"
+
+
 def test_health_from() -> None:
     adapter = OpencodeAdapter()
     assert adapter.health_from(0, "") == "ok"
