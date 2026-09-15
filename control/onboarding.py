@@ -57,10 +57,18 @@ class ProviderDescriptor:
     carry — the same set the sandbox runner restores and
     ``export-credentials`` writes back. ``content_kind`` selects the
     per-file schema check applied on import/refresh.
+
+    ``support`` is the provider's Release 0.1 support tier exactly as
+    published in ``docs/providers.md`` (``stable`` / ``experimental`` /
+    ``preview`` / ``unsupported``) — user-facing output must never claim a
+    tier above the real-account evidence. ``experimental`` is the import
+    gate: providers whose production path is not part of the release
+    require the explicit ``--experimental`` opt-in.
     """
 
     provider: str
-    stability: str  # "stable" | "experimental"
+    support: str  # release support tier — mirrors docs/providers.md
+    experimental: bool  # import requires --experimental opt-in
     credential_files: tuple[str, ...]
     content_kind: str  # "json" | "toml"
     default_models: tuple[str, ...]
@@ -70,7 +78,8 @@ class ProviderDescriptor:
 PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ProviderDescriptor(
         provider="codex",
-        stability="stable",
+        support="stable",
+        experimental=False,
         credential_files=(".codex/auth.json",),
         content_kind="json",
         default_models=("gpt-5.6-luna",),
@@ -78,7 +87,8 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ),
     ProviderDescriptor(
         provider="devin",
-        stability="stable",
+        support="experimental",
+        experimental=False,
         credential_files=(".local/share/devin/credentials.toml",),
         content_kind="toml",
         default_models=("swe-2-high", "swe-2-medium"),
@@ -86,7 +96,8 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ),
     ProviderDescriptor(
         provider="antigravity",
-        stability="stable",
+        support="experimental",
+        experimental=False,
         credential_files=(".gemini/antigravity-cli/antigravity-oauth-token",),
         content_kind="json",
         default_models=("gemini-3.8-flash-low",),
@@ -94,7 +105,8 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ),
     ProviderDescriptor(
         provider="grok",
-        stability="stable",
+        support="experimental",
+        experimental=False,
         credential_files=(".grok/auth.json",),
         content_kind="json",
         default_models=("grok-4.6",),
@@ -102,7 +114,8 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ),
     ProviderDescriptor(
         provider="opencode",
-        stability="stable",
+        support="preview",
+        experimental=False,
         credential_files=(".local/share/opencode/auth.json",),
         content_kind="json",
         default_models=(),
@@ -110,7 +123,8 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ),
     ProviderDescriptor(
         provider="claude",
-        stability="experimental",
+        support="unsupported",
+        experimental=True,
         credential_files=(".claude/.credentials.json",),
         content_kind="json",
         default_models=(),
@@ -556,7 +570,7 @@ class OnboardingService:
     ) -> Account:
         """Import a credential as a new account. Fails before any write."""
         desc = descriptor_for(provider)
-        if desc.stability == "experimental" and not experimental_ok:
+        if desc.experimental and not experimental_ok:
             raise OnboardingError(
                 "experimental_provider",
                 f"provider {provider!r} is experimental; pass --experimental to proceed",
@@ -678,7 +692,7 @@ class OnboardingService:
             "provider": account.provider,
             "label": account.label,
             "status": account.status,
-            "stability": desc.stability if desc else "unknown",
+            "support": desc.support if desc else "unknown",
             "credential_files": list(desc.credential_files) if desc else [],
             "credential_env": CREDENTIAL_ENV,
             "secret_name": account.secret_name,
@@ -830,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
             entries = [
                 {
                     "provider": d.provider,
-                    "stability": d.stability,
+                    "support": d.support,
                     "credential_files": list(d.credential_files),
                     "credential_env": CREDENTIAL_ENV,
                     "default_models": list(d.default_models),
@@ -843,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 for e in entries:
                     print(
-                        f"{e['provider']}\t{e['stability']}\t{','.join(e['credential_files'])}\t{e['summary']}"
+                        f"{e['provider']}\t{e['support']}\t{','.join(e['credential_files'])}\t{e['summary']}"
                     )
             return 0
 

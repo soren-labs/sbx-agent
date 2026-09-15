@@ -609,10 +609,9 @@ IMAGE_BUILDERS: dict[str, tuple[Any, str]] = {
 def image_for(provider: str) -> str:
     """Explicit provider → published-image-name mapping (Release 0.1).
 
-    The control plane mirrors the devin / antigravity / grok names as
-    ``control.config`` constants (sync covered by tests). The opencode
-    control-plane resolution lands with its adapter package; this mapping is
-    the runtime seam it should consume.
+    The control plane mirrors every name as a ``control.config`` constant
+    (``*_IMAGE_NAME``; sync covered by tests) and resolves them in
+    ``control/backends/modal.py::_PROVIDER_IMAGE_NAMES``.
     """
     try:
         return IMAGE_BUILDERS[provider][1]
@@ -690,7 +689,10 @@ def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
         "devin": devin_runtime_env(),
         "antigravity": agent_home_env(),
         "grok": agent_home_env(),
-        "opencode": agent_home_env(),
+        # opencode auth.json is an XDG data file: the image and the control
+        # plane (control/backends/modal.py::_create_env) both pin HOME+XDG —
+        # the same devin_runtime_env overlay.
+        "opencode": devin_runtime_env(),
     }
     providers: dict[str, dict[str, Any]] = {}
     for provider in sorted(IMAGE_BUILDERS):

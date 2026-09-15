@@ -93,6 +93,32 @@ def test_manifest_install_kinds_and_home_layout() -> None:
     assert layout["dirs"] == ["inbox", "turns", "home", ".codex"]
 
 
+def test_manifest_env_matches_control_plane_injection() -> None:
+    """Regression: the manifest's ``env`` must equal the vars the control
+    plane injects at ``Sandbox.create`` — opencode gets the same HOME+XDG
+    pinning as devin (its auth.json is an XDG data file)."""
+    from control.backend import SandboxSpec
+    from control.backends.modal import _create_env
+    from runtime.image import agent_home_env, devin_runtime_env
+
+    manifest = image_manifest()
+    expected = {
+        "codex": {},
+        "devin": devin_runtime_env(),
+        "antigravity": agent_home_env(),
+        "grok": agent_home_env(),
+        "opencode": devin_runtime_env(),
+    }
+    for provider, overlay in expected.items():
+        assert manifest["providers"][provider]["env"] == overlay
+        injected = _create_env(SandboxSpec(tags={"provider": provider}))
+        for key, value in overlay.items():
+            assert injected[key] == value
+    # opencode/devin specifically carry XDG pinning; agy/grok must not.
+    assert manifest["providers"]["opencode"]["env"]["XDG_DATA_HOME"].endswith("/.local/share")
+    assert "XDG_DATA_HOME" not in manifest["providers"]["antigravity"]["env"]
+
+
 def test_manifest_credential_files_match_contract() -> None:
     manifest = image_manifest()
     for provider, files in PROVIDER_CREDENTIAL_FILES.items():

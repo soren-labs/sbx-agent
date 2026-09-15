@@ -87,6 +87,7 @@ directory imports take the containing dir):
 | devin | `.local/share/devin/credentials.toml` |
 | antigravity | `.gemini/antigravity-cli/antigravity-oauth-token` |
 | grok | `.grok/auth.json` |
+| opencode | `.local/share/opencode/auth.json` |
 
 ## Provider-specific notes
 
@@ -112,4 +113,12 @@ first session marker. Step-level `usage.signature` is redacted before
 persistence. Stale `--resume` exits rc=1 with a stderr 404 signature and no
 stream events, so the rc path fails the turn.
 
-**opencode / claude.** Not supported in `v0.1.0-alpha` — see the matrix.
+**opencode.** The production adapter, pinned image and credential path are
+merged and schedulable (`opencode run <prompt> --format json`, resume via
+`--session <id>`), but no real-account gate has run yet — status stays
+**Preview** until the SOR-96 real-Modal gate passes with a real `auth.json`.
+
+**claude.** Not supported in `v0.1.0-alpha` — the experimental adapter seam
+is merged but deliberately not registered, so `provider=claude` is not
+schedulable (`invalid_provider`). Credential import is possible behind
+`--experimental` for early testing only.

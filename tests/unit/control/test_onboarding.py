@@ -63,13 +63,29 @@ def _registry(service: OnboardingService):
 
 
 class TestDescriptors:
-    def test_stable_providers_cover_the_contract_five(self) -> None:
-        stable = {d.provider for d in PROVIDER_DESCRIPTORS if d.stability == "stable"}
-        assert stable == {"codex", "devin", "antigravity", "grok", "opencode"}
+    def test_support_tiers_match_the_release_matrix(self) -> None:
+        """Descriptors must not claim a tier above the docs/providers.md
+        evidence matrix — ``providers``/``status`` output is user-facing."""
+        tiers = {d.provider: d.support for d in PROVIDER_DESCRIPTORS}
+        assert tiers == {
+            "codex": "stable",
+            "devin": "experimental",
+            "antigravity": "experimental",
+            "grok": "experimental",
+            "opencode": "preview",
+            "claude": "unsupported",
+        }
 
-    def test_claude_is_experimental(self) -> None:
+    def test_every_release_provider_imports_without_flag(self) -> None:
+        # The five released providers are not behind --experimental; only
+        # claude (unregistered adapter, unsupported in 0.1) is gated.
+        free = {d.provider for d in PROVIDER_DESCRIPTORS if not d.experimental}
+        assert free == {"codex", "devin", "antigravity", "grok", "opencode"}
+
+    def test_claude_is_unsupported_and_gated(self) -> None:
         desc = descriptor_for("claude")
-        assert desc.stability == "experimental"
+        assert desc.support == "unsupported"
+        assert desc.experimental is True
         assert desc.credential_files == (CLAUDE_CRED_REL,)
 
     def test_credential_files_match_contract(self) -> None:
@@ -631,6 +647,30 @@ class TestCli:
 
         rc, out, _ = run("list", "--json")
         assert json.loads(out)["accounts"] == []
+
+    def test_cli_providers_output_uses_release_tiers(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Regression: ``providers`` must not print ``stable`` for providers
+        the release matrix marks Experimental/Preview/unsupported."""
+        rc = onboarding_main(["--store-dir", str(tmp_path / "store"), "providers"])
+        assert rc == 0
+        rows = {
+            line.split("\t")[0]: line.split("\t")[1]
+            for line in capsys.readouterr().out.splitlines()
+            if "\t" in line
+        }
+        assert rows["opencode"] == "preview"
+        assert rows["devin"] == "experimental"
+        assert rows["claude"] == "unsupported"
+        assert rows["codex"] == "stable"
+        assert "stable" not in {rows["opencode"], rows["devin"], rows["grok"]}
+
+    def test_describe_reports_support_tier(self, tmp_path: Path) -> None:
+        svc = _service()
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        account = svc.add("opencode", src)
+        assert svc.describe(account)["support"] == "preview"
 
     def test_cli_error_is_structured(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

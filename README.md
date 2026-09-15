@@ -2,8 +2,9 @@
 
 **Self-hosted orchestration for cloud coding agents.** One `POST /v1/agents`
 call creates an isolated [Modal](https://modal.com) Sandbox that runs the
-official provider CLI you already pay for (Codex, Devin, Antigravity, Grok) —
-multi-turn, streaming, with durable runs, artifacts and workflow recovery.
+official provider CLI you already pay for (Codex, Devin, Antigravity, Grok,
+OpenCode) — multi-turn, streaming, with durable runs, artifacts and workflow
+recovery.
 
 > **Status: `v0.1.0-alpha` (public alpha).** Self-hosted bring-your-own-everything
 > release. The `/v1` API may still change; see [Known limitations](#known-limitations).
@@ -49,7 +50,8 @@ and hands work between agents via artifacts.
                                         │  init · turn · stop · export-     │
                                         │  credentials                      │
                                         │ official provider CLI             │
-                                        │  (codex / devin / agy / grok)     │
+                                        │  (codex / devin / agy / grok /    │
+                                        │   opencode)                       │
                                         │ credential files only — no        │
                                         │  Modal or platform keys inside    │
                                         └───────────────────────────────────┘
@@ -142,7 +144,8 @@ Everything deploys into your Modal workspace. The deployment creates:
 ```bash
 sbx deploy         # idempotent: builds images, seeds Dicts/Secrets, deploys
 sbx upgrade        # re-deploy keeping durable runs/accounts/artifacts
-sbx uninstall      # stop app + sandboxes; keeps durable data unless --purge
+sbx uninstall      # stop app + sandboxes; durable data stays unless
+                   # --purge-data / --purge-credentials is passed
 ```
 
 Manual equivalent (`modal secret create`, `make image*`, `make deploy`),

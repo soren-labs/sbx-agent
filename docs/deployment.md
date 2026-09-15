@@ -104,8 +104,9 @@ the deployment. In-flight sandboxes keep running on their existing image.
 ## Uninstall
 
 ```bash
-sbx uninstall              # stops the app + leftover sandboxes
-sbx uninstall --purge      # also deletes Dicts/Secrets (opt-in; off by default)
+sbx uninstall                       # stops the app + leftover sandboxes
+sbx uninstall --purge-data          # also deletes the durable Dicts
+sbx uninstall --purge-credentials   # also deletes Secrets + the local key file
 ```
 
 Manual equivalent:
@@ -119,7 +120,8 @@ modal sandbox list         # verify zero sbx sandboxes remain
 ```
 
 Credentials are yours — uninstall never deletes them unless you pass
-`--purge` or delete the Secrets yourself.
+`--purge-credentials` (or `--purge-data` for the Dicts) or delete the
+Secrets yourself.
 
 ## Optional edge
 

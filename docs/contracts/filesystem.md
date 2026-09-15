@@ -24,7 +24,8 @@ $SBX_WORK/
     .local/share/opencode/auth.json
                         # opencode provider 凭证（按需）
     .gemini/antigravity-cli/  # antigravity provider 凭证（按需）
-    .config/devin/      # devin provider 凭证（按需）
+    .local/share/devin/credentials.toml
+                          # devin provider 凭证（按需）
 ```
 
 `events.jsonl` 的行号从 1 起算，与会话 API SSE 的 `id:` 帧字段一致。

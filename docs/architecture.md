@@ -28,7 +28,8 @@ Modal, and one Modal Sandbox per agent running the official provider CLI.
                                     │  init · turn · stop ·              │
                                     │  export-credentials                │
                                     │ AgentAdapter → official CLI        │
-                                    │  codex · devin · agy · grok        │
+                                    │  codex · devin · agy · grok ·      │
+                                    │  opencode                        │
                                     └────────────────────────────────────┘
 ```
 
