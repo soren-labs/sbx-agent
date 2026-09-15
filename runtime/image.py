@@ -264,7 +264,7 @@ def render_dockerfile_local(
     if devin:
         env.update(devin_runtime_env())
     elif opencode:
-        env.update(agent_home_env())
+        env.update(devin_runtime_env())
     env_lines = "ENV " + " \\\n    ".join(f"{key}={value}" for key, value in env.items())
     extra_run = ""
     mkdirs = "/work/inbox /work/turns /work/.codex /work/home"
@@ -515,18 +515,17 @@ def sbx_opencode_image(base: Any | None = None, spec: PackageSpec | None = None)
     """Named Modal Image ``sbx-runtime-opencode`` (Release 0.1 seam).
 
     ``sbx-runtime`` plus the pinned ``opencode-ai`` npm package — fully
-    reproducible from ``packages.txt``, no host artifact — with ``HOME``
-    rooted at ``$SBX_WORK/home`` so the restored
-    ``.local/share/opencode/auth.json`` is the only auth source. The OpenCode
-    adapter lands with its own package; this image is the runtime seam.
-    ``base``/``spec`` exist for no-cloud tests.
+    reproducible from ``packages.txt``, no host artifact — with ``HOME`` and
+    XDG rooted at ``$SBX_WORK/home`` (same pinning as devin, per SOR-96) so
+    the restored ``.local/share/opencode/auth.json`` is the only auth
+    source. ``base``/``spec`` exist for no-cloud tests.
     """
     spec = spec or load_packages()
     image = base if base is not None else sbx_runtime_image()
     return image.run_commands(
         f"npm i -g {spec.opencode_npm_spec}",
         cli_version_check("opencode", spec.opencode_version),
-    ).env(agent_home_env())
+    ).env(devin_runtime_env())
 
 
 def invoke_control_deploy() -> None:

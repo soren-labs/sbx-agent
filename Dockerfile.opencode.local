@@ -9,7 +9,11 @@ FROM python:3.12-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive \
     SBX_WORK=/work \
     PYTHONPATH=/opt/sbx \
-    HOME=/work/home
+    HOME=/work/home \
+    XDG_CONFIG_HOME=/work/home/.config \
+    XDG_CACHE_HOME=/work/home/.cache \
+    XDG_DATA_HOME=/work/home/.local/share \
+    XDG_STATE_HOME=/work/home/.local/state
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl git ca-certificates ripgrep jq procps build-essential python3-pip \

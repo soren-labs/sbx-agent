@@ -29,6 +29,7 @@ from control.config import (
     DEVIN_IMAGE_NAME,
     GROK_IMAGE_NAME,
     MODAL_APP_NAME,
+    OPENCODE_IMAGE_NAME,
     RUNS_DICT_NAME,
     RUNTIME_IMAGE_NAME,
     SESSIONS_DICT_NAME,
@@ -58,6 +59,7 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "image_devin": (("images", "devin"), ("SBX_IMAGE_DEVIN",)),
     "image_antigravity": (("images", "antigravity"), ("SBX_IMAGE_ANTIGRAVITY",)),
     "image_grok": (("images", "grok"), ("SBX_IMAGE_GROK",)),
+    "image_opencode": (("images", "opencode"), ("SBX_IMAGE_OPENCODE",)),
     "providers": (("deploy", "providers"), ("SBX_PROVIDERS",)),
 }
 
@@ -80,6 +82,7 @@ class BootstrapConfig:
     image_devin: str = DEVIN_IMAGE_NAME
     image_antigravity: str = ANTIGRAVITY_IMAGE_NAME
     image_grok: str = GROK_IMAGE_NAME
+    image_opencode: str = OPENCODE_IMAGE_NAME
     providers: tuple[str, ...] = ("codex",)
 
     def image_name(self, provider: str) -> str:

@@ -106,7 +106,7 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
         credential_files=(".local/share/opencode/auth.json",),
         content_kind="json",
         default_models=(),
-        summary="OpenCode auth.json (runtime adapter pending)",
+        summary="OpenCode auth.json",
     ),
     ProviderDescriptor(
         provider="claude",

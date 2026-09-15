@@ -33,6 +33,7 @@ from runtime.image import (
     agent_home_env,
     cli_version_check,
     image_for,
+    devin_runtime_env,
     load_packages,
     opencode_install_command,
     sbx_opencode_image,
@@ -228,7 +229,7 @@ def test_opencode_image_layers_pinned_npm_cli() -> None:
                 cli_version_check("opencode", spec.opencode_version),
             ),
         ),
-        ("env", {"HOME": "/work/home"}),
+        ("env", devin_runtime_env()),
     ]
 
 
@@ -243,9 +244,9 @@ def test_opencode_install_command_pins_npm_version() -> None:
     assert "opencode --version" in cmd
 
 
-def test_opencode_image_layers_npm_and_home_env() -> None:
-    """``sbx_opencode_image`` = base + npm pin + HOME pinning (auth.json is
-    ``$HOME/.local/share/opencode/auth.json``); no add_local_file, no secrets."""
+def test_opencode_image_layers_npm_and_xdg_env() -> None:
+    """``sbx_opencode_image`` = base + npm pin + HOME/XDG pinning (auth.json
+    is an XDG data file); no add_local_file and no secrets."""
     import runtime.image as runtime_image
 
     base = _RecordingImage()
@@ -262,8 +263,8 @@ def test_opencode_image_layers_npm_and_home_env() -> None:
     run_cmds = base.calls[0][1]
     assert any("npm i -g opencode-ai@" in cmd for cmd in run_cmds)
     env = base.calls[1][1]
-    assert env == agent_home_env()
-    assert env["HOME"].endswith("/home")
+    assert env == devin_runtime_env()
+    assert env["XDG_DATA_HOME"].endswith("/.local/share")
 
 
 def test_image_py_defines_provider_builders() -> None:
