@@ -602,9 +602,7 @@ class _Artifacts:
         )
         artifacts = list(body.get("artifacts") or [])
         if run_id is not None:
-            artifacts = [
-                a for a in artifacts if (a.get("producer") or {}).get("run_id") == run_id
-            ]
+            artifacts = [a for a in artifacts if (a.get("producer") or {}).get("run_id") == run_id]
         return artifacts
 
     def download(
