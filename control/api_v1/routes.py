@@ -32,10 +32,17 @@ from control.api_v1.deps import (
     get_key_store,
     get_plane,
     get_registry,
+    get_run_states,
     get_scheduler,
     get_v1_state,
 )
 from control.api_v1.errors import V1ApiError, not_found
+from control.api_v1.lifecycle import (
+    RUN_TERMINAL,
+    RunStateStore,
+    launch_first_run,
+    request_fingerprint,
+)
 from control.api_v1.schemas import (
     VALID_SCOPES,
     CreateAccountRequest,
@@ -90,7 +97,24 @@ def _ledger(plane: Any) -> Any:
     return getattr(plane, "run_ledger", None)
 
 
-def _known_run_ns(rec: Any, ledger: Any = None) -> set[int]:
+def _meta_for(v1: V1State, rec: Any) -> AgentMeta:
+    """Agent metadata with a restart-stable fallback to sandbox tags.
+
+    ``V1State`` is per-process; after a control-plane restart the durable
+    session record's sandbox tags still carry provider/account, so identity
+    does not drift back to defaults (SOR-82).
+    """
+    meta = v1.get_meta(rec.id)
+    if meta is not None:
+        return meta
+    tags = getattr(rec, "sandbox_tags", None) or {}
+    return AgentMeta(
+        provider=tags.get("provider") or "codex",
+        account_id=tags.get("account_id") or "auto",
+    )
+
+
+def _known_run_ns(rec: Any, ledger: Any = None, run_states: Any = None) -> set[int]:
     ns = set(range(1, int(rec.turns) + 1))
     for message in rec.messages:
         n = _turn_n(message.get("turn_id"))
@@ -103,6 +127,14 @@ def _known_run_ns(rec: Any, ledger: Any = None) -> set[int]:
         # when the session record lost the matching messages/turn count.
         try:
             ns.update(record.n for record in ledger.list(rec.id))
+        except Exception:
+            pass
+    if run_states is not None:
+        # A separate run-state seam (ledger-less deployments, injected test
+        # stores) can know runs the ledger does not — e.g. a queued CREATING
+        # run-1 before the ledger saw it.
+        try:
+            ns.update(s.n for s in run_states.list(rec.id))
         except Exception:
             pass
     return ns
@@ -199,6 +231,7 @@ def _run_public(
     n: int,
     cancelled: set[int],
     meta: Any = None,
+    run_states: RunStateStore | None = None,
 ) -> dict[str, Any]:
     """Cursor-shaped Run; the durable ledger is authoritative once written.
 
@@ -206,7 +239,11 @@ def _run_public(
     derivation: a readable ``turns/<n>.json`` decides the terminal status
     (persisted into the ledger when one is attached); without evidence the
     status is explicit ``UNKNOWN`` or the session-derived fallback — never
-    inferred ``FINISHED``.
+    inferred ``FINISHED``. While the session is still live, a persisted open
+    record's own status (``CREATING`` pre-dispatch, ``RUNNING`` after) is
+    authoritative — the derived view cannot see the queued-run window
+    (SOR-82 A2). A separate ``RunStateStore`` (when the ledger is absent or a
+    test injects one) overlays the derived view the same way.
     """
     ledger = _ledger(plane)
     record = ledger.get(rec.id, n) if ledger is not None else None
@@ -237,10 +274,16 @@ def _run_public(
             # Corrupt stored payload: report it as-is (UNKNOWN) rather than
             # guessing a terminal state from the session.
             return _record_public(record, pub, meta)
-        status = _fallback_status(rec)
-        return _record_public(
-            record, pub, meta, status=status, error=record.error or _fallback_error(status)
-        )
+        if rec.status in TERMINAL_STATUSES:
+            # The session died with the run still open and no evidence left:
+            # fall back to the session-derived terminal status.
+            status = _fallback_status(rec)
+            return _record_public(
+                record, pub, meta, status=status, error=record.error or _fallback_error(status)
+            )
+        # Live session, open record, no readable evidence yet — the record's
+        # persisted open status (CREATING/RUNNING) is the truth.
+        return _record_public(record, pub, meta)
 
     # No ledger record (pre-ledger session or lost store): derive honestly.
     turn_id = f"turn-{n}"
@@ -296,6 +339,36 @@ def _run_public(
         status = "CANCELLED"
         error = _fallback_error("CANCELLED")
 
+    if run_states is not None:
+        state = run_states.get(rec.id, n)
+        if state is not None:
+            if state.status in RUN_TERMINAL:
+                status = state.status
+                updated_at = state.updated_at
+            else:
+                # The derived view cannot see a queued/pre-dispatch run; its
+                # catch-all "CANCELLED" is only real when the cancel was
+                # recorded or the session went terminal.
+                catch_all_cancelled = (
+                    status == "CANCELLED"
+                    and n not in cancelled
+                    and rec.status not in ("closed", "timed_out", "lost")
+                )
+                if status in RUN_TERMINAL and not catch_all_cancelled:
+                    # Derived terminal truth (turn finished, session died):
+                    # fold it into a RUNNING record so the store converges.
+                    # A CREATING record belongs to the worker, which persists
+                    # ERROR/CANCELLED itself.
+                    if state.status == "RUNNING":
+                        run_states.transition(rec.id, n, status)
+                elif status != "RUNNING":
+                    status = state.status
+            run_state = state
+        else:
+            run_state = None
+    else:
+        run_state = None
+
     run: dict[str, Any] = {
         "id": f"run-{n}",
         "agent_id": rec.id,
@@ -311,18 +384,22 @@ def _run_public(
         "model": pub.get("model"),
         "artifact_refs": default_artifact_refs(n),
     }
+    if run_state is not None and run_state.error is not None:
+        run["error"] = run_state.error
     if usage is not None:
         run["usage"] = usage_public(usage)
     return run
 
 
-def _runs(plane: Any, rec: Any, v1: V1State) -> list[dict[str, Any]]:
+def _runs(
+    plane: Any, rec: Any, v1: V1State, run_states: RunStateStore | None = None
+) -> list[dict[str, Any]]:
     pub = plane.public(rec)
     cancelled = v1.cancelled(rec.id)
-    meta = v1.get_meta(rec.id)
-    ledger = _ledger(plane)
+    meta = _meta_for(v1, rec)
     return [
-        _run_public(plane, pub, rec, n, cancelled, meta) for n in sorted(_known_run_ns(rec, ledger))
+        _run_public(plane, pub, rec, n, cancelled, meta, run_states)
+        for n in sorted(_known_run_ns(rec, _ledger(plane), run_states))
     ]
 
 
@@ -333,12 +410,19 @@ def _require_agent(plane: Any, agent_id: str) -> Any:
     return rec
 
 
-def _require_run(plane: Any, rec: Any, run_id: str, v1: V1State) -> dict[str, Any]:
+def _require_run(
+    plane: Any,
+    rec: Any,
+    run_id: str,
+    v1: V1State,
+    run_states: RunStateStore | None = None,
+) -> dict[str, Any]:
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec, _ledger(plane)):
+    known = _known_run_ns(rec, _ledger(plane), run_states)
+    if n is None or n not in known:
         raise not_found("run not found")
     pub = plane.public(rec)
-    return _run_public(plane, pub, rec, n, v1.cancelled(rec.id), v1.get_meta(rec.id))
+    return _run_public(plane, pub, rec, n, v1.cancelled(rec.id), _meta_for(v1, rec), run_states)
 
 
 # ---------------------------------------------------------------- agents
@@ -417,6 +501,95 @@ def create_agent(
     registry: AccountRegistry = Depends(get_registry),
     scheduler: Scheduler = Depends(get_scheduler),
     v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    """Create an agent and queue its first run (SOR-82 A2).
+
+    Returns as soon as the session record + a ``CREATING`` run-1 exist;
+    sandbox cold start / ``runner init`` / first-turn dispatch run on a
+    background worker and surface through ``GET`` polling. A retried
+    ``Idempotency-Key`` with the same body replays the original response;
+    a different body under a used key is a 409 ``idempotency_conflict``.
+    """
+    owned = None
+    fingerprint = request_fingerprint(body)
+    if idempotency_key:
+        # Durable dedup first: the session record pins (api key, key) so a
+        # retry landing after a control-plane restart — where the in-memory
+        # IdempotencyStore is empty — still resolves to the original agent.
+        prior = plane.find_by_idempotency(key.id, idempotency_key)
+        if prior is not None:
+            if prior.idempotency_fingerprint not in (None, fingerprint):
+                raise V1ApiError(
+                    409,
+                    "idempotency_conflict",
+                    "Idempotency-Key was already used with a different request body",
+                )
+            pub = plane.public(prior)
+            meta = _meta_for(v1, prior)
+            return {
+                "agent": agent_public(pub, meta),
+                "run": _run_public(
+                    plane, pub, prior, 1, v1.cancelled(prior.id), meta, run_states
+                ),
+            }
+        outcome, entry = v1.idempotency.claim(key.id, idempotency_key, fingerprint)
+        if outcome == "hit":
+            return entry.body
+        if outcome == "conflict":
+            raise V1ApiError(
+                409,
+                "idempotency_conflict",
+                "Idempotency-Key was already used with a different request body",
+            )
+        if outcome == "timeout":
+            raise V1ApiError(
+                409,
+                "idempotency_in_progress",
+                "a create with this Idempotency-Key is still in progress",
+            )
+        owned = (entry,)
+
+    try:
+        result = _create_agent_once(
+            body,
+            key,
+            plane,
+            registry,
+            scheduler,
+            v1,
+            run_states,
+            idempotency_key=idempotency_key,
+            idempotency_fingerprint=fingerprint,
+        )
+    except Exception:
+        if owned is not None:
+            # Failed creates don't pin the key — a retry may proceed.
+            v1.idempotency.abandon(key.id, idempotency_key, owned[0])
+        raise
+    if owned is not None:
+        v1.idempotency.complete(
+            key.id,
+            idempotency_key,
+            owned[0],
+            agent_id=result["agent"]["id"],
+            body=result,
+        )
+    return result
+
+
+def _create_agent_once(
+    body: CreateAgentRequest,
+    key: ApiKey,
+    plane: Any,
+    registry: AccountRegistry,
+    scheduler: Scheduler,
+    v1: V1State,
+    run_states: RunStateStore,
+    *,
+    idempotency_key: str | None = None,
+    idempotency_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -455,13 +628,15 @@ def create_agent(
     model = body.agent.model or _default_model(provider, account)
 
     try:
-        session_id = plane.create_session(
+        session_id = plane.open_session(
             owner=key.id,
             title=body.name,
             model=model,
             provider=provider,
             account_id=resolved,
-            secret_name=secret_name,
+            first_prompt=body.prompt.text,
+            idempotency_key=idempotency_key,
+            idempotency_fingerprint=idempotency_fingerprint,
         )
     except ConcurrencyLimit as exc:
         _release_lease(lease)
@@ -489,26 +664,32 @@ def create_agent(
                 registry.touch(account.id, _iso_now())
             except KeyError:
                 pass
-        try:
-            turn_id = plane.post_message(session_id, body.prompt.text)
-        except SessionConflict as exc:
-            raise V1ApiError(exc.code, exc.error, exc.error) from exc
-        except KeyError as exc:
-            raise not_found("agent not found after create") from exc
-        n = _turn_n(turn_id) or 1
-        rec = _require_agent(plane, session_id)
-        agent = agent_public(plane.public(rec), v1.get_meta(session_id))
-        run = _run_public(
-            plane,
-            plane.public(rec),
-            rec,
-            n,
-            v1.cancelled(session_id),
-            v1.get_meta(session_id),
-        )
+        # Backstop for ledger-less run-state seams: with the durable ledger
+        # attached, open_session already persisted run-1 as CREATING and this
+        # is an idempotent no-op.
+        run_states.begin(session_id, 1, prompt=body.prompt.text)
     except Exception:
         _discard_agent(plane, v1, session_id, lease)
         raise
+
+    # The worker provisions the sandbox, runs ``runner init`` and dispatches
+    # run-1; failures land as persisted run ERROR and release the lease.
+    launch_first_run(
+        plane=plane,
+        v1=v1,
+        run_states=run_states,
+        session_id=session_id,
+        provider=provider,
+        account_id=resolved,
+        secret_name=secret_name,
+    )
+
+    rec = _require_agent(plane, session_id)
+    pub = plane.public(rec)
+    agent = agent_public(pub, _meta_for(v1, rec))
+    run = _run_public(
+        plane, pub, rec, 1, v1.cancelled(session_id), _meta_for(v1, rec), run_states
+    )
     return {"agent": agent, "run": run}
 
 
@@ -528,7 +709,10 @@ def list_agents(
             start = max(0, int(cursor))
         except ValueError:
             raise V1ApiError(400, "invalid_provider", "malformed cursor") from None
-    agents = [agent_public(pub, v1.get_meta(pub["id"])) for pub in plane.list_sessions()]
+    agents = [
+        agent_public(plane.public(rec), _meta_for(v1, rec))
+        for rec in plane.store.list_all()
+    ]
     agents = [
         a
         for a in agents
@@ -550,7 +734,7 @@ def get_agent(
     v1: V1State = Depends(get_v1_state),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
-    return agent_public(plane.public(rec), v1.get_meta(agent_id))
+    return agent_public(plane.public(rec), _meta_for(v1, rec))
 
 
 @router.delete("/agents/{agent_id}")
@@ -568,7 +752,7 @@ def delete_agent(
         # The account slot is freed even when close/terminate fails; deeper
         # sandbox cleanup stays with the control plane / reaper (P2-C).
         _release_agent_lease(v1, agent_id)
-    return agent_public(plane.public(rec), v1.get_meta(agent_id))
+    return agent_public(plane.public(rec), _meta_for(v1, rec))
 
 
 # ------------------------------------------------------------------- runs
@@ -581,6 +765,7 @@ def create_run(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
 ) -> dict[str, Any]:
     _require_agent(plane, agent_id)
     try:
@@ -590,9 +775,13 @@ def create_run(
     except SessionConflict as exc:
         raise V1ApiError(exc.code, exc.error, exc.error) from exc
     n = _turn_n(turn_id) or 0
+    # Dispatched at once, so the run is born RUNNING (SOR-82 A2 seam).
+    run_states.begin(agent_id, n, prompt=body.prompt.text, status="RUNNING")
     rec = _require_agent(plane, agent_id)
     pub = plane.public(rec)
-    return _run_public(plane, pub, rec, n, v1.cancelled(agent_id), v1.get_meta(agent_id))
+    return _run_public(
+        plane, pub, rec, n, v1.cancelled(agent_id), _meta_for(v1, rec), run_states
+    )
 
 
 @router.get("/agents/{agent_id}/runs")
@@ -601,9 +790,10 @@ def list_runs(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
-    return {"runs": _runs(plane, rec, v1)}
+    return {"runs": _runs(plane, rec, v1, run_states)}
 
 
 @router.get("/agents/{agent_id}/runs/{run_id}")
@@ -613,9 +803,10 @@ def get_run(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
-    return _require_run(plane, rec, run_id, v1)
+    return _require_run(plane, rec, run_id, v1, run_states)
 
 
 @router.post("/agents/{agent_id}/runs/{run_id}/cancel")
@@ -625,19 +816,29 @@ def cancel_run(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
 ) -> dict[str, Any]:
     rec = _require_agent(plane, agent_id)
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec, _ledger(plane)):
+    if n is None or n not in _known_run_ns(rec, _ledger(plane), run_states):
         raise not_found("run not found")
-    if rec.current_turn_n == n and rec.status == "running":
+    state = run_states.get(agent_id, n)
+    if state is not None and state.status == "CREATING":
+        # Pre-dispatch run-1 (SOR-82 A2): drop the queued turn so the worker
+        # skips it, and persist CANCELLED — terminal, never resurrected.
+        plane.discard_queued_first_turn(agent_id)
+        run_states.transition(agent_id, n, "CANCELLED")
+        v1.mark_cancelled(agent_id, n)
+        rec = _require_agent(plane, agent_id)
+    elif rec.current_turn_n == n and rec.status == "running":
         try:
             plane.stop(agent_id)
         except KeyError:
             raise not_found("agent not found") from None
         v1.mark_cancelled(agent_id, n)
+        run_states.transition(agent_id, n, "CANCELLED")
         rec = _require_agent(plane, agent_id)
-    return _require_run(plane, rec, run_id, v1)
+    return _require_run(plane, rec, run_id, v1, run_states)
 
 
 # ------------------------------------------------------------------- SSE
@@ -677,12 +878,13 @@ async def stream_run(
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
 ) -> Any:
     from control.app import DisconnectAwareStreamingResponse
 
     rec = _require_agent(plane, agent_id)
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec, _ledger(plane)):
+    if n is None or n not in _known_run_ns(rec, _ledger(plane), run_states):
         raise not_found("run not found")
     try:
         last_id = int(last_event_id) if last_event_id else 0
@@ -691,20 +893,48 @@ async def stream_run(
     start_line = max(1, last_id + 1)
 
     backend = getattr(plane, "backend", None)
-    handle = rec.handle()
-    poll = None
-    if backend is not None and handle is not None:
-        try:
-            poll = backend.poll(handle)
-        except Exception:
-            poll = None
     keepalive_s: float = getattr(request.app.state, "keepalive_s", 15.0)
+
+    def _live_handle() -> tuple[Any, Any]:
+        """Current sandbox handle + poll, re-fetched so a CREATING run can
+        attach once the background provisioner binds the sandbox (SOR-82 A2)."""
+        if backend is None:
+            return None, None
+        rec_now = plane.get(agent_id)
+        if rec_now is None:
+            return None, None
+        h = rec_now.handle()
+        if h is None:
+            return None, None
+        try:
+            p = backend.poll(h)
+        except Exception:
+            p = None
+        return h, p
 
     async def gen() -> AsyncIterator[str]:
         proc: Any = None
         current_turn = 0
         try:
             yield ": keepalive\n\n"
+            handle, poll = _live_handle()
+            next_ka = time.monotonic() + keepalive_s
+            # Wait out the CREATING window: the sandbox appears once the
+            # background worker binds it; a terminal run/session exits to the
+            # replay path below.
+            while handle is None or poll is None or not poll.alive:
+                state = run_states.get(agent_id, n)
+                if state is not None and state.status in RUN_TERMINAL:
+                    break
+                rec_now = plane.get(agent_id)
+                if rec_now is None or rec_now.status in ("closed", "timed_out", "lost"):
+                    break
+                now = time.monotonic()
+                if now >= next_ka:
+                    yield ": keepalive\n\n"
+                    next_ka = now + keepalive_s
+                await asyncio.sleep(0.05)
+                handle, poll = _live_handle()
             if backend is not None and handle is not None and poll is not None and poll.alive:
                 proc = await asyncio.to_thread(
                     backend.exec,

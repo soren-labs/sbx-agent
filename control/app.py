@@ -191,6 +191,15 @@ def create_app(
     app.state.plane = plane
     app.state.run_store = run_store
     app.state.run_ledger = plane.run_ledger
+    # SOR-82 integration: the durable run ledger is the source of truth, and
+    # the /v1 run-state seam (begin/get/list/transition) binds to it by
+    # default. Tests may still inject a substitute on app.state.run_states or
+    # app.state.v1_state.
+    from control.api_v1.lifecycle import LedgerRunStates
+    from control.api_v1.state import V1State
+
+    app.state.run_states = LedgerRunStates(plane.run_ledger)
+    app.state.v1_state = V1State(run_states=app.state.run_states)
     app.state.basic_user = basic_user
     app.state.basic_password = basic_password
     app.state.keepalive_s = keepalive

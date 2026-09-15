@@ -111,6 +111,10 @@ class ControlPlane:
         # restart; persisted RunRecords carry their own copies, and sandbox
         # tags keep provider/account for sessions that predate the restart.
         self._run_meta: dict[str, dict[str, str | None]] = {}
+        # Sessions whose first turn was queued by ``open_session`` but not yet
+        # dispatched: post_message must not allocate that turn id to a
+        # follow-up run in the gap between provision and dispatch (SOR-82 A2).
+        self._first_turn_pending: set[str] = set()
 
     def runner(self, *args: str) -> list[str]:
         return [*self.runner_cmd, *args]
@@ -146,6 +150,24 @@ class ControlPlane:
     def get(self, session_id: str) -> SessionRecord | None:
         return self.store.get(session_id)
 
+    def find_by_idempotency(self, owner: str, key: str) -> SessionRecord | None:
+        """Durable ``Idempotency-Key`` lookup across restarts (SOR-82).
+
+        The in-memory ``IdempotencyStore`` only covers one process; the
+        session record pins ``(owner, key)`` durably so a retry landing after
+        a control-plane restart still resolves to the original agent.
+        ``lost`` records are failed creates — the key is free for retry.
+        """
+        with self._lock:
+            for rec in self.store.list_all():
+                if (
+                    rec.owner == owner
+                    and rec.idempotency_key == key
+                    and rec.status != "lost"
+                ):
+                    return rec
+        return None
+
     def create_session(
         self,
         *,
@@ -156,9 +178,63 @@ class ControlPlane:
         account_id: str = "auto",
         secret_name: str | None = None,
     ) -> str:
+        session_id = self.open_session(
+            owner=owner,
+            title=title,
+            model=model,
+            provider=provider,
+            account_id=account_id,
+        )
+        self.provision_session(
+            session_id,
+            provider=provider,
+            account_id=account_id,
+            secret_name=secret_name,
+        )
+        return session_id
+
+    def open_session(
+        self,
+        *,
+        owner: str,
+        title: str | None,
+        model: str | None,
+        provider: str = "codex",
+        account_id: str = "auto",
+        first_prompt: str | None = None,
+        idempotency_key: str | None = None,
+        idempotency_fingerprint: str | None = None,
+    ) -> str:
+        """Publish a ``creating`` record without provisioning the sandbox.
+
+        SOR-82 A2: ``/v1`` callers return immediately after this call and run
+        ``provision_session`` on a background thread; ``/api`` keeps calling
+        ``create_session``, which is ``open_session`` + ``provision_session``
+        inline and unchanged.
+
+        ``first_prompt`` queues the first run: its user message is appended as
+        ``turn-1``, the turn id is reserved in ``_first_turn_pending`` so a
+        follow-up ``post_message`` cannot steal it before the worker
+        dispatches, and a ``CREATING`` run-1 record is persisted in the run
+        ledger before the session record becomes visible.
+
+        ``idempotency_key``/``idempotency_fingerprint`` pin a client-supplied
+        ``Idempotency-Key`` to the durable record so a retry that lands after
+        a control-plane restart still dedups (``find_by_idempotency``).
+        """
         with self._lock:
             live = self.backend.list(tags={"owner": owner})
-            if len(live) >= self.max_concurrent:
+            # In-flight creates own no sandbox yet — count them against the cap
+            # so N parallel creates cannot overshoot it. A ``creating`` record
+            # whose sandbox already exists (bind pending) is counted via
+            # ``live`` only — never twice.
+            live_ids = {(h.tags or {}).get("session_id") for h in live}
+            creating = sum(
+                1
+                for rec in self.store.list_all()
+                if rec.owner == owner and rec.status == "creating" and rec.id not in live_ids
+            )
+            if len(live) + creating >= self.max_concurrent:
                 raise ConcurrencyLimit()
             session_id = uuid.uuid4().hex
             tags = {"session_id": session_id, "owner": owner}
@@ -167,8 +243,13 @@ class ControlPlane:
             # the correct image and reattach the per-account Secret on exec.
             if provider != "codex" or account_id != "auto":
                 tags.update({"provider": provider, "account_id": account_id})
-            secrets = [secret_name] if secret_name else []
             now = self.clock()
+            messages: list[dict[str, Any]] = []
+            if first_prompt is not None:
+                messages.append(
+                    {"role": "user", "text": first_prompt, "turn_id": "turn-1", "ts": iso(now)}
+                )
+                self._first_turn_pending.add(session_id)
             rec = SessionRecord(
                 id=session_id,
                 title=title or "untitled",
@@ -178,24 +259,79 @@ class ControlPlane:
                 model=model or self.default_model,
                 turns=0,
                 usage=empty_usage(),
-                messages=[],
+                messages=messages,
                 owner=owner,
                 sandbox_tags=tags,
                 last_activity_at=now,
+                idempotency_key=idempotency_key,
+                idempotency_fingerprint=idempotency_fingerprint,
             )
+            self._run_meta[session_id] = {
+                "provider": provider,
+                "account_id": account_id,
+                "model": rec.model,
+            }
+            if first_prompt is not None and self.run_ledger is not None:
+                # The durable ledger is the source of truth: run-1 exists as
+                # CREATING before the session record is visible, so no reader
+                # can observe a queued run with no persisted state.
+                self.run_ledger.begin(
+                    agent_id=session_id,
+                    n=1,
+                    provider=provider,
+                    account_id=account_id,
+                    model=rec.model,
+                    status="CREATING",
+                )
             # Publish the record before the sandbox exists: the reaper
             # distinguishes an in-flight create from an orphan sandbox via
             # this record (SOR-80), so ``backend.create`` cannot race it.
             self.store.put(rec)
-            try:
-                handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
-            except Exception:
-                self._mark_create_failed(rec)
-                raise
-            rec.sandbox_id = handle.id
-            rec.sandbox_root = str(handle.root)
-            rec.updated_at = self.clock()
-            self.store.put(rec)
+            return session_id
+
+    def provision_session(
+        self,
+        session_id: str,
+        *,
+        provider: str = "codex",
+        account_id: str = "auto",
+        secret_name: str | None = None,
+    ) -> None:
+        """Create the sandbox and run ``runner init`` for an open session.
+
+        Blocking — intended for a worker thread under ``/v1`` (SOR-82 A2).
+        On failure the record is terminal ``lost`` with sandbox metadata kept
+        for the reaper; ``SessionConflict`` means the session was closed while
+        provisioning ran.
+        """
+        with self._lock:
+            rec = self.store.get(session_id)
+            if rec is None:
+                raise KeyError(session_id)
+            if rec.status != "creating":
+                raise SessionConflict("session_not_runnable")
+            tags = dict(rec.sandbox_tags)
+        secrets = [secret_name] if secret_name else []
+        try:
+            handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
+        except Exception:
+            self._mark_create_failed(rec)
+            raise
+
+        with self._lock:
+            stored = self.store.get(session_id)
+            if stored is None or stored.status in TERMINAL_STATUSES:
+                # Closed while the sandbox was being created — do not bind it.
+                try:
+                    self.backend.terminate(handle)
+                except Exception:
+                    pass
+                raise SessionConflict("session_not_runnable")
+            stored.sandbox_id = handle.id
+            stored.sandbox_root = str(handle.root)
+            stored.updated_at = self.clock()
+            self.store.put(stored)
+            rec = stored
 
         try:
             init_args = ["init", "--auth", "auth_json", "--model", rec.model]
@@ -226,28 +362,23 @@ class ControlPlane:
 
         with self._lock:
             stored = self.store.get(session_id)
-            if stored is not None and stored.status in TERMINAL_STATUSES:
+            if stored is None or stored.status in TERMINAL_STATUSES:
                 # Closed concurrently while init ran — do not resurrect it.
                 try:
                     self.backend.terminate(handle)
                 except Exception:
                     pass
                 raise SessionConflict("session_not_runnable")
-            rec.status = "idle"
+            stored.status = "idle"
             now = self.clock()
-            rec.updated_at = now
-            rec.last_activity_at = now
-            self.store.put(rec)
-            self._run_meta[session_id] = {
-                "provider": provider,
-                "account_id": account_id,
-                "model": rec.model,
-            }
-        return session_id
+            stored.updated_at = now
+            stored.last_activity_at = now
+            self.store.put(stored)
 
     def _mark_create_failed(self, rec: SessionRecord) -> None:
         """Terminal ``lost`` transition for a failed create; keeps sandbox_id."""
         with self._lock:
+            self._first_turn_pending.discard(rec.id)
             stored = self.store.get(rec.id) or rec
             if stored.status in TERMINAL_STATUSES:
                 return
@@ -256,6 +387,28 @@ class ControlPlane:
             stored.updated_at = stored.ended_at
             self.store.put(stored)
 
+    def discard_queued_first_turn(self, session_id: str) -> None:
+        """Drop a queued-but-undispatched first turn reservation (cancel path)."""
+        with self._lock:
+            self._first_turn_pending.discard(session_id)
+
+    def _next_turn_n(self, rec: SessionRecord) -> int:
+        """Next never-reused turn number for ``rec``.
+
+        ``turns`` counts finished turns only; queued-but-undispatched run
+        messages (SOR-82 A2 ``first_prompt``) already occupy their turn id, so
+        allocation is ``max(turns, message turn ids, current_turn_n) + 1``.
+        """
+        known = {rec.turns, rec.current_turn_n or 0}
+        for message in rec.messages:
+            turn_id = message.get("turn_id")
+            if isinstance(turn_id, str) and turn_id.startswith("turn-"):
+                try:
+                    known.add(int(turn_id[5:]))
+                except ValueError:
+                    pass
+        return max(known) + 1
+
     def post_message(self, session_id: str, text: str) -> str:
         with self._lock:
             rec = self.store.get(session_id)
@@ -263,6 +416,9 @@ class ControlPlane:
                 raise KeyError(session_id)
             if rec.status in TERMINAL_STATUSES:
                 raise SessionConflict("session_not_runnable")
+            if session_id in self._first_turn_pending:
+                # The queued first run owns turn-1 until its worker dispatches.
+                raise SessionConflict("turn_in_progress")
             if rec.status == "running" or rec.current_turn_id is not None:
                 raise SessionConflict("turn_in_progress")
             if rec.status != "idle":
@@ -271,7 +427,7 @@ class ControlPlane:
             handle = rec.handle()
             if handle is None:
                 raise SessionConflict("session_not_runnable")
-            n = rec.turns + 1
+            n = self._next_turn_n(rec)
             turn_id = f"turn-{n}"
             now = self.clock()
             rec.status = "running"
@@ -291,7 +447,78 @@ class ControlPlane:
                     or "auto",
                     model=meta.get("model") or rec.model,
                 )
+        return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
 
+    def post_queued_first_turn(self, session_id: str) -> str:
+        """Dispatch the run-1 queued by ``open_session(first_prompt=...)``.
+
+        The user message was appended at open time; here we only flip the
+        record to ``running`` and exec the turn. Raises SessionConflict when
+        the queue marker is gone (already dispatched/dropped) or the session
+        is not runnable.
+        """
+        with self._lock:
+            rec = self.store.get(session_id)
+            if rec is None:
+                self._first_turn_pending.discard(session_id)
+                raise KeyError(session_id)
+            if session_id not in self._first_turn_pending:
+                raise SessionConflict("turn_in_progress")
+            if rec.status in TERMINAL_STATUSES:
+                self._first_turn_pending.discard(session_id)
+                raise SessionConflict("session_not_runnable")
+            if rec.status != "idle":
+                raise SessionConflict("session_not_runnable")
+            handle = rec.handle()
+            if handle is None:
+                raise SessionConflict("session_not_runnable")
+            self._first_turn_pending.discard(session_id)
+            n = 1
+            turn_id = f"turn-{n}"
+            rec.status = "running"
+            rec.current_turn_id = turn_id
+            rec.current_turn_n = n
+            rec.updated_at = self.clock()
+            self.store.put(rec)
+            if self.run_ledger is not None:
+                # The run-1 record already exists (CREATING, written by
+                # open_session / the route seam); dispatch is the RUNNING
+                # transition. begin() backstops records created before the
+                # ledger existed; mark_running is terminal-safe.
+                meta = self._run_meta.get(session_id, {})
+                self.run_ledger.begin(
+                    agent_id=session_id,
+                    n=n,
+                    provider=meta.get("provider") or rec.sandbox_tags.get("provider") or "codex",
+                    account_id=meta.get("account_id")
+                    or rec.sandbox_tags.get("account_id")
+                    or "auto",
+                    model=meta.get("model") or rec.model,
+                )
+                self.run_ledger.mark_running(session_id, n)
+        text = next(
+            (
+                str(m.get("text") or "")
+                for m in rec.messages
+                if m.get("turn_id") == turn_id and m.get("role") == "user"
+            ),
+            "",
+        )
+        # On dispatch failure the queued user message stays: turn-1 remains
+        # allocated to run-1 (which the caller marks ERROR) and the next
+        # post_message allocates turn-2 — run ids never collide.
+        return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=False)
+
+    def _dispatch_turn(
+        self,
+        session_id: str,
+        turn_id: str,
+        n: int,
+        handle: Any,
+        text: str,
+        *,
+        drop_message: bool,
+    ) -> str:
         rel = f"_prompt_{n}.md"
         try:
             write_file(self.backend, handle, rel, text)
@@ -309,7 +536,7 @@ class ControlPlane:
                 env=sandbox_env(handle),
             )
         except Exception:
-            self._rollback_turn(session_id, turn_id, handle)
+            self._rollback_turn(session_id, turn_id, handle, drop_message=drop_message)
             raise
         with self._lock:
             self._live[session_id] = LiveTurn(turn_id=turn_id, n=n, proc=proc)
@@ -322,12 +549,15 @@ class ControlPlane:
         thread.start()
         return turn_id
 
-    def _rollback_turn(self, session_id: str, turn_id: str, handle: Any) -> None:
+    def _rollback_turn(
+        self, session_id: str, turn_id: str, handle: Any, *, drop_message: bool = True
+    ) -> None:
         """Undo a queued turn whose write/exec never started (SOR-80).
 
         Deterministic end state: ``idle`` when the sandbox is still alive
-        (runnable again) or ``lost`` when it is gone (terminal); the pending
-        user message and turn markers are rolled back either way.
+        (runnable again) or ``lost`` when it is gone (terminal). The pending
+        user message is rolled back too, except for queued first turns
+        (``drop_message=False``) whose turn id must stay allocated.
         """
         with self._lock:
             rec = self.store.get(session_id)
@@ -338,7 +568,8 @@ class ControlPlane:
             except Exception:
                 alive = False
             now = self.clock()
-            rec.messages = [m for m in rec.messages if m.get("turn_id") != turn_id]
+            if drop_message:
+                rec.messages = [m for m in rec.messages if m.get("turn_id") != turn_id]
             rec.current_turn_id = None
             rec.current_turn_n = None
             rec.status = "idle" if alive else "lost"
@@ -347,9 +578,11 @@ class ControlPlane:
             rec.updated_at = now
             rec.last_activity_at = now
             self.store.put(rec)
-            if self.run_ledger is not None:
+            if self.run_ledger is not None and drop_message:
                 # The turn never started; its open run record is rolled back
-                # with the pending user message.
+                # with the pending user message. Queued first turns keep
+                # theirs (drop_message=False): run-1 stays allocated so the
+                # caller can persist the terminal startup failure on it.
                 try:
                     n = int(turn_id.rsplit("-", 1)[-1])
                 except ValueError:
@@ -415,6 +648,7 @@ class ControlPlane:
             rec = self.store.get(session_id)
             if rec is None:
                 raise KeyError(session_id)
+            self._first_turn_pending.discard(session_id)
             handle = rec.handle()
             live = self._live.get(session_id)
             if rec.status == "running":
@@ -443,6 +677,7 @@ class ControlPlane:
             rec = self.store.get(session_id)
             if rec is None:
                 raise KeyError(session_id)
+            self._first_turn_pending.discard(session_id)
             live = self._live.pop(session_id, None)
             handle = rec.handle()
             self._run_meta.pop(session_id, None)

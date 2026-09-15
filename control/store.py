@@ -32,6 +32,9 @@ class SessionRecord:
     current_turn_n: int | None = None
     last_activity_at: datetime | None = None
     ended_at: datetime | None = None
+    # SOR-82: durable Idempotency-Key pin so create dedup survives restarts.
+    idempotency_key: str | None = None
+    idempotency_fingerprint: str | None = None
 
     def handle(self) -> SandboxHandle | None:
         if not self.sandbox_id or not self.sandbox_root:

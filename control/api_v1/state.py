@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from control.api_v1.lifecycle import IdempotencyStore, InMemoryRunStates, RunStateStore
 from control.ports import Account, ApiKey, ScheduleDecision
 
 PROVIDERS: tuple[str, ...] = ("codex", "antigravity", "grok", "opencode", "devin")
@@ -232,6 +233,8 @@ class V1State:
     agents: dict[str, AgentMeta] = field(default_factory=dict)
     cancelled_runs: dict[str, set[int]] = field(default_factory=dict)
     leases: dict[str, Any] = field(default_factory=dict)
+    run_states: RunStateStore = field(default_factory=InMemoryRunStates)
+    idempotency: IdempotencyStore = field(default_factory=IdempotencyStore)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from control.devin_pool import DevinAccountPool
-from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run
+from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run, wait_sandbox
 
 
 class TestCreateAgent:
@@ -17,11 +17,14 @@ class TestCreateAgent:
         assert agent["name"] == "demo"
         assert agent["provider"] == "codex"
         assert agent["account_id"] == "acct-codex-1"  # scheduler pick, not "auto"
-        assert agent["status"] in ("running", "idle")
+        assert agent["status"] in ("creating", "running", "idle")
         assert agent["model"] == "gpt-5.6-luna"
         assert run["id"] == "run-1"
         assert run["agent_id"] == agent["id"]
-        assert run["status"] in ("RUNNING", "FINISHED")
+        # SOR-82 A2: the first run is queued CREATING; the background worker
+        # provisions and dispatches it.
+        assert run["status"] in ("CREATING", "RUNNING", "FINISHED")
+        assert wait_run(client, auth, agent["id"], "run-1")["status"] == "FINISHED"
 
     def test_named_account_is_used(self, client, auth, v1_env) -> None:
         seed_account(v1_env, "acct-codex-2", max_concurrent=5)
@@ -59,8 +62,7 @@ class TestCreateAgent:
         )
         agent_id = body["agent"]["id"]
         assert pool.active_count == 1
-        rec = v1_env.store.get(agent_id)
-        assert rec is not None
+        rec = wait_sandbox(v1_env, agent_id)
         assert rec.sandbox_tags["provider"] == "devin"
         assert rec.sandbox_tags["account_id"] == "acct-devin-1"
         session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
@@ -189,7 +191,7 @@ class TestModelDefaults:
         body = create_agent(client, auth, agent={"provider": provider})
         agent = body["agent"]
         assert agent["model"] == expected
-        rec = v1_env.store.get(agent["id"])
+        rec = wait_sandbox(v1_env, agent["id"])
         session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
         assert session["model"] == expected
 
@@ -210,7 +212,7 @@ class TestModelDefaults:
         body = create_agent(client, auth, agent={"provider": provider, "model": explicit})
         agent = body["agent"]
         assert agent["model"] == explicit
-        rec = v1_env.store.get(agent["id"])
+        rec = wait_sandbox(v1_env, agent["id"])
         session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
         assert session["model"] == explicit
 

@@ -38,8 +38,9 @@ def test_sbx_client_flow(sbx: SbxClient) -> None:
 
     created = sbx.create_agent("Say hello")
     agent, run = created["agent"], created["run"]
-    assert agent["status"] in ("running", "idle")
-    assert run["status"] in ("RUNNING", "FINISHED")
+    # SOR-82 A2: create returns while the sandbox is still provisioning.
+    assert agent["status"] in ("creating", "running", "idle")
+    assert run["status"] in ("CREATING", "RUNNING", "FINISHED")
 
     types = set()
     for event in sbx.stream_run(agent["id"], run["id"]):

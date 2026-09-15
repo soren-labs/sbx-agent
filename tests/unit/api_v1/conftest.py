@@ -193,3 +193,19 @@ def wait_run(
             return run
         time.sleep(0.1)
     raise AssertionError(f"run {run_id} did not reach a terminal state")
+
+
+def wait_sandbox(v1_env: V1Env, agent_id: str, *, timeout: float = 15.0) -> Any:
+    """Block until the async create's provisioner finishes (SOR-82 A2).
+
+    Returns the record once it leaves ``creating`` — ``idle``/``running``
+    means ``runner init`` completed; a terminal status means provision failed
+    or the session was closed mid-flight.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rec = v1_env.store.get(agent_id)
+        if rec is not None and rec.status != "creating":
+            return rec
+        time.sleep(0.05)
+    raise AssertionError(f"agent {agent_id} was never provisioned")

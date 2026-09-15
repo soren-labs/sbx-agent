@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -190,8 +191,15 @@ def test_v1_agents_schedule_all_four_providers(monkeypatch, stub_runner) -> None
                 assert agent["account_id"] == f"{provider}-1"
                 assert scheduler.pools[provider].active_count == 1
 
-                rec = store.get(agent["id"])
-                assert rec is not None
+                # SOR-82 A2: provisioning is async — wait for runner init.
+                deadline = time.monotonic() + 15
+                rec = None
+                while time.monotonic() < deadline:
+                    rec = store.get(agent["id"])
+                    if rec is not None and rec.status != "creating":
+                        break
+                    time.sleep(0.05)
+                assert rec is not None and rec.sandbox_root is not None
                 assert rec.sandbox_tags["provider"] == provider
                 session = json.loads((Path(rec.sandbox_root) / "session.json").read_text())
                 assert session["provider"] == provider

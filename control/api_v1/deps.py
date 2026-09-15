@@ -13,6 +13,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
 from control.api_v1.errors import V1ApiError
+from control.api_v1.lifecycle import RunStateStore
 from control.api_v1.state import (
     InMemoryAccountRegistry,
     InMemoryApiKeyStore,
@@ -34,6 +35,15 @@ def get_v1_state(request: Request) -> V1State:
         state = V1State()
         request.app.state.v1_state = state
     return state
+
+
+def get_run_states(request: Request) -> RunStateStore:
+    """Run-state seam (SOR-82 A2): default in-memory; A1 (SOR-88) may install a
+    durable ``RunStateStore`` on ``app.state.run_states`` without route changes."""
+    store = getattr(request.app.state, "run_states", None)
+    if store is None:
+        store = get_v1_state(request).run_states
+    return store
 
 
 def get_registry(request: Request) -> AccountRegistry:
