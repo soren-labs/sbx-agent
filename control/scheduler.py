@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
 
 from control.accounts import cooldown_expired, iso_utc, parse_iso
-from control.config import env_float, env_int
+from control.config import TERMINAL_STATUSES, env_float, env_int
 from control.ports import Account, AccountRegistry, ProviderId, ScheduleDecision
 from control.run_errors import RunError
 
@@ -82,6 +82,28 @@ def failure_status(kind: str) -> str | None:
     if kind in _COOLING_KINDS:
         return "cooling"
     return None
+
+
+def session_running_source(store: Any) -> Callable[[str], int]:
+    """Build an ``external_running`` hook backed by a ``SessionStore``.
+
+    Counts non-terminal session records tagged ``account_id=<id>`` — the
+    design-v2-§3.3 "derive running from the sessions store" source. It keeps
+    per-account and global slot accounting truthful across control-plane
+    restarts, where in-process leases are gone but earlier sandboxes are
+    still live. Sessions holding an in-process lease appear in both counts;
+    ``running_count`` takes the max and never double-counts them.
+    """
+
+    def count(account_id: str) -> int:
+        return sum(
+            1
+            for rec in store.list_all()
+            if rec.status not in TERMINAL_STATUSES
+            and (rec.sandbox_tags or {}).get("account_id") == account_id
+        )
+
+    return count
 
 
 class ScheduleRefused(Exception):
@@ -398,4 +420,5 @@ __all__ = [
     "AccountScheduler",
     "ScheduleRefused",
     "failure_status",
+    "session_running_source",
 ]

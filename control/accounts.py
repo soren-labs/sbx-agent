@@ -234,9 +234,15 @@ class FileAccountStore:
     def _write(path: Path, payload: dict[str, Any], *, secret: bool) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+        data = json.dumps(payload, ensure_ascii=False) + "\n"
         if secret:
-            tmp.chmod(0o600)
+            # Create 0600 at open — no window where the blob file is
+            # umask-readable between write and chmod.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(data)
+        else:
+            tmp.write_text(data, encoding="utf-8")
         tmp.replace(path)
 
     @staticmethod

@@ -22,7 +22,7 @@ from control.api_v1.state import (
 )
 from control.auth_bearer import bearer_scheme, bearer_token, has_scope, lookup_key
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
-from control.scheduler import AccountScheduler
+from control.scheduler import AccountScheduler, session_running_source
 
 
 def get_plane(request: Request) -> Any:
@@ -60,7 +60,15 @@ def get_scheduler(request: Request) -> Scheduler:
     if scheduler is None:
         # SOR-63/D1 is the default scheduler even without bootstrap: atomic
         # acquire + cooldown/failover over whatever registry is installed.
-        scheduler = AccountScheduler(get_registry(request))
+        # Running counts derive from the sessions store (design v2 §3.3) so
+        # slots stay truthful across control-plane restarts.
+        session_store = getattr(getattr(request.app.state, "plane", None), "store", None)
+        scheduler = AccountScheduler(
+            get_registry(request),
+            external_running=(
+                session_running_source(session_store) if session_store is not None else None
+            ),
+        )
         request.app.state.scheduler = scheduler
     return scheduler
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,7 +30,7 @@ from control.accounts import PersistentAccountRegistry, select_store
 from control.api_v1.state import InMemoryApiKeyStore
 from control.config import env_int
 from control.ports import Account
-from control.scheduler import AccountScheduler
+from control.scheduler import AccountScheduler, session_running_source
 
 # Flat per-account slot cap for non-Devin providers; Devin's seeded account
 # takes ``SBX_DEVIN_BURST_SLOTS`` (the old tiered pool's ceiling). Overridable
@@ -53,6 +54,32 @@ def _models(provider: str) -> tuple[str, ...]:
     if raw is None:
         return PROVIDER_DEFAULT_MODELS[provider]
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _upsert_seeded(registry: PersistentAccountRegistry, account: Account) -> Account:
+    """Insert or refresh a seeded account without clobbering runtime state.
+
+    Bootstrap runs on every control-plane boot and the registry is durable
+    (file store / ``modal.Dict``), so an existing record's health and LRU
+    fields must survive re-seeding — otherwise each restart silently
+    re-enables ``disabled``/``invalid`` accounts and cancels in-flight
+    cooldowns. Config fields (label/secret_name/slots/models) refresh from
+    env. A record re-seeded under a different provider is a different
+    logical account and is replaced wholesale; a corrupt record (decoded
+    as provider-less ``disabled``) is healed by the fresh seed.
+    """
+    existing = registry.get(account.id)
+    if existing is not None and existing.provider == account.provider:
+        account = replace(
+            account,
+            status=existing.status,
+            cooldown_until=existing.cooldown_until,
+            last_error=existing.last_error,
+            last_used_at=existing.last_used_at,
+            created_at=existing.created_at or account.created_at,
+        )
+    registry.put(account)
+    return account
 
 
 def _seed_account(
@@ -81,7 +108,8 @@ def _seed_account(
     else:
         secret_name = default_secret_name
     slots = env_int(f"{prefix}_SLOTS", default_slots)
-    registry.put(
+    _upsert_seeded(
+        registry,
         Account(
             id=account_id,
             provider=provider,
@@ -91,7 +119,7 @@ def _seed_account(
             secret_name=secret_name,
             models=_models(provider),
             created_at=created_at,
-        )
+        ),
     )
     return account_id
 
@@ -164,8 +192,7 @@ def _seed_accounts(
             models=models,
             created_at=created_at,
         )
-        registry.put(account)
-        seeded.append(account)
+        seeded.append(_upsert_seeded(registry, account))
     return seeded
 
 
@@ -213,5 +240,14 @@ def configure_v1_bootstrap(app: Any) -> bool:
         )
 
     app.state.account_registry = registry
-    app.state.scheduler = AccountScheduler(registry)
+    # Derive per-account running counts from the sessions store so slots stay
+    # truthful across control-plane restarts (design v2 §3.3): in-process
+    # leases alone forget sessions whose sandboxes are still live.
+    session_store = getattr(getattr(app.state, "plane", None), "store", None)
+    app.state.scheduler = AccountScheduler(
+        registry,
+        external_running=(
+            session_running_source(session_store) if session_store is not None else None
+        ),
+    )
     return True

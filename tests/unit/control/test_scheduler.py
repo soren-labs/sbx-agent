@@ -21,7 +21,9 @@ from control.scheduler import (
     AccountScheduler,
     ScheduleRefused,
     failure_status,
+    session_running_source,
 )
+from control.store import InMemoryStore, SessionRecord, empty_usage
 
 
 @pytest.fixture(autouse=True)
@@ -469,6 +471,40 @@ class TestExternalRunning:
         live["agy-1"] = 1
         with pytest.raises(ScheduleRefused):
             sched.acquire(provider="antigravity", account="agy-1")
+
+    def test_session_running_source_counts_tagged_live_sessions(self) -> None:
+        """Restart path: sessions store is the running-count source (v2 §3.3)."""
+        store = InMemoryStore()
+        now = datetime.now(UTC)
+
+        def _rec(sid: str, status: str, account: str | None = "agy-1") -> None:
+            store.put(
+                SessionRecord(
+                    id=sid,
+                    title="t",
+                    status=status,
+                    created_at=now,
+                    updated_at=now,
+                    model="m",
+                    turns=0,
+                    usage=empty_usage(),
+                    messages=[],
+                    owner="k",
+                    sandbox_tags=({"account_id": account} if account is not None else {}),
+                    last_activity_at=now,
+                )
+            )
+
+        _rec("s-live-1", "idle")
+        _rec("s-live-2", "running")
+        _rec("s-live-3", "creating")
+        _rec("s-other", "idle", account="agy-2")
+        _rec("s-untagged", "idle", account=None)
+        _rec("s-dead", "closed")
+        count = session_running_source(store)
+        assert count("agy-1") == 3
+        assert count("agy-2") == 1
+        assert count("agy-3") == 0
 
 
 class TestRegistryBinding:

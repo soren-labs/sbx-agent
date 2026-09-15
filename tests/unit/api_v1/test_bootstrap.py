@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from control.api_v1.bootstrap import configure_v1_bootstrap
 from control.app import create_app
 from control.backend import LocalProcessBackend
 from control.scheduler import AccountScheduler, ScheduleRefused
-from control.store import InMemoryStore
+from control.store import InMemoryStore, SessionRecord, empty_usage
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -396,3 +397,113 @@ def test_v1_multi_account_grok_gate(monkeypatch, stub_runner) -> None:
     finally:
         for handle in list(backend.list()):
             backend.terminate(handle)
+
+
+def test_reseed_preserves_account_runtime_state(monkeypatch, tmp_path) -> None:
+    """Re-seeding on restart must not clobber persisted health/LRU state.
+
+    The registry is durable: an operator ``disable`` or a health-driven
+    ``invalid``/``cooling`` mark has to survive a control-plane reboot —
+    re-seeding refreshes config (slots/secret/models) only.
+    """
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "7" * 40)
+    monkeypatch.setenv("SBX_ACCOUNT_STORE_DIR", str(tmp_path / "store"))
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+    registry = app.state.account_registry
+
+    registry.mark_status("grok-1", "disabled")
+    registry.mark_status(
+        "antigravity-1",
+        "cooling",
+        cooldown_until="2999-01-01T00:00:00Z",
+        last_error="rate_limited",
+    )
+    registry.mark_status("devin-1", "invalid", last_error="auth_invalid")
+    registry.touch("codex-1", "2026-09-15T08:00:00Z")
+
+    # Simulated reboot: a fresh app over the same persisted store.
+    rebooted = FastAPI()
+    assert configure_v1_bootstrap(rebooted) is True
+    registry2 = rebooted.state.account_registry
+
+    assert registry2.get("grok-1").status == "disabled"  # type: ignore[union-attr]
+    agy = registry2.get("antigravity-1")
+    assert agy is not None
+    assert agy.status == "cooling"
+    assert agy.cooldown_until == "2999-01-01T00:00:00Z"
+    assert agy.last_error == "rate_limited"
+    devin = registry2.get("devin-1")
+    assert devin is not None and devin.status == "invalid"
+    codex = registry2.get("codex-1")
+    assert codex is not None
+    assert codex.status == "active"
+    assert codex.last_used_at == "2026-09-15T08:00:00Z"
+
+    # Env config still refreshes on re-seed while health stays put.
+    monkeypatch.setenv("SBX_GROK_SLOTS", "5")
+    third = FastAPI()
+    configure_v1_bootstrap(third)
+    grok = third.state.account_registry.get("grok-1")
+    assert grok is not None
+    assert grok.max_concurrent == 5
+    assert grok.status == "disabled"
+
+
+def test_bootstrap_scheduler_counts_live_sessions(monkeypatch, tmp_path) -> None:
+    """A session that outlived a restart still occupies its account's slot.
+
+    In-process leases are lost on restart; the sessions store is durable, so
+    the scheduler's ``external_running`` source must count live tagged
+    sessions (design v2 §3.3) — otherwise the slot is oversold.
+    """
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "8" * 40)
+    monkeypatch.setenv("SBX_ACCOUNT_STORE_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("SBX_GROK_SLOTS", "1")
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    app = create_app(
+        backend=backend,
+        store=store,
+        runner_cmd=[sys.executable, "nonexistent-runner"],
+        max_concurrent=16,
+    )
+    now = datetime.now(UTC)
+    store.put(
+        SessionRecord(
+            id="sess-old",
+            title="t",
+            status="idle",
+            created_at=now,
+            updated_at=now,
+            model="grok-4.6",
+            turns=0,
+            usage=empty_usage(),
+            messages=[],
+            owner="key_x",
+            sandbox_tags={
+                "session_id": "sess-old",
+                "owner": "key_x",
+                "provider": "grok",
+                "account_id": "grok-1",
+            },
+            last_activity_at=now,
+        )
+    )
+    scheduler = app.state.scheduler
+    # The un-leased live session fills grok-1's only slot.
+    with pytest.raises(ScheduleRefused) as excinfo:
+        scheduler.acquire(provider="grok")
+    assert excinfo.value.error == "provider_exhausted"
+    with pytest.raises(ScheduleRefused) as excinfo:
+        scheduler.acquire(provider="grok", account="grok-1")
+    assert excinfo.value.error == "account_busy"
+    assert scheduler.registry.running_count("grok-1") == 1
+    # Other providers are unaffected.
+    assert scheduler.decide(provider="devin").account is not None
+    # Terminal sessions stop counting.
+    rec = store.get("sess-old")
+    assert rec is not None
+    rec.status = "closed"
+    store.put(rec)
+    assert scheduler.decide(provider="grok").account is not None
