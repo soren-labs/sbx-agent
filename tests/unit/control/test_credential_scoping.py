@@ -18,6 +18,7 @@ from control.backends.modal import (
     _account_secrets,
     _sandbox_secrets,
 )
+from control.config import CODEX_SECRET_NAME
 from control.sandbox_io import sandbox_env
 
 
@@ -182,3 +183,32 @@ def test_devin_aux_bridges_stack_with_named_secret_but_not_blob(monkeypatch) -> 
     assert secrets[0] == ("secret", "sbx-acct-1")
     assert ("dict", {"SBX_ACCOUNT_CREDENTIAL": _blob("devin")}) not in secrets
     assert ("dict", {"GH_TOKEN": "REDACTED_GITHUB", "GITHUB_TOKEN": "REDACTED_GITHUB"}) in secrets
+
+
+def test_sandbox_env_extra_cannot_reintroduce_foreign_credentials(monkeypatch) -> None:
+    handle = SandboxHandle(
+        id="sb-grok-extra",
+        root=Path("/work"),
+        tags={"provider": "grok", "account_id": "grok-1"},
+    )
+    env = sandbox_env(
+        handle,
+        {
+            "CODEX_AUTH_JSON": "should-not-pass",
+            "SBX_PROVIDER_API_KEY": "should-not-pass",
+            "SBX_PROVIDER_BASE_URL": "https://example.invalid",
+            "SBX_ACCOUNT_ID": "devin-1",
+            "SBX_ACCOUNT_CREDENTIAL": _blob("devin"),
+        },
+    )
+    assert "CODEX_AUTH_JSON" not in env
+    assert "SBX_PROVIDER_API_KEY" not in env
+    assert "SBX_PROVIDER_BASE_URL" not in env
+    assert "SBX_ACCOUNT_ID" not in env
+    assert "SBX_ACCOUNT_CREDENTIAL" not in env
+
+
+def test_account_provider_never_mounts_codex_named_secret() -> None:
+    spec = SandboxSpec(tags={"provider": "grok"}, secrets=[CODEX_SECRET_NAME])
+    secrets = _sandbox_secrets(_FakeModal, spec)
+    assert ("secret", CODEX_SECRET_NAME) not in secrets

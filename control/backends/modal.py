@@ -187,6 +187,10 @@ def _secrets_for(modal: Any, provider: str, secret_names: Iterable[str]) -> list
     the Codex auth Secret; anything else keeps the P1 Codex path unchanged.
     """
     names = list(secret_names)
+    if provider in ACCOUNT_PROVIDERS:
+        # Account-provider sandboxes must never mount the shared Codex auth
+        # Secret even if an internal caller or deployment override supplies it.
+        names = [name for name in names if name != CODEX_SECRET_NAME]
     named = [modal.Secret.from_name(name) for name in names]
     if provider in ACCOUNT_PROVIDERS:
         return [*named, *_account_secrets(modal, provider, credential=not named)]

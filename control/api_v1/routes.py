@@ -779,7 +779,11 @@ def verify_account(
         secrets = [account.secret_name] if account.secret_name else []
         handle = backend.create(
             SandboxSpec(
-                tags={"purpose": _VERIFY_TAG, "account_id": account_id},
+                tags={
+                    "purpose": _VERIFY_TAG,
+                    "provider": account.provider,
+                    "account_id": account_id,
+                },
                 secrets=secrets,
             )
         )

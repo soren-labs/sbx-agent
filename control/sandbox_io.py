@@ -117,7 +117,23 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
     if credential is not None:
         env[_ACCOUNT_CREDENTIAL_ENV] = credential
     if extra:
-        env.update(extra)
+        safe_extra = dict(extra)
+        # Never let callers re-introduce credentials that violate the
+        # sandbox provider/account boundary after the scoped env above.
+        if provider != "codex":
+            safe_extra.pop("CODEX_AUTH_JSON", None)
+            safe_extra.pop("SBX_PROVIDER_API_KEY", None)
+            safe_extra.pop("SBX_PROVIDER_BASE_URL", None)
+        extra_account = safe_extra.get(_ACCOUNT_ID_ENV)
+        if extra_account is not None and extra_account != account_id:
+            safe_extra.pop(_ACCOUNT_ID_ENV, None)
+            safe_extra.pop(_ACCOUNT_CREDENTIAL_ENV, None)
+        extra_credential = safe_extra.get(_ACCOUNT_CREDENTIAL_ENV)
+        if extra_credential is not None:
+            blob = parse_credential_blob(extra_credential)
+            if blob is None or blob.get("provider") != provider:
+                safe_extra.pop(_ACCOUNT_CREDENTIAL_ENV, None)
+        env.update(safe_extra)
     return env
 
 

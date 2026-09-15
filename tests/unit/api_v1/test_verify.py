@@ -143,7 +143,11 @@ class TestVerifyCredentialAttach:
         assert len(spy_backend.specs) == 1
         spec = spy_backend.specs[0]
         assert spec.secrets == [secret_name]
-        assert spec.tags == {"purpose": "account-verify", "account_id": account_id}
+        assert spec.tags == {
+            "purpose": "account-verify",
+            "provider": provider,
+            "account_id": account_id,
+        }
 
         assert len(spy_backend.execs) == 1
         argv, env = spy_backend.execs[0]
