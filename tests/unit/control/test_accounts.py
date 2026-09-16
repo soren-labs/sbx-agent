@@ -531,3 +531,79 @@ class TestCliAccountIdSafety:
             "provider": "codex",
             "files": {".codex/auth.json": "{}"},
         }
+
+
+class TestStoredRecordIdIntegrity:
+    """SOR-105 review: the store key is authoritative. A stored record whose
+    body id is unsafe — or simply differs from the key it sits under —
+    decodes as ``corrupt_account`` so no smuggled id can reach a lane that
+    re-uses ``account.id`` (``running_count``, ``mark_status``, ``touch``,
+    scheduler picks, Secret-name construction)."""
+
+    def test_unsafe_body_id_decodes_corrupt(self, store: AccountStore) -> None:
+        store.put_record("good-1", {"id": "../victim", "provider": "grok", "status": "active"})
+        reg = _registry(store)
+        acct = reg.get("good-1")
+        assert acct is not None
+        assert acct.id == "good-1"
+        assert acct.status == "disabled"
+        assert acct.last_error == "corrupt_record"
+        (listed,) = reg.list()
+        assert (listed.id, listed.status) == ("good-1", "disabled")
+
+    def test_foreign_body_id_decodes_corrupt(self, store: AccountStore) -> None:
+        store.put_record("good-1", {"id": "other-1", "provider": "grok"})
+        acct = _registry(store).get("good-1")
+        assert acct is not None
+        assert acct.id == "good-1"
+        assert acct.status == "disabled"
+
+    def test_unsafe_store_key_lists_disabled_and_refuses_ops(self, tmp_path: Path) -> None:
+        """A stray ``accounts/<unsafe>.json`` (other tools, older versions)
+        stays visible-but-disabled; per-id ops still refuse its key."""
+        root = tmp_path / "store"
+        (root / "accounts").mkdir(parents=True)
+        (root / "accounts" / ".hidden.json").write_text(
+            json.dumps({"id": ".hidden", "provider": "grok", "status": "active"}),
+            encoding="utf-8",
+        )
+        reg = _registry(FileAccountStore(root))
+        (listed,) = reg.list()
+        assert listed.status == "disabled"
+        assert listed.last_error == "corrupt_record"
+        with pytest.raises(ValueError):
+            reg.get(".hidden")
+        with pytest.raises(ValueError):
+            reg.mark_status(".hidden", "active")
+        with pytest.raises(ValueError):
+            reg.remove(".hidden")
+        # The planted file is untouched — remove never formed a path from it.
+        assert (root / "accounts" / ".hidden.json").is_file()
+
+    def test_smuggled_id_never_schedules(self, store: AccountStore) -> None:
+        store.put_record("good-1", {"id": "../victim", "provider": "grok", "status": "active"})
+        sched = AccountScheduler(_registry(store))
+        assert sched.decide(provider="grok").account is None
+        assert sched.decide(provider="grok", account="good-1").error == "account_unavailable"
+        with pytest.raises(ScheduleRefused):
+            sched.acquire(provider="grok", account="good-1")
+
+    def test_cli_list_survives_unsafe_stored_filenames(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        root = tmp_path / "store"
+        (root / "accounts").mkdir(parents=True)
+        (root / "accounts" / ".hidden.json").write_text(
+            json.dumps({"id": ".hidden", "provider": "grok", "status": "active"}),
+            encoding="utf-8",
+        )
+        (root / "accounts" / "grok-1.json").write_text(
+            json.dumps({"id": "grok-1", "provider": "grok", "status": "active"}),
+            encoding="utf-8",
+        )
+        rc = accounts_main(["--store-dir", str(root), "list"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert ".hidden" in out
+        assert "grok-1" in out
+        assert "running=0" in out

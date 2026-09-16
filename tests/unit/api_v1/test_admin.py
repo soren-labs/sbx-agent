@@ -174,6 +174,27 @@ class TestAccountIdTraversal:
         assert resp.json()["error"]["code"] == "account_unavailable"
         assert not (tmp_path / "accounts").exists()
 
+    def test_record_with_smuggled_body_id_is_not_500(
+        self, client, admin_auth, v1_env, tmp_path
+    ) -> None:
+        """SOR-105 review: a stored record whose body id is unsafe or
+        foreign to its key decodes as a disabled corrupt record — GET
+        returns it keyed by its store key, never a 500."""
+        from control.accounts import FileAccountStore, PersistentAccountRegistry
+        from control.scheduler import AccountScheduler
+
+        store = FileAccountStore(tmp_path / "accounts")
+        registry = PersistentAccountRegistry(store)
+        v1_env.app.state.account_registry = registry
+        v1_env.app.state.scheduler = AccountScheduler(registry)
+        store.put_record("good-1", {"id": "../victim", "provider": "grok", "status": "active"})
+        resp = client.get("/v1/accounts/good-1", headers=admin_auth)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["id"] == "good-1"
+        assert resp.json()["status"] == "disabled"
+        assert client.get("/v1/accounts", headers=admin_auth).status_code == 200
+        assert client.delete("/v1/accounts/good-1", headers=admin_auth).status_code == 204
+
 
 class TestApiKeys:
     def test_create_list_revoke(self, client, admin_auth) -> None:

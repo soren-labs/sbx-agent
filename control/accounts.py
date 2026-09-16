@@ -115,6 +115,8 @@ def account_from_dict(raw: Any) -> Account:
     provider = raw.get("provider")
     if not isinstance(account_id, str) or not account_id:
         raise ValueError("account record missing id")
+    if not is_valid_account_id(account_id):
+        raise ValueError(f"account record has unsafe id {account_id!r}")
     if not isinstance(provider, str) or not provider:
         raise ValueError("account record missing provider")
     status = raw.get("status", "active")
@@ -164,7 +166,13 @@ def corrupt_account(account_id: str, detail: str) -> Account:
 
 def _decode(raw: Any, account_id: str) -> Account:
     try:
-        return account_from_dict(raw)
+        account = account_from_dict(raw)
+        # The store key is authoritative (SOR-105): a record whose body id
+        # differs is corrupt — it must never hand a smuggled id to a lane
+        # that re-uses ``account.id`` (running_count, touch, mark_status).
+        if account.id != account_id:
+            raise ValueError("account record id does not match store key")
+        return account
     except (ValueError, TypeError) as exc:
         return corrupt_account(account_id, str(exc))
 
@@ -637,9 +645,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "list":
             for account in registry.list(args.provider):
+                # A corrupt record keeps its (possibly unsafe) store key as
+                # id — never feed it back into running_count (SOR-105).
+                running = (
+                    registry.running_count(account.id) if is_valid_account_id(account.id) else 0
+                )
                 print(
                     f"{account.id}\t{account.provider}\t{account.status}\t"
-                    f"running={registry.running_count(account.id)}/{account.max_concurrent}\t"
+                    f"running={running}/{account.max_concurrent}\t"
                     f"{account.label}"
                 )
             return 0

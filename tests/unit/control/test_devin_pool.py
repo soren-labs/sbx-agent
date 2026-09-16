@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -370,3 +372,21 @@ class TestCredentialHygiene:
             assert lease.account.id == "devin-1"
         pool.report_failure("rate_limited", retry_after=1.0)
         assert "REDACTED" not in repr(vars(pool))
+
+
+def test_auto_resolve_ignores_unsafe_stored_id(tmp_path: Path) -> None:
+    """SOR-105 review: a stray ``accounts/<unsafe>.json`` must never resolve
+    as the pool's account — its id could otherwise reach ``mark_status`` in
+    ``report_failure``."""
+    from control.accounts import FileAccountStore, PersistentAccountRegistry
+
+    root = tmp_path / "store"
+    (root / "accounts").mkdir(parents=True)
+    (root / "accounts" / ".hidden.json").write_text(
+        json.dumps({"id": ".hidden", "provider": "devin", "status": "active"}),
+        encoding="utf-8",
+    )
+    pool = DevinAccountPool(PersistentAccountRegistry(FileAccountStore(root)))
+    assert pool.decide(provider="devin").error == "provider_exhausted"
+    with pytest.raises(KeyError):
+        pool.report_failure("rate_limited")

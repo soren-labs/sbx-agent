@@ -1682,7 +1682,7 @@ def create_account(
             account.id,
             {"provider": body.provider, "files": dict(files or {})},
         )
-    return account_public(account, registry.running_count(account.id))
+    return account_public(account, _running_or_zero(registry, account.id))
 
 
 @router.get("/accounts/{account_id}")
@@ -1692,7 +1692,7 @@ def get_account(
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
     account = _registry_account(registry, account_id)
-    return account_public(account, registry.running_count(account.id))
+    return account_public(account, _running_or_zero(registry, account.id))
 
 
 @router.delete("/accounts/{account_id}", status_code=204)

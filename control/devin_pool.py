@@ -277,7 +277,9 @@ class DevinAccountPool:
             acct = self._registry.get(self._account_id)
             return acct if acct is not None and acct.provider == self.provider else None
         accounts = self._registry.list(self.provider)
-        return accounts[0] if len(accounts) == 1 else None
+        if len(accounts) != 1 or not _is_valid_account_id(accounts[0].id):
+            return None
+        return accounts[0]
 
     def _refresh_locked(self, acct: Account) -> Account:
         """Auto-recover a ``cooling`` account whose ``cooldown_until`` passed."""
