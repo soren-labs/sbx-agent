@@ -8,7 +8,13 @@ from datetime import datetime
 
 from control.accounts import cooldown_expired
 from control.backend import SandboxBackend, SandboxHandle
-from control.config import CREATE_GRACE_S, IDLE_TIMEOUT_S, TERMINAL_STATUSES
+from control.config import (
+    CREATE_GRACE_S,
+    IDLE_TIMEOUT_S,
+    RUN_GRACE_S,
+    TERMINAL_STATUSES,
+    TURN_MAX_SECONDS,
+)
 from control.ports import AccountRegistry
 from control.store import SessionRecord, SessionStore
 
@@ -28,6 +34,7 @@ def reap(
     *,
     idle_timeout_s: int = IDLE_TIMEOUT_S,
     create_grace_s: int = CREATE_GRACE_S,
+    run_grace_s: int = TURN_MAX_SECONDS + RUN_GRACE_S,
     account_registry: AccountRegistry | None = None,
     on_action: Callable[[ReapAction], None] | None = None,
 ) -> list[ReapAction]:
@@ -40,6 +47,10 @@ def reap(
       ``create_grace_s`` of its last update → ``lost`` (the provisioner is
       gone — e.g. control-plane restart mid-create — so nothing will ever
       finish it; the orphan pass then reclaims the sandbox)
+    * ``running`` record stale beyond the runner's own ``--max-seconds``
+      bound plus ``run_grace_s`` → ``lost`` (the turn watcher is
+      in-process; a control-plane cutover mid-turn strands the record
+      ``running`` on a live sandbox forever, holding the account slot)
     * idle longer than ``idle_timeout_s`` and sandbox still alive → terminate + ``timed_out``
     * record exists, sandbox gone, status was idle → ``timed_out`` (native idle_timeout)
     * record exists, sandbox gone, status was creating/running → ``lost``
@@ -122,6 +133,25 @@ def reap(
                 rec.updated_at = now
                 store.put(rec)
                 emit("lost", rec.id, rec.sandbox_id)
+            continue
+
+        if rec.status == "running":
+            if (now - rec.updated_at).total_seconds() >= run_grace_s:
+                # Mark terminal *before* terminate (close() ordering): the
+                # slot frees immediately, and a failed terminate is retried
+                # by the terminal_cleanup pass on the next sweep.
+                rec.status = "lost"
+                rec.ended_at = now
+                rec.updated_at = now
+                rec.current_turn_id = None
+                rec.current_turn_n = None
+                store.put(rec)
+                emit("lost", rec.id, rec.sandbox_id)
+                if handle is not None:
+                    try:
+                        backend.terminate(handle)
+                    except Exception:
+                        emit("cleanup_failed", rec.id, rec.sandbox_id)
             continue
 
         if rec.status == "idle" and idle_expired and handle is not None:

@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[3]
 REAL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "opencode"
 WP0_FIXTURES = ROOT / "tests" / "fixtures" / "events" / "opencode"
 
-MODEL = "anthropic/claude-sonnet-4.5"
+MODEL = "openai/gpt-5.6-luna"
 REAL_ID = "ses_01a0a2d787bc7192b642ad17"
 WP0_ID = "ses_01a09b11abcd"
 

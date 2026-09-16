@@ -16,6 +16,7 @@ from control.config import (
     BASIC_SECRET_NAME,
     CODEX_SECRET_NAME,
     MODAL_APP_NAME,
+    RUN_GRACE_S,
     V1_BOOTSTRAP_SECRET_NAME,
     remote_env_overlay,
 )
@@ -77,6 +78,7 @@ def reap_cron() -> None:
         plane.backend,
         datetime.now(UTC),
         idle_timeout_s=plane.idle_timeout_s,
+        run_grace_s=plane.turn_max_seconds + RUN_GRACE_S,
         # SOR-63: expired cooldowns return accounts to rotation; absent on
         # app.state until the registry is wired (P2-D bootstrap).
         account_registry=getattr(web.state, "account_registry", None),

@@ -46,10 +46,13 @@ PROVIDER_DEFAULT_MODELS = {
     "antigravity": ("gemini-3.8-flash-low",),
     "grok": ("grok-4.6",),
     # SOR-96: OpenCode models travel as ``provider/model`` argv (``-m``).
-    # The default pair covers the two auth channels the gate accounts use
-    # (Anthropic OAuth subscription + an API-key provider); a deploy
-    # overrides via ``SBX_OPENCODE_MODELS``.
-    "opencode": ("anthropic/claude-sonnet-4.5", "openai/gpt-5.3-codex"),
+    # The default pair covers the two auth channels the gate account uses
+    # (OpenAI OAuth subscription + the OpenCode Zen API key) with ids that
+    # resolve on those channels — ``anthropic/claude-sonnet-4.5`` and
+    # ``openai/gpt-5.3-codex`` do not exist there (real ids use ``-4-5`` /
+    # the ``opencode`` zen prefix). A deploy overrides via
+    # ``SBX_OPENCODE_MODELS``.
+    "opencode": ("openai/gpt-5.6-luna", "opencode/claude-sonnet-4-5"),
 }
 
 

@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from tests.unit.runner.conftest import load_json, parsed_events, run_runner
 
-MODEL = "anthropic/claude-sonnet-4.5"
+MODEL = "openai/gpt-5.6-luna"
 SESS_ID = "ses_01a0a2d787bc7192b642ad17"
 WP0_ID = "ses_01a09b11abcd"
 REPLAYER = Path(__file__).resolve().parent / "replay_opencode.py"

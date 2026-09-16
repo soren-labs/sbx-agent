@@ -16,6 +16,11 @@ CREATE_GRACE_S = 300
 SANDBOX_TIMEOUT_S = 14400  # 4h hard cap
 SSE_KEEPALIVE_S = 15.0
 TURN_MAX_SECONDS = 900
+# SOR-80: a ``running`` record is finalized by the in-process watcher. When a
+# control-plane cutover kills that watcher mid-turn, nothing ever closes the
+# record — the reaper treats a turn stale beyond the runner's own
+# --max-seconds bound plus this margin as stranded.
+RUN_GRACE_S = 300
 CPU = (1, 2)
 MEMORY_MIB = (1024, 4096)
 WORK_DIR = "/work"

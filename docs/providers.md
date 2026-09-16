@@ -15,7 +15,7 @@ extraction, and health classification.
 | devin | Experimental | Devin CLI **3000.10.21** — sha256-pinned bundle in `sbx-runtime-devin` | `.local/share/devin/credentials.toml` | ✅ ACP session | ✅ | ✅ `SBX_DEVIN_ACCOUNTS` / burst slots | SOR-73 spike: Modal clean-room credential injection + `auth status` + `-p` smoke, 2/4/8-way concurrency PASS — 2026-09-14 (`spike/p2/`); full `/v1` e2e gate pending |
 | antigravity | Experimental | your own `agy` binary (`SBX_AGY_BIN` / `~/.local/bin/agy`, baked into `sbx-runtime-antigravity`; pin `agy_version` **1.2.3**, stream shape re-verified on real 1.2.3 — SOR-106) | `.gemini/antigravity-cli/antigravity-oauth-token` | ✅ `--conversation <id>` | ✅ | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/agy_gate.py` (init → 2 turns → stale-resume → export → leak scan); SOR-68 multi-account fleet matrix pending |
 | grok | Experimental | your own `grok` binary (`SBX_GROK_BIN` / `~/.local/bin/grok`, verified against real 1.0.24 stream shape) | `.grok/auth.json` | ✅ `--resume <id>` | ✅ | ✅ `SBX_GROK_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/grok_gate.py`; SOR-68 fleet matrix pending |
-| opencode | **Preview** | `opencode-ai` **1.18.29** — npm-pinned in `sbx-runtime-opencode` (`runtime/packages.txt` `opencode_*`) | `.local/share/opencode/auth.json` | ✅ `--session <id>` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Replay/fixture only — production adapter, image and credential path merged (SOR-96); real-account gate **CREDENTIAL_DEFERRED** (`docs/reviews/SOR-96.md`) |
+| opencode | Experimental | `opencode-ai` **1.18.29** — npm-pinned in `sbx-runtime-opencode` (`runtime/packages.txt` `opencode_*`) | `.local/share/opencode/auth.json` | ✅ `--session <id>` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Real-account gate **PASS** on the RC plane — two turns on one native session, cancel, usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`) |
 | claude | **Not supported** | — | — | — | — | — | Experimental adapter seam merged but **not registered** in the provider registry (SOR-97, replay-only); not schedulable |
 
 ### Evidence policy
@@ -115,8 +115,13 @@ stream events, so the rc path fails the turn.
 
 **opencode.** The production adapter, pinned image and credential path are
 merged and schedulable (`opencode run <prompt> --format json`, resume via
-`--session <id>`), but no real-account gate has run yet — status stays
-**Preview** until the SOR-96 real-Modal gate passes with a real `auth.json`.
+`--session <id>`). The Release 0.1 real-Modal gate passed on the isolated
+RC plane: two turns on one native session, cancel, honest usage, zero
+credential leaks (`docs/reviews/release-0.1-gate-core.md`) — promoted from
+Preview to Experimental. Note the gate ran on the account's OpenAI OAuth
+channel (`openai/gpt-5.6-luna`); the OpenCode Zen channel resolves but the
+seeded account carries no Zen balance, and `SBX_OPENCODE_MODELS` remains
+the per-deploy override for the advertised defaults.
 
 **claude.** Not supported in `v0.1.0-alpha` — the experimental adapter seam
 is merged but deliberately not registered, so `provider=claude` is not
