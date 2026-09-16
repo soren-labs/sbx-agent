@@ -57,7 +57,7 @@ PROVIDER_MODELS: dict[str, list[str]] = {
     "codex": ["gpt-5.6-luna", "gpt-5.3-codex"],
     "antigravity": ["gemini-3-pro", "claude-sonnet-4.5"],
     "grok": ["grok-build", "grok-4.1"],
-    "opencode": ["anthropic/claude-sonnet-4.5", "openai/gpt-5.3-codex"],
+    "opencode": ["openai/gpt-5.6-luna", "opencode/claude-sonnet-4-5"],
     "devin": ["swe-2-high", "swe-2"],
 }
 

@@ -75,10 +75,13 @@ def test_bootstrap_seeds_all_providers(monkeypatch) -> None:
     assert by_provider["antigravity"].secret_name == "sbx-acct-antigravity-1"
     assert by_provider["grok"].secret_name == "sbx-acct-grok-1"
     assert by_provider["opencode"].secret_name == "sbx-acct-opencode-1"
-    # SOR-96: opencode advertises provider/model-qualified defaults.
+    # SOR-96: opencode advertises provider/model-qualified defaults whose
+    # ids resolve on the gate account's real auth channels (the earlier
+    # ``anthropic/claude-sonnet-4.5`` / ``openai/gpt-5.3-codex`` pair named
+    # models that do not exist — real-gate finding, SOR-68).
     assert by_provider["opencode"].models == (
-        "anthropic/claude-sonnet-4.5",
-        "openai/gpt-5.3-codex",
+        "openai/gpt-5.6-luna",
+        "opencode/claude-sonnet-4-5",
     )
     assert all(a.status == "active" for a in by_provider.values())
     scheduler = app.state.scheduler
