@@ -224,7 +224,7 @@ def _version_grep_pattern(expect: str) -> str:
     """ERE matching ``expect`` as a whole token, not a version prefix.
 
     Plain substring matching (``grep -F``) false-passes pins that are a
-    prefix of a different version — ``1.2.2`` inside ``1.2.20`` or
+    prefix of a different version — ``1.2.3`` inside ``1.2.30`` or
     ``1.0.24`` inside ``11.0.24``. Boundaries are ``[^0-9.]`` so a match
     cannot be part of a longer version number on either side.
     """

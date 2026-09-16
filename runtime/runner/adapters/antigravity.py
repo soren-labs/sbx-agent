@@ -84,8 +84,9 @@ _USAGE_FIELDS = (
 # step_type -> canonical item type for text-carrying steps.
 _TEXT_STEPS = {"agent_response": "agent_message", "thinking": "reasoning"}
 
-# step_type values that map to tool items ("tool" is the real 1.2.2 name;
-# "tool_call" only appears in the WP0 hand-written fixtures).
+# step_type values that map to tool items ("tool" is the real 1.2.x name —
+# verified on 1.2.2 and 1.2.3; "tool_call" only appears in the WP0
+# hand-written fixtures).
 _TOOL_STEPS = {"tool", "tool_call"}
 
 # tool_name values that produce file_change items; all others produce

@@ -46,9 +46,21 @@ BYO Modal workspace + BYO official provider subscriptions behind one
   sandboxes.
 - `/v1` keys stored as `sha256` only; credential material never logged;
   artifact collection fails closed on suspected secrets.
+- Account ids are validated fail-closed (`[A-Za-z0-9._-]`, alnum first,
+  ≤128 chars) before they reach `FileAccountStore` paths, `modal.Dict`
+  keys, or `sbx-acct-<id>` Secret names — traversal/absolute/encoded ids
+  are refused across the legacy `control.accounts` CLI, registry,
+  scheduler, onboarding, and `/v1/accounts/{id}` routes (404/409, no
+  store I/O). Stored records whose body id is unsafe or foreign to their
+  store key decode as disabled corrupt records (SOR-105).
 
 ### Fixed
 
+- Antigravity release pin moved `agy_version` 1.2.2 → **1.2.3** after
+  re-validating the headless contract against the real 1.2.3 binary
+  (`--version` output, stream-json init/step/result shapes,
+  `--conversation` resume + stale-id semantics, credential path) — no
+  adapter or gate changes required (SOR-106).
 - `sbx uninstall` no longer reports a clean teardown when Modal is
   unreachable: `ModalPlane` raises `BootstrapError` on auth/network
   failures instead of flattening them to "empty"/"absent" (clean-room
