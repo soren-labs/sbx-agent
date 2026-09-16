@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -46,6 +47,34 @@ ACCOUNT_STATUSES = ("active", "cooling", "invalid", "disabled")
 
 _BLOB_PROVIDER = "provider"
 _BLOB_FILES = "files"
+
+# Shared account_id rule (SOR-105): every store maps an id onto a filesystem
+# path (``accounts/<id>.json`` / ``credentials/<id>.json``), a ``modal.Dict``
+# key (``account/<id>`` / ``credential/<id>``), and the ``sbx-acct-<id>``
+# Secret name — only unreserved filename characters are safe, so ``../x``,
+# absolute paths, slashes/backslashes, empty and overlong ids are refused
+# before any filesystem/Secret/Dict access.
+ACCOUNT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def is_valid_account_id(account_id: Any) -> bool:
+    """Whether ``account_id`` is safe to use as a store/Secret key."""
+    return isinstance(account_id, str) and ACCOUNT_ID_RE.fullmatch(account_id) is not None
+
+
+def validate_account_id(account_id: Any) -> str:
+    """Fail-closed account_id check shared by every store/registry/CLI path.
+
+    Raises ``ValueError`` for anything outside ``ACCOUNT_ID_RE`` — callers
+    must run this before the id reaches a filesystem path, ``modal.Dict``
+    key, or Secret name.
+    """
+    if not is_valid_account_id(account_id):
+        raise ValueError(
+            f"invalid account id {account_id!r}: use 1-128 chars of "
+            "[A-Za-z0-9._-], starting with an alphanumeric"
+        )
+    return account_id
 
 
 def iso_utc(ts: datetime) -> str:
@@ -175,11 +204,13 @@ class InMemoryAccountStore:
         self._lock = threading.Lock()
 
     def get_record(self, account_id: str) -> dict[str, Any] | None:
+        validate_account_id(account_id)
         with self._lock:
             raw = self._records.get(account_id)
             return dict(raw) if isinstance(raw, dict) else raw
 
     def put_record(self, account_id: str, record: dict[str, Any]) -> None:
+        validate_account_id(account_id)
         with self._lock:
             self._records[account_id] = dict(record)
 
@@ -188,19 +219,23 @@ class InMemoryAccountStore:
             return list(self._records.items())
 
     def delete_record(self, account_id: str) -> None:
+        validate_account_id(account_id)
         with self._lock:
             self._records.pop(account_id, None)
 
     def get_blob(self, account_id: str) -> dict[str, Any] | None:
+        validate_account_id(account_id)
         with self._lock:
             blob = self._blobs.get(account_id)
             return dict(blob) if blob is not None else None
 
     def put_blob(self, account_id: str, blob: dict[str, Any]) -> None:
+        validate_account_id(account_id)
         with self._lock:
             self._blobs[account_id] = dict(blob)
 
     def delete_blob(self, account_id: str) -> None:
+        validate_account_id(account_id)
         with self._lock:
             self._blobs.pop(account_id, None)
 
@@ -225,9 +260,13 @@ class FileAccountStore:
         return self._root
 
     def _record_path(self, account_id: str) -> Path:
+        # SOR-105: the id is the filename — refuse traversal/absolute/segment
+        # ids before any path is formed, even for direct (non-registry) use.
+        validate_account_id(account_id)
         return self._root / "accounts" / f"{account_id}.json"
 
     def _blob_path(self, account_id: str) -> Path:
+        validate_account_id(account_id)
         return self._root / "credentials" / f"{account_id}.json"
 
     @staticmethod
@@ -311,10 +350,12 @@ class ModalDictAccountStore:
         return self._dict
 
     def get_record(self, account_id: str) -> dict[str, Any] | None:
+        validate_account_id(account_id)
         raw = self._d().get(self._ACCOUNT_PREFIX + account_id)
         return raw if isinstance(raw, dict) else None
 
     def put_record(self, account_id: str, record: dict[str, Any]) -> None:
+        validate_account_id(account_id)
         self._d().put(self._ACCOUNT_PREFIX + account_id, dict(record))
 
     def iter_records(self) -> Iterable[tuple[str, Any]]:
@@ -326,19 +367,23 @@ class ModalDictAccountStore:
         return out
 
     def delete_record(self, account_id: str) -> None:
+        validate_account_id(account_id)
         try:
             self._d().pop(self._ACCOUNT_PREFIX + account_id)
         except KeyError:
             return
 
     def get_blob(self, account_id: str) -> dict[str, Any] | None:
+        validate_account_id(account_id)
         raw = self._d().get(self._BLOB_PREFIX + account_id)
         return raw if isinstance(raw, dict) else None
 
     def put_blob(self, account_id: str, blob: dict[str, Any]) -> None:
+        validate_account_id(account_id)
         self._d().put(self._BLOB_PREFIX + account_id, dict(blob))
 
     def delete_blob(self, account_id: str) -> None:
+        validate_account_id(account_id)
         try:
             self._d().pop(self._BLOB_PREFIX + account_id)
         except KeyError:
@@ -377,10 +422,12 @@ class PersistentAccountRegistry:
 
     def set_running(self, account_id: str, count: int) -> None:
         """Test/standalone helper: pretend ``count`` sessions are live."""
+        validate_account_id(account_id)
         with self._lock:
             self._counts[account_id] = count
 
     def adjust_running(self, account_id: str, delta: int) -> None:
+        validate_account_id(account_id)
         with self._lock:
             self._counts[account_id] = max(0, self._counts.get(account_id, 0) + delta)
 
@@ -395,14 +442,14 @@ class PersistentAccountRegistry:
         return sorted(out, key=lambda a: a.id)
 
     def get(self, account_id: str) -> Account | None:
+        validate_account_id(account_id)
         raw = self._store.get_record(account_id)
         if raw is None:
             return None
         return _decode(raw, account_id)
 
     def put(self, account: Account) -> None:
-        if not account.id:
-            raise ValueError("account id must be non-empty")
+        validate_account_id(account.id)
         if not account.provider:
             raise ValueError("account provider must be non-empty")
         if account.status not in ACCOUNT_STATUSES:
@@ -417,6 +464,7 @@ class PersistentAccountRegistry:
         cooldown_until: str | None = None,
         last_error: str | None = None,
     ) -> Account:
+        validate_account_id(account_id)
         if status not in ACCOUNT_STATUSES:
             raise ValueError(f"unknown account status {status!r}")
         with self._lock:
@@ -433,6 +481,7 @@ class PersistentAccountRegistry:
             return updated
 
     def touch(self, account_id: str, used_at: str) -> None:
+        validate_account_id(account_id)
         with self._lock:
             raw = self._store.get_record(account_id)
             if raw is None:
@@ -441,12 +490,14 @@ class PersistentAccountRegistry:
             self._store.put_record(account_id, account_to_dict(updated))
 
     def remove(self, account_id: str) -> None:
+        validate_account_id(account_id)
         self._store.delete_record(account_id)
         self._store.delete_blob(account_id)
         with self._lock:
             self._counts.pop(account_id, None)
 
     def running_count(self, account_id: str) -> int:
+        validate_account_id(account_id)
         if self._running_src is not None:
             return self._running_src(account_id)
         with self._lock:
@@ -454,9 +505,11 @@ class PersistentAccountRegistry:
 
     def get_credential_blob(self, account_id: str) -> dict[str, Any] | None:
         """Return the stored blob; secret material — never log it."""
+        validate_account_id(account_id)
         return self._store.get_blob(account_id)
 
     def put_credential_blob(self, account_id: str, blob: dict[str, Any]) -> None:
+        validate_account_id(account_id)
         if not isinstance(blob, dict) or not isinstance(blob.get(_BLOB_FILES), dict):
             raise ValueError("credential blob must be {'provider': P, 'files': {relpath: content}}")
         account = self.get(account_id)
@@ -563,43 +616,51 @@ def main(argv: list[str] | None = None) -> int:
     backend = "modal" if args.modal else os.environ.get("SBX_BACKEND", "local")
     registry = PersistentAccountRegistry(select_store(store_dir=args.store_dir, backend=backend))
 
-    if args.cmd == "import":
-        blob = _pack_blob(args.provider, Path(args.source).expanduser())
-        account_id = args.account_id or f"acct_{uuid.uuid4().hex[:8]}"
-        account = Account(
-            id=account_id,
-            provider=args.provider,
-            label=args.label or account_id,
-            status="active",
-            max_concurrent=args.slots,
-            secret_name=f"sbx-acct-{account_id}",
-            created_at=datetime.now(UTC).isoformat(),
-        )
-        registry.put(account)
-        registry.put_credential_blob(account_id, blob)
-        print(f"imported {account_id} provider={args.provider} files={len(blob[_BLOB_FILES])}")
-        return 0
-    if args.cmd == "list":
-        for account in registry.list(args.provider):
-            print(
-                f"{account.id}\t{account.provider}\t{account.status}\t"
-                f"running={registry.running_count(account.id)}/{account.max_concurrent}\t"
-                f"{account.label}"
+    try:
+        if args.cmd == "import":
+            # The id becomes a store path / Secret name — refuse an unsafe id
+            # before the credential source or the store is touched (SOR-105).
+            account_id = validate_account_id(args.account_id or f"acct_{uuid.uuid4().hex[:8]}")
+            blob = _pack_blob(args.provider, Path(args.source).expanduser())
+            account = Account(
+                id=account_id,
+                provider=args.provider,
+                label=args.label or account_id,
+                status="active",
+                max_concurrent=args.slots,
+                secret_name=f"sbx-acct-{account_id}",
+                created_at=datetime.now(UTC).isoformat(),
             )
-        return 0
-    if args.cmd == "disable":
-        registry.mark_status(args.account_id, "disabled")
-        print(f"disabled {args.account_id}")
-        return 0
-    if args.cmd == "enable":
-        registry.mark_status(args.account_id, "active")
-        print(f"enabled {args.account_id}")
-        return 0
-    if args.cmd == "remove":
-        registry.remove(args.account_id)
-        print(f"removed {args.account_id}")
-        return 0
-    return 2
+            registry.put(account)
+            registry.put_credential_blob(account_id, blob)
+            print(f"imported {account_id} provider={args.provider} files={len(blob[_BLOB_FILES])}")
+            return 0
+        if args.cmd == "list":
+            for account in registry.list(args.provider):
+                print(
+                    f"{account.id}\t{account.provider}\t{account.status}\t"
+                    f"running={registry.running_count(account.id)}/{account.max_concurrent}\t"
+                    f"{account.label}"
+                )
+            return 0
+        if args.cmd == "disable":
+            registry.mark_status(validate_account_id(args.account_id), "disabled")
+            print(f"disabled {args.account_id}")
+            return 0
+        if args.cmd == "enable":
+            registry.mark_status(validate_account_id(args.account_id), "active")
+            print(f"enabled {args.account_id}")
+            return 0
+        if args.cmd == "remove":
+            registry.remove(validate_account_id(args.account_id))
+            print(f"removed {args.account_id}")
+            return 0
+        return 2
+    except ValueError as exc:
+        # Never a traceback for a refused id — and the message carries only
+        # the id itself, never credential material.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

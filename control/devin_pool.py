@@ -33,6 +33,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from control.accounts import is_valid_account_id as _is_valid_account_id
 from control.accounts import iso_utc as _iso
 from control.accounts import parse_iso as _parse_iso
 from control.config import env_float, env_int
@@ -269,6 +270,10 @@ class DevinAccountPool:
     def _resolve_locked(self) -> Account | None:
         """The pool's one account: pinned id, else the unique devin account."""
         if self._account_id is not None:
+            # A non-conformant configured id is unresolvable, not a crash —
+            # it must never reach a store path (SOR-105).
+            if not _is_valid_account_id(self._account_id):
+                return None
             acct = self._registry.get(self._account_id)
             return acct if acct is not None and acct.provider == self.provider else None
         accounts = self._registry.list(self.provider)
@@ -276,7 +281,7 @@ class DevinAccountPool:
 
     def _refresh_locked(self, acct: Account) -> Account:
         """Auto-recover a ``cooling`` account whose ``cooldown_until`` passed."""
-        if acct.status != "cooling":
+        if acct.status != "cooling" or not _is_valid_account_id(acct.id):
             return acct
         until = _parse_iso(acct.cooldown_until)
         if until is not None and until <= self._clock():

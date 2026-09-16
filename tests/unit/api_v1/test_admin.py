@@ -128,6 +128,53 @@ class TestAccounts:
         assert resp.status_code == 404
 
 
+class TestAccountIdTraversal:
+    """SOR-105: ``{account_id}`` path params reach ``FileAccountStore`` paths;
+    a file-backed registry refuses non-conformant ids and the routes map the
+    refusal to ``not_found`` — never a 500, never a store access."""
+
+    def _file_registry(self, v1_env, tmp_path):
+        from control.accounts import FileAccountStore, PersistentAccountRegistry
+        from control.scheduler import AccountScheduler
+
+        registry = PersistentAccountRegistry(FileAccountStore(tmp_path / "accounts"))
+        v1_env.app.state.account_registry = registry
+        v1_env.app.state.scheduler = AccountScheduler(registry)
+        return registry
+
+    def test_traversal_ids_are_not_found_not_500(
+        self, client, admin_auth, v1_env, tmp_path
+    ) -> None:
+        self._file_registry(v1_env, tmp_path)
+        # Ids that survive URL transport and still fail the account_id rule.
+        for bad in (".hidden", "-x", "a%5Cb", "a%20b", "x" * 129):
+            resp = client.get(f"/v1/accounts/{bad}", headers=admin_auth)
+            assert resp.status_code == 404, (bad, resp.text)
+            resp = client.delete(f"/v1/accounts/{bad}", headers=admin_auth)
+            assert resp.status_code == 404, (bad, resp.text)
+            resp = client.post(f"/v1/accounts/{bad}/verify", headers=admin_auth)
+            assert resp.status_code == 404, (bad, resp.text)
+        # Nothing ever reached the file store (tmp_path/home is the test
+        # isolation HOME, not store state).
+        assert not (tmp_path / "accounts").exists()
+
+    def test_create_agent_with_traversal_account_id_is_409(
+        self, client, admin_auth, v1_env, tmp_path
+    ) -> None:
+        self._file_registry(v1_env, tmp_path)
+        resp = client.post(
+            "/v1/agents",
+            json={
+                "prompt": {"text": "hi"},
+                "agent": {"provider": "grok", "account_id": "../escape"},
+            },
+            headers=admin_auth,
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "account_unavailable"
+        assert not (tmp_path / "accounts").exists()
+
+
 class TestApiKeys:
     def test_create_list_revoke(self, client, admin_auth) -> None:
         resp = client.post(

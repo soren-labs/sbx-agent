@@ -105,6 +105,28 @@ def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _registry_account(registry: AccountRegistry, account_id: str) -> Account:
+    """``registry.get`` with 404 mapping. A non-conformant id is refused by
+    the registry before any store access (SOR-105) — no such account can
+    exist, so it surfaces as ``not_found`` rather than a 500."""
+    try:
+        account = registry.get(account_id)
+    except ValueError:
+        account = None
+    if account is None:
+        raise not_found("account not found")
+    return account
+
+
+def _running_or_zero(registry: AccountRegistry, account_id: str) -> int:
+    """``running_count`` that treats a non-conformant stored id as 0 — such a
+    record can never hold a session and must not 500 a listing (SOR-105)."""
+    try:
+        return registry.running_count(account_id)
+    except ValueError:
+        return 0
+
+
 def _turn_n(turn_id: str | None) -> int | None:
     match = _TURN_ID_RE.match(turn_id or "")
     return int(match.group(1)) if match else None
@@ -1596,7 +1618,7 @@ def list_models(
     for account in registry.list():
         free = (
             account.status == "active"
-            and registry.running_count(account.id) < account.max_concurrent
+            and _running_or_zero(registry, account.id) < account.max_concurrent
         )
         for model in account.models:
             key_ = (account.provider, model)
@@ -1624,7 +1646,7 @@ def list_accounts(
 ) -> dict[str, Any]:
     return {
         "accounts": [
-            account_public(account, registry.running_count(account.id))
+            account_public(account, _running_or_zero(registry, account.id))
             for account in registry.list(provider)
         ]
     }
@@ -1669,9 +1691,7 @@ def get_account(
     key: ApiKey = Depends(admin_key),
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
-    account = registry.get(account_id)
-    if account is None:
-        raise not_found("account not found")
+    account = _registry_account(registry, account_id)
     return account_public(account, registry.running_count(account.id))
 
 
@@ -1681,8 +1701,7 @@ def delete_account(
     key: ApiKey = Depends(admin_key),
     registry: AccountRegistry = Depends(get_registry),
 ) -> Response:
-    if registry.get(account_id) is None:
-        raise not_found("account not found")
+    _registry_account(registry, account_id)
     registry.remove(account_id)
     return Response(status_code=204)
 
@@ -1704,9 +1723,7 @@ def verify_account(
     account is simply marked ``active`` (real per-provider CLI probes land with
     the P2-B adapters).
     """
-    account = registry.get(account_id)
-    if account is None:
-        raise not_found("account not found")
+    account = _registry_account(registry, account_id)
     blob = registry.get_credential_blob(account_id)
     backend = getattr(plane, "backend", None)
     runner = getattr(plane, "runner", None)

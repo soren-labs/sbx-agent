@@ -32,7 +32,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
 
-from control.accounts import cooldown_expired, iso_utc, parse_iso
+from control.accounts import cooldown_expired, is_valid_account_id, iso_utc, parse_iso
 from control.config import TERMINAL_STATUSES, env_float, env_int
 from control.ports import Account, AccountRegistry, ProviderId, ScheduleDecision
 from control.run_errors import RunError
@@ -260,9 +260,12 @@ class AccountScheduler:
         ``auth_invalid`` → ``invalid``; ``ok`` → recover to ``active``;
         anything else records ``last_error`` without a status change. Pass
         ``status="cooling"`` to force a timed cooldown for any kind. Raises
-        ``KeyError`` for an unknown account.
+        ``KeyError`` for an unknown account — a non-conformant id can never
+        name one (SOR-105).
         """
         with self._lock:
+            if not is_valid_account_id(account_id):
+                raise KeyError(account_id)
             acct = self._registry.get(account_id)
             if acct is None:
                 raise KeyError(account_id)
@@ -299,6 +302,8 @@ class AccountScheduler:
         err = error if isinstance(error, RunError) else RunError.from_dict(error)
         if err is None:
             with self._lock:
+                if not is_valid_account_id(account_id):
+                    raise KeyError(account_id)
                 acct = self._registry.get(account_id)
                 if acct is None:
                     raise KeyError(account_id)
@@ -336,6 +341,8 @@ class AccountScheduler:
 
     def _refresh_locked(self, acct: Account) -> Account:
         """Auto-recover a ``cooling`` account whose ``cooldown_until`` passed."""
+        if not is_valid_account_id(acct.id):
+            return acct  # non-conformant stored id — never usable, leave it (SOR-105)
         if cooldown_expired(acct, self._clock()):
             return self._registry.mark_status(acct.id, "active")
         return acct
@@ -382,6 +389,10 @@ class AccountScheduler:
     def _pick_named_locked(
         self, provider: str, account_id: str
     ) -> tuple[Account | None, ScheduleRefused | None]:
+        # SOR-105: a non-conformant id can never name an account — refuse it
+        # here so it never reaches a registry/store path as a lookup miss.
+        if not is_valid_account_id(account_id):
+            return None, ScheduleRefused("account_unavailable")
         acct = self._registry.get(account_id)
         if acct is None or acct.provider != provider:
             return None, ScheduleRefused("account_unavailable")
@@ -401,7 +412,9 @@ class AccountScheduler:
         candidates = [
             a
             for a in accounts
-            if a.status == "active" and self._running_locked(a.id) < self._cap(a)
+            if a.status == "active"
+            and is_valid_account_id(a.id)  # a non-conformant stored id can never serve a session
+            and self._running_locked(a.id) < self._cap(a)
         ]
         if not candidates:
             return None, ScheduleRefused(

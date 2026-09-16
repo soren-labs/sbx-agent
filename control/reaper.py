@@ -74,7 +74,9 @@ def reap(
                 continue
             try:
                 account_registry.mark_status(acct.id, "active")
-            except KeyError:
+            except (KeyError, ValueError):
+                # Missing — or a stored record whose id fails account_id
+                # validation (SOR-105): never usable, leave it.
                 continue
             emit("account_recovered", None, None, account_id=acct.id)
 

@@ -31,7 +31,6 @@ import base64
 import binascii
 import json
 import os
-import re
 import shlex
 import stat
 import sys
@@ -43,7 +42,12 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
-from control.accounts import PersistentAccountRegistry, select_store
+from control.accounts import (
+    PersistentAccountRegistry,
+    is_valid_account_id,
+    select_store,
+    validate_account_id,
+)
 from control.ports import Account
 
 # ------------------------------------------------------------------ descriptors
@@ -168,24 +172,19 @@ def descriptor_for(provider: str) -> ProviderDescriptor:
         ) from None
 
 
-_ACCOUNT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-
-
 def _check_account_id(account_id: Any) -> str:
     """Reject ids that could escape the account store's file layout.
 
-    ``FileAccountStore`` maps an id to ``accounts/<id>.json`` /
+    Delegates to the shared ``control.accounts.validate_account_id`` seam
+    (SOR-105): ``FileAccountStore`` maps an id to ``accounts/<id>.json`` /
     ``credentials/<id>.json``, and the Modal lane embeds it verbatim in Dict
     keys and the ``sbx-acct-<id>`` Secret name — only unreserved filename
     characters are safe.
     """
-    if not isinstance(account_id, str) or not _ACCOUNT_ID_RE.fullmatch(account_id):
-        raise OnboardingError(
-            "invalid_account_id",
-            f"invalid account id {account_id!r}: use 1-128 chars of "
-            "[A-Za-z0-9._-], starting with an alphanumeric",
-        )
-    return account_id
+    try:
+        return validate_account_id(account_id)
+    except ValueError as exc:
+        raise OnboardingError("invalid_account_id", str(exc)) from exc
 
 
 # ------------------------------------------------------------------ validation
@@ -687,6 +686,10 @@ class OnboardingService:
     def describe(self, account: Account) -> dict[str, Any]:
         """Metadata-only account descriptor (SOR-99 §1 shape)."""
         desc = _DESCRIPTOR_INDEX.get(account.provider)
+        # A record stored with a non-conformant id (planted/corrupt) stays
+        # visible but must never reach the running/blob lanes — per-id store
+        # ops refuse it fail-closed (SOR-105).
+        id_ok = is_valid_account_id(account.id)
         return {
             "account_id": account.id,
             "provider": account.provider,
@@ -698,8 +701,10 @@ class OnboardingService:
             "secret_name": account.secret_name,
             "models": list(account.models),
             "max_concurrent": account.max_concurrent,
-            "running": self._registry.running_count(account.id),
-            "has_credential": self._registry.get_credential_blob(account.id) is not None,
+            "running": self._registry.running_count(account.id) if id_ok else 0,
+            "has_credential": (
+                id_ok and self._registry.get_credential_blob(account.id) is not None
+            ),
             "created_at": account.created_at,
             "last_used_at": account.last_used_at,
             "cooldown_until": account.cooldown_until,

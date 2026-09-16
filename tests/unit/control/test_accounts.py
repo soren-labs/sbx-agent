@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 from typing import Any
@@ -11,15 +12,19 @@ from control.accounts import (
     AccountStore,
     FileAccountStore,
     InMemoryAccountStore,
+    ModalDictAccountStore,
     PersistentAccountRegistry,
     account_from_dict,
     account_to_dict,
     cooldown_expired,
+    is_valid_account_id,
     parse_iso,
     select_store,
+    validate_account_id,
 )
 from control.accounts import main as accounts_main
 from control.ports import Account, AccountRegistry
+from control.scheduler import AccountScheduler, ScheduleRefused
 
 
 def _account(id: str, provider: str = "antigravity", **kw: Any) -> Account:
@@ -253,6 +258,252 @@ class TestCli:
         assert rc == 0
         assert reg.get(account.id) is None
         assert reg.get_credential_blob(account.id) is None
+
+
+class TestAccountIdSafety:
+    """SOR-105: every account_id reaching a store/registry path is validated
+    fail-closed — traversal, absolute, slash/backslash, empty and overlong
+    ids are refused before any filesystem/Secret/Dict access. Legal ids
+    (``[A-Za-z0-9._-]``, alnum first, <=128 chars) are unaffected."""
+
+    BAD_IDS = (
+        "../x",
+        "../escape",
+        "..",
+        "../../victim",
+        "/abs/path",
+        "a/b",
+        "a\\b",
+        "",
+        "   ",
+        ".hidden",
+        "-x",
+        "a b",
+        "a\x00b",
+        "x" * 129,
+    )
+    GOOD_IDS = ("a", "acct-grok-1", "A9._-x", "9", "x" * 128, "a.b_c-d")
+
+    def test_validate_accepts_legal_ids(self) -> None:
+        for good in self.GOOD_IDS:
+            assert validate_account_id(good) == good
+            assert is_valid_account_id(good)
+
+    def test_validate_rejects_unsafe_and_nonstring_ids(self) -> None:
+        for bad in (*self.BAD_IDS, None, 7, b"a1"):
+            with pytest.raises(ValueError):
+                validate_account_id(bad)
+            assert not is_valid_account_id(bad)
+
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    def test_file_store_rejects_before_any_io(self, tmp_path: Path, bad: str) -> None:
+        store = FileAccountStore(tmp_path / "store")
+        calls = (
+            lambda: store.get_record(bad),
+            lambda: store.put_record(bad, {"id": bad, "provider": "grok"}),
+            lambda: store.delete_record(bad),
+            lambda: store.get_blob(bad),
+            lambda: store.put_blob(bad, {"provider": "grok", "files": {"c": "REDACTED"}}),
+            lambda: store.delete_blob(bad),
+        )
+        for call in calls:
+            with pytest.raises(ValueError):
+                call()
+        # Nothing was created — inside or outside the store root.
+        assert not (tmp_path / "store").exists()
+
+    def test_file_store_traversal_cannot_read_or_delete_outside_root(self, tmp_path: Path) -> None:
+        """Pre-fix reproducer: ``accounts/<id>.json`` / ``credentials/<id>.json``
+        with ``../victim`` resolved to ``<root>/victim.json`` — reads and
+        deletes escaped the store. Now refused before any path is formed."""
+        root = tmp_path / "store"
+        (root / "accounts").mkdir(parents=True)
+        (root / "credentials").mkdir(parents=True)
+        victim = root / "victim.json"
+        victim.write_text(
+            json.dumps({"provider": "grok", "files": {"c": "REDACTED"}}), encoding="utf-8"
+        )
+        store = FileAccountStore(root)
+        with pytest.raises(ValueError):
+            store.get_blob("../victim")
+        with pytest.raises(ValueError):
+            store.get_record("../victim")
+        with pytest.raises(ValueError):
+            store.delete_blob("../victim")
+        with pytest.raises(ValueError):
+            store.delete_record("../victim")
+        assert victim.is_file()
+
+    def test_file_store_traversal_cannot_write_outside_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "store"
+        store = FileAccountStore(root)
+        with pytest.raises(ValueError):
+            store.put_blob("../../escape", {"provider": "grok", "files": {"c": "x"}})
+        with pytest.raises(ValueError):
+            store.put_record("../../escape", {"id": "../../escape", "provider": "grok"})
+        assert not (tmp_path / "escape.json").exists()
+        assert not root.exists()
+
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    def test_registry_rejects_unsafe_ids(self, store: AccountStore, bad: str) -> None:
+        reg = _registry(store)
+        with pytest.raises(ValueError):
+            reg.get(bad)
+        with pytest.raises(ValueError):
+            reg.put(_account(bad))
+        with pytest.raises(ValueError):
+            reg.mark_status(bad, "disabled")
+        with pytest.raises(ValueError):
+            reg.touch(bad, "2026-09-16T00:00:00Z")
+        with pytest.raises(ValueError):
+            reg.remove(bad)
+        with pytest.raises(ValueError):
+            reg.get_credential_blob(bad)
+        with pytest.raises(ValueError):
+            reg.put_credential_blob(bad, {"provider": "antigravity", "files": {"c": "R"}})
+        with pytest.raises(ValueError):
+            reg.set_running(bad, 1)
+        with pytest.raises(ValueError):
+            reg.adjust_running(bad, 1)
+        with pytest.raises(ValueError):
+            reg.running_count(bad)
+
+    def test_rejection_message_carries_no_credential(self, store: AccountStore) -> None:
+        reg = _registry(store)
+        with pytest.raises(ValueError) as exc:
+            reg.put_credential_blob(
+                "../x", {"provider": "antigravity", "files": {"c": "S3CR3T-VALUE"}}
+            )
+        assert "S3CR3T-VALUE" not in str(exc.value)
+
+    def test_modal_store_validates_before_dict_access(self) -> None:
+        """A non-conformant id raises ValueError before ``_d()`` — no modal
+        import, no Dict key construction. The exploding stub proves order:
+        a legal id reaches the Dict and trips it."""
+
+        class _ExplodingDict:
+            def __getattr__(self, name: str) -> Any:
+                raise AssertionError("modal.Dict was touched")
+
+        store = ModalDictAccountStore()
+        store._dict = _ExplodingDict()
+        for bad in ("../x", "/abs", "a\\b", "", "x" * 129):
+            for call in (
+                lambda: store.get_record(bad),
+                lambda: store.put_record(bad, {}),
+                lambda: store.delete_record(bad),
+                lambda: store.get_blob(bad),
+                lambda: store.put_blob(bad, {}),
+                lambda: store.delete_blob(bad),
+            ):
+                with pytest.raises(ValueError):
+                    call()
+        with pytest.raises(AssertionError, match="modal.Dict was touched"):
+            store.get_record("legal-1")
+
+    def test_scheduler_named_pick_refuses_unsafe_id(self) -> None:
+        sched = AccountScheduler(_registry(InMemoryAccountStore()))
+        for bad in ("../x", "/abs", "a\\b", "", "x" * 129):
+            decision = sched.decide(provider="grok", account=bad)
+            assert decision.account is None
+            assert decision.error == "account_unavailable"
+            with pytest.raises(ScheduleRefused) as exc:
+                sched.acquire(provider="grok", account=bad)
+            assert exc.value.error == "account_unavailable"
+            # report_failure's contract is KeyError for an unknown account;
+            # a non-conformant id can never name one.
+            with pytest.raises(KeyError):
+                sched.report_failure(bad, "rate_limited")
+            with pytest.raises(KeyError):
+                sched.report_run_error(bad, None)
+
+
+class TestCliAccountIdSafety:
+    """SOR-105: the legacy ``python -m control.accounts`` CLI rejects unsafe
+    ids with a clean error — no traceback, no store/filesystem access, no
+    credential material on either stream."""
+
+    def _creds(self, tmp_path: Path) -> Path:
+        creds = tmp_path / "creds.json"
+        creds.write_text('{"token": "REDACTED"}', encoding="utf-8")
+        return creds
+
+    def test_remove_traversal_cannot_delete_outside_store(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Pre-fix, ``remove ../../victim`` unlinked ``<tmp>/victim.json``
+        via ``accounts/../../victim.json``."""
+        store_dir = tmp_path / "store"
+        victim = tmp_path / "victim.json"
+        victim.write_text("{}", encoding="utf-8")
+        rc = accounts_main(["--store-dir", str(store_dir), "remove", "../../victim"])
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "invalid account id" in captured.err
+        assert "Traceback" not in captured.err
+        assert victim.is_file()
+
+    @pytest.mark.parametrize("cmd", ["disable", "enable", "remove"])
+    def test_status_and_remove_commands_reject_unsafe_ids(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], cmd: str
+    ) -> None:
+        store_dir = tmp_path / "store"
+        for bad in ("../x", "/abs", "a\\b", "", "x" * 129):
+            rc = accounts_main(["--store-dir", str(store_dir), cmd, bad])
+            assert rc == 2
+            captured = capsys.readouterr()
+            assert "invalid account id" in captured.err
+            assert "Traceback" not in captured.err
+        assert not store_dir.exists()
+
+    def test_import_rejects_unsafe_account_id_before_touching_anything(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_dir = tmp_path / "store"
+        creds = self._creds(tmp_path)
+        for bad in ("../x", "/abs", "a\\b", "x" * 129):
+            rc = accounts_main(
+                [
+                    "--store-dir",
+                    str(store_dir),
+                    "import",
+                    "--provider",
+                    "grok",
+                    "--from",
+                    str(creds),
+                    "--account-id",
+                    bad,
+                ]
+            )
+            assert rc == 2
+            captured = capsys.readouterr()
+            assert "invalid account id" in captured.err
+            assert "REDACTED" not in captured.out + captured.err
+        # The refused imports created nothing — inside or outside the store.
+        assert not store_dir.exists()
+        assert not (tmp_path / "x.json").exists()
+
+    def test_cli_legal_ids_still_work(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        store_dir = tmp_path / "store"
+        creds = self._creds(tmp_path)
+        for good in TestAccountIdSafety.GOOD_IDS:
+            rc = accounts_main(
+                [
+                    "--store-dir",
+                    str(store_dir),
+                    "import",
+                    "--provider",
+                    "grok",
+                    "--from",
+                    str(creds),
+                    "--account-id",
+                    good,
+                ]
+            )
+            assert rc == 0, capsys.readouterr().err
+            assert (store_dir / "accounts" / f"{good}.json").is_file()
 
     def test_import_directory_uses_adapter_files(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

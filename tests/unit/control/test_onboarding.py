@@ -537,7 +537,18 @@ class TestAccountIdSafety:
     """account_id feeds FileAccountStore paths and the sbx-acct-<id> Secret
     name — anything outside [A-Za-z0-9._-] is refused before any store I/O."""
 
-    BAD_IDS = ("../escape", "..", "/abs", "a/b", "a\\b", "white space", ".hidden")
+    # NOTE: "" is not listed — ``account_id=""`` is falsy and means
+    # "generate one" on add; lookup commands treat it as invalid.
+    BAD_IDS = (
+        "../escape",
+        "..",
+        "/abs",
+        "a/b",
+        "a\\b",
+        "white space",
+        ".hidden",
+        "x" * 129,
+    )
 
     def test_add_rejects_unsafe_account_id(self, tmp_path: Path) -> None:
         src = _write(tmp_path / "auth.json", '{"token": "x"}')
@@ -570,9 +581,10 @@ class TestAccountIdSafety:
     def test_lookup_commands_reject_unsafe_ids(self, tmp_path: Path) -> None:
         svc = _service()
         for call in (svc.status, svc.verify, svc.disable, svc.enable):
-            with pytest.raises(OnboardingError) as exc:
-                call("../x")
-            assert exc.value.code == "invalid_account_id"
+            for bad in ("../x", "", "x" * 200):
+                with pytest.raises(OnboardingError) as exc:
+                    call(bad)
+                assert exc.value.code == "invalid_account_id"
         with pytest.raises(OnboardingError) as exc:
             svc.refresh("../x", tmp_path / "nope.json")
         assert exc.value.code == "invalid_account_id"
