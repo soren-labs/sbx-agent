@@ -72,7 +72,7 @@ class TestDescriptors:
             "devin": "experimental",
             "antigravity": "experimental",
             "grok": "experimental",
-            "opencode": "preview",
+            "opencode": "experimental",
             "claude": "unsupported",
         }
 
@@ -672,7 +672,7 @@ class TestCli:
             for line in capsys.readouterr().out.splitlines()
             if "\t" in line
         }
-        assert rows["opencode"] == "preview"
+        assert rows["opencode"] == "experimental"
         assert rows["devin"] == "experimental"
         assert rows["claude"] == "unsupported"
         assert rows["codex"] == "stable"
@@ -682,7 +682,7 @@ class TestCli:
         svc = _service()
         src = _write(tmp_path / "auth.json", '{"token": "x"}')
         account = svc.add("opencode", src)
-        assert svc.describe(account)["support"] == "preview"
+        assert svc.describe(account)["support"] == "experimental"
 
     def test_cli_error_is_structured(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -112,11 +112,11 @@ python examples/sbx_client.py "Write hello.txt containing hi"
 
 | Provider | Status in 0.1 | CLI / version | Auth material | Multi-turn | Cancel | Multi-account | Real-E2E evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **codex** | **Stable** | `@openai/codex` 0.153.0 (pinned in image) | `~/.codex/auth.json` (ChatGPT login) | ✅ `exec resume` | ✅ | ✅ | Real-Modal suite `tests/e2e_modal/` + committed `timings.json`; P0 spike |
-| **devin** | Experimental | Devin CLI 3000.10.21 (sha256-pinned) | `~/.local/share/devin/credentials.toml` | ✅ via ACP | ✅ | ✅ | Modal clean-room credential + 8-way concurrency PASS, 2026-09-14 (`spike/p2/`); full `/v1` gate pending |
-| **antigravity** | Experimental | your `agy` binary | OAuth token file | ✅ `--conversation` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/agy_gate.py`; SOR-68 fleet matrix pending |
-| **grok** | Experimental | your `grok` binary (verified 1.0.24) | `~/.grok/auth.json` | ✅ `--resume` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/grok_gate.py`; SOR-68 fleet matrix pending |
-| **opencode** | Preview | `opencode-ai` 1.18.29 (npm-pinned) | `~/.local/share/opencode/auth.json` | ✅ `--session` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Replay/fixture only — production adapter, image and credential path merged (SOR-96); real-account gate CREDENTIAL_DEFERRED |
+| **codex** | **Stable** | `@openai/codex` 0.153.0 (pinned in image) | `~/.codex/auth.json` (ChatGPT login) | ✅ `exec resume` | ✅ | ✅ | Real-Modal suite `tests/e2e_modal/` + committed `timings.json`; P0 spike; RC gate lane CREDENTIAL_DEFERRED (stale ChatGPT token — interactive `codex login` needed, external) |
+| **devin** | Experimental | Devin CLI 3000.10.21 (sha256-pinned) | `~/.local/share/devin/credentials.toml` | ✅ via ACP | ✅ | ✅ | Modal clean-room credential + 8-way concurrency PASS, 2026-09-14 (`spike/p2/`); Release 0.1 `/v1` real-Modal gate PASS on the RC plane (`docs/reviews/release-0.1-gate-core.md`) |
+| **antigravity** | Experimental | your `agy` binary | OAuth token file | ✅ `--conversation` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/agy_gate.py`; SOR-68 fleet gate PASS 50/50 on the RC plane (`docs/reviews/release-0.1-gate-agy.md`) |
+| **grok** | Experimental | your `grok` binary (verified 1.0.24) | `~/.grok/auth.json` | ✅ `--resume` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/grok_gate.py`; SOR-68 runner + fleet gates PASS on the RC plane (`docs/reviews/release-0.1-gate-grok.md`) |
+| **opencode** | Experimental | `opencode-ai` 1.18.29 (npm-pinned) | `~/.local/share/opencode/auth.json` | ✅ `--session` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Release 0.1 real-account gate PASS on the RC plane — two turns on one native session, cancel, zero leaks (`docs/reviews/release-0.1-gate-core.md`) |
 | **claude** | Not supported | — | — | — | — | — | Experimental adapter seam merged but **not registered** (SOR-97, replay-only); not schedulable |
 
 **Evidence policy.** *Stable* requires a passing real-account E2E on the
@@ -235,8 +235,10 @@ only, never secret material.
 - **No browser layer.** The noVNC/browser-execution tier is out of scope
   for 0.1.
 - **Provider coverage.** Only codex is Stable in this tag; devin /
-  antigravity / grok are Experimental; opencode is **Preview** (merged but
-  no real-account evidence); claude is **not** supported (see the matrix —
+  antigravity / grok / opencode are Experimental — all four passed
+  real-account Modal gates on the RC plane, while codex's own RC lane is
+  credential-deferred on a stale ChatGPT token (external, not a defect);
+  claude is **not** supported (see the matrix —
   nothing is claimed without real-account evidence).
 - **Single workspace.** One deployment = one Modal workspace; API keys are
   deployment-scoped (`sbx_<key>`, stored as `sha256` only).

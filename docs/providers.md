@@ -11,10 +11,10 @@ extraction, and health classification.
 
 | Provider | Status | CLI / version | Auth material (imported file, rel. `$HOME`) | Multi-turn | Cancel | Multi-account | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| codex | **Stable** | `@openai/codex` **0.153.0** — pinned in `sbx-runtime` (`runtime/packages.txt`) | `.codex/auth.json` (ChatGPT `codex login`) | ✅ `codex exec resume` | ✅ | ✅ `SBX_CODEX_ACCOUNTS` | `tests/e2e_modal/` real-Modal suite (two-turn, concurrency, no-leak); committed `timings.json`; P0 spike |
-| devin | Experimental | Devin CLI **3000.10.21** — sha256-pinned bundle in `sbx-runtime-devin` | `.local/share/devin/credentials.toml` | ✅ ACP session | ✅ | ✅ `SBX_DEVIN_ACCOUNTS` / burst slots | SOR-73 spike: Modal clean-room credential injection + `auth status` + `-p` smoke, 2/4/8-way concurrency PASS — 2026-09-14 (`spike/p2/`); full `/v1` e2e gate pending |
-| antigravity | Experimental | your own `agy` binary (`SBX_AGY_BIN` / `~/.local/bin/agy`, baked into `sbx-runtime-antigravity`; pin `agy_version` **1.2.3**, stream shape re-verified on real 1.2.3 — SOR-106) | `.gemini/antigravity-cli/antigravity-oauth-token` | ✅ `--conversation <id>` | ✅ | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/agy_gate.py` (init → 2 turns → stale-resume → export → leak scan); SOR-68 multi-account fleet matrix pending |
-| grok | Experimental | your own `grok` binary (`SBX_GROK_BIN` / `~/.local/bin/grok`, verified against real 1.0.24 stream shape) | `.grok/auth.json` | ✅ `--resume <id>` | ✅ | ✅ `SBX_GROK_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/grok_gate.py`; SOR-68 fleet matrix pending |
+| codex | **Stable** | `@openai/codex` **0.153.0** — pinned in `sbx-runtime` (`runtime/packages.txt`) | `.codex/auth.json` (ChatGPT `codex login`) | ✅ `codex exec resume` | ✅ | ✅ `SBX_CODEX_ACCOUNTS` | `tests/e2e_modal/` real-Modal suite (two-turn, concurrency, no-leak); committed `timings.json`; P0 spike; RC gate lane **CREDENTIAL_DEFERRED** — stale ChatGPT token, needs interactive `codex login` (external, not a product failure; `docs/reviews/release-0.1-gate-core.md`) |
+| devin | Experimental | Devin CLI **3000.10.21** — sha256-pinned bundle in `sbx-runtime-devin` | `.local/share/devin/credentials.toml` | ✅ ACP session | ✅ | ✅ `SBX_DEVIN_ACCOUNTS` / burst slots | SOR-73 spike: Modal clean-room credential injection + `auth status` + `-p` smoke, 2/4/8-way concurrency PASS — 2026-09-14 (`spike/p2/`); Release 0.1 `/v1` real-Modal gate **PASS** on the RC plane — two turns on one native thread, cancel, honest usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`); exact-head reviewer leg of the cross-provider workflow gate **PASS** (`docs/reviews/SOR-107-gate-workflow.md`) |
+| antigravity | Experimental | your own `agy` binary (`SBX_AGY_BIN` / `~/.local/bin/agy`, baked into `sbx-runtime-antigravity`; pin `agy_version` **1.2.3**, stream shape re-verified on real 1.2.3 — SOR-106) | `.gemini/antigravity-cli/antigravity-oauth-token` | ✅ `--conversation <id>` | ✅ | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/agy_gate.py` (init → 2 turns → stale-resume → export → leak scan); SOR-68 fleet gate **PASS** 50/50 on the RC plane — 4×1-slot fleet, `account_id=auto` distribution, cooldown + real `auth_invalid` failover, restart slot safety (`docs/reviews/release-0.1-gate-agy.md`) |
+| grok | Experimental | your own `grok` binary (`SBX_GROK_BIN` / `~/.local/bin/grok`, verified against real 1.0.24 stream shape) | `.grok/auth.json` | ✅ `--resume <id>` | ✅ | ✅ `SBX_GROK_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/grok_gate.py`; SOR-68 runner lanes (`grok-1`/`grok-2`) + fleet gate **PASS** on the RC plane — auto distribution, exhaustion, cooldown failover, stranded-`running` reaper (`docs/reviews/release-0.1-gate-grok.md`) |
 | opencode | Experimental | `opencode-ai` **1.18.29** — npm-pinned in `sbx-runtime-opencode` (`runtime/packages.txt` `opencode_*`) | `.local/share/opencode/auth.json` | ✅ `--session <id>` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Real-account gate **PASS** on the RC plane — two turns on one native session, cancel, usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`) |
 | claude | **Not supported** | — | — | — | — | — | Experimental adapter seam merged but **not registered** in the provider registry (SOR-97, replay-only); not schedulable |
 
@@ -95,7 +95,10 @@ directory imports take the containing dir):
 pass through. `--dangerously-bypass-approvals-and-sandbox` is used because
 the sandbox (not Codex's Landlock/seccomp layer) is the security boundary —
 see [architecture.md](architecture.md). `CODEX_AUTH_JSON` remains a supported
-v1-style credential path for codex only.
+v1-style credential path for codex only. The v0.1.0-alpha RC gate lane is
+**CREDENTIAL_DEFERRED** — the workspace ChatGPT token is stale and
+noninteractive refresh fails; restoring the lane needs an interactive
+`codex login` (external, not a product defect).
 
 **devin.** Driven over the official ACP stdio protocol (`devin acp`,
 JSON-RPC) via `runtime/runner/adapters/devin_acp.py`; `SBX_DEVIN_TRANSPORT=cli`

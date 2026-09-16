@@ -119,7 +119,7 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ),
     ProviderDescriptor(
         provider="opencode",
-        support="preview",
+        support="experimental",
         experimental=False,
         credential_files=(".local/share/opencode/auth.json",),
         content_kind="json",

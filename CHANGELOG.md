@@ -19,9 +19,10 @@ BYO Modal workspace + BYO official provider subscriptions behind one
   `EXPIRED`) persist across sandbox teardown and restarts; structured
   `RunError` (`code`/`source`/`retryable`/`retry_after`).
 - Multi-provider runner: `AgentAdapter` protocol + adapters for codex
-  (Stable), devin / antigravity / grok (Experimental), opencode (Preview —
-  production path merged, real-account gate deferred). Provider matrix and
-  evidence policy: `docs/providers.md`.
+  (Stable), devin / antigravity / grok / opencode (Experimental — all
+  four passed real-account Modal gates on the RC plane; codex's RC lane
+  is credential-deferred on a stale ChatGPT token, external). Provider
+  matrix and evidence policy: `docs/providers.md`.
 - Multi-account scheduling: account registry, `account_id:"auto"` LRU pick,
   per-account slots, cooldown/failover on `auth_invalid`/`rate_limited`;
   fleets via `SBX_<PROVIDER>_ACCOUNTS`.
@@ -68,12 +69,25 @@ BYO Modal workspace + BYO official provider subscriptions behind one
 - `sbx uninstall` can actually stop the app: `modal app stop` now runs
   with `--yes` instead of dying on the interactive `[y/N]` prompt
   (SOR-100).
+- OpenCode seeded default models named ids that do not exist on the
+  account's real auth channels (`anthropic/claude-sonnet-4.5` /
+  `openai/gpt-5.3-codex`); corrected to `openai/gpt-5.6-luna` +
+  `opencode/claude-sonnet-4-5` (`SBX_OPENCODE_MODELS` still overrides) —
+  found by the Release 0.1 core gate.
+- A `running` record stranded by a control-plane cutover held its account
+  slot forever; the reaper now finalizes it `lost` past the runner's own
+  `--max-seconds` bound plus a 300 s grace, and a dead-sandbox follow-up
+  maps to `409 session_not_runnable` instead of a bare 500 — found by the
+  Release 0.1 grok gate.
 
 ### Known limitations
 
 - Alpha: `/v1` may change before 1.0. No hosted SaaS, no browser/noVNC
   layer, no real billing (cost is a Modal list-price estimate).
-- OpenCode is Preview (merged, replay-only evidence — real-account gate
-  deferred); Claude Code is not supported (experimental adapter seam merged
-  but unregistered) — see `docs/providers.md` for the honest per-provider
+- Codex's Release 0.1 RC gate lane is **CREDENTIAL_DEFERRED** — the
+  workspace ChatGPT token is stale and noninteractive refresh fails;
+  restoring the lane needs an interactive `codex login` (external, not a
+  product defect; the earlier real-Modal suite evidence stands). Claude
+  Code is not supported (experimental adapter seam merged but
+  unregistered) — see `docs/providers.md` for the honest per-provider
   status.
