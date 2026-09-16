@@ -34,6 +34,8 @@ class FakePlane:
         self.secret_create_calls = 0
         self.dict_create_calls = 0
         self.image_calls: list[str] = []
+        self.image_names: dict[str, str | None] = {}
+        self.deploy_env: dict[str, str] = {}
         self.terminated: list[str] = []
         self.terminate_noop = False
 
@@ -83,13 +85,15 @@ class FakePlane:
         self._fail("delete_dict")
         return self.dicts.pop(name, None) is not None
 
-    def ensure_image(self, provider: str) -> None:
+    def ensure_image(self, provider: str, name: str | None = None) -> None:
         self._fail("ensure_image")
         self.image_calls.append(provider)
+        self.image_names[provider] = name
 
-    def deploy_app(self, app_name: str) -> str:
+    def deploy_app(self, app_name: str, *, env: Mapping[str, str] | None = None) -> str:
         self._fail("deploy_app")
         self.deploy_calls += 1
+        self.deploy_env = dict(env or {})
         url = f"https://{self.workspace_name}--{app_name}-fastapi-app.modal.run"
         self.apps[app_name] = url
         return url

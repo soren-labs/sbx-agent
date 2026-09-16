@@ -48,6 +48,7 @@ from control.accounts import (
     select_store,
     validate_account_id,
 )
+from control.config import account_secret_prefix
 from control.ports import Account
 
 # ------------------------------------------------------------------ descriptors
@@ -591,7 +592,7 @@ class OnboardingService:
             label=label or account_id,
             status="active",
             max_concurrent=slots,
-            secret_name=f"sbx-acct-{account_id}",
+            secret_name=f"{account_secret_prefix()}{account_id}",
             models=tuple(models) if models else desc.default_models,
             created_at=datetime.now(UTC).isoformat(),
         )

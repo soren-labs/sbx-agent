@@ -27,11 +27,15 @@ from control.config import (
     DEFAULT_MODEL,
     IDLE_TIMEOUT_S,
     MAX_CONCURRENT,
+    RUNS_DICT_NAME,
+    SESSIONS_DICT_NAME,
     SSE_KEEPALIVE_S,
+    WORKFLOWS_DICT_NAME,
     basic_credentials,
     default_runner_cmd,
     env_float,
     env_int,
+    env_str,
 )
 from control.run_store import RunLedger, RunStore
 from control.sandbox_io import sandbox_env
@@ -117,7 +121,9 @@ def _select_store() -> SessionStore:
     if kind == "modal":
         from control.store import ModalDictStore
 
-        return ModalDictStore()
+        # ``SBX_SESSIONS_DICT`` lets a parallel deploy keep its own durable
+        # Dict; the contract default is unchanged when unset.
+        return ModalDictStore(env_str("SBX_SESSIONS_DICT", SESSIONS_DICT_NAME))
     return InMemoryStore()
 
 
@@ -133,7 +139,7 @@ def _select_run_store() -> RunStore:
     if kind == "modal":
         from control.run_store import ModalDictRunStore
 
-        return ModalDictRunStore()
+        return ModalDictRunStore(env_str("SBX_RUNS_DICT", RUNS_DICT_NAME))
     from pathlib import Path
 
     from control.run_store import FileRunStore
@@ -155,9 +161,9 @@ def _xdg_state_dir(name: str) -> Path:
 def _select_artifact_store() -> Any:
     """SOR-83: durable artifact package store (survives sandbox teardown)."""
     if os.environ.get("SBX_BACKEND", "local") == "modal":
-        from control.artifacts import ModalDictArtifactStore
+        from control.artifacts import ARTIFACTS_DICT_NAME, ModalDictArtifactStore
 
-        return ModalDictArtifactStore()
+        return ModalDictArtifactStore(env_str("SBX_ARTIFACTS_DICT", ARTIFACTS_DICT_NAME))
     from control.artifacts import FileArtifactStore
 
     override = os.environ.get("SBX_ARTIFACT_STORE_DIR")
@@ -167,9 +173,9 @@ def _select_artifact_store() -> Any:
 def _select_workspace_store() -> Any:
     """SOR-83: durable workspace record store."""
     if os.environ.get("SBX_BACKEND", "local") == "modal":
-        from control.workspace import ModalDictWorkspaceStore
+        from control.workspace import WORKSPACES_DICT_NAME, ModalDictWorkspaceStore
 
-        return ModalDictWorkspaceStore()
+        return ModalDictWorkspaceStore(env_str("SBX_WORKSPACES_DICT", WORKSPACES_DICT_NAME))
     from control.workspace import FileWorkspaceStore
 
     override = os.environ.get("SBX_WORKSPACE_STORE_DIR")
@@ -188,7 +194,7 @@ def _select_workflow_store() -> WorkflowStore:
     if os.environ.get("SBX_BACKEND", "local") == "modal":
         from control.workflow_store import ModalDictWorkflowStore
 
-        return ModalDictWorkflowStore()
+        return ModalDictWorkflowStore(env_str("SBX_WORKFLOWS_DICT", WORKFLOWS_DICT_NAME))
     from control.workflow_store import FileWorkflowStore
 
     override = os.environ.get("SBX_WORKFLOW_STORE_DIR")

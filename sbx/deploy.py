@@ -234,10 +234,10 @@ def deploy(
     )
 
     for provider in config.providers:
-        plane.ensure_image(provider)
+        plane.ensure_image(provider, config.image_name(provider))
         steps.append(StepResult(f"image:{provider}", True, config.image_name(provider)))
 
-    base_url = plane.deploy_app(config.modal_app_name)
+    base_url = plane.deploy_app(config.modal_app_name, env=config.deploy_env())
     steps.append(StepResult("app", True, f"{config.modal_app_name} → {base_url}"))
 
     token, _ = load_or_create_key(key_path(env))

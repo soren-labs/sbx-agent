@@ -27,7 +27,7 @@ from typing import Any
 
 from control.accounts import PersistentAccountRegistry, select_store
 from control.api_v1.state import InMemoryApiKeyStore
-from control.config import env_int
+from control.config import account_secret_prefix, env_int
 from control.ports import Account
 from control.scheduler import AccountScheduler, session_running_source
 
@@ -99,8 +99,9 @@ def _seed_account(
 
     ``SBX_<PROVIDER>_ACCOUNT_ID`` / ``SBX_<PROVIDER>_SECRET_NAME`` /
     ``SBX_<PROVIDER>_SLOTS`` override the defaults. ``default_secret_name`` of
-    ``None`` resolves to the ``sbx-acct-<account_id>`` convention; ``""``
-    attaches no per-account Secret (the provider's default credential path).
+    ``None`` resolves to the ``<prefix><account_id>`` convention
+    (``SBX_ACCOUNT_SECRET_PREFIX``); ``""`` attaches no per-account Secret
+    (the provider's default credential path).
     """
     prefix = f"SBX_{provider.upper()}"
     account_id = (os.environ.get(f"{prefix}_ACCOUNT_ID") or f"{provider}-1").strip()
@@ -108,7 +109,7 @@ def _seed_account(
     if raw_secret is not None:
         secret_name = raw_secret.strip()
     elif default_secret_name is None:
-        secret_name = f"sbx-acct-{account_id}"
+        secret_name = f"{account_secret_prefix()}{account_id}"
     else:
         secret_name = default_secret_name
     slots = env_int(f"{prefix}_SLOTS", default_slots)
@@ -142,7 +143,7 @@ def _seed_accounts(
     ``SBX_<PROVIDER>_ACCOUNTS`` — a JSON list of ``{"id", "label"?,
     "secret_name"?, "slots"?, "models"?}`` — seeds a multi-account pool
     (the Antigravity-4 / Grok-2 gate shape). Per entry, ``secret_name``
-    defaults to the ``sbx-acct-<id>`` convention (or ``default_secret_name``
+    defaults to the ``<prefix><id>`` convention (or ``default_secret_name``
     when the provider overrides it), ``slots`` to ``default_slots``,
     ``models`` to the provider defaults. Without the JSON var, falls back to
     the single-account ``SBX_<PROVIDER>_ACCOUNT_ID`` path.
@@ -176,7 +177,7 @@ def _seed_accounts(
         if raw_secret is not None:
             secret_name = str(raw_secret).strip()
         elif default_secret_name is None:
-            secret_name = f"sbx-acct-{account_id}"
+            secret_name = f"{account_secret_prefix()}{account_id}"
         else:
             secret_name = default_secret_name
         raw_models = spec.get("models")

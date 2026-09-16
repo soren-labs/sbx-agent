@@ -17,7 +17,14 @@ def _deployed(tmp_path):
     write_state(tmp_path, {"version": "0.1.0"})
     plane = FakePlane()
     plane.apps["sbx-control"] = "https://ws-test--sbx-control-fastapi-app.modal.run"
-    for name in ("sbx-sessions", "sbx-runs", "sbx-accounts", "sbx-workflows"):
+    for name in (
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    ):
         plane.dicts[name] = {"k": 1}
     for name in ("sbx-codex-auth", "sbx-basic-auth", "sbx-v1-bootstrap", "sbx-acct-devin-1"):
         plane.secrets[name] = {"K": "V"}
@@ -35,7 +42,14 @@ def test_uninstall_default_scope_preserves_credentials(tmp_path) -> None:
     assert plane.list_sandboxes("sbx-control") == []
     assert report.app_stopped
     # durable data + user credentials preserved by default
-    assert set(plane.dicts) == {"sbx-sessions", "sbx-runs", "sbx-accounts", "sbx-workflows"}
+    assert set(plane.dicts) == {
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    }
     assert set(plane.secrets) == {
         "sbx-codex-auth",
         "sbx-basic-auth",
@@ -55,6 +69,8 @@ def test_uninstall_purge_data_removes_dicts(tmp_path) -> None:
         "sbx-runs",
         "sbx-accounts",
         "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
     }
     assert set(plane.secrets)  # credentials still preserved
     assert key_path(env).is_file()

@@ -355,7 +355,15 @@ class ControlPlane:
             )
             code = drain(init)
             if code != 0:
-                raise RuntimeError(f"runner init exited {code}")
+                tail = ""
+                stderr_text = getattr(init, "stderr_text", None)
+                if callable(stderr_text):
+                    try:
+                        tail = stderr_text().strip()
+                    except Exception:
+                        tail = ""
+                detail = f": {tail[-300:]}" if tail else ""
+                raise RuntimeError(f"runner init exited {code}{detail}")
         except Exception:
             # Mark the record lost *before* terminating: even if terminate
             # fails, the record stays terminal with sandbox_id bound so the

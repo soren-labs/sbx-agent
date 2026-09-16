@@ -22,8 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from control.config import (
+    ACCOUNT_SECRET_PREFIX,
     ACCOUNTS_DICT_NAME,
     ANTIGRAVITY_IMAGE_NAME,
+    ARTIFACTS_DICT_NAME,
     BASIC_SECRET_NAME,
     CODEX_SECRET_NAME,
     DEVIN_IMAGE_NAME,
@@ -35,6 +37,7 @@ from control.config import (
     SESSIONS_DICT_NAME,
     V1_BOOTSTRAP_SECRET_NAME,
     WORKFLOWS_DICT_NAME,
+    WORKSPACES_DICT_NAME,
 )
 
 CONFIG_ENV = "SBX_CONFIG"
@@ -52,6 +55,12 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "runs_dict": (("state", "runs_dict"), ("SBX_RUNS_DICT",)),
     "accounts_dict": (("state", "accounts_dict"), ("SBX_ACCOUNTS_DICT",)),
     "workflows_dict": (("state", "workflows_dict"), ("SBX_WORKFLOWS_DICT",)),
+    "artifacts_dict": (("state", "artifacts_dict"), ("SBX_ARTIFACTS_DICT",)),
+    "workspaces_dict": (("state", "workspaces_dict"), ("SBX_WORKSPACES_DICT",)),
+    "account_secret_prefix": (
+        ("state", "account_secret_prefix"),
+        ("SBX_ACCOUNT_SECRET_PREFIX",),
+    ),
     "codex_secret": (("secrets", "codex"), ("SBX_CODEX_SECRET_NAME",)),
     "basic_secret": (("secrets", "basic"), ("SBX_BASIC_SECRET_NAME",)),
     "bootstrap_secret": (("secrets", "bootstrap"), ("SBX_V1_BOOTSTRAP_SECRET_NAME",)),
@@ -75,6 +84,9 @@ class BootstrapConfig:
     runs_dict: str = RUNS_DICT_NAME
     accounts_dict: str = ACCOUNTS_DICT_NAME
     workflows_dict: str = WORKFLOWS_DICT_NAME
+    artifacts_dict: str = ARTIFACTS_DICT_NAME
+    workspaces_dict: str = WORKSPACES_DICT_NAME
+    account_secret_prefix: str = ACCOUNT_SECRET_PREFIX
     codex_secret: str = CODEX_SECRET_NAME
     basic_secret: str = BASIC_SECRET_NAME
     bootstrap_secret: str = V1_BOOTSTRAP_SECRET_NAME
@@ -100,7 +112,39 @@ class BootstrapConfig:
             self.runs_dict,
             self.accounts_dict,
             self.workflows_dict,
+            self.artifacts_dict,
+            self.workspaces_dict,
         )
+
+    def deploy_env(self) -> dict[str, str]:
+        """``SBX_*`` env the ``modal deploy`` subprocess needs.
+
+        The deployed app resolves its resource names from process env at
+        deploy time (``control/modal_app.py`` + ``remote_env_overlay``), so
+        the resolved config — whether the values came from the file or env —
+        is replayed as env vars. Without this a file-configured parallel
+        deploy would create the renamed resources yet keep the app on the
+        production contract names.
+        """
+        fields = (
+            "modal_app_name",
+            "sessions_dict",
+            "runs_dict",
+            "accounts_dict",
+            "workflows_dict",
+            "artifacts_dict",
+            "workspaces_dict",
+            "account_secret_prefix",
+            "codex_secret",
+            "basic_secret",
+            "bootstrap_secret",
+            "image_codex",
+            "image_devin",
+            "image_antigravity",
+            "image_grok",
+            "image_opencode",
+        )
+        return {_FIELD_MAP[name][1][0]: str(getattr(self, name)) for name in fields}
 
 
 @dataclass(frozen=True)

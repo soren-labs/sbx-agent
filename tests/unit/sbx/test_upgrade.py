@@ -12,7 +12,14 @@ def _deployed(tmp_path, plane, version="0.1.0"):
     """A healthy deployed fixture: secrets + dicts with durable content."""
     env = make_env(tmp_path)
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    for name in ("sbx-sessions", "sbx-runs", "sbx-accounts", "sbx-workflows"):
+    for name in (
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    ):
         plane.dicts[name] = {f"key/{name}/1": {"v": 1}}
     write_state(tmp_path, {"version": version, "app_url": "https://old.modal.run"})
     cfg = make_cfg(tmp_path, env=env)
@@ -58,9 +65,9 @@ def test_upgrade_detects_key_loss(tmp_path, monkeypatch) -> None:
     transport, _ = make_v1()
     original = plane.deploy_app
 
-    def sabotage(app_name: str) -> str:
+    def sabotage(app_name: str, *, env=None) -> str:
         plane.dicts["sbx-runs"].pop("key/sbx-runs/1")
-        return original(app_name)
+        return original(app_name, env=env)
 
     monkeypatch.setattr(plane, "deploy_app", sabotage)
     with pytest.raises(BootstrapError) as exc:

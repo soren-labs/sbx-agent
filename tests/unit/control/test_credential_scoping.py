@@ -130,6 +130,22 @@ def test_sandbox_env_opencode_bin_scoped(monkeypatch) -> None:
         assert "OPENCODE_BIN" not in sandbox_env(_handle(provider))
 
 
+def test_sandbox_env_modal_handle_pins_image_pythonpath(monkeypatch, tmp_path) -> None:
+    """A deployed control function's ``PYTHONPATH`` (Modal's mount root)
+    must never reach the sandbox exec — it would shadow the image's
+    ``/opt/sbx`` and ``python -m runtime.runner`` fails to resolve.
+    Non-local handles get the contract value; local roots keep host
+    forwarding for ``LocalProcessBackend``."""
+    monkeypatch.setenv("PYTHONPATH", "/modal/mount/root")
+    remote = sandbox_env(_handle("codex"))  # root=/work does not exist locally
+    assert remote["PYTHONPATH"] == "/opt/sbx"
+
+    local_root = tmp_path / "work"
+    local_root.mkdir()
+    local = sandbox_env(SandboxHandle(id="sb", root=local_root, tags={"provider": "codex"}))
+    assert local["PYTHONPATH"] == "/modal/mount/root"
+
+
 # ------------------------------------------------------- modal secret rule
 
 

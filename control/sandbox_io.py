@@ -26,10 +26,14 @@ def is_local_root(handle: SandboxHandle) -> bool:
 
 
 # Control-plane env vars explicitly forwarded to sandbox children. Required
-# since LocalProcessBackend.exec no longer inherits os.environ (SOR-56).
+# since LocalProcessBackend.exec no longer inherits os.environ (SOR-56) — and
+# only applied to local roots: on Modal the sandbox image pins its own
+# ``PYTHONPATH=/opt/sbx``, and forwarding the control function's value would
+# clobber it (``python -m runtime.runner`` then fails to resolve).
 # SOR-80: forwarding is scoped by the sandbox's provider/account tags so
 # control-only credential variables never reach a foreign provider's exec.
 _SHARED_ENV_KEYS = ("PYTHONPATH",)
+_SANDBOX_PYTHONPATH = "/opt/sbx"  # runtime.image.PYTHONPATH_REMOTE
 
 _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "codex": (
@@ -107,7 +111,14 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
         auth_json = os.environ.get("CODEX_AUTH_JSON")
         if auth_json:
             env["CODEX_AUTH_JSON"] = auth_json
-    for key in _SHARED_ENV_KEYS + _PROVIDER_ENV_KEYS.get(provider, ()):
+    if is_local_root(handle):
+        for key in _SHARED_ENV_KEYS:
+            value = os.environ.get(key)
+            if value is not None:
+                env[key] = value
+    else:
+        env["PYTHONPATH"] = _SANDBOX_PYTHONPATH
+    for key in _PROVIDER_ENV_KEYS.get(provider, ()):
         value = os.environ.get(key)
         if value is not None:
             env[key] = value

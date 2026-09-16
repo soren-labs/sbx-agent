@@ -46,8 +46,9 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
+from control.config import ARTIFACTS_DICT_NAME
+
 ARTIFACT_FORMAT_PATCH = "patch"
-ARTIFACTS_DICT_NAME = "sbx-artifacts"
 MANIFEST_MEMBER = "manifest.json"
 PATCH_MEMBER = "patch.diff"  # conventional caller-supplied unified diff member
 FILES_PREFIX = "files/"

@@ -35,9 +35,17 @@ def test_deploy_happy_path(tmp_path) -> None:
     # control only ever receives the token inside the Secret env; storage is hash-only
     assert plane.secrets["sbx-v1-bootstrap"]["SBX_V1_BOOTSTRAP_KEY"] == token
     assert "sbx-basic-auth" in plane.secrets
-    for name in ("sbx-sessions", "sbx-runs", "sbx-accounts", "sbx-workflows"):
+    for name in (
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    ):
         assert name in plane.dicts
     assert plane.image_calls == ["codex"]
+    assert plane.image_names["codex"] == "sbx-runtime"
     assert plane.apps["sbx-control"].startswith("https://")
     assert report.base_url == plane.apps["sbx-control"]
     # deployed URL is persisted into the single config source

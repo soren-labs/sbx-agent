@@ -33,9 +33,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
 from control.backend import Process, SandboxBackend, SandboxHandle
+from control.config import WORKSPACES_DICT_NAME
 from control.sandbox_io import drain, is_local_root, sandbox_env
-
-WORKSPACES_DICT_NAME = "sbx-workspaces"
 
 # Machine-readable failure codes. ``base_sha_mismatch`` is the contract's
 # core guarantee: any gap between the declared base and the real repo state

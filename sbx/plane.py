@@ -62,11 +62,16 @@ class Plane(Protocol):
         Raises ``BootstrapError`` when the delete itself fails.
         """
 
-    def ensure_image(self, provider: str) -> None:
-        """Build + publish the provider's named runtime image."""
+    def ensure_image(self, provider: str, name: str | None = None) -> None:
+        """Build + publish the provider's named runtime image (``name`` overrides)."""
 
-    def deploy_app(self, app_name: str) -> str:
-        """Deploy the control app idempotently; return its web base URL."""
+    def deploy_app(self, app_name: str, *, env: Mapping[str, str] | None = None) -> str:
+        """Deploy the control app idempotently; return its web base URL.
+
+        ``env`` carries the resolved resource names (``SBX_*_DICT`` /
+        ``SBX_*_SECRET_NAME`` / ``SBX_IMAGE_*``) into the deploy subprocess so
+        ``control.modal_app`` binds the app to them.
+        """
 
     def app_url(self, app_name: str) -> str | None:
         """Deployed app base URL, or None when not deployed."""
@@ -227,11 +232,11 @@ class ModalPlane:
             ) from exc
         return True
 
-    def ensure_image(self, provider: str) -> None:
+    def ensure_image(self, provider: str, name: str | None = None) -> None:
         from runtime.image import build_named_image
 
         try:
-            build_named_image(provider=provider)
+            build_named_image(provider=provider, name=name)
         except SystemExit as exc:
             raise BootstrapError(
                 f"image build for provider {provider!r} failed: {exc}",
@@ -239,10 +244,10 @@ class ModalPlane:
                 code="image_build_failed",
             ) from exc
 
-    def deploy_app(self, app_name: str) -> str:
+    def deploy_app(self, app_name: str, *, env: Mapping[str, str] | None = None) -> str:
         output = self._cli(
             ["deploy", "-m", "control.modal_app"],
-            extra_env={"SBX_MODAL_APP_NAME": app_name},
+            extra_env={"SBX_MODAL_APP_NAME": app_name, **dict(env or {})},
         )
         match = _WEB_URL_RE.search(output)
         if match:

@@ -13,11 +13,11 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from control.config import ACCOUNT_SECRET_PREFIX
+
 from sbx.config import ResolvedConfig, basic_auth_path, deploy_state_path, key_path
 from sbx.errors import BootstrapError
 from sbx.plane import Plane
-
-ACCOUNT_SECRET_PREFIX = "sbx-acct-"
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,10 @@ def uninstall(
 
     if purge_credentials:
         targets = set(config.secret_names())
-        targets.update(n for n in plane.list_secret_names() if n.startswith(ACCOUNT_SECRET_PREFIX))
+        # Scope the account-secret sweep to this deployment's prefix so a
+        # parallel deploy's ``sbx-acct-*`` Secrets are never swept.
+        prefix = config.account_secret_prefix or ACCOUNT_SECRET_PREFIX
+        targets.update(n for n in plane.list_secret_names() if n.startswith(prefix))
         for name in sorted(targets):
             if plane.delete_secret(name):
                 deleted_secrets.append(name)

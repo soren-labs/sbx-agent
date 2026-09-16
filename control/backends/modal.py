@@ -28,6 +28,7 @@ from control.config import (
     RUNTIME_IMAGE_NAME,
     SANDBOX_TIMEOUT_S,
     WORK_DIR,
+    env_str,
 )
 
 _GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
@@ -80,6 +81,12 @@ def _is_sandbox_gone(exc: BaseException) -> bool:
     return any(cls.__name__ in _GONE_ERROR_NAMES for cls in type(exc).mro())
 
 
+def _codex_secret_name() -> str:
+    """Shared Codex auth Secret — ``SBX_CODEX_SECRET_NAME`` renames it for
+    parallel deployments (the bootstrap config's ``secrets.codex``)."""
+    return env_str("SBX_CODEX_SECRET_NAME", CODEX_SECRET_NAME)
+
+
 def _codex_secrets(modal: Any) -> list[Any]:
     """Secret for every Sandbox ``create`` / ``exec``.
 
@@ -89,7 +96,7 @@ def _codex_secrets(modal: Any) -> list[Any]:
     auth_json = os.environ.get("CODEX_AUTH_JSON")
     if auth_json:
         return [modal.Secret.from_dict({"CODEX_AUTH_JSON": auth_json})]
-    return [modal.Secret.from_name(CODEX_SECRET_NAME)]
+    return [modal.Secret.from_name(_codex_secret_name())]
 
 
 def _ambient_account_blob(provider: str) -> str | None:
@@ -198,7 +205,8 @@ def _secrets_for(modal: Any, provider: str, secret_names: Iterable[str]) -> list
     if provider in ACCOUNT_PROVIDERS:
         # Account-provider sandboxes must never mount the shared Codex auth
         # Secret even if an internal caller or deployment override supplies it.
-        names = [name for name in names if name != CODEX_SECRET_NAME]
+        codex_names = {CODEX_SECRET_NAME, _codex_secret_name()}
+        names = [name for name in names if name not in codex_names]
     named = [modal.Secret.from_name(name) for name in names]
     if provider in ACCOUNT_PROVIDERS:
         return [*named, *_account_secrets(modal, provider, credential=not named)]
@@ -252,11 +260,16 @@ def _devin_home_env() -> dict[str, str]:
         }
 
 
+def _provider_image_name(provider: str, default: str) -> str:
+    """Named-image override for a parallel deploy (``SBX_IMAGE_<PROVIDER>``)."""
+    return env_str(f"SBX_IMAGE_{provider.upper()}", default)
+
+
 def _resolve_image(modal: Any, provider: str = "codex") -> Any:
     if provider == DEVIN_PROVIDER:
         from_name = getattr(modal.Image, "from_name", None)
         if callable(from_name):
-            return from_name(DEVIN_IMAGE_NAME)
+            return from_name(_provider_image_name(provider, DEVIN_IMAGE_NAME))
         try:
             from runtime.image import sbx_devin_image
         except ImportError:
@@ -270,7 +283,7 @@ def _resolve_image(modal: Any, provider: str = "codex") -> Any:
         # binary is a host artifact; there is no in-band source build).
         from_name = getattr(modal.Image, "from_name", None)
         if callable(from_name):
-            return from_name(provider_image)
+            return from_name(_provider_image_name(provider, provider_image))
         return modal.Image.debian_slim(python_version="3.12")
     try:
         import runtime.image as runtime_image
@@ -283,7 +296,7 @@ def _resolve_image(modal: Any, provider: str = "codex") -> Any:
         pass
     from_name = getattr(modal.Image, "from_name", None)
     if callable(from_name):
-        return from_name(RUNTIME_IMAGE_NAME)
+        return from_name(_provider_image_name("codex", RUNTIME_IMAGE_NAME))
     return modal.Image.debian_slim(python_version="3.12")
 
 
@@ -311,6 +324,20 @@ class ModalProcess:
         self._secret_names = secret_names
         self._provider = provider
         self.stdout = _iter_lines(proc.stdout)
+
+    def stderr_text(self, limit: int = 2000) -> str:
+        """Buffered stderr tail after exit; ``""`` when unreadable.
+
+        Callers only read this after ``wait()`` — stderr is what turns a bare
+        "exited N" into a diagnosable failure on the run record.
+        """
+        try:
+            text = self._proc.stderr.read()
+        except Exception:
+            return ""
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", "replace")
+        return text[-limit:]
 
     def wait(self) -> int:
         return int(self._proc.wait())

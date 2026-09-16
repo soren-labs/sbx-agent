@@ -731,28 +731,31 @@ def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
     }
 
 
-def build_named_image(*, provider: str = "codex") -> None:
+def build_named_image(*, provider: str = "codex", name: str | None = None) -> None:
     """``modal image build`` equivalent: build + publish a named runtime image.
 
     ``provider`` selects the variant (``sbx-runtime`` for codex; the SOR-74 /
-    SOR-80 / Release-0.1 fast-path images otherwise). Requires Modal
-    credentials and, for agy / grok, the provider CLI on the build host.
-    Never called from ``make test``.
+    SOR-80 / Release-0.1 fast-path images otherwise). ``name`` overrides the
+    published name so a parallel deploy can build RC images without moving
+    the production names; ``SBX_IMAGE_APP`` likewise relocates the build app.
+    Requires Modal credentials and, for agy / grok, the provider CLI on the
+    build host. Never called from ``make test``.
     """
     import modal
 
     spec = load_packages()
-    app = modal.App.lookup(APP_NAME, create_if_missing=True)
+    app = modal.App.lookup(os.environ.get("SBX_IMAGE_APP") or APP_NAME, create_if_missing=True)
     try:
-        builder, name = IMAGE_BUILDERS[provider]
+        builder, default_name = IMAGE_BUILDERS[provider]
     except KeyError:
         raise SystemExit(f"unknown image provider {provider!r}") from None
+    publish_name = name or default_name
     image = builder()
     with modal.enable_output():
         built = image.build(app)
         publish = getattr(built, "publish", None)
         if callable(publish):
-            publish(name)
+            publish(publish_name)
     cli_versions = {
         "devin": spec.devin_version,
         "antigravity": spec.agy_version,
@@ -761,7 +764,7 @@ def build_named_image(*, provider: str = "codex") -> None:
     }
     extra = f", {provider} {cli_versions[provider]}" if provider in cli_versions else ""
     print(
-        f"named image {name} ready "
+        f"named image {publish_name} ready "
         f"(python {spec.python_version}, node {spec.node_major}, {spec.codex_npm_spec}{extra})"
     )
 

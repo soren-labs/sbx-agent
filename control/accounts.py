@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from control.config import ACCOUNTS_DICT_NAME
+from control.config import ACCOUNTS_DICT_NAME, account_secret_prefix, env_str
 from control.ports import Account
 
 ACCOUNT_STATUSES = ("active", "cooling", "invalid", "disabled")
@@ -544,7 +544,7 @@ def select_store(
     """
     kind = backend if backend is not None else os.environ.get("SBX_BACKEND", "local")
     if kind == "modal":
-        return ModalDictAccountStore()
+        return ModalDictAccountStore(env_str("SBX_ACCOUNTS_DICT", ACCOUNTS_DICT_NAME))
     root = store_dir or os.environ.get("SBX_ACCOUNT_STORE_DIR")
     if not root:
         xdg = os.environ.get("XDG_STATE_HOME")
@@ -636,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
                 label=args.label or account_id,
                 status="active",
                 max_concurrent=args.slots,
-                secret_name=f"sbx-acct-{account_id}",
+                secret_name=f"{account_secret_prefix()}{account_id}",
                 created_at=datetime.now(UTC).isoformat(),
             )
             registry.put(account)
