@@ -57,6 +57,12 @@ BYO Modal workspace + BYO official provider subscriptions behind one
 
 ### Fixed
 
+- Fresh self-host installs now materialize credentials imported through
+  `control.onboarding --modal` into deployment-scoped `sbx-acct-<id>` Modal
+  Secrets during `sbx deploy` / `sbx upgrade`. Previously the durable account
+  blob existed but the runtime Secret did not, so `sbx doctor` could be green
+  while the first real provider run failed `runtime_error: Secret ... not found`.
+  `sbx doctor` now verifies every account record's referenced Secret as well.
 - Antigravity release pin moved `agy_version` 1.2.2 → **1.2.3** after
   re-validating the headless contract against the real 1.2.3 binary
   (`--version` output, stream-json init/step/result shapes,

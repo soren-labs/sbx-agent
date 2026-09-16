@@ -86,11 +86,15 @@ credential import → deploy → health check in one pass:
 
 ```bash
 sbx init                         # check env, write local config, pick Modal profile
+# Codex uses the shared Secret path:
 modal secret create sbx-codex-auth \
-  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"   # your provider credential
-sbx deploy                       # build images, init Dicts/Secrets, deploy control
-sbx doctor                       # verify auth, secrets, /v1 auth, providers
-sbx smoke                        # minimal real run through /v1
+  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
+# Other providers use account onboarding (example: Devin):
+python -m control.onboarding --modal import --provider devin \
+  --from ~/.local/share/devin/credentials.toml --account-id devin-1 --experimental
+sbx deploy                       # materialize account Secrets, build images, deploy control
+sbx doctor                       # verify managed + account Secrets, /v1 auth, providers
+sbx smoke --provider devin       # minimal real run through /v1
 ```
 
 It prints your `SBX_BASE_URL` and a `sbx_<key>` API key (shown once).

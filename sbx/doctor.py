@@ -133,6 +133,47 @@ def _api_checks(
     return checks
 
 
+def _account_secret_check(config, plane: Plane, secret_names: set[str]) -> Check:
+    """Verify every account record's referenced Secret exists.
+
+    This catches the fresh-install failure mode where onboarding metadata and
+    credential blobs exist in the accounts Dict but the runtime Secret was
+    never materialized.  Values are never read or rendered.
+    """
+    try:
+        items = plane.dict_items(config.accounts_dict)
+    except Exception as exc:
+        return Check(
+            name="account-secrets",
+            ok=False,
+            detail=f"cannot inspect account registry: {exc}",
+            hint="check Modal Dict access, then rerun `sbx doctor`",
+        )
+    referenced: list[str] = []
+    for key, value in items:
+        if not (isinstance(key, str) and key.startswith("account/") and isinstance(value, dict)):
+            continue
+        name = str(value.get("secret_name") or "").strip()
+        if name:
+            referenced.append(name)
+    missing = sorted(name for name in set(referenced) if name not in secret_names)
+    if missing:
+        preview = ", ".join(missing[:5])
+        if len(missing) > 5:
+            preview += f", +{len(missing) - 5} more"
+        return Check(
+            name="account-secrets",
+            ok=False,
+            detail=f"missing {len(missing)} referenced account Secret(s): {preview}",
+            hint="rerun `sbx deploy` to materialize imported account credentials",
+        )
+    return Check(
+        name="account-secrets",
+        ok=True,
+        detail=f"{len(set(referenced))} referenced account Secret(s) present",
+    )
+
+
 def run_doctor(
     cfg: ResolvedConfig,
     plane: Plane,
@@ -186,6 +227,8 @@ def run_doctor(
             except Exception:
                 present = False
             checks.append(check_dict_present(present, name))
+        if plane.has_dict(config.accounts_dict):
+            checks.append(_account_secret_check(config, plane, secret_names))
 
     token = resolve_api_key(env)
     if token is None:

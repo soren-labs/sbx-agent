@@ -81,6 +81,12 @@ class FakePlane:
             raise KeyError(name)
         return len(self.dicts[name])
 
+    def dict_items(self, name: str) -> list[tuple[object, object]]:
+        self._fail("dict_items")
+        if name not in self.dicts:
+            raise KeyError(name)
+        return list(self.dicts[name].items())
+
     def delete_dict(self, name: str) -> bool:
         self._fail("delete_dict")
         return self.dicts.pop(name, None) is not None

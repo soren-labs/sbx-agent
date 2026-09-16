@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sbx.config import BootstrapConfig, key_path, load
 from sbx.deploy import deploy, read_deploy_state
@@ -166,3 +168,50 @@ def test_deploy_multi_provider_images(tmp_path) -> None:
     config = BootstrapConfig(providers=("codex", "devin"))
     _deploy(tmp_path, plane, config=config)
     assert plane.image_calls == ["codex", "devin"]
+
+
+def test_deploy_materializes_imported_account_secret(tmp_path) -> None:
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    plane.dicts["sbx-accounts"] = {
+        "account/devin-1": {
+            "id": "devin-1",
+            "provider": "devin",
+            "secret_name": "sbx-acct-devin-1",
+        },
+        "credential/devin-1": {
+            "provider": "devin",
+            "files": {".local/share/devin/credentials.toml": "credential-v1"},
+        },
+    }
+    _deploy(tmp_path, plane)
+    raw = plane.secrets["sbx-acct-devin-1"]["SBX_ACCOUNT_CREDENTIAL"]
+    assert json.loads(raw)["provider"] == "devin"
+    assert "credential-v1" in raw
+
+    plane.dicts["sbx-accounts"]["credential/devin-1"] = {
+        "provider": "devin",
+        "files": {".local/share/devin/credentials.toml": "credential-v2"},
+    }
+    _deploy(tmp_path, plane)
+    raw2 = plane.secrets["sbx-acct-devin-1"]["SBX_ACCOUNT_CREDENTIAL"]
+    assert "credential-v2" in raw2 and "credential-v1" not in raw2
+
+
+def test_deploy_does_not_overwrite_custom_account_secret(tmp_path) -> None:
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    plane.secrets["customer-managed"] = {"SBX_ACCOUNT_CREDENTIAL": "external"}
+    plane.dicts["sbx-accounts"] = {
+        "account/grok-1": {
+            "id": "grok-1",
+            "provider": "grok",
+            "secret_name": "customer-managed",
+        },
+        "credential/grok-1": {
+            "provider": "grok",
+            "files": {".grok/auth.json": "stored"},
+        },
+    }
+    _deploy(tmp_path, plane)
+    assert plane.secrets["customer-managed"] == {"SBX_ACCOUNT_CREDENTIAL": "external"}

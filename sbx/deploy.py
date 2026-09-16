@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from control.accounts import is_valid_account_id
 
 import sbx
 from sbx.config import (
@@ -172,6 +173,68 @@ def _require_codex_secret(cfg: BootstrapConfig, plane: Plane) -> StepResult:
     return StepResult("secret:codex", False, f"{cfg.codex_secret} present")
 
 
+def _materialize_account_secrets(cfg: BootstrapConfig, plane: Plane) -> StepResult:
+    """Materialize deployment-scoped account blobs as Modal Secrets.
+
+    ``control.onboarding --modal import`` intentionally stores credential blobs
+    in the durable accounts Dict.  Runtime sandboxes mount named Secrets, so
+    deploy is the bridge: for accounts using this deployment's managed
+    ``account_secret_prefix``, refresh the Secret from the stored blob.
+
+    Accounts with an empty or custom Secret name are externally managed and
+    are never overwritten here.  Credential values are never included in the
+    report.
+    """
+    try:
+        items = plane.dict_items(cfg.accounts_dict)
+    except Exception as exc:
+        raise BootstrapError(
+            f"cannot read account credential store {cfg.accounts_dict!r}: {exc}",
+            hint="check Modal Dict access, then rerun `sbx deploy`",
+            code="account_credentials_unreadable",
+        ) from exc
+
+    records: dict[str, dict[str, Any]] = {}
+    blobs: dict[str, dict[str, Any]] = {}
+    for key, value in items:
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        if key.startswith("account/"):
+            records[key[len("account/") :]] = value
+        elif key.startswith("credential/"):
+            blobs[key[len("credential/") :]] = value
+
+    existing = plane.list_secret_names()
+    materialized = 0
+    refreshed = 0
+    for account_id, blob in sorted(blobs.items()):
+        if not is_valid_account_id(account_id):
+            continue
+        record = records.get(account_id)
+        if record is None:
+            continue
+        secret_name = str(record.get("secret_name") or "").strip()
+        expected = f"{cfg.account_secret_prefix}{account_id}"
+        if secret_name != expected:
+            # Empty/custom names are explicitly external-management lanes.
+            continue
+        if secret_name in existing:
+            plane.delete_secret(secret_name)
+            refreshed += 1
+        payload = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
+        plane.ensure_secret(secret_name, {"SBX_ACCOUNT_CREDENTIAL": payload})
+        existing.add(secret_name)
+        materialized += 1
+
+    if materialized == 0:
+        detail = "no deployment-managed account credentials to materialize"
+    else:
+        detail = f"{materialized} account credential Secret(s) ready"
+        if refreshed:
+            detail += f" ({refreshed} refreshed)"
+    return StepResult("credentials:accounts", bool(materialized), detail)
+
+
 def _probe_v1(
     base_url: str,
     token: str,
@@ -232,6 +295,7 @@ def deploy(
             + (f" (created: {', '.join(created_dicts)})" if created_dicts else ""),
         )
     )
+    steps.append(_materialize_account_secrets(config, plane))
 
     for provider in config.providers:
         plane.ensure_image(provider, config.image_name(provider))

@@ -67,7 +67,10 @@ at `sbx-acct-<id>` — create those Secrets with the credential blob, or import
 accounts through the API/CLI instead (see [providers.md](providers.md)).
 
 Import a provider account (writes account record + credential blob into
-`sbx-accounts`; never prints material):
+`sbx-accounts`; never prints material). On the next `sbx deploy` / `sbx upgrade`,
+the bootstrap CLI materializes deployment-managed blobs into the matching
+`sbx-acct-<account_id>` Modal Secret before the control app is deployed; you do
+not need to create those account Secrets by hand:
 
 ```bash
 python -m control.onboarding --modal import \

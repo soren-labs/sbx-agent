@@ -56,6 +56,9 @@ class Plane(Protocol):
     def dict_len(self, name: str) -> int:
         """Readable key count of Dict ``name`` (durable-state probe)."""
 
+    def dict_items(self, name: str) -> list[tuple[object, object]]:
+        """Snapshot all key/value pairs from durable Dict ``name``."""
+
     def delete_dict(self, name: str) -> bool:
         """Delete Dict ``name``; True when it existed.
 
@@ -218,6 +221,9 @@ class ModalPlane:
 
     def dict_len(self, name: str) -> int:
         return int(self._modal().Dict.from_name(name).len())
+
+    def dict_items(self, name: str) -> list[tuple[object, object]]:
+        return list(self._modal().Dict.from_name(name).items())
 
     def delete_dict(self, name: str) -> bool:
         if not self.has_dict(name):

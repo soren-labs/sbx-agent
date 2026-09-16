@@ -18,7 +18,14 @@ def _healthy(tmp_path, token=None):
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     plane.secrets["sbx-basic-auth"] = {"SBX_BASIC_USER": "sbx", "SBX_BASIC_PASS": "x"}
     plane.secrets["sbx-v1-bootstrap"] = {"SBX_V1_BOOTSTRAP_KEY": token}
-    for name in ("sbx-sessions", "sbx-runs", "sbx-accounts", "sbx-workflows"):
+    for name in (
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    ):
         plane.dicts[name] = {}
     plane.apps["sbx-control"] = "https://ws-test--sbx-control-fastapi-app.modal.run"
     config = BootstrapConfig(api_base_url=plane.apps["sbx-control"])
@@ -113,3 +120,36 @@ def test_doctor_cleanup_capability_reported(tmp_path) -> None:
     checks = run_doctor(cfg, plane, env=env, transport=transport)
     cleanup = next(c for c in checks if c.name == "cleanup")
     assert cleanup.ok and "1 live" in cleanup.detail
+
+
+def test_doctor_fails_when_account_secret_is_not_materialized(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    plane.dicts["sbx-accounts"]["account/devin-1"] = {
+        "id": "devin-1",
+        "provider": "devin",
+        "secret_name": "sbx-acct-devin-1",
+    }
+    plane.dicts["sbx-accounts"]["credential/devin-1"] = {
+        "provider": "devin",
+        "files": {".local/share/devin/credentials.toml": "REDACTED"},
+    }
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    bad = failed(checks)
+    account = next(c for c in bad if c.name == "account-secrets")
+    assert "sbx-acct-devin-1" in account.detail
+    assert "sbx deploy" in (account.hint or "")
+
+
+def test_doctor_reports_materialized_account_secrets(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    plane.dicts["sbx-accounts"]["account/devin-1"] = {
+        "id": "devin-1",
+        "provider": "devin",
+        "secret_name": "sbx-acct-devin-1",
+    }
+    plane.secrets["sbx-acct-devin-1"] = {"SBX_ACCOUNT_CREDENTIAL": "REDACTED"}
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    account = next(c for c in checks if c.name == "account-secrets")
+    assert account.ok and "1 referenced" in account.detail
