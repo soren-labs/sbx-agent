@@ -230,6 +230,61 @@ def test_reaper_hook_releases_lease_on_terminal_actions() -> None:
     assert v1.pop_lease("s1") is None
 
 
+def test_stranded_running_turn_is_finalized_and_freed() -> None:
+    """A ``running`` record whose watcher died (control-plane cutover) past
+    the runner's own ``--max-seconds`` bound is finalized ``lost``, its
+    sandbox terminated, and its lease released — no permanent slot leak."""
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    created = _now()
+    handle = backend.create(SandboxSpec(tags={"session_id": "s1", "owner": "sbx"}))
+    rec = _record(session_id="s1", status="running", handle=handle, last=created)
+    rec.current_turn_id = "turn-3"
+    rec.current_turn_n = 3
+    store.put(rec)
+
+    v1 = V1State()
+    lease = _FakeLease()
+    v1.set_lease("s1", lease)
+    actions = reap(
+        store,
+        backend,
+        created + timedelta(seconds=1300),
+        run_grace_s=1200,
+        on_action=lambda action: release_lease_for_action(v1, action),
+    )
+    rec = store.get("s1")
+    assert rec is not None
+    assert rec.status == "lost"
+    assert rec.current_turn_id is None
+    assert rec.current_turn_n is None
+    assert backend.poll(handle).alive is False
+    assert any(a.kind == "lost" and a.session_id == "s1" for a in actions)
+    assert lease.released is True
+    assert v1.pop_lease("s1") is None
+
+
+def test_fresh_running_turn_is_left_alone() -> None:
+    """A legitimately in-flight turn is never touched by the run-stale rule."""
+    backend = LocalProcessBackend()
+    store = InMemoryStore()
+    created = _now()
+    handle = backend.create(SandboxSpec(tags={"session_id": "s1", "owner": "sbx"}))
+    rec = _record(session_id="s1", status="running", handle=handle, last=created)
+    rec.current_turn_id = "turn-1"
+    rec.current_turn_n = 1
+    store.put(rec)
+
+    actions = reap(store, backend, created + timedelta(seconds=30), run_grace_s=1200)
+    rec = store.get("s1")
+    assert rec is not None
+    assert rec.status == "running"
+    assert rec.current_turn_id == "turn-1"
+    assert backend.poll(handle).alive is True
+    assert actions == []
+    backend.terminate(handle)
+
+
 # --------------------------------------------------------- post_message rules
 
 
@@ -281,8 +336,10 @@ def test_post_message_rolls_back_to_lost_when_sandbox_gone() -> None:
     assert handle is not None
     backend.terminate(handle)
 
-    with pytest.raises(Exception):
+    with pytest.raises(SessionConflict) as exc:
         plane.post_message(sid, "hello")
+    assert exc.value.error == "session_not_runnable"
+    assert exc.value.code == 409
     rec = store.get(sid)
     assert rec is not None
     assert rec.status == "lost"

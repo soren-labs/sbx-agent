@@ -470,7 +470,17 @@ class ControlPlane:
                     or "auto",
                     model=meta.get("model") or rec.model,
                 )
-        return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
+        try:
+            return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
+        except Exception:
+            # Rollback already finalized the record: a terminal (lost)
+            # session means the sandbox died between the liveness check and
+            # dispatch, so the refusal is the canonical session_not_runnable
+            # rather than an unhandled 500.
+            rec = self.store.get(session_id)
+            if rec is not None and rec.status in TERMINAL_STATUSES:
+                raise SessionConflict("session_not_runnable") from None
+            raise
 
     def post_queued_first_turn(self, session_id: str) -> str:
         """Dispatch the run-1 queued by ``open_session(first_prompt=...)``.
