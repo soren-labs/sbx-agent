@@ -49,6 +49,11 @@ BYO Modal workspace + BYO official provider subscriptions behind one
 
 ### Fixed
 
+- Antigravity release pin moved `agy_version` 1.2.2 → **1.2.3** after
+  re-validating the headless contract against the real 1.2.3 binary
+  (`--version` output, stream-json init/step/result shapes,
+  `--conversation` resume + stale-id semantics, credential path) — no
+  adapter or gate changes required (SOR-106).
 - `sbx uninstall` no longer reports a clean teardown when Modal is
   unreachable: `ModalPlane` raises `BootstrapError` on auth/network
   failures instead of flattening them to "empty"/"absent" (clean-room

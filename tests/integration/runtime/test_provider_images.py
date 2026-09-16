@@ -140,10 +140,10 @@ def test_cli_image_appends_version_gate_when_expect_given(tmp_path: Path) -> Non
     host = tmp_path / "agy"
     host.write_bytes(b"bin")
     base = _RecordingImage()
-    _cli_image(base, host, AGY_BIN_REMOTE, agent_home_env(), version_expect="1.2.2")
+    _cli_image(base, host, AGY_BIN_REMOTE, agent_home_env(), version_expect="1.2.3")
     assert base.calls[-1] == (
         "run_commands",
-        (cli_version_check(AGY_BIN_REMOTE, "1.2.2"),),
+        (cli_version_check(AGY_BIN_REMOTE, "1.2.3"),),
     )
 
 
@@ -158,15 +158,15 @@ def test_host_cli_version_gate(tmp_path: Path) -> None:
     wrong.write_text("#!/bin/sh\necho 1.1.0\n", encoding="utf-8")
     wrong.chmod(0o755)
     with pytest.raises(SystemExit) as exc:
-        _assert_host_cli_version(wrong, "agy", "1.2.2")
-    assert "1.2.2" in str(exc.value)
+        _assert_host_cli_version(wrong, "agy", "1.2.3")
+    assert "1.2.3" in str(exc.value)
 
-    # A pin must not match as a prefix of a different version: 1.2.20 and
+    # A pin must not match as a prefix of a different version: 1.2.30 and
     # 11.0.24 both contain the pins as substrings but are not the pins.
     for version_out, cli, pin in (
-        ("1.2.20", "agy", "1.2.2"),
+        ("1.2.30", "agy", "1.2.3"),
         ("11.0.24", "grok", "1.0.24"),
-        ("1.2.2.1", "agy", "1.2.2"),
+        ("1.2.3.1", "agy", "1.2.3"),
     ):
         prefixed = tmp_path / f"{cli}-{version_out}"
         prefixed.write_text(f"#!/bin/sh\necho '{version_out}'\n", encoding="utf-8")
@@ -178,7 +178,7 @@ def test_host_cli_version_gate(tmp_path: Path) -> None:
     broken.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     broken.chmod(0o755)
     with pytest.raises(SystemExit):
-        _assert_host_cli_version(broken, "agy", "1.2.2")
+        _assert_host_cli_version(broken, "agy", "1.2.3")
 
 
 def test_cli_version_check_shell_command() -> None:
@@ -208,11 +208,11 @@ def test_cli_version_check_gate_rejects_prefixed_versions(tmp_path: Path) -> Non
         return proc.returncode
 
     assert run_gate("grok 1.0.24 (68e414c) [stable]", "1.0.24") == 0
-    assert run_gate("1.2.2", "1.2.2") == 0
+    assert run_gate("1.2.3", "1.2.3") == 0
     assert run_gate("codex-cli 0.153.0", "codex-cli 0.153.0") == 0
-    assert run_gate("1.2.20", "1.2.2") != 0
+    assert run_gate("1.2.30", "1.2.3") != 0
     assert run_gate("11.0.24", "1.0.24") != 0
-    assert run_gate("1.2.3", "1.2.2") != 0
+    assert run_gate("1.2.2", "1.2.3") != 0
     assert run_gate("codex-cli 0.153.01", "codex-cli 0.153.0") != 0
 
 

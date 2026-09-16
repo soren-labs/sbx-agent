@@ -85,8 +85,9 @@ def test_packages_txt_pins_provider_cli_versions() -> None:
     assert spec.opencode_npm == "opencode-ai"
     assert spec.opencode_npm_spec == f"opencode-ai@{spec.opencode_version}"
     assert spec.codex_version_expect == f"codex-cli {spec.codex_version}"
-    # SOR-60 spike-validated host-binary pins.
-    assert spec.agy_version == "1.2.2"
+    # SOR-60 spike-validated host-binary pins; agy re-validated on the
+    # real 1.2.3 binary under SOR-106.
+    assert spec.agy_version == "1.2.3"
     assert spec.grok_version == "1.0.24"
     assert spec.devin_version == "3000.10.21"
 

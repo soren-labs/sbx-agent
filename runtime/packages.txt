@@ -23,10 +23,11 @@ opencode_npm=opencode-ai
 opencode_version=1.18.29
 
 # Expected `--version` pins for the host-binary providers (SOR-60
-# spike-validated: agy 1.2.2, grok 1.0.24). These CLIs are build-host
-# artifacts (never committed); the image build rejects a binary whose
-# `--version` output does not contain the pin.
-agy_version=1.2.2
+# spike-validated: agy 1.2.2, grok 1.0.24; agy re-validated against the
+# real 1.2.3 binary under SOR-106 — headless contract unchanged). These
+# CLIs are build-host artifacts (never committed); the image build
+# rejects a binary whose `--version` output does not contain the pin.
+agy_version=1.2.3
 grok_version=1.0.24
 
 
