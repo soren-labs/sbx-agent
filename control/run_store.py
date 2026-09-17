@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from control.config import RUNS_DICT_NAME
+from control.latency import observe
 from control.run_errors import (
     CODE_EVENT_PARSE_ERROR,
     RunError,
@@ -379,31 +380,37 @@ class ModalDictRunStore:
         return f"{agent_id}/{n}"
 
     def get(self, agent_id: str, n: int) -> RunRecord | None:
-        raw = self._d().get(self._key(agent_id, n))
+        key = self._key(agent_id, n)
+        with observe("modal_dict.get", store=self._name, key=key):
+            raw = self._d().get(key)
         if raw is None:
             return None
         return _decode(raw, agent_id, n)
 
     def put(self, record: RunRecord) -> None:
-        self._d().put(self._key(record.agent_id, record.n), record_to_dict(record))
+        key = self._key(record.agent_id, record.n)
+        with observe("modal_dict.put", store=self._name, key=key):
+            self._d().put(key, record_to_dict(record))
 
     def list(self, agent_id: str) -> list[RunRecord]:
         prefix = f"{agent_id}/"
         out = []
-        items: Iterator[tuple[Any, Any]] = self._d().items()
-        for key, raw in items:
-            if not isinstance(key, str) or not key.startswith(prefix):
-                continue
-            try:
-                n = int(key.rsplit("/", 1)[1])
-            except (ValueError, IndexError):
-                continue
-            out.append(_decode(raw, agent_id, n))
+        with observe("modal_dict.items", store=self._name, agent_id=agent_id):
+            items: Iterator[tuple[Any, Any]] = self._d().items()
+            for key, raw in items:
+                if not isinstance(key, str) or not key.startswith(prefix):
+                    continue
+                try:
+                    n = int(key.rsplit("/", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                out.append(_decode(raw, agent_id, n))
         return sorted(out, key=lambda r: r.n)
 
     def delete(self, agent_id: str, n: int) -> None:
         try:
-            self._d().pop(self._key(agent_id, n))
+            with observe("modal_dict.pop", store=self._name, key=self._key(agent_id, n)):
+                self._d().pop(self._key(agent_id, n))
         except KeyError:
             return
 

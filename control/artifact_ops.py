@@ -92,6 +92,28 @@ _READ_SCRIPT = (
     "sys.stdout.write(base64.b64encode(p.read_bytes()).decode())\n"
 )
 
+# Bulk remote read (SOR-118): one exec serves every allowed file as a JSON
+# line — ``{"p": relpath, "b64": ...}``, or ``{"p": relpath, "e": 1}`` when
+# the file vanished or is unreadable. One Modal ``exec`` costs a remote
+# process spawn; per-file reads made artifact create scale linearly in
+# sandbox round-trips.
+_READ_MANY_SCRIPT = (
+    "import base64,json,pathlib,sys\n"
+    "root=pathlib.Path(sys.argv[1])\n"
+    "for rel in json.loads(sys.argv[2]):\n"
+    "    p=root/rel\n"
+    "    data=None\n"
+    "    try:\n"
+    "        if p.is_file() and not p.is_symlink(): data=p.read_bytes()\n"
+    "    except OSError:\n"
+    "        data=None\n"
+    "    if data is None: print(json.dumps({'p':rel,'e':1}))\n"
+    "    else: print(json.dumps({'p':rel,'b64':base64.b64encode(data).decode()}))\n"
+)
+
+# Relpaths per bulk-read exec — keeps the argv JSON well under ARG_MAX.
+_READ_BATCH = 2000
+
 
 def _iter_local(root: Path) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
@@ -159,6 +181,46 @@ def read_sandbox_bytes(
         return None
 
 
+def _read_many_sandbox(
+    backend: SandboxBackend, handle: SandboxHandle, workdir: str, relpaths: Sequence[str]
+) -> dict[str, bytes | None]:
+    """Bulk-read ``relpaths`` under ``workdir`` in ONE remote exec.
+
+    Returns ``relpath -> bytes | None`` (None = vanished/unreadable, same
+    semantics as :func:`read_sandbox_bytes`). A dead read path is
+    ``CHECKOUT_FAILED`` like a failed workspace listing, not a silent empty
+    artifact.
+    """
+    root = Path(handle.root) / workdir
+    proc = backend.exec(
+        handle,
+        ["python3", "-c", _READ_MANY_SCRIPT, str(root), json.dumps(list(relpaths))],
+        env=sandbox_env(handle),
+    )
+    lines = list(proc.stdout)
+    if proc.wait() != 0:
+        raise WorkspaceError(
+            CHECKOUT_FAILED, f"cannot read workspace files in {workdir} (sandbox {handle.id})"
+        )
+    out: dict[str, bytes | None] = dict.fromkeys(relpaths)
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        rel = entry.get("p")
+        if rel not in out:
+            continue
+        b64 = entry.get("b64")
+        if b64 is None:
+            continue
+        try:
+            out[rel] = base64.b64decode(b64)
+        except Exception:
+            out[rel] = None
+    return out
+
+
 def collect_sandbox_workspace(
     backend: SandboxBackend,
     handle: SandboxHandle,
@@ -185,6 +247,8 @@ def collect_sandbox_workspace(
     warnings: list[str] = []
     excluded: list[str] = []
     leaks: list[str] = []
+    # Phase 1: policy/allowlist gate — denied paths are never read.
+    to_read: list[str] = []
     for relpath, kind in _iter_workspace(backend, handle, workdir):
         if kind == "l":
             warnings.append(f"skipped symlink {relpath}")
@@ -196,7 +260,20 @@ def collect_sandbox_workspace(
         if policy.denial(relpath) is not None or not policy.is_included(relpath):
             excluded.append(relpath)
             continue
-        data = read_sandbox_bytes(backend, handle, f"{workdir}/{relpath}")
+        to_read.append(relpath)
+    # Phase 2: content. Remote reads batch into one exec — per-file execs
+    # made artifact create scale linearly in sandbox round-trips (SOR-118).
+    contents: dict[str, bytes | None]
+    if is_local_root(handle):
+        contents = {rel: read_sandbox_bytes(backend, handle, f"{workdir}/{rel}") for rel in to_read}
+    else:
+        contents = {}
+        for i in range(0, len(to_read), _READ_BATCH):
+            contents.update(
+                _read_many_sandbox(backend, handle, workdir, to_read[i : i + _READ_BATCH])
+            )
+    for relpath in to_read:
+        data = contents.get(relpath)
         if data is None:
             warnings.append(f"unreadable file {relpath}")
             continue

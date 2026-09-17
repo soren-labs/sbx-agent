@@ -11,6 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from control.backend import SandboxHandle
 from control.config import SESSIONS_DICT_NAME
+from control.latency import observe
 
 
 @dataclass
@@ -156,24 +157,28 @@ class ModalDictStore:
         return self._dict
 
     def get(self, session_id: str) -> SessionRecord | None:
-        raw = self._d().get(session_id)
+        with observe("modal_dict.get", store=self._name, key=session_id):
+            raw = self._d().get(session_id)
         if raw is None:
             return None
         return record_from_dict(raw)
 
     def put(self, record: SessionRecord) -> None:
-        self._d().put(record.id, record_to_dict(record))
+        with observe("modal_dict.put", store=self._name, key=record.id):
+            self._d().put(record.id, record_to_dict(record))
 
     def list_all(self) -> list[SessionRecord]:
         out: list[SessionRecord] = []
-        items: Iterator[tuple[Any, Any]] = self._d().items()
-        for _key, raw in items:
-            if isinstance(raw, dict):
-                out.append(record_from_dict(raw))
+        with observe("modal_dict.items", store=self._name):
+            items: Iterator[tuple[Any, Any]] = self._d().items()
+            for _key, raw in items:
+                if isinstance(raw, dict):
+                    out.append(record_from_dict(raw))
         return out
 
     def delete(self, session_id: str) -> None:
         try:
-            self._d().pop(session_id)
+            with observe("modal_dict.pop", store=self._name, key=session_id):
+                self._d().pop(session_id)
         except KeyError:
             return

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from control.config import ACCOUNTS_DICT_NAME, account_secret_prefix, env_str
+from control.latency import observe
 from control.ports import Account
 
 ACCOUNT_STATUSES = ("active", "cooling", "invalid", "disabled")
@@ -359,41 +360,52 @@ class ModalDictAccountStore:
 
     def get_record(self, account_id: str) -> dict[str, Any] | None:
         validate_account_id(account_id)
-        raw = self._d().get(self._ACCOUNT_PREFIX + account_id)
+        key = self._ACCOUNT_PREFIX + account_id
+        with observe("modal_dict.get", store=self._name, key=key):
+            raw = self._d().get(key)
         return raw if isinstance(raw, dict) else None
 
     def put_record(self, account_id: str, record: dict[str, Any]) -> None:
         validate_account_id(account_id)
-        self._d().put(self._ACCOUNT_PREFIX + account_id, dict(record))
+        key = self._ACCOUNT_PREFIX + account_id
+        with observe("modal_dict.put", store=self._name, key=key):
+            self._d().put(key, dict(record))
 
     def iter_records(self) -> Iterable[tuple[str, Any]]:
         out: list[tuple[str, Any]] = []
-        items: Iterator[tuple[Any, Any]] = self._d().items()
-        for key, raw in items:
-            if isinstance(key, str) and key.startswith(self._ACCOUNT_PREFIX):
-                out.append((key[len(self._ACCOUNT_PREFIX) :], raw))
+        with observe("modal_dict.items", store=self._name):
+            items: Iterator[tuple[Any, Any]] = self._d().items()
+            for key, raw in items:
+                if isinstance(key, str) and key.startswith(self._ACCOUNT_PREFIX):
+                    out.append((key[len(self._ACCOUNT_PREFIX) :], raw))
         return out
 
     def delete_record(self, account_id: str) -> None:
         validate_account_id(account_id)
         try:
-            self._d().pop(self._ACCOUNT_PREFIX + account_id)
+            with observe("modal_dict.pop", store=self._name, key=account_id):
+                self._d().pop(self._ACCOUNT_PREFIX + account_id)
         except KeyError:
             return
 
     def get_blob(self, account_id: str) -> dict[str, Any] | None:
         validate_account_id(account_id)
-        raw = self._d().get(self._BLOB_PREFIX + account_id)
+        # The key identifies the account, never the blob — contents stay
+        # out of logs either way (AGENTS.md §4).
+        with observe("modal_dict.get", store=self._name, key=f"credential/{account_id}"):
+            raw = self._d().get(self._BLOB_PREFIX + account_id)
         return raw if isinstance(raw, dict) else None
 
     def put_blob(self, account_id: str, blob: dict[str, Any]) -> None:
         validate_account_id(account_id)
-        self._d().put(self._BLOB_PREFIX + account_id, dict(blob))
+        with observe("modal_dict.put", store=self._name, key=f"credential/{account_id}"):
+            self._d().put(self._BLOB_PREFIX + account_id, dict(blob))
 
     def delete_blob(self, account_id: str) -> None:
         validate_account_id(account_id)
         try:
-            self._d().pop(self._BLOB_PREFIX + account_id)
+            with observe("modal_dict.pop", store=self._name, key=account_id):
+                self._d().pop(self._BLOB_PREFIX + account_id)
         except KeyError:
             return
 
