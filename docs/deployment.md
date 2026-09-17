@@ -9,18 +9,20 @@ the remediation when neither is present.
 
 ## One-shot path (bootstrap CLI)
 
-The 0.1 bootstrap CLI (`sbx`, SOR-98) is the documented route:
+The 0.1 bootstrap CLI (`sbx`, SOR-98) is the documented route — run it as
+`uv run sbx …` (equivalently `python -m sbx …`, or the `sbx` console script
+once installed):
 
 ```bash
-sbx init       # checks python/uv/git/modal, writes local config, picks profile
-sbx deploy     # builds runtime images, seeds Dicts/Secrets, deploys sbx-control
-sbx doctor     # verifies auth, secrets, control URL, /v1 auth, providers
-sbx smoke      # one minimal real run through /v1
+uv run sbx init       # checks python/uv/git/modal + Modal auth, writes local config
+uv run sbx deploy     # builds runtime images, seeds Dicts/Secrets, deploys sbx-control
+uv run sbx doctor     # verifies auth, secrets, control URL, /v1 auth, providers
+uv run sbx smoke      # one minimal real run through /v1
 ```
 
-If `sbx` is not present in your checkout (it lands with the release
-candidate), use the [manual path](#manual-path-what-sbx-deploy-wraps) below —
-it is exactly what the CLI wraps.
+The [manual path](#manual-path-what-sbx-deploy-wraps) below is exactly what
+the CLI wraps; the first-run walkthrough with credential discovery is the
+[README Quick Start](../README.md#quick-start).
 
 It is idempotent — re-running `deploy`/`doctor` never damages state — and it
 prints the two values clients need: `SBX_BASE_URL` and a `sbx_<key>` API key
@@ -32,7 +34,7 @@ prints the two values clients need: `SBX_BASE_URL` and a `sbx_<key>` API key
 | --- | --- | --- |
 | Modal App (ASGI + reaper cron `*/5`) | `sbx-control` | `SBX_MODAL_APP_NAME` |
 | Runtime images | `sbx-runtime`, `sbx-runtime-devin`, `sbx-runtime-antigravity`, `sbx-runtime-grok`, `sbx-runtime-opencode` | built by `make image*` / `sbx deploy` |
-| Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows` | created on demand by stores |
+| Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows`, `sbx-artifacts`, `sbx-workspaces` | created on demand by stores |
 | Secrets | `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<account_id>`, plus `sbx-codex-auth` **only when `codex` is enabled** | `modal secret create` |
 
 Which providers a deployment serves is configured by `deploy.providers` in
@@ -80,8 +82,12 @@ named Secret does not exist:
 ```bash
 modal secret create sbx-github GH_TOKEN='<fine-grained PAT>'
 export SBX_GITHUB_EPHEMERAL=1 SBX_GITHUB_SECRET_NAME=sbx-github
-sbx deploy
+uv run sbx deploy
 ```
+
+The full repo workflow — workspace declarations, GitHub-less fallbacks,
+artifact handoffs, review pinning — is in
+[docs/repo-workflow.md](repo-workflow.md).
 
 ## Manual path (what `sbx deploy` wraps)
 
@@ -120,9 +126,9 @@ the bootstrap CLI materializes deployment-managed blobs into the matching
 not need to create those account Secrets by hand:
 
 ```bash
-python -m control.onboarding --modal import \
+uv run python -m control.onboarding --modal import \
   --provider devin --from ~/.local/share/devin/credentials.toml --slots 4
-python -m control.onboarding --modal list
+uv run python -m control.onboarding --modal list
 ```
 
 Fetch your base URL from the deployed app (`modal app list` /
@@ -144,7 +150,7 @@ them, so prefer separate Modal workspaces for parallel deployments.
 ## Upgrade
 
 ```bash
-sbx upgrade      # rebuilds images + redeploys; Dicts/Secrets are durable
+uv run sbx upgrade      # rebuilds images + redeploys; Dicts/Secrets are durable
 ```
 
 Manual equivalent: `make image*` then `make deploy`. Durable runs, accounts,
@@ -154,9 +160,9 @@ the deployment. In-flight sandboxes keep running on their existing image.
 ## Uninstall
 
 ```bash
-sbx uninstall                       # stops the app + leftover sandboxes
-sbx uninstall --purge-data          # also deletes the durable Dicts
-sbx uninstall --purge-credentials   # also deletes Secrets + the local key file
+uv run sbx uninstall                       # stops the app + leftover sandboxes
+uv run sbx uninstall --purge-data          # also deletes the durable Dicts
+uv run sbx uninstall --purge-credentials   # also deletes Secrets + the local key file
 ```
 
 Manual equivalent:
@@ -165,8 +171,9 @@ Manual equivalent:
 modal app stop sbx-control
 modal sandbox list         # verify zero sbx sandboxes remain
 # optional data purge: delete the sbx-* Dicts (sbx-sessions, sbx-runs,
-#   sbx-accounts, sbx-workflows) and Secrets (sbx-codex-auth, sbx-basic-auth,
-#   sbx-v1-bootstrap, sbx-acct-*) from the Modal dashboard or SDK.
+#   sbx-accounts, sbx-workflows, sbx-artifacts, sbx-workspaces) and Secrets
+#   (sbx-codex-auth, sbx-basic-auth, sbx-v1-bootstrap, sbx-acct-*) from the
+#   Modal dashboard or SDK.
 ```
 
 Credentials are yours — uninstall never deletes them unless you pass

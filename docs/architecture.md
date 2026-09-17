@@ -15,7 +15,8 @@ Modal, and one Modal Sandbox per agent running the official provider CLI.
                                  │  reaper cron (*/5 min)                 │
                                  │ stores: modal.Dict                     │
                                  │  sbx-sessions / sbx-runs /             │
-                                 │  sbx-accounts / sbx-workflows          │
+                                 │  sbx-accounts / sbx-workflows /        │
+                                 │  sbx-artifacts / sbx-workspaces        │
                                  └────────────────┬────────────────────────┘
                                                   │ Sandbox.create(image,
                                                   │  secrets, idle_timeout,
@@ -119,5 +120,5 @@ examples/    sbx_client.py — reference /v1 client
 deploy/      optional edge (Cloudflare Worker) in front of sbx-control
 tests/       unit · integration · e2e (mocked) · e2e_modal (real, host-run)
 spike/       recorded provider experiments (evidence for the support matrix)
-docs/        this file, deployment/provider guides, frozen contracts
+docs/        this file, deployment/provider/repo-workflow guides, frozen contracts
 ```
