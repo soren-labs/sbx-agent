@@ -85,6 +85,37 @@ def test_config_paths_from_env(tmp_path) -> None:
     assert cfg.path == tmp_path / "config.toml"
 
 
+def test_max_concurrent_env_and_file(tmp_path) -> None:
+    cfg = load(tmp_path / "missing.toml", env={"SBX_MAX_CONCURRENT": "4"})
+    assert cfg.config.max_concurrent == 4
+    assert cfg.sources["max_concurrent"] == "env"
+    save(BootstrapConfig(max_concurrent=6), tmp_path / "c.toml")
+    cfg = load(tmp_path / "c.toml", env={})
+    assert cfg.config.max_concurrent == 6
+    assert cfg.sources["max_concurrent"] == "file"
+
+
+def test_max_concurrent_unset_stays_absent(tmp_path) -> None:
+    """An unset cap must not leak into the file or the deploy env."""
+    config = BootstrapConfig()
+    save(config, tmp_path / "c.toml")
+    text = (tmp_path / "c.toml").read_text()
+    assert "max_concurrent" not in text
+    assert "SBX_MAX_CONCURRENT" not in config.deploy_env()
+
+
+def test_max_concurrent_reaches_deploy_env(tmp_path) -> None:
+    env = BootstrapConfig(max_concurrent=3).deploy_env()
+    assert env["SBX_MAX_CONCURRENT"] == "3"
+
+
+def test_max_concurrent_rejects_nonpositive(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        load(tmp_path / "missing.toml", env={"SBX_MAX_CONCURRENT": "0"})
+    with pytest.raises(ValueError):
+        load(tmp_path / "missing.toml", env={"SBX_MAX_CONCURRENT": "bogus"})
+
+
 def test_secret_names_are_provider_aware() -> None:
     """SOR-116: the shared Codex Secret is required iff codex is enabled."""
     codex = BootstrapConfig(providers=("codex",))

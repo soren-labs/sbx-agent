@@ -12,8 +12,10 @@ import os
 from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import httpx
+from control.config import ACTIVE_STATUSES
 
 from sbx.config import ResolvedConfig, key_path
 from sbx.credentials import cli_auth_check, scan_credentials
@@ -32,11 +34,102 @@ from sbx.prereqs import (
 )
 
 
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def provider_summaries(models: Any) -> list[str]:
+    """Aggregate ``/v1/models`` rows by provider — one line per provider.
+
+    ``accounts_available`` is per (provider, model); identical counts render
+    as ``devin: 1 account, 2 models (m1, m2)`` and divergent counts as a
+    ``min–max`` range, so a provider is never repeated per model.
+    """
+    by_provider: dict[str, dict[str, int]] = {}
+    for model in models or []:
+        if not isinstance(model, Mapping):
+            continue
+        provider = str(model.get("provider") or "?")
+        name = str(model.get("model") or model.get("id") or "?")
+        try:
+            free = int(model.get("accounts_available") or 0)
+        except (TypeError, ValueError):
+            free = 0
+        by_provider.setdefault(provider, {})[name] = free
+    lines: list[str] = []
+    for provider in sorted(by_provider):
+        entries = by_provider[provider]
+        counts = sorted(set(entries.values()))
+        if len(counts) == 1:
+            accounts = _plural(counts[0], "account")
+        else:
+            accounts = f"{counts[0]}–{counts[-1]} accounts"
+        names = ", ".join(sorted(entries))
+        lines.append(f"{provider}: {accounts}, {_plural(len(entries), 'model')} ({names})")
+    return lines
+
+
+def live_agent_count(client: V1Client) -> int:
+    """Live (non-terminal) agents across all ``/v1/agents`` pages.
+
+    ``creating`` / ``idle`` / ``running`` agents each occupy a live-sandbox
+    slot — an idle agent waiting for a follow-up still counts until it is
+    closed (``DELETE /v1/agents/{id}``) or reaped.
+    """
+    live = 0
+    cursor: str | None = None
+    while True:
+        page = client.list_agents(cursor=cursor)
+        if not isinstance(page, Mapping):
+            return live
+        agents = page.get("agents") or []
+        live += sum(
+            1 for a in agents if isinstance(a, Mapping) and a.get("status") in ACTIVE_STATUSES
+        )
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return live
+
+
+def _live_agents_check(client: V1Client, max_concurrent: int | None) -> Check:
+    try:
+        live = live_agent_count(client)
+    except (ApiError, httpx.HTTPError) as exc:
+        return Check(
+            name="live-agents",
+            ok=False,
+            warn=True,
+            detail=f"cannot list agents: {exc}",
+        )
+    if max_concurrent is not None and live >= max_concurrent:
+        return Check(
+            name="live-agents",
+            ok=False,
+            warn=True,
+            detail=f"{_plural(live, 'live agent')} — at the "
+            f"SBX_MAX_CONCURRENT cap ({max_concurrent})",
+            hint="close an idle agent (DELETE /v1/agents/{id}), run scoped "
+            "cleanup (DELETE /v1/workflows/{id}), or raise "
+            "deploy.max_concurrent / SBX_MAX_CONCURRENT and `sbx deploy`",
+        )
+    cap = (
+        f"cap {max_concurrent} (SBX_MAX_CONCURRENT)"
+        if max_concurrent is not None
+        else "SBX_MAX_CONCURRENT unset — remote defaults apply"
+    )
+    return Check(
+        name="live-agents",
+        ok=True,
+        detail=f"{_plural(live, 'live agent')}, {cap}; idle agents hold slots until closed",
+    )
+
+
 def _api_checks(
     config_base_url: str,
     token: str | None,
     *,
     transport: httpx.BaseTransport | None,
+    max_concurrent: int | None = None,
 ) -> list[Check]:
     checks: list[Check] = []
     if not config_base_url:
@@ -110,6 +203,9 @@ def _api_checks(
                 )
             )
             models = client.models()
+            # Never raises ApiError/HTTPError — failures render as a warn
+            # check, so a broken agent list can't mask api-auth's verdict.
+            live_check = _live_agents_check(client, max_concurrent)
     except (ApiError, httpx.HTTPError) as exc:
         detail = getattr(exc, "code", None) or str(exc)
         checks.append(
@@ -123,18 +219,15 @@ def _api_checks(
         )
         return checks
 
-    provider_lines = []
-    for model in models.get("models", []):
-        provider = model.get("provider", "?")
-        free = model.get("accounts_available")
-        provider_lines.append(f"{provider}:{free}")
+    provider_lines = provider_summaries(models.get("models", []))
     checks.append(
         Check(
             name="providers",
             ok=True,
-            detail="model/account view: " + (", ".join(provider_lines) or "none"),
+            detail="provider/account view: " + (", ".join(provider_lines) or "none"),
         )
     )
+    checks.append(live_check)
     return checks
 
 
@@ -287,7 +380,14 @@ def run_doctor(
     # Same resolution order as `sbx status`: configured URL, else the last
     # deployed URL recorded in the state dir.
     base_url = config.api_base_url or str(read_deploy_state(env).get("app_url") or "")
-    checks.extend(_api_checks(base_url, token, transport=transport))
+    checks.extend(
+        _api_checks(
+            base_url,
+            token,
+            transport=transport,
+            max_concurrent=config.max_concurrent,
+        )
+    )
 
     app_url = None
     if workspace is not None:

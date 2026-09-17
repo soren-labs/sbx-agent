@@ -226,7 +226,7 @@ the Cursor Cloud Agents field mapping is in [examples/README.md](examples/README
 | `sbx deploy` can't reach Modal | Not authenticated: `modal token new`, or wrong `MODAL_PROFILE`. `sbx doctor` reports presence/status, never values. |
 | `401 unauthorized` on `/v1` | Missing/wrong `SBX_API_KEY`, or key revoked (`DELETE /v1/api-keys/{id}` earlier). Verify with `GET /v1/me`. |
 | Run `ERROR` with `error.code=auth_invalid` | Provider credential expired/invalid. Re-import (`python -m control.onboarding --modal import`) or probe it: `POST /v1/accounts/{id}/verify`. |
-| `429 provider_exhausted` / `concurrency_limit` | No free account slot or global cap. Honor `error.retry_after`, add accounts (`SBX_<PROVIDER>_ACCOUNTS`) or raise `max_concurrent`. |
+| `429 provider_exhausted` / `concurrency_limit` | No free account slot, or the `SBX_MAX_CONCURRENT` live-agent cap (per-key default 2 / global default 8; idle agents hold slots until closed). Honor `error.retry_after`, close idle agents (`DELETE /v1/agents/{id}`), run scoped cleanup (`DELETE /v1/workflows/{id}`), add accounts (`SBX_<PROVIDER>_ACCOUNTS`), or raise the cap (`deploy.max_concurrent`) and `sbx deploy`. `sbx status`/`sbx doctor` show live agents vs the cap. |
 | Agent stuck `creating` then `lost` | Sandbox create failed (image missing, Secret missing). Re-run `make image*` / `sbx deploy`, then `sbx doctor`. |
 | Agent `timed_out` / `lost` | Idle timeout or reaper sweep — expected lifecycle. History stays read-only; create a new agent. |
 | Event stream stalls | `watch` reconnects with `Last-Event-ID` (bounded); after it ends, `wait`/`get_run` is the durable fallback — never retry forever. |

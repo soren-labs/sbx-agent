@@ -125,9 +125,12 @@ def make_v1(
     *,
     token: str | None = None,
     run_statuses: list[str] | None = None,
+    run_error: dict[str, Any] | None = None,
     create_error: tuple[int, str, str] | None = None,
     unreachable: bool = False,
     models: list[dict[str, Any]] | None = None,
+    agents: list[dict[str, Any]] | None = None,
+    agents_page_size: int = 100,
 ) -> tuple[httpx.MockTransport, dict[str, Any]]:
     """A ``/v1`` transport + observable state (agents, deletions, requests).
 
@@ -168,6 +171,19 @@ def make_v1(
                     else [{"provider": "codex", "model": "gpt-5.6-luna", "accounts_available": 1}]
                 },
             )
+        if path == "/v1/agents" and request.method == "GET":
+            all_agents = agents if agents is not None else list(state["agents"].values())
+            try:
+                start = max(0, int(request.url.params.get("cursor") or 0))
+            except ValueError:
+                start = 0
+            page = all_agents[start : start + agents_page_size]
+            next_cursor = (
+                str(start + agents_page_size)
+                if start + agents_page_size < len(all_agents)
+                else None
+            )
+            return httpx.Response(200, json={"agents": page, "next_cursor": next_cursor})
         if path == "/v1/agents" and request.method == "POST":
             if create_error is not None:
                 status, code, message = create_error
@@ -199,10 +215,13 @@ def make_v1(
             if agent_id not in state["agents"]:
                 return err(404, "not_found", "agent not found")
             status = statuses.pop(0) if statuses else "FINISHED"
-            return httpx.Response(
-                200,
-                json={"id": run_id, "agent_id": agent_id, "status": status},
-            )
+            body: dict[str, Any] = {
+                "id": run_id,
+                "agent_id": agent_id,
+                "status": status,
+                "error": run_error,
+            }
+            return httpx.Response(200, json=body)
         return err(404, "not_found", f"no fake route for {request.method} {path}")
 
     return httpx.MockTransport(handler), state

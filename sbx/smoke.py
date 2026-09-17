@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from control.run_errors import RunError, clip_message
 
 from sbx.config import ResolvedConfig
 from sbx.errors import BootstrapError
@@ -26,6 +27,52 @@ TERMINAL_OK = "FINISHED"
 TERMINAL_STATUSES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED", "UNKNOWN"}
 DEFAULT_TIMEOUT_S = 600.0
 DEFAULT_POLL_S = 3.0
+
+# Canonical run-error code → remediation line (``docs/contracts/api-v1.yaml``
+# ``x-canonical.run_error_codes``). Codes not listed fall back to the
+# generic terminal hint.
+_RUN_ERROR_HINTS: dict[str, str] = {
+    "auth_invalid": (
+        "provider credential rejected (auth_invalid) — re-import the account "
+        "(`python -m control.onboarding --modal import`) or probe it with "
+        "`POST /v1/accounts/{id}/verify`"
+    ),
+    "timeout": "the turn exceeded its time budget — check provider latency",
+    "event_parse_error": ("the provider event stream was unparseable — check the provider CLI pin"),
+}
+
+_GENERIC_FAILED_HINT = (
+    "the run reached a terminal state but not FINISHED — "
+    "check provider credentials and `sbx doctor` output"
+)
+
+
+def _run_failure(run_id: str, status: str, run: Mapping[str, Any]) -> BootstrapError:
+    """Surface the canonical ``run.error`` fields for a non-FINISHED terminal.
+
+    ``run.error`` is the structured RunError the control plane persists
+    (``code``/``source``/``message``/``retryable``/``retry_after``); a
+    missing or non-canonical payload falls back to the bare status line.
+    The message is re-clipped here — the third redaction seam — so a
+    malformed upstream can never echo credential material to the terminal.
+    """
+    err = RunError.from_dict(run.get("error"))
+    if err is None:
+        return BootstrapError(
+            f"smoke run {run_id} ended {status}",
+            hint=_GENERIC_FAILED_HINT,
+            code="smoke_run_failed",
+        )
+    detail = f"smoke run {run_id} ended {status} — {err.code} ({err.source})"
+    if err.message:
+        detail += f": {clip_message(err.message)}"
+    hint = _RUN_ERROR_HINTS.get(err.code, _GENERIC_FAILED_HINT)
+    if err.retryable:
+        retry = "retryable — rerun `sbx smoke`"
+        if err.retry_after is not None:
+            retry = f"retryable — wait ~{err.retry_after:g}s, then rerun `sbx smoke`"
+        hint = f"{hint}; {retry}"
+    return BootstrapError(detail, hint=hint, code="smoke_run_failed")
 
 
 @dataclass(frozen=True)
@@ -83,10 +130,22 @@ def run_smoke(
             try:
                 created = client.create_agent(prompt=prompt, provider=provider)
             except ApiError as exc:
+                if exc.code == "concurrency_limit":
+                    hint = (
+                        "concurrency_limit: the live-agent cap "
+                        "(SBX_MAX_CONCURRENT) is reached — close an idle agent "
+                        "(DELETE /v1/agents/{id}), run scoped cleanup "
+                        "(DELETE /v1/workflows/{id}), or raise "
+                        "deploy.max_concurrent / SBX_MAX_CONCURRENT and `sbx deploy`"
+                    )
+                else:
+                    hint = (
+                        "check provider accounts via `sbx doctor` — "
+                        "provider_exhausted means no seeded account has a free slot"
+                    )
                 raise BootstrapError(
                     f"cannot create smoke agent ({exc.code}: {exc.message})",
-                    hint="check provider accounts via `sbx doctor` — "
-                    "provider_exhausted means no seeded account has a free slot",
+                    hint=hint,
                     code="smoke_create_failed",
                 ) from exc
             agent = created.get("agent") or {}
@@ -102,6 +161,7 @@ def run_smoke(
 
             status = ""
             last_error: Exception | None = None
+            last_run: dict[str, Any] = {}
             while monotonic() < deadline:
                 try:
                     payload: dict[str, Any] = client.get_run(agent_id, run_id)
@@ -117,6 +177,7 @@ def run_smoke(
                     last_error = exc
                 else:
                     last_error = None
+                    last_run = payload
                     status = str(payload.get("status") or "")
                     if status in TERMINAL_STATUSES:
                         break
@@ -139,12 +200,7 @@ def run_smoke(
                 pass
 
     if status != TERMINAL_OK:
-        raise BootstrapError(
-            f"smoke run {run_id} ended {status}",
-            hint="the run reached a terminal state but not FINISHED — "
-            "check provider credentials and `sbx doctor` output",
-            code="smoke_run_failed",
-        )
+        raise _run_failure(run_id, status, last_run)
     return SmokeResult(
         agent_id=agent_id,
         run_id=run_id,

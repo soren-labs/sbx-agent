@@ -89,6 +89,10 @@ class V1Client:
             )
         )
 
+    def list_agents(self, *, cursor: str | None = None) -> dict[str, Any]:
+        params = {} if cursor is None else {"cursor": cursor}
+        return self._check(self._client.get("/v1/agents", params=params))
+
     def get_run(self, agent_id: str, run_id: str) -> dict[str, Any]:
         return self.get(f"/v1/agents/{agent_id}/runs/{run_id}")
 

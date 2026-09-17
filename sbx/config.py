@@ -77,6 +77,7 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "image_grok": (("images", "grok"), ("SBX_IMAGE_GROK",)),
     "image_opencode": (("images", "opencode"), ("SBX_IMAGE_OPENCODE",)),
     "providers": (("deploy", "providers"), ("SBX_PROVIDERS",)),
+    "max_concurrent": (("deploy", "max_concurrent"), ("SBX_MAX_CONCURRENT",)),
 }
 
 
@@ -103,6 +104,11 @@ class BootstrapConfig:
     image_grok: str = GROK_IMAGE_NAME
     image_opencode: str = OPENCODE_IMAGE_NAME
     providers: tuple[str, ...] = ("codex",)
+    # Live-agent/sandbox cap forwarded to the deployed app as
+    # ``SBX_MAX_CONCURRENT`` (per-key cap + scheduler global cap). ``None``
+    # means "not configured" — the remote defaults apply — so it is never
+    # written to config.toml or pushed into the deploy env.
+    max_concurrent: int | None = None
 
     def image_name(self, provider: str) -> str:
         """Published Modal image name for ``provider``."""
@@ -158,8 +164,15 @@ class BootstrapConfig:
             "image_antigravity",
             "image_grok",
             "image_opencode",
+            "max_concurrent",
         )
-        out = {_FIELD_MAP[name][1][0]: str(getattr(self, name)) for name in fields}
+        # ``None`` (e.g. an unset max_concurrent) is never replayed — the
+        # remote defaults must win over an absent local value.
+        out = {
+            _FIELD_MAP[name][1][0]: str(getattr(self, name))
+            for name in fields
+            if getattr(self, name) is not None
+        }
         # ``control.modal_app`` reads this at deploy time to skip mounting
         # the shared Codex Secret and seeding accounts for providers the
         # deployment does not serve (SOR-115/SOR-116).
@@ -225,8 +238,12 @@ def _serialize(config: BootstrapConfig) -> str:
     for name in _field_names():
         (section, key), _envs = _FIELD_MAP[name]
         value = getattr(config, name)
+        if value is None:
+            continue  # unset optional knobs stay absent, not "None"
         if isinstance(value, tuple):
             rendered = "[" + ", ".join(_toml_escape(v) for v in value) + "]"
+        elif isinstance(value, int) and not isinstance(value, bool):
+            rendered = str(value)
         else:
             rendered = _toml_escape(str(value))
         sections.setdefault(section, []).append(f"{key} = {rendered}")
@@ -255,6 +272,16 @@ def _coerce(name: str, value: Any) -> Any:
         if isinstance(value, (list, tuple)):
             return tuple(str(p).strip() for p in value if str(p).strip())
         raise ValueError("providers must be a list or comma-separated string")
+    if name == "max_concurrent":
+        if value in (None, ""):
+            return None
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("max_concurrent must be a positive integer") from None
+        if n < 1:
+            raise ValueError("max_concurrent must be a positive integer")
+        return n
     return str(value)
 
 

@@ -268,6 +268,15 @@ def _clip(text: str) -> str:
     return text if len(text) <= _MESSAGE_LIMIT else text[: _MESSAGE_LIMIT - 1] + "…"
 
 
+def clip_message(text: str) -> str:
+    """``_clip`` for callers outside this module (e.g. the ``sbx`` CLI).
+
+    The same second-seam guarantee applies to any user-facing render of a
+    run error: secret-shaped fragments are redacted and the text is bounded.
+    """
+    return _clip(text)
+
+
 def _retry_after(text: str) -> float | None:
     for pattern in _RETRY_AFTER_RES:
         match = pattern.search(text)
