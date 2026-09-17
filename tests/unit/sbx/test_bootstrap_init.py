@@ -129,3 +129,50 @@ class TestModalAuthEnvTokens:
     def test_no_auth_points_at_token_new(self) -> None:
         check = prereqs.check_modal_auth(None, env={})
         assert not check.ok and "modal token new" in (check.hint or "")
+
+
+class TestCheckGithub:
+    """SOR-117: advisory GitHub-bridge detection — names/statuses only."""
+
+    _NO_GH = staticmethod(lambda name: None)
+
+    def test_token_detected_not_opted_in_warns_without_secret(self) -> None:
+        check = prereqs.check_github({"GH_TOKEN": "REDACTED_GITHUB"}, which=self._NO_GH)
+        assert not check.ok and check.warn
+        assert "GH_TOKEN" in check.detail
+        assert "REDACTED_GITHUB" not in f"{check.detail} {check.hint}"
+        assert "SBX_GITHUB_EPHEMERAL" in (check.hint or "")
+
+    def test_opted_in_with_token_is_ok(self) -> None:
+        env = {"GH_TOKEN": "REDACTED_GITHUB", "SBX_GITHUB_EPHEMERAL": "1"}
+        check = prereqs.check_github(env, which=self._NO_GH)
+        assert check.ok and "GH_TOKEN" in check.detail
+        assert "REDACTED_GITHUB" not in check.detail
+
+    def test_opted_in_without_token_warns(self) -> None:
+        check = prereqs.check_github({"SBX_GITHUB_EPHEMERAL": "1"}, which=self._NO_GH)
+        assert not check.ok and check.warn
+        assert "GH_TOKEN" in (check.hint or "")
+
+    def test_nothing_detected_is_ok_and_neutral(self) -> None:
+        check = prereqs.check_github({}, which=self._NO_GH)
+        assert check.ok and "disabled" in check.detail
+
+    def test_gh_authenticated_under_verify(self) -> None:
+        class _Proc:
+            returncode = 0
+
+        check = prereqs.check_github(
+            {}, verify=True, runner=lambda *a, **k: _Proc(), which=lambda n: "/usr/bin/gh"
+        )
+        assert not check.ok and check.warn
+        assert "gh CLI is authenticated" in check.detail
+        assert "gh auth token" in (check.hint or "")
+
+
+def test_init_reports_github_bridge_advisory(tmp_path) -> None:
+    env = make_env(tmp_path)
+    cfg = make_cfg(tmp_path, env=env, write=False)
+    report = init_mod.init(cfg, FakePlane(), env=env)
+    gh = next(c for c in report.checks if c.name == "github")
+    assert gh.ok  # nothing detected: advisory-neutral, not a failure

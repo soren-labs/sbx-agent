@@ -342,3 +342,19 @@ def test_doctor_and_deploy_agree_on_provider_prereqs(tmp_path) -> None:
         deploy(cfg, plane, env=env, transport=transport, sleep=lambda s: None)
     assert exc.value.code == "secret_missing"
     assert plane.secret_create_calls == 0  # fail-before-write preserved
+
+
+def test_doctor_reports_github_bridge_without_secret(tmp_path) -> None:
+    """SOR-117: an ambient GH_TOKEN is reported by *name* — advisory warn,
+    opt-in hint, and the token value never reaches doctor output."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    env = {**env, "GH_TOKEN": "REDACTED_GITHUB"}
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    gh = next(c for c in checks if c.name == "github")
+    assert gh not in failed(checks)
+    assert not gh.ok and gh.warn
+    assert "GH_TOKEN" in gh.detail
+    assert "SBX_GITHUB_EPHEMERAL" in (gh.hint or "")
+    blob = "\n".join(f"{c.name} {c.detail} {c.hint}" for c in checks)
+    assert "REDACTED_GITHUB" not in blob

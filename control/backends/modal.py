@@ -13,6 +13,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+from control import github
 from control.backend import Process, SandboxHandle, SandboxPoll, SandboxSpec
 from control.config import (
     ANTIGRAVITY_IMAGE_NAME,
@@ -130,19 +131,18 @@ def _ambient_account_blob(provider: str) -> str | None:
     return None
 
 
-def _devin_aux_secret_env() -> dict[str, str]:
-    """Opt-in non-credential bridges for Devin sandboxes (GitHub / Linear MCP).
+def _aux_secret_env(provider: str) -> dict[str, str]:
+    """Opt-in non-credential bridges (GitHub for all providers, Linear MCP
+    for Devin only).
 
     These stack alongside the authoritative credential source (named Secret
     or ambient blob) because they never carry ``SBX_ACCOUNT_CREDENTIAL``.
+    SOR-117: the GitHub bridge (``control.github.exec_env``) is no longer
+    Devin-specific — the same ``SBX_GITHUB_EPHEMERAL`` opt-in applies to every
+    provider's sandbox.
     """
-    env: dict[str, str] = {}
-    if os.environ.get("SBX_GITHUB_EPHEMERAL") == "1":
-        github_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-        if github_token:
-            env["GH_TOKEN"] = github_token
-            env["GITHUB_TOKEN"] = github_token
-    if os.environ.get(_LINEAR_MCP_GATE_ENV) == "1":
+    env = github.exec_env()
+    if provider == DEVIN_PROVIDER and os.environ.get(_LINEAR_MCP_GATE_ENV) == "1":
         linear_key = next(
             (os.environ.get(name) for name in _LINEAR_HOST_KEY_ENVS if os.environ.get(name)),
             None,
@@ -157,15 +157,14 @@ def _account_secret_env(provider: str, *, credential: bool = True) -> dict[str, 
 
     ``credential=False`` skips the ambient account blob so a named per-account
     Secret stays authoritative; provider-validated ambient blob and the
-    Devin-only opt-in bridges are otherwise included.
+    opt-in aux bridges are otherwise included.
     """
     env: dict[str, str] = {}
     if credential:
         blob = _ambient_account_blob(provider)
         if blob:
             env[_ACCOUNT_CREDENTIAL_ENV] = blob
-    if provider == DEVIN_PROVIDER:
-        env.update(_devin_aux_secret_env())
+    env.update(_aux_secret_env(provider))
     return env
 
 
@@ -210,9 +209,11 @@ def _secrets_for(modal: Any, provider: str, secret_names: Iterable[str]) -> list
     named = [modal.Secret.from_name(name) for name in names]
     if provider in ACCOUNT_PROVIDERS:
         return [*named, *_account_secrets(modal, provider, credential=not named)]
-    if named:
-        return named
-    return _codex_secrets(modal)
+    secrets = named if named else _codex_secrets(modal)
+    aux = _aux_secret_env(provider)
+    # The opt-in GitHub bridge is provider-agnostic (SOR-117): it stacks on
+    # codex sandboxes exactly like the account providers.
+    return [*secrets, modal.Secret.from_dict(aux)] if aux else secrets
 
 
 def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:

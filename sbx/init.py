@@ -29,6 +29,7 @@ from sbx.credentials import CredentialScan, cli_auth_check, scan_credentials
 from sbx.plane import Plane
 from sbx.prereqs import (
     Check,
+    check_github,
     check_modal_auth,
     check_provider_config,
     tool_checks,
@@ -120,6 +121,8 @@ def init(
                 auth,
                 check_provider_config(merged.providers),
                 *(s.to_check() for s in scans),
+                # SOR-117: advisory GitHub-bridge detection (gh probe under --verify).
+                check_github(env, verify=verify),
             ]
         ),
         config_path=cfg.path,

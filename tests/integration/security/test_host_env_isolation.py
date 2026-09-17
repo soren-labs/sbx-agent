@@ -91,3 +91,24 @@ def test_host_canary_env_never_reaches_test_or_output() -> None:
     assert res.returncode == 0, f"child pytest failed:\n{output[-2000:]}"
     assert CANARY not in output
     assert "CANARY-SBX" not in output
+
+
+def test_github_token_never_forwarded_without_opt_in(monkeypatch) -> None:
+    """SOR-117: an ambient ``GH_TOKEN``/``GITHUB_TOKEN`` (as in a real
+    developer shell) must never reach a sandbox exec env unless the explicit
+    ``SBX_GITHUB_EPHEMERAL`` opt-in is armed."""
+    from control.backend import SandboxHandle
+    from control.sandbox_io import sandbox_env
+
+    monkeypatch.setenv("GH_TOKEN", CANARY)
+    monkeypatch.setenv("GITHUB_TOKEN", CANARY)
+    monkeypatch.delenv("SBX_GITHUB_EPHEMERAL", raising=False)
+    for provider in ("codex", "devin", "grok"):
+        handle = SandboxHandle(id="sb", root=Path("/work"), tags={"provider": provider})
+        env = sandbox_env(handle)
+        assert "GH_TOKEN" not in env
+        assert "GITHUB_TOKEN" not in env
+        assert not any(k.startswith("GIT_CONFIG_") for k in env)
+        assert CANARY not in env.values()
+        # Execs have no stdin: git must fail fast rather than prompt.
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
