@@ -33,7 +33,14 @@ prints the two values clients need: `SBX_BASE_URL` and a `sbx_<key>` API key
 | Modal App (ASGI + reaper cron `*/5`) | `sbx-control` | `SBX_MODAL_APP_NAME` |
 | Runtime images | `sbx-runtime`, `sbx-runtime-devin`, `sbx-runtime-antigravity`, `sbx-runtime-grok`, `sbx-runtime-opencode` | built by `make image*` / `sbx deploy` |
 | Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows` | created on demand by stores |
-| Secrets | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<account_id>` | `modal secret create` |
+| Secrets | `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<account_id>`, plus `sbx-codex-auth` **only when `codex` is enabled** | `modal secret create` |
+
+Which providers a deployment serves is configured by `deploy.providers` in
+the config file (env override `SBX_PROVIDERS`, comma-separated; default
+`codex`). Deploy preconditions derive from that list: the shared Codex
+credential Secret is required iff `codex` is enabled, and only enabled
+providers' account Secrets are checked/materialized. An empty or unknown
+provider list fails `sbx deploy` before anything is written.
 
 Control-plane tunables (env on the Modal app): `SBX_MAX_CONCURRENT` (global
 cap, default 2), `SBX_IDLE_TIMEOUT_S` (default 1800), per-provider
@@ -48,6 +55,7 @@ serves — the shared `sbx-codex-auth` Secret is only required and mounted when
 
 ```bash
 # 1. Secrets — values never echoed, never committed
+#    (sbx-codex-auth only when codex is an enabled provider)
 modal secret create sbx-codex-auth CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
 modal secret create sbx-basic-auth \
   SBX_BASIC_USER='<user>' SBX_BASIC_PASS='<long-random>'
@@ -67,7 +75,8 @@ make deploy               # = python -m modal deploy -m control.modal_app
 ```
 
 `SBX_V1_BOOTSTRAP_KEY` seeds a hash-only admin API key plus the default
-accounts on first boot (`control/api_v1/bootstrap.py`). Codex keeps the
+accounts on first boot (`control/api_v1/bootstrap.py`) — one seeded account
+per **enabled** provider (`SBX_PROVIDERS`). Codex keeps the
 shared `sbx-codex-auth` path; other providers get a seeded account pointing
 at `sbx-acct-<id>` — create those Secrets with the credential blob, or import
 accounts through the API/CLI instead (see [providers.md](providers.md)).

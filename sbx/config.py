@@ -19,7 +19,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from control.config import (
     ACCOUNT_SECRET_PREFIX,
@@ -39,12 +39,19 @@ from control.config import (
     WORKFLOWS_DICT_NAME,
     WORKSPACES_DICT_NAME,
 )
+from control.ports import ProviderId
+
+from sbx.errors import BootstrapError
 
 CONFIG_ENV = "SBX_CONFIG"
 STATE_DIR_ENV = "SBX_STATE_DIR"
 API_KEY_ENV = "SBX_API_KEY"
 
 _APP_DIR = "sbx"
+
+# Contract provider set (``ProviderId`` in control/ports.py — the api-v1
+# enum). ``deploy.providers`` must stay inside it.
+KNOWN_PROVIDERS: tuple[str, ...] = get_args(ProviderId)
 
 # field -> ((toml section, toml key), env override names in priority order)
 _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
@@ -102,8 +109,16 @@ class BootstrapConfig:
         return str(getattr(self, f"image_{provider}"))
 
     def secret_names(self) -> tuple[str, ...]:
-        """Managed Modal Secrets the control app requires."""
-        return (self.codex_secret, self.basic_secret, self.bootstrap_secret)
+        """Managed Modal Secrets the control app requires.
+
+        Provider-aware (SOR-116): the shared Codex credential Secret is only
+        required when ``codex`` is an enabled provider — other providers
+        carry per-account ``<account_secret_prefix><id>`` Secrets instead.
+        """
+        names = [self.basic_secret, self.bootstrap_secret]
+        if "codex" in self.providers:
+            names.insert(0, self.codex_secret)
+        return tuple(names)
 
     def dict_names(self) -> tuple[str, ...]:
         """Durable stores an upgrade must preserve."""
@@ -146,7 +161,8 @@ class BootstrapConfig:
         )
         out = {_FIELD_MAP[name][1][0]: str(getattr(self, name)) for name in fields}
         # ``control.modal_app`` reads this at deploy time to skip mounting
-        # the shared Codex Secret on codex-less deploys (SOR-115).
+        # the shared Codex Secret and seeding accounts for providers the
+        # deployment does not serve (SOR-115/SOR-116).
         out["SBX_PROVIDERS"] = ",".join(self.providers)
         return out
 
@@ -287,3 +303,25 @@ def load(
     if overrides:
         config = replace(config, **overrides)
     return ResolvedConfig(config=config, path=path, sources=sources, file_exists=file_exists)
+
+
+def validate_providers(providers: tuple[str, ...]) -> None:
+    """Deploy precondition: ``providers`` must be a non-empty known set.
+
+    Every prerequisite check and remote resource derives from this list —
+    an empty or unknown entry can only produce a deployment that serves
+    nothing, so it fails fast with remediation instead.
+    """
+    if not providers:
+        raise BootstrapError(
+            "no providers configured (deploy.providers is empty)",
+            hint='set deploy.providers in the config or SBX_PROVIDERS, e.g. "codex,devin"',
+            code="invalid_providers",
+        )
+    unknown = [p for p in providers if p not in KNOWN_PROVIDERS]
+    if unknown:
+        raise BootstrapError(
+            f"unknown provider(s): {', '.join(unknown)}",
+            hint=f"valid providers: {', '.join(KNOWN_PROVIDERS)}",
+            code="invalid_providers",
+        )

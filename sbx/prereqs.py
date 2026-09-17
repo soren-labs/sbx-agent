@@ -11,9 +11,10 @@ import importlib.util
 import os
 import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from sbx.config import KNOWN_PROVIDERS
 from sbx.errors import BootstrapError
 
 MIN_PYTHON = (3, 12)
@@ -109,6 +110,36 @@ def check_modal_auth(workspace: str | None, env: Mapping[str, str] | None = None
         detail="not authenticated",
         hint="run `modal token new` (or `modal setup`), or export "
         "MODAL_TOKEN_ID/MODAL_TOKEN_SECRET",
+    )
+
+
+def check_provider_config(providers: Sequence[str]) -> Check:
+    """``deploy.providers`` must name at least one contract provider.
+
+    Deploy preconditions derive from this list — an empty or unknown entry
+    means the deployment cannot serve any provider.
+    """
+    enabled = [str(p) for p in providers]
+    if not enabled:
+        return Check(
+            name="provider-config",
+            ok=False,
+            detail="no providers configured",
+            hint="set deploy.providers in the config or SBX_PROVIDERS, "
+            f'e.g. "{",".join(KNOWN_PROVIDERS[:2])}"',
+        )
+    unknown = [p for p in enabled if p not in KNOWN_PROVIDERS]
+    if unknown:
+        return Check(
+            name="provider-config",
+            ok=False,
+            detail=f"unknown provider(s): {', '.join(unknown)}",
+            hint=f"valid providers: {', '.join(KNOWN_PROVIDERS)}",
+        )
+    return Check(
+        name="provider-config",
+        ok=True,
+        detail="enabled: " + ", ".join(enabled),
     )
 
 

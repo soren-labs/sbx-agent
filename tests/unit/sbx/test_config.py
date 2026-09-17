@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import pytest
 from control.config import (
     ACCOUNTS_DICT_NAME,
     MODAL_APP_NAME,
     RUNTIME_IMAGE_NAME,
     V1_BOOTSTRAP_SECRET_NAME,
 )
-from sbx.config import BootstrapConfig, load, load_file_values, save
+from sbx.config import (
+    BootstrapConfig,
+    load,
+    load_file_values,
+    save,
+    validate_providers,
+)
+from sbx.errors import BootstrapError
 from sbx_fakes import make_cfg, make_env
 
 
@@ -75,3 +83,43 @@ def test_config_paths_from_env(tmp_path) -> None:
     env = make_env(tmp_path)
     cfg = load(env=env)
     assert cfg.path == tmp_path / "config.toml"
+
+
+def test_secret_names_are_provider_aware() -> None:
+    """SOR-116: the shared Codex Secret is required iff codex is enabled."""
+    codex = BootstrapConfig(providers=("codex",))
+    assert codex.secret_names() == (
+        "sbx-codex-auth",
+        "sbx-basic-auth",
+        "sbx-v1-bootstrap",
+    )
+    devin = BootstrapConfig(providers=("devin",))
+    assert "sbx-codex-auth" not in devin.secret_names()
+    assert devin.secret_names() == ("sbx-basic-auth", "sbx-v1-bootstrap")
+    mixed = BootstrapConfig(providers=("devin", "codex"))
+    assert "sbx-codex-auth" in mixed.secret_names()
+
+
+def test_deploy_env_forwards_provider_set() -> None:
+    env = BootstrapConfig(providers=("codex", "devin")).deploy_env()
+    assert env["SBX_PROVIDERS"] == "codex,devin"
+
+
+def test_validate_providers_accepts_known_set() -> None:
+    validate_providers(("codex",))
+    validate_providers(("devin", "grok"))
+
+
+def test_validate_providers_rejects_empty() -> None:
+    with pytest.raises(BootstrapError) as exc:
+        validate_providers(())
+    assert exc.value.code == "invalid_providers"
+    assert "deploy.providers" in exc.value.message
+
+
+def test_validate_providers_rejects_unknown() -> None:
+    with pytest.raises(BootstrapError) as exc:
+        validate_providers(("codex", "bogus"))
+    assert exc.value.code == "invalid_providers"
+    assert "bogus" in exc.value.message
+    assert "codex" in (exc.value.hint or "")

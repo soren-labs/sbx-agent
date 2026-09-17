@@ -53,6 +53,10 @@ local official CLI login                your Modal workspace
 - One provider can hold **multiple accounts**; `account_id: "auto"` picks a
   free one (LRU + per-account `max_concurrent` slots + cooldown on
   `auth_invalid`/`rate_limited`). Name an account explicitly to pin it.
+- `deploy.providers` (`SBX_PROVIDERS`) selects which providers a deployment
+  serves. Credential prerequisites are scoped to it: `sbx-codex-auth` is
+  required only when `codex` is enabled, account Secrets only for enabled
+  providers, and the control plane seeds/mounts per enabled provider.
 - `POST /v1/accounts/{id}/verify` probes a credential in a throwaway sandbox
   without spending a session.
 - **Never** paste credential material into issues, PRs, logs, fixtures, or
