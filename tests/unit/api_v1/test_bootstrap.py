@@ -127,6 +127,23 @@ def test_bootstrap_enforces_devin_only_deployment(monkeypatch) -> None:
     assert app.state.scheduler.decide(provider="codex").error == "invalid_provider"
 
 
+def test_bootstrap_seeds_only_enabled_providers(monkeypatch) -> None:
+    """SOR-116: SBX_PROVIDERS scopes seeding — a devin-only deploy must not
+    gain accounts for providers whose credentials were never required."""
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "9" * 40)
+    monkeypatch.setenv("SBX_PROVIDERS", "devin")
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+
+    registry = app.state.account_registry
+    assert {a.provider for a in registry.list()} == {"devin"}
+    assert registry.get("devin-1") is not None
+    assert registry.get("codex-1") is None
+    # codex is unselected → the scheduler gate rejects it outright.
+    decision = app.state.scheduler.decide(provider="codex", account="auto")
+    assert decision.error == "invalid_provider"
+
+
 def test_scheduler_decides_each_provider(monkeypatch) -> None:
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "d" * 40)
     app = FastAPI()

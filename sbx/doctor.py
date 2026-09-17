@@ -26,6 +26,7 @@ from sbx.prereqs import (
     check_dict_present,
     check_modal_auth,
     check_modal_package,
+    check_provider_config,
     check_python,
     check_secret_present,
 )
@@ -138,12 +139,14 @@ def _api_checks(
 
 
 def _account_secret_check(config, plane: Plane, secret_names: set[str]) -> Check:
-    """Verify every account record's referenced Secret exists.
+    """Verify every enabled-provider account record's referenced Secret exists.
 
     This catches the fresh-install failure mode where onboarding metadata and
     credential blobs exist in the accounts Dict but the runtime Secret was
-    never materialized.  Values are never read or rendered.
+    never materialized.  Values are never read or rendered.  Accounts of
+    providers that are not enabled carry no prerequisite (SOR-116).
     """
+    enabled = frozenset(config.providers)
     try:
         items = plane.dict_items(config.accounts_dict)
     except Exception as exc:
@@ -156,6 +159,8 @@ def _account_secret_check(config, plane: Plane, secret_names: set[str]) -> Check
     referenced: list[str] = []
     for key, value in items:
         if not (isinstance(key, str) and key.startswith("account/") and isinstance(value, dict)):
+            continue
+        if str(value.get("provider") or "") not in enabled:
             continue
         name = str(value.get("secret_name") or "").strip()
         if name:
@@ -200,6 +205,9 @@ def run_doctor(
         workspace = None
     checks.append(check_modal_auth(workspace, env=env))
 
+    provider_check = check_provider_config(config.providers)
+    checks.append(provider_check)
+
     secret_names: set[str] = set()
     secret_list_failed = False
     if workspace is not None:
@@ -238,7 +246,7 @@ def run_doctor(
             except Exception:
                 present = False
             checks.append(check_dict_present(present, name))
-        if plane.has_dict(config.accounts_dict):
+        if provider_check.ok and plane.has_dict(config.accounts_dict):
             checks.append(_account_secret_check(config, plane, secret_names))
 
     token = resolve_api_key(env)

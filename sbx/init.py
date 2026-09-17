@@ -27,7 +27,12 @@ from sbx.config import (
 )
 from sbx.credentials import CredentialScan, cli_auth_check, scan_credentials
 from sbx.plane import Plane
-from sbx.prereqs import Check, check_modal_auth, tool_checks
+from sbx.prereqs import (
+    Check,
+    check_modal_auth,
+    check_provider_config,
+    tool_checks,
+)
 
 
 @dataclass(frozen=True)
@@ -109,7 +114,14 @@ def init(
         auth_check=auth_check,
     )
     return InitReport(
-        checks=tuple([*checks, auth, *(s.to_check() for s in scans)]),
+        checks=tuple(
+            [
+                *checks,
+                auth,
+                check_provider_config(merged.providers),
+                *(s.to_check() for s in scans),
+            ]
+        ),
         config_path=cfg.path,
         config_created=not cfg.file_exists,
         state_dir=state_dir(env),

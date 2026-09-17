@@ -231,7 +231,9 @@ def configure_v1_bootstrap(app: Any) -> bool:
     # name — its sandboxes keep the ``sbx-codex-auth`` / ``CODEX_AUTH_JSON``
     # credential path (``SBX_CODEX_SECRET_NAME`` can name a per-account
     # Secret instead). ``SBX_<PROVIDER>_ACCOUNTS`` JSON switches any provider
-    # to a multi-account fleet.
+    # to a multi-account fleet. Only selected providers seed — a disabled
+    # provider's accounts would reference Secrets the deployment never
+    # required (SOR-116).
     provider_specs = (
         ("devin", None, env_int("SBX_DEVIN_BURST_SLOTS", 8)),
         ("codex", "", _DEFAULT_PROVIDER_SLOTS),

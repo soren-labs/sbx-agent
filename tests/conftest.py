@@ -63,6 +63,9 @@ _CLOUD_KEYS = frozenset(
         # ``modal`` at collection time.
         "SBX_DEVIN_TRANSPORT",
         "SBX_BACKEND",
+        # SOR-116: ambient provider selection must not leak into tests —
+        # ``SBX_PROVIDERS`` gates deploy preconditions and remote seeding.
+        "SBX_PROVIDERS",
         # Ambient store-dir overrides would redirect the import-time app's
         # local stores off the XDG-isolated home.
         "SBX_RUN_STORE_DIR",

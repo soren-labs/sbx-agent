@@ -82,6 +82,13 @@ def test_remote_env_overlay_defaults_to_production_app_name() -> None:
     assert out == {"SBX_MODAL_APP_NAME": MODAL_APP_NAME}
 
 
+def test_remote_env_overlay_forwards_provider_set() -> None:
+    """SOR-116: the remote app must see the enabled-provider set so it can
+    mount/seed per provider instead of assuming codex."""
+    out = remote_env_overlay({"SBX_PROVIDERS": "devin,grok"}, app_name="x")
+    assert out["SBX_PROVIDERS"] == "devin,grok"
+
+
 def test_account_secret_prefix_env(monkeypatch) -> None:
     monkeypatch.setenv("SBX_ACCOUNT_SECRET_PREFIX", "rc-acct-")
     assert account_secret_prefix() == "rc-acct-"
