@@ -30,6 +30,7 @@ from control.config import (
     RUNS_DICT_NAME,
     SESSIONS_DICT_NAME,
     SSE_KEEPALIVE_S,
+    TURN_MAX_SECONDS,
     WORKFLOWS_DICT_NAME,
     basic_credentials,
     default_runner_cmd,
@@ -217,6 +218,7 @@ def create_app(
     max_concurrent: int | None = None,
     default_model: str | None = None,
     idle_timeout_s: int | None = None,
+    turn_max_seconds: int | None = None,
 ) -> FastAPI:
     backend_kind = os.environ.get("SBX_BACKEND", "local")
     backend = backend or _select_backend()
@@ -252,6 +254,9 @@ def create_app(
         idle_timeout_s=idle_timeout_s
         if idle_timeout_s is not None
         else env_int("SBX_IDLE_TIMEOUT_S", IDLE_TIMEOUT_S),
+        turn_max_seconds=turn_max_seconds
+        if turn_max_seconds is not None
+        else env_int("SBX_TURN_MAX_SECONDS", TURN_MAX_SECONDS),
         run_ledger=RunLedger(run_store, clock=clock),
         workspaces=workspaces,
         handoffs=handoffs,

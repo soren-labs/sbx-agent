@@ -15,7 +15,7 @@ IDLE_TIMEOUT_S = 1800
 CREATE_GRACE_S = 300
 SANDBOX_TIMEOUT_S = 14400  # 4h hard cap
 SSE_KEEPALIVE_S = 15.0
-TURN_MAX_SECONDS = 900
+TURN_MAX_SECONDS = 900  # default; override with SBX_TURN_MAX_SECONDS
 # SOR-80: a ``running`` record is finalized by the in-process watcher. When a
 # control-plane cutover kills that watcher mid-turn, nothing ever closes the
 # record — the reaper treats a turn stale beyond the runner's own
@@ -171,6 +171,7 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_PROVIDERS",
     "SBX_MAX_CONCURRENT",
     "SBX_IDLE_TIMEOUT_S",
+    "SBX_TURN_MAX_SECONDS",
     "SBX_DEFAULT_MODEL",
     "SBX_SSE_KEEPALIVE_SECONDS",
     "SBX_DEVIN_BURST_SLOTS",
