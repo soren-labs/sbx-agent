@@ -121,6 +121,50 @@ the repositories agents work on — `Contents: read/write`, plus
 practical lifetime. Nothing is persisted in Modal beyond the Secret you
 named; a classic `repo`-scoped PAT works but is broader than needed.
 
+## Git policy — first-class branch/push/PR (SOR-128)
+
+`POST /v1/agents` accepts an optional `git` policy next to `workspace`:
+
+```python
+created = client.create(
+    "Fix the flaky date test",
+    provider="codex",
+    workspace={"repo": REPO, "base_ref": "main", "base_sha": BASE_SHA},
+    git={
+        "branch": "sbx/flaky-date",  # work branch, created on base_sha
+        "push": True,  # publish enables `POST .../git/publish`
+        "auto_create_pr": True,  # open a PR after push (requires push)
+        "target": "main",  # PR base; default: workspace base_ref
+        "draft": True,
+        "title": "Fix flaky date test",
+    },
+)
+```
+
+- `git` requires `workspace`; `auto_create_pr` requires `push`. Branch,
+  target and handoff refs are validated for safe git-ref characters.
+- `branch` materializes during prepare (`checkout -B` on `base_sha`) and is
+  recorded on the durable `WorkspaceRecord` alongside the resolved `git`
+  policy.
+- `POST /v1/agents/{id}/git/publish` executes the publish half: refresh
+  head → push `HEAD` to `refs/heads/<branch>` on the workspace repo's
+  remote → verify `ls-remote` resolved to exactly the pushed head (drift
+  fails closed `repo_unavailable`) → when `auto_create_pr`, open the PR via
+  the opt-in GitHub bridge. `pushed_head_sha` and structured
+  `pull_request` metadata (`number`/`url`/`ref`/`head_sha`/`target`/
+  `draft`) persist on the record. Works with plain file-path remotes for
+  push; PR creation needs the GitHub bridge armed.
+- **Reviewer start from a PR ref** — `handoff.pull_request` (on create or
+  `POST /v1/agents/{id}/handoff`) carries `{ref, head_sha}`; the ref is
+  fetched (`refs/pull/<n>/head`, `pull/<n>/head`, or a branch name) and
+  must resolve to exactly `head_sha` — a ref that drifted since the pin
+  fails closed as `409 head_sha_mismatch`.
+- **Review is a comment, never an approval** — `POST .../workspace/review`
+  accepts `comment`, posted as a machine-readable PR issue comment through
+  the recorded PR's `comments_url`. Every sandbox shares one GitHub
+  identity, so a formal GitHub review approval would read as the PR author
+  approving their own work — the API deliberately has no approve path.
+
 ## Errors
 
 Workspace/handoff failures are structured `{error:{code,message}}`; during
@@ -129,11 +173,11 @@ run-1 they persist on the durable run ledger (`source=control`,
 
 | Code | Meaning / fix |
 | --- | --- |
-| `repo_unavailable` | Clone/push/PR failed — repo unreachable or auth missing (private github.com without the bridge armed). |
-| `workspace_invalid` | Malformed declaration — e.g. a `handoff` without `workspace` on create, or an unsafe workdir. |
+| `repo_unavailable` | Clone/fetch/push/PR failed — repo unreachable, auth missing (private github.com without the bridge armed), or the remote resolved to a different sha than the head just pushed. |
+| `workspace_invalid` | Malformed declaration — e.g. a `handoff` without `workspace` on create, an unsafe workdir, or an invalid `git` policy (`auto_create_pr` without `push`, unsafe ref names). |
 | `workspace_not_found` | The agent declared no workspace. |
 | `checkout_failed` | `base_ref`/`base_sha` does not resolve in the fresh clone. |
-| `base_sha_mismatch` | `base_ref` resolved to a different commit than the declared `base_sha`, or a `head_sha` handoff is not a descendant of the base. |
-| `head_sha_mismatch` | Handoff/review head disagrees with the recorded workspace head. |
+| `base_sha_mismatch` | `base_ref` resolved to a different commit than the declared `base_sha`, or a `head_sha`/`pull_request` handoff is not a descendant of the base. |
+| `head_sha_mismatch` | Handoff/review head disagrees with the recorded workspace head, or a fetched `pull_request` ref drifted from its pinned `head_sha`. |
 | `artifact_not_found` / `artifact_invalid` / `checksum_mismatch` | Handoff artifact is missing, malformed, or failed integrity checks. |
 | `artifact_secret` | Snapshot collection found credential-shaped content — refused fail-closed, nothing persisted. |

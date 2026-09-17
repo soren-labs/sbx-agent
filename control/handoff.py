@@ -46,10 +46,12 @@ from control.workspace import (
     WorkspaceService,
     WorkspaceSpec,
     git_checkout,
+    git_fetch_ref,
     git_head,
     git_is_ancestor,
     git_rev_parse,
     is_commit_sha,
+    is_safe_ref,
     is_safe_relpath,
     is_sha256,
     run_git,
@@ -228,6 +230,7 @@ class HandoffService:
         *,
         spec: WorkspaceSpec | None = None,
         workdir: str = DEFAULT_WORKDIR,
+        git: dict[str, Any] | None = None,
     ) -> WorkspaceRecord:
         """Check out an exact commit the downstream task was handed.
 
@@ -239,7 +242,7 @@ class HandoffService:
             raise WorkspaceError(
                 WORKSPACE_INVALID, f"head_sha must be a 40-hex commit sha: {head_sha!r}"
             )
-        record = self._ensure_base(handle, agent_id, spec, workdir)
+        record = self._ensure_base(handle, agent_id, spec, workdir, git)
         backend = self._workspaces.backend
         self._assert_at_recorded_head(handle, record)
         if git_rev_parse(backend, handle, record.workdir, head_sha) != head_sha:
@@ -253,7 +256,58 @@ class HandoffService:
                 BASE_SHA_MISMATCH,
                 f"head_sha {head_sha} does not descend from declared base {record.base_sha}",
             )
-        git_checkout(backend, handle, record.workdir, head_sha)
+        git_checkout(backend, handle, record.workdir, head_sha, branch=record.branch)
+        actual = git_head(backend, handle, record.workdir)
+        if actual != head_sha:
+            raise WorkspaceError(
+                HEAD_SHA_MISMATCH, f"checkout drifted: HEAD is {actual}, expected {head_sha}"
+            )
+        record.checkout_sha = head_sha
+        record.head_sha = head_sha
+        return self._workspaces.save(record)
+
+    def prepare_from_pull_request(
+        self,
+        handle: SandboxHandle,
+        agent_id: str,
+        ref: str,
+        head_sha: str,
+        *,
+        spec: WorkspaceSpec | None = None,
+        workdir: str = DEFAULT_WORKDIR,
+        git: dict[str, Any] | None = None,
+    ) -> WorkspaceRecord:
+        """Start a reviewer from a PR/remote ref pinned to an exact head.
+
+        ``ref`` is fetched from the workspace repo's ``origin`` (a
+        ``refs/pull/<n>/head`` path, its ``pull/<n>/head`` shorthand, or a
+        branch name) and must resolve to exactly ``head_sha`` — a ref that
+        moved since the pin was taken is an explicit ``head_sha_mismatch``
+        (head drift fails closed), never a checkout of the drifted commit.
+        The pinned head must still descend from the declared ``base_sha``.
+        """
+        if not is_commit_sha(head_sha):
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"head_sha must be a 40-hex commit sha: {head_sha!r}"
+            )
+        if not is_safe_ref(ref):
+            raise WorkspaceError(WORKSPACE_INVALID, f"unsafe PR ref: {ref!r}")
+        record = self._ensure_base(handle, agent_id, spec, workdir, git)
+        backend = self._workspaces.backend
+        self._assert_at_recorded_head(handle, record)
+        resolved = git_fetch_ref(backend, handle, record.workdir, ref)
+        if resolved != head_sha:
+            raise WorkspaceError(
+                HEAD_SHA_MISMATCH,
+                f"PR ref {ref} resolves to {resolved}, pinned head is {head_sha} — "
+                "the ref drifted since the pin was taken",
+            )
+        if not git_is_ancestor(backend, handle, record.workdir, record.base_sha, head_sha):
+            raise WorkspaceError(
+                BASE_SHA_MISMATCH,
+                f"PR head {head_sha} does not descend from declared base {record.base_sha}",
+            )
+        git_checkout(backend, handle, record.workdir, head_sha, branch=record.branch)
         actual = git_head(backend, handle, record.workdir)
         if actual != head_sha:
             raise WorkspaceError(
@@ -271,6 +325,7 @@ class HandoffService:
         *,
         spec: WorkspaceSpec | None = None,
         workdir: str = DEFAULT_WORKDIR,
+        git: dict[str, Any] | None = None,
     ) -> WorkspaceRecord:
         """Apply a B1 artifact package onto the workspace.
 
@@ -296,7 +351,7 @@ class HandoffService:
                 f"artifact {artifact_id} payload sha256 {digest} "
                 f"!= manifest {manifest.payload_sha256}",
             )
-        record = self._ensure_base(handle, agent_id, spec, workdir)
+        record = self._ensure_base(handle, agent_id, spec, workdir, git)
         if manifest.repo != record.repo:
             raise WorkspaceError(
                 ARTIFACT_INVALID,
@@ -311,7 +366,9 @@ class HandoffService:
                 f"but workspace head is {current}",
             )
         if manifest.kind == ARTIFACT_KIND_BUNDLE:
-            actual = self._fetch_bundle(handle, record.workdir, manifest, payload)
+            actual = self._fetch_bundle(
+                handle, record.workdir, manifest, payload, branch=record.branch
+            )
         else:
             actual = self._apply_patch(handle, record.workdir, manifest, payload)
         self._verify_files(handle, record.workdir, manifest.files)
@@ -336,6 +393,7 @@ class HandoffService:
         agent_id: str,
         spec: WorkspaceSpec | None,
         workdir: str,
+        git: dict[str, Any] | None = None,
     ) -> WorkspaceRecord:
         """The workspace the handoff applies onto: existing prepared record,
         or a fresh ``prepare`` from the supplied spec."""
@@ -346,7 +404,7 @@ class HandoffService:
                     WORKSPACE_INVALID,
                     f"agent {agent_id} has no workspace; pass a WorkspaceSpec to declare one",
                 )
-            return self._workspaces.prepare(handle, agent_id, spec, workdir=workdir)
+            return self._workspaces.prepare(handle, agent_id, spec, workdir=workdir, git=git)
         if spec is not None and spec != record.spec:
             raise WorkspaceError(
                 WORKSPACE_INVALID,
@@ -435,6 +493,8 @@ class HandoffService:
         workdir: str,
         manifest: ArtifactManifest,
         payload: bytes,
+        *,
+        branch: str | None = None,
     ) -> str:
         """Fetch a git bundle and check out ``manifest.head_sha`` exactly."""
         backend = self._workspaces.backend
@@ -465,7 +525,7 @@ class HandoffService:
                 f"bundle fetch failed for artifact {manifest.artifact_id} "
                 "(prerequisite commits missing?)",
             )
-        git_checkout(backend, handle, workdir, manifest.head_sha)
+        git_checkout(backend, handle, workdir, manifest.head_sha, branch=branch)
         actual = git_head(backend, handle, workdir)
         if actual != manifest.head_sha:
             raise WorkspaceError(

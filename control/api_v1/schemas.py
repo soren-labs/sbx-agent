@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 ProviderId = Literal["codex", "antigravity", "grok", "opencode", "devin"]
 VALID_SCOPES = ("agents", "admin")
@@ -39,17 +39,57 @@ class WorkspaceDecl(BaseModel):
     base_sha: str = Field(pattern=_COMMIT_SHA)
 
 
+class GitPolicy(BaseModel):
+    """SOR-128 git collaboration policy on agent create (``api-v1.yaml``).
+
+    Optional — requires a ``workspace`` declaration. ``branch`` is the work
+    branch the workspace materializes and publishes under (default
+    ``sbx/<agent_id>``); ``push`` allows the publish endpoint to push it to
+    the repo's remote; ``auto_create_pr`` (requires ``push``) opens a pull
+    request to ``target`` (default ``workspace.base_ref``) on publish.
+    Ref-name safety and the push/PR dependency are enforced in the domain
+    layer so violations surface as ``workspace_invalid``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    branch: str | None = None
+    push: bool = False
+    auto_create_pr: bool = False
+    target: str | None = None
+    draft: bool = False
+    title: str | None = None
+    body: str | None = None
+
+
+class PullRequestRef(BaseModel):
+    """SOR-128 reviewer handoff reference: a remote ref + pinned head.
+
+    ``ref`` is fetched from the workspace repo's origin (``refs/pull/<n>/head``,
+    ``pull/<n>/head``, or a branch name); ``head_sha`` pins the exact commit
+    it must resolve to — drift fails closed as ``head_sha_mismatch``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(min_length=1)
+    head_sha: str = Field(pattern=_COMMIT_SHA)
+
+
 class HandoffRef(BaseModel):
-    """SOR-83 cross-agent handoff reference: exactly one of the fields.
+    """SOR-83/SOR-128 cross-agent handoff reference: exactly one of the
+    ref fields.
 
     ``artifact_id`` consumes a durable artifact package; ``head_sha`` checks
-    out an exact commit in the declared repo. ``workspace`` is only used by
-    ``POST /v1/agents/{id}/handoff`` when the agent has no recorded
-    workspace yet.
+    out an exact commit in the declared repo; ``pull_request`` fetches a
+    remote ref pinned to an exact head (SOR-128 reviewer start).
+    ``workspace`` is only used by ``POST /v1/agents/{id}/handoff`` when the
+    agent has no recorded workspace yet.
     """
 
     artifact_id: str | None = None
     head_sha: str | None = Field(default=None, pattern=_COMMIT_SHA)
+    pull_request: PullRequestRef | None = None
     workspace: WorkspaceDecl | None = None
 
 
@@ -74,6 +114,7 @@ class CreateAgentRequest(BaseModel):
     idle_timeout_s: int | None = Field(default=None, ge=1)
     workspace: WorkspaceDecl | None = None
     handoff: HandoffRef | None = None
+    git: GitPolicy | None = None
     metadata: WorkflowMetadata | None = None
 
 
@@ -96,9 +137,16 @@ class ReviewWorkspaceRequest(BaseModel):
 
     ``head_sha`` pins the exact commit reviewed; omitted means "the recorded
     head". A mismatch with the recorded head is ``head_sha_mismatch``.
+
+    ``comment`` (SOR-128) additionally posts a machine-readable *comment*
+    on the workspace's recorded pull request — deliberately never a formal
+    GitHub review approval (all sandboxes share one GitHub identity, so an
+    approval would read as the author approving their own work). Commenting
+    needs the agent's live sandbox and the opt-in GitHub bridge.
     """
 
     head_sha: str | None = Field(default=None, pattern=_COMMIT_SHA)
+    comment: str | None = Field(default=None, min_length=1)
 
 
 class CreateAccountRequest(BaseModel):

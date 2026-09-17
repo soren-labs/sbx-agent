@@ -129,6 +129,7 @@ x-canonical:
     - GET /v1/agents/{id}/workspace
     - POST /v1/agents/{id}/workspace/review
     - POST /v1/agents/{id}/handoff
+    - POST /v1/agents/{id}/git/publish
     - POST /v1/agents/{id}/artifacts
     - GET /v1/artifacts
     - GET /v1/artifacts/{artifactId}
@@ -281,7 +282,12 @@ paths:
         Records `reviewed_head_sha` — the exact commit a reviewer signed
         off. `head_sha` omitted means "the recorded head"; an explicit value
         that disagrees with it is an explicit 409 `head_sha_mismatch`,
-        never a silent mislabel.
+        never a silent mislabel. `comment` (SOR-128) additionally posts a
+        machine-readable comment on the workspace's recorded pull request —
+        never a formal GitHub review approval: every sandbox shares one
+        GitHub identity, so an approval would read as the PR author
+        approving their own work. Commenting requires the agent's live
+        sandbox and the opt-in GitHub bridge.
       operationId: reviewWorkspace
       parameters:
         - $ref: "#/components/parameters/AgentId"
@@ -307,16 +313,19 @@ paths:
   /v1/agents/{id}/handoff:
     post:
       tags: [workspaces]
-      summary: Apply a cross-agent handoff into a live workspace (SOR-83)
+      summary: Apply a cross-agent handoff into a live workspace (SOR-83/SOR-128)
       description: |
-        Exactly one of `artifact_id` / `head_sha`. `artifact_id` applies a
-        durable artifact package after validating repo identity, payload
-        checksum and that the workspace stands exactly on the artifact's
-        declared `base_sha`; `head_sha` checks out an exact commit that
-        must descend from the declared base. `workspace` supplies a
-        WorkspaceDecl only when the agent has no recorded workspace yet.
-        The agent must be `idle` with a live sandbox — a running turn is
-        409 `turn_in_progress`; a base gap is 409 `base_sha_mismatch`.
+        Exactly one of `artifact_id` / `head_sha` / `pull_request`.
+        `artifact_id` applies a durable artifact package after validating
+        repo identity, payload checksum and that the workspace stands
+        exactly on the artifact's declared `base_sha`; `head_sha` checks
+        out an exact commit that must descend from the declared base;
+        `pull_request` fetches a remote ref pinned to an exact head — a ref
+        that drifted since the pin fails closed as 409 `head_sha_mismatch`
+        (SOR-128 reviewer start). `workspace` supplies a WorkspaceDecl only
+        when the agent has no recorded workspace yet. The agent must be
+        `idle` with a live sandbox — a running turn is 409
+        `turn_in_progress`; a base gap is 409 `base_sha_mismatch`.
       operationId: applyHandoff
       parameters:
         - $ref: "#/components/parameters/AgentId"
@@ -329,6 +338,39 @@ paths:
       responses:
         "200":
           description: Workspace record after the handoff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
+  /v1/agents/{id}/git/publish:
+    post:
+      tags: [workspaces]
+      summary: Publish the work branch per the declared git policy (SOR-128)
+      description: |
+        Executes the `git` policy declared at agent create: refreshes the
+        recorded head, pushes the work branch to the workspace repo's
+        remote and verifies the remote resolved to exactly the pushed head
+        — drift fails closed as 409 `repo_unavailable`. When the policy's
+        `auto_create_pr` is set, opens the pull request to `target` via the
+        opt-in GitHub bridge and records structured `pull_request`
+        metadata. `pushed_head_sha`/`pull_request` persist on the durable
+        workspace record so a reviewer can pin the exact published head.
+        The agent must be `idle` with a live sandbox; an agent without a
+        push-enabled `git` policy is 400 `workspace_invalid`.
+      operationId: publishGit
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Workspace record after publish
           content:
             application/json:
               schema:
@@ -956,8 +998,43 @@ components:
           $ref: "#/components/schemas/WorkspaceDecl"
         handoff:
           $ref: "#/components/schemas/HandoffRef"
+        git:
+          $ref: "#/components/schemas/GitPolicy"
         metadata:
           $ref: "#/components/schemas/WorkflowMetadata"
+    GitPolicy:
+      type: object
+      description: |
+        SOR-128 git collaboration policy. Declares the work branch and how
+        the head is published; requires a `workspace` declaration. `branch`
+        materializes at prepare via `checkout -B` on the declared base.
+        `push` publishes `HEAD` to `refs/heads/<branch>` on the workspace
+        repo's remote via `POST /v1/agents/{id}/git/publish`; remote drift
+        fails closed. `auto_create_pr` opens a PR to `target` through the
+        opt-in GitHub bridge and requires `push`. GitHub-backed operations
+        need the shared GitHub identity env (opt-in).
+      properties:
+        branch:
+          type: string
+          description: Work branch ref name; safe git ref chars only.
+        push:
+          type: boolean
+          description: Publish the head to the remote work branch.
+        auto_create_pr:
+          type: boolean
+          description: Open a pull request after push; requires `push`.
+        target:
+          type: string
+          description: PR base branch; default the workspace `base_ref`.
+        draft:
+          type: boolean
+          description: Open the pull request as a draft.
+        title:
+          type: string
+          description: PR title; default "sbx/<agent_id>".
+        body:
+          type: string
+          description: PR body text.
     WorkspaceDecl:
       type: object
       required: [repo, base_ref, base_sha]
@@ -976,14 +1053,31 @@ components:
         base_sha:
           type: string
           pattern: "^[0-9a-f]{40}$"
+    PullRequestRef:
+      type: object
+      required: [ref, head_sha]
+      description: |
+        SOR-128 remote ref pinned to an exact head — the reviewer-start
+        handoff. `ref` is fetched from the workspace repo's remote
+        (`refs/pull/<n>/head`, `pull/<n>/head`, or a branch name); the
+        resolved sha must equal `head_sha` exactly — drift fails closed as
+        `head_sha_mismatch`.
+      properties:
+        ref:
+          type: string
+          description: Remote ref to fetch; safe git ref chars only.
+        head_sha:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: Exact commit the ref must resolve to.
     HandoffRef:
       type: object
       description: |
-        SOR-83 cross-agent handoff reference — exactly one of
-        `artifact_id` / `head_sha` required. On `POST /v1/agents` a
-        `workspace` declaration must accompany the handoff; on
-        `POST /v1/agents/{id}/handoff` `workspace` is only used when the
-        agent has no recorded workspace yet.
+        SOR-83/SOR-128 cross-agent handoff reference — exactly one of
+        `artifact_id` / `head_sha` / `pull_request` required. On
+        `POST /v1/agents` a `workspace` declaration must accompany the
+        handoff; on `POST /v1/agents/{id}/handoff` `workspace` is only used
+        when the agent has no recorded workspace yet.
       properties:
         artifact_id:
           type: string
@@ -992,6 +1086,8 @@ components:
           type: string
           pattern: "^[0-9a-f]{40}$"
           description: Exact commit to check out; must descend from base.
+        pull_request:
+          $ref: "#/components/schemas/PullRequestRef"
         workspace:
           $ref: "#/components/schemas/WorkspaceDecl"
     CreateArtifactRequest:
@@ -1013,6 +1109,15 @@ components:
             Exact commit the reviewer signed off; omitted pins the recorded
             head. A value that disagrees with the recorded head is an
             explicit `head_sha_mismatch`.
+        comment:
+          type: string
+          minLength: 1
+          description: |
+            SOR-128 machine-readable review comment posted on the
+            workspace's recorded pull request. Never a formal GitHub review
+            approval — every sandbox shares one GitHub identity, so an
+            approval would read as the PR author approving their own work.
+            Requires a live sandbox and the opt-in GitHub bridge.
     WorkspaceRecord:
       type: object
       required: [agent_id, repo, base_ref, base_sha]
@@ -1040,6 +1145,26 @@ components:
           type: string
           nullable: true
           description: Commit an independent reviewer pinned via `/workspace/review`.
+        git:
+          type: object
+          nullable: true
+          description: Resolved SOR-128 GitPolicy declared at create.
+        branch:
+          type: string
+          nullable: true
+          description: Work branch materialized from the git policy.
+        pushed_head_sha:
+          type: string
+          nullable: true
+          description: Exact head last pushed per the git policy.
+        pull_request:
+          type: object
+          nullable: true
+          description: |
+            SOR-128 PR metadata recorded by publish: `number`, `url`,
+            `state`, `ref` (`refs/pull/<n>/head` — the reviewer-start
+            handoff ref), `head_sha` (the pinned published head), `base`
+            (PR target), `draft`, `review_comment_url`.
         created_at:
           type: string
           format: date-time
