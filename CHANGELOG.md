@@ -4,11 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this file is the
 source for release notes.
 
-## [0.1.0-alpha] - Unreleased
+## [0.1.0-alpha] - 2026-09-17
 
-First public alpha. Self-hosted orchestration for cloud coding agents:
-BYO Modal workspace + BYO official provider subscriptions behind one
-`/v1` REST API.
+First public alpha (release candidate for the `v0.1.0-alpha` tag, pending
+Owner final acceptance). Self-hosted orchestration for cloud coding
+agents: BYO Modal workspace + BYO official provider subscriptions behind
+one `/v1` REST API.
 
 ### Added
 
@@ -99,12 +100,22 @@ BYO Modal workspace + BYO official provider subscriptions behind one
 
 ### Known limitations
 
-- Alpha: `/v1` may change before 1.0. No hosted SaaS, no browser/noVNC
-  layer, no real billing (cost is a Modal list-price estimate).
-- Codex's Release 0.1 RC gate lane is **CREDENTIAL_DEFERRED** — the
-  workspace ChatGPT token is stale and noninteractive refresh fails;
-  restoring the lane needs an interactive `codex login` (external, not a
-  product defect; the earlier real-Modal suite evidence stands). Claude
-  Code is not supported (experimental adapter seam merged but
-  unregistered) — see `docs/providers.md` for the honest per-provider
-  status.
+- Alpha: `/v1` may change before 1.0. No hosted SaaS, no multi-tenant
+  control plane, no browser/noVNC layer, no real billing
+  (`cost_estimate_usd` is a Modal list-price estimate).
+- Single workspace: one deployment = one Modal workspace; API keys are
+  deployment-scoped (`sbx_<key>`, stored as `sha256` only).
+- Lifecycle caps: 30 min idle reclaim (configurable), 4 h hard sandbox
+  cap, 15 min per-turn soft cap.
+- Sandbox-local files (`events.jsonl`, `inbox/`, `turns/`) are ephemeral;
+  durable outcomes are the run ledger and artifacts — export artifacts
+  before closing an agent.
+- Provider coverage: only codex is Stable in this tag; devin /
+  antigravity / grok / opencode are Experimental — all four passed
+  real-account Modal gates on the RC plane — while codex's own RC gate
+  lane is **CREDENTIAL_DEFERRED** (the workspace ChatGPT token is stale
+  and noninteractive refresh fails; restoring the lane needs an
+  interactive `codex login` — external, not a product defect; the earlier
+  real-Modal suite evidence stands). Claude Code is not supported
+  (experimental adapter seam merged but unregistered) — see
+  `docs/providers.md` for the honest per-provider status.
