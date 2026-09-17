@@ -34,6 +34,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from control.backend import Process, SandboxBackend, SandboxHandle
 from control.config import WORKSPACES_DICT_NAME
+from control.latency import observe
 from control.sandbox_io import drain, is_local_root, sandbox_env
 
 # Machine-readable failure codes. ``base_sha_mismatch`` is the contract's
@@ -290,7 +291,8 @@ class ModalDictWorkspaceStore:
         return self._dict
 
     def get(self, agent_id: str) -> WorkspaceRecord | None:
-        raw = self._d().get(agent_id)
+        with observe("modal_dict.get", store=self._name, key=agent_id):
+            raw = self._d().get(agent_id)
         if raw is None:
             return None
         try:
@@ -301,11 +303,13 @@ class ModalDictWorkspaceStore:
             ) from exc
 
     def put(self, record: WorkspaceRecord) -> None:
-        self._d().put(record.agent_id, record_to_dict(record))
+        with observe("modal_dict.put", store=self._name, key=record.agent_id):
+            self._d().put(record.agent_id, record_to_dict(record))
 
     def delete(self, agent_id: str) -> None:
         try:
-            self._d().pop(agent_id)
+            with observe("modal_dict.pop", store=self._name, key=agent_id):
+                self._d().pop(agent_id)
         except KeyError:
             return
 

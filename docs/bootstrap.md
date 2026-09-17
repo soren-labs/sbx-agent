@@ -11,8 +11,9 @@ own Modal workspace. Run it as `uv run sbx …`, `python -m sbx …`, or the
 
 ```bash
 uv run sbx init --profile <modal-profile>      # checks toolchain, writes config
+uv run sbx credentials --verify                # discover local logins, verify via provider CLIs
 modal secret create sbx-codex-auth \
-  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"  # your provider credential
+  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"  # only when codex is enabled
 uv run sbx deploy                              # idempotent: secrets/dicts/image/app
 uv run sbx doctor                              # end-to-end verification
 uv run sbx smoke                               # minimal agent → terminal → cleanup
@@ -40,11 +41,12 @@ plaintext exists only locally.
 
 | Command | Behavior |
 | --- | --- |
-| `init` | Check Python/uv/git/Modal CLI; write config (idempotent; flags override file values). |
+| `init` | Check Python/uv/git/Modal CLI; scan selected providers' local credentials (advisory); write config (idempotent; flags override file values). |
+| `credentials` | Scan the selected providers' declared credential files under `$HOME` and report presence/permissions/schema/status — never contents. `--verify` runs each provider CLI's own auth check (`codex login status`, `devin auth status`, `agy models`, `grok models`, `opencode auth list`); `--providers a,b` overrides the selection; `--allow-open-permissions` accepts files readable by group/other (default requires `0600`, with `chmod 600` remediation in the hint). |
 | `config` | Print resolved non-sensitive config with per-value source (file/env/default). |
 | `status` | Print deploy record, base URL, key fingerprint (`sha256:` prefix), provider view aggregated per provider (`devin: 1 account, 2 models`), live agents vs `SBX_MAX_CONCURRENT` when configured. |
-| `deploy` | Preflight (Modal auth + `sbx-codex-auth` Secret) → bootstrap/basic Secrets → durable Dicts → runtime image(s) → `modal deploy` → `/v1/me` probe. Every step is check-then-act; reruns converge. |
-| `doctor` | Modal auth, required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability aggregated per provider/account, live agents vs the `SBX_MAX_CONCURRENT` cap (idle agents hold slots until closed), sandbox-list capability. Never prints secret values. |
+| `deploy` | Preflight (provider config, Modal auth, provider-aware Secrets: `sbx-codex-auth` only when `codex` is in `deploy.providers`, plus enabled providers' referenced account Secrets) → bootstrap/basic Secrets → durable Dicts → runtime image(s) → `modal deploy` → `/v1/me` probe. Every step is check-then-act; reruns converge. |
+| `doctor` | Modal auth, provider config + provider-required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability aggregated per provider/account, live agents vs the `SBX_MAX_CONCURRENT` cap (idle agents hold slots until closed), sandbox-list capability, advisory local credential scan (`--verify` upgrades it to provider-CLI auth checks). Never prints secret values. |
 | `smoke` | `POST /v1/agents` with a trivial prompt → poll the run to a terminal status → `DELETE` the agent. A non-`FINISHED` terminal run surfaces the canonical `run.error` fields (`code`/`source`/`message`/`retryable`/`retry_after`) — e.g. `auth_invalid` — re-clipped before printing. |
 | `upgrade` | Snapshot all durable Dicts → redeploy → verify each is still readable with no lost keys. Aborts before touching anything when a store is unreadable. |
 | `uninstall` | Terminate all sandboxes owned by the app, re-list to prove zero leftovers, stop the app. `--purge-data` also deletes Dicts; `--purge-credentials` also deletes Secrets (incl. `sbx-acct-*`), the local credential files, and the deploy record. Defaults preserve both. |

@@ -129,6 +129,29 @@ def test_deploy_missing_codex_secret_is_actionable(tmp_path) -> None:
     assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
 
 
+def test_deploy_missing_codex_secret_guides_login_on_clean_home(tmp_path) -> None:
+    """When no local credential exists the remediation starts at the
+    official login, not a bare secret-create command (SOR-115)."""
+    plane = FakePlane()
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane)
+    assert "codex login" in (exc.value.hint or "")
+    assert "~/.codex/auth.json" in (exc.value.hint or "")
+    assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
+
+
+def test_deploy_non_codex_providers_skip_codex_secret(tmp_path) -> None:
+    """Only selected providers gate onboarding: a devin-only deploy must
+    not require ``sbx-codex-auth`` (SOR-115)."""
+    plane = FakePlane()  # no sbx-codex-auth — and none needed
+    config = BootstrapConfig(providers=("devin",))
+    report, _, _ = _deploy(tmp_path, plane, config=config)
+    assert plane.image_calls == ["devin"]
+    names = [s.name for s in report.steps]
+    assert "secret:codex" not in names
+    assert plane.deploy_env["SBX_PROVIDERS"] == "devin"
+
+
 def test_deploy_missing_modal_auth_is_actionable(tmp_path) -> None:
     plane = FakePlane(workspace=None)
     with pytest.raises(BootstrapError) as exc:
@@ -184,7 +207,7 @@ def test_deploy_materializes_imported_account_secret(tmp_path) -> None:
             "files": {".local/share/devin/credentials.toml": "credential-v1"},
         },
     }
-    _deploy(tmp_path, plane)
+    _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "devin")))
     raw = plane.secrets["sbx-acct-devin-1"]["SBX_ACCOUNT_CREDENTIAL"]
     assert json.loads(raw)["provider"] == "devin"
     assert "credential-v1" in raw
@@ -193,9 +216,87 @@ def test_deploy_materializes_imported_account_secret(tmp_path) -> None:
         "provider": "devin",
         "files": {".local/share/devin/credentials.toml": "credential-v2"},
     }
-    _deploy(tmp_path, plane)
+    _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "devin")))
     raw2 = plane.secrets["sbx-acct-devin-1"]["SBX_ACCOUNT_CREDENTIAL"]
     assert "credential-v2" in raw2 and "credential-v1" not in raw2
+
+
+def test_deploy_devin_only_does_not_require_codex_secret(tmp_path) -> None:
+    """SOR-116 gate: providers=[devin] fresh deploy needs no sbx-codex-auth."""
+    plane = FakePlane()  # no secrets at all
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("devin",)))
+    assert "sbx-codex-auth" not in plane.secrets
+    assert plane.image_calls == ["devin"]
+    # the Codex preflight never runs — no step, no Secret lookup
+    assert all(s.name != "secret:codex" for s in report.steps)
+    assert plane.deploy_env["SBX_PROVIDERS"] == "devin"
+
+
+def test_deploy_mixed_providers_still_require_codex_secret(tmp_path) -> None:
+    plane = FakePlane()
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "devin")))
+    assert exc.value.code == "secret_missing"
+    assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
+    assert plane.secret_create_calls == 0  # fail-before-write
+
+
+def test_deploy_empty_providers_fails_before_any_write(tmp_path) -> None:
+    plane = FakePlane()
+    env = make_env(tmp_path)
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=()))
+    assert exc.value.code == "invalid_providers"
+    assert "deploy.providers" in exc.value.message
+    assert plane.secret_create_calls == 0
+    assert plane.dict_create_calls == 0
+    assert plane.deploy_calls == 0
+    assert not key_path(env).exists()  # not even the local key was minted
+
+
+def test_deploy_unknown_provider_fails_before_any_write(tmp_path) -> None:
+    plane = FakePlane()
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "bogus")))
+    assert exc.value.code == "invalid_providers"
+    assert "bogus" in exc.value.message
+    assert plane.secret_create_calls == 0
+    assert plane.deploy_calls == 0
+
+
+def test_deploy_missing_enabled_account_secret_fails_before_write(tmp_path) -> None:
+    """An enabled provider's referenced-but-absent Secret is a real missing
+    prerequisite — it must abort before any resource is written."""
+    plane = FakePlane()
+    plane.dicts["sbx-accounts"] = {
+        "account/devin-1": {
+            "id": "devin-1",
+            "provider": "devin",
+            "secret_name": "sbx-acct-devin-1",
+        },
+        # no credential blob → the materialize step cannot satisfy it
+    }
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("devin",)))
+    assert exc.value.code == "account_secret_missing"
+    assert "sbx-acct-devin-1" in exc.value.message
+    assert plane.secret_create_calls == 0
+
+
+def test_deploy_ignores_disabled_provider_account_secret(tmp_path) -> None:
+    """A devin account's missing Secret is no codex-only prerequisite."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    plane.dicts["sbx-accounts"] = {
+        "account/devin-1": {
+            "id": "devin-1",
+            "provider": "devin",
+            "secret_name": "sbx-acct-devin-1",
+        },
+    }
+    report, _, _ = _deploy(tmp_path, plane)  # providers=("codex",)
+    assert report.base_url
+    assert "sbx-acct-devin-1" not in plane.secrets  # not materialized either
 
 
 def test_deploy_does_not_overwrite_custom_account_secret(tmp_path) -> None:
@@ -213,5 +314,5 @@ def test_deploy_does_not_overwrite_custom_account_secret(tmp_path) -> None:
             "files": {".grok/auth.json": "stored"},
         },
     }
-    _deploy(tmp_path, plane)
+    _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "grok")))
     assert plane.secrets["customer-managed"] == {"SBX_ACCOUNT_CREDENTIAL": "external"}

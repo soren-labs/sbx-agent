@@ -9,10 +9,12 @@ overrides the emitted ``sessionID``.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from _fake_native import (
+    auth_check,
     install_term_handler,
     rewrite_json,
     run_scenario,
@@ -39,6 +41,12 @@ def _rewrite_session(line: str, session_id: str) -> str:
 
 def main() -> None:
     install_term_handler()
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    auth_check(
+        sys.argv[1:],
+        ("auth", "list"),
+        data_home / "opencode" / "auth.json",
+    )
     positionals, values, seen = scan_argv(
         sys.argv[1:],
         bool_flags=_BOOL_FLAGS,

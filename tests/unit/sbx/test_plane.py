@@ -6,11 +6,41 @@ The Modal SDK is stubbed out — these tests pin the check-then-act and
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 from sbx.errors import BootstrapError
 from sbx.plane import ModalPlane
+
+
+def _stub_modal_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    profile_rc: int = 0,
+    profile_name: str = "ws-test",
+    app_list_rc: int = 0,
+    profile_list_out: str = "",
+) -> list[list[str]]:
+    """Replace ``subprocess.run`` for ``python -m modal`` calls in workspace().
+
+    Returns the recorded argv list. ``profile list`` output emulates Modal's
+    env-token line (``Using <ws> workspace based on environment variables``).
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        if argv[-2:] == ["profile", "current"]:
+            return subprocess.CompletedProcess(argv, profile_rc, f"{profile_name}\n", "")
+        if argv[-3:] == ["app", "list", "--json"]:
+            return subprocess.CompletedProcess(argv, app_list_rc, "[]", "")
+        if argv[-2:] == ["profile", "list"]:
+            return subprocess.CompletedProcess(argv, 0, profile_list_out, "")
+        return subprocess.CompletedProcess(argv, 2, "", "unexpected argv")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
 
 
 class _NotFound(Exception):
@@ -44,6 +74,49 @@ def _plane(apps: list[dict], workspace: str = "ws-test") -> ModalPlane:
     return plane
 
 
+class TestWorkspace:
+    """``workspace()`` is the auth probe: a printed profile name is not proof
+    of authentication — only ``modal app list`` succeeding is."""
+
+    def test_profile_name_without_working_auth_is_not_authenticated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_modal_cli(monkeypatch, profile_name="default", app_list_rc=1)
+        assert ModalPlane(env={}).workspace() is None
+
+    def test_profile_auth_resolves_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_modal_cli(monkeypatch, profile_name="acme", app_list_rc=0)
+        assert ModalPlane(env={}).workspace() == "acme"
+
+    def test_env_tokens_without_profile_still_authenticate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_modal_cli(
+            monkeypatch,
+            profile_rc=1,
+            app_list_rc=0,
+            profile_list_out="Using env-ws workspace based on environment variables\n",
+        )
+        env = {"MODAL_TOKEN_ID": "ak-x", "MODAL_TOKEN_SECRET": "as-x"}
+        assert ModalPlane(env=env).workspace() == "env-ws"
+
+    def test_env_tokens_unparseable_workspace_uses_auth_only_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Auth proved by ``app list``; the profile name is unrelated to the
+        # env tokens, so an honest placeholder beats a wrong workspace.
+        _stub_modal_cli(monkeypatch, profile_name="default", app_list_rc=0)
+        env = {"MODAL_TOKEN_ID": "ak-x", "MODAL_TOKEN_SECRET": "as-x"}
+        assert ModalPlane(env=env).workspace() == "env-tokens"
+
+    def test_env_tokens_with_failed_probe_are_not_authenticated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_modal_cli(monkeypatch, app_list_rc=1)
+        env = {"MODAL_TOKEN_ID": "ak-x", "MODAL_TOKEN_SECRET": "as-x"}
+        assert ModalPlane(env=env).workspace() is None
+
+
 def test_app_url_ignores_stopped_app() -> None:
     plane = _plane([{"description": "sbx-control", "state": "stopped"}])
     assert plane.app_url("sbx-control") is None
@@ -52,6 +125,14 @@ def test_app_url_ignores_stopped_app() -> None:
 def test_app_url_for_deployed_app() -> None:
     plane = _plane([{"description": "sbx-control", "state": "deployed"}])
     assert plane.app_url("sbx-control") == ("https://ws-test--sbx-control-fastapi-app.modal.run")
+
+
+def test_app_url_rejects_env_token_auth_only_marker() -> None:
+    plane = _plane(
+        [{"description": "sbx-control", "state": "deployed"}],
+        workspace="env-tokens",
+    )
+    assert plane.app_url("sbx-control") is None
 
 
 def test_app_url_missing_state_field_treated_as_deployed() -> None:

@@ -8,11 +8,13 @@ message instead of a bare failure.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from sbx.config import KNOWN_PROVIDERS
 from sbx.errors import BootstrapError
 
 MIN_PYTHON = (3, 12)
@@ -69,16 +71,75 @@ def check_tool(name: str, install_hint: str, *, required: bool = False) -> Check
     )
 
 
-def check_modal_auth(workspace: str | None) -> Check:
-    ok = workspace is not None
+def check_modal_auth(workspace: str | None, env: Mapping[str, str] | None = None) -> Check:
+    """Modal auth check: CLI profile login OR user-owned env tokens.
+
+    ``MODAL_TOKEN_ID``/``MODAL_TOKEN_SECRET`` are a supported auth source —
+    when both are set but the workspace probe still failed, the tokens
+    themselves are the suspect, not a missing login.
+    """
+    env = os.environ if env is None else env
+    env_id = bool((env.get("MODAL_TOKEN_ID") or "").strip())
+    env_secret = bool((env.get("MODAL_TOKEN_SECRET") or "").strip())
+    if workspace is not None:
+        source = "env MODAL_TOKEN_ID/MODAL_TOKEN_SECRET" if env_id and env_secret else "profile"
+        return Check(
+            name="modal-auth",
+            ok=True,
+            detail=f"authenticated (workspace {workspace}, via {source})",
+        )
+    if env_id and env_secret:
+        return Check(
+            name="modal-auth",
+            ok=False,
+            detail="MODAL_TOKEN_ID/MODAL_TOKEN_SECRET are set but the workspace probe failed",
+            hint="check the tokens are valid and belong to the intended workspace "
+            "(`modal app list` should succeed), or unset them and run `modal token new`",
+        )
+    if env_id != env_secret:
+        missing = "MODAL_TOKEN_SECRET" if env_id else "MODAL_TOKEN_ID"
+        return Check(
+            name="modal-auth",
+            ok=False,
+            detail=f"partial env credentials: {missing} is missing",
+            hint="export both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET, or run `modal token new`",
+        )
     return Check(
         name="modal-auth",
-        ok=ok,
-        detail=f"authenticated (workspace {workspace})" if ok else "not authenticated",
-        hint=None
-        if ok
-        else "run `modal token new` (or `modal setup`), or export "
+        ok=False,
+        detail="not authenticated",
+        hint="run `modal token new` (or `modal setup`), or export "
         "MODAL_TOKEN_ID/MODAL_TOKEN_SECRET",
+    )
+
+
+def check_provider_config(providers: Sequence[str]) -> Check:
+    """``deploy.providers`` must name at least one contract provider.
+
+    Deploy preconditions derive from this list — an empty or unknown entry
+    means the deployment cannot serve any provider.
+    """
+    enabled = [str(p) for p in providers]
+    if not enabled:
+        return Check(
+            name="provider-config",
+            ok=False,
+            detail="no providers configured",
+            hint="set deploy.providers in the config or SBX_PROVIDERS, "
+            f'e.g. "{",".join(KNOWN_PROVIDERS[:2])}"',
+        )
+    unknown = [p for p in enabled if p not in KNOWN_PROVIDERS]
+    if unknown:
+        return Check(
+            name="provider-config",
+            ok=False,
+            detail=f"unknown provider(s): {', '.join(unknown)}",
+            hint=f"valid providers: {', '.join(KNOWN_PROVIDERS)}",
+        )
+    return Check(
+        name="provider-config",
+        ok=True,
+        detail="enabled: " + ", ".join(enabled),
     )
 
 

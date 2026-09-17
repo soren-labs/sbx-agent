@@ -242,7 +242,10 @@ def make_cfg(
 
 
 def make_env(tmp_path: Path, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
     env = {
+        "HOME": str(home),
         "SBX_CONFIG": str(tmp_path / "config.toml"),
         "SBX_STATE_DIR": str(tmp_path / "state"),
     }

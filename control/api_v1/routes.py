@@ -74,8 +74,9 @@ from control.artifacts import (
     ArtifactSecretError,
     manifest_to_dict,
 )
-from control.config import TERMINAL_STATUSES
+from control.config import TERMINAL_STATUSES, selected_providers
 from control.devin_pool import ScheduleRefused
+from control.latency import observe
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.run_errors import run_error_for_run
 from control.run_store import (
@@ -1094,7 +1095,8 @@ def get_workspace(
     the sha an independent reviewer pinned (``reviewed_head_sha``)."""
     _require_agent(plane, agent_id)
     try:
-        record = workspaces.get(agent_id)
+        with observe("v1.workspace.get", agent_id=agent_id):
+            record = workspaces.get(agent_id)
     except WorkspaceError as exc:
         raise _workspace_error(exc) from exc
     if record is None:
@@ -1118,7 +1120,8 @@ def review_workspace(
     """
     _require_agent(plane, agent_id)
     try:
-        record = workspaces.mark_reviewed(agent_id, body.head_sha if body else None)
+        with observe("v1.workspace.review", agent_id=agent_id):
+            record = workspaces.mark_reviewed(agent_id, body.head_sha if body else None)
     except WorkspaceError as exc:
         raise _workspace_error(exc) from exc
     return {"workspace": workspace_record_to_dict(record)}
@@ -1159,10 +1162,13 @@ def apply_handoff(
         except WorkspaceError as exc:
             raise _workspace_error(exc) from exc
     try:
-        if has_artifact:
-            record = handoffs.prepare_from_artifact(handle, agent_id, body.artifact_id, spec=spec)
-        else:
-            record = handoffs.prepare_from_head(handle, agent_id, body.head_sha, spec=spec)
+        with observe("v1.workspace.handoff", agent_id=agent_id):
+            if has_artifact:
+                record = handoffs.prepare_from_artifact(
+                    handle, agent_id, body.artifact_id, spec=spec
+                )
+            else:
+                record = handoffs.prepare_from_head(handle, agent_id, body.head_sha, spec=spec)
     except WorkspaceError as exc:
         raise _workspace_error(exc) from exc
     return {"workspace": workspace_record_to_dict(record)}
@@ -1219,18 +1225,19 @@ def create_artifact(
         run_n = int(rec.turns)
         run_id = f"run-{run_n}"
     try:
-        manifest = snapshot_workspace_artifact(
-            backend=plane.backend,
-            handle=rec.handle(),
-            workspaces=workspaces,
-            store=artifacts,
-            agent_id=agent_id,
-            run_id=run_id,
-            test_command=body.test_command if body is not None else None,
-            forbidden_values=_artifact_forbidden(plane, v1, registry, rec),
-            ledger=_ledger(plane),
-            run_n=run_n,
-        )
+        with observe("v1.artifact.create", agent_id=agent_id, run_id=run_id):
+            manifest = snapshot_workspace_artifact(
+                backend=plane.backend,
+                handle=rec.handle(),
+                workspaces=workspaces,
+                store=artifacts,
+                agent_id=agent_id,
+                run_id=run_id,
+                test_command=body.test_command if body is not None else None,
+                forbidden_values=_artifact_forbidden(plane, v1, registry, rec),
+                ledger=_ledger(plane),
+                run_n=run_n,
+            )
     except WorkspaceError as exc:
         raise _workspace_error(exc) from exc
     except ArtifactSecretError as exc:
@@ -1247,7 +1254,9 @@ def list_artifacts(
     artifacts: Any = Depends(get_artifact_store),
 ) -> dict[str, Any]:
     """Durable artifact manifests (``?agent_id=`` filters by producer)."""
-    return {"artifacts": [_artifact_public(m) for m in artifacts.list(agent_id=agent_id)]}
+    with observe("v1.artifact.list", agent_id=agent_id):
+        manifests = artifacts.list(agent_id=agent_id)
+    return {"artifacts": [_artifact_public(m) for m in manifests]}
 
 
 @router.get("/artifacts/{artifact_id}")
@@ -1258,7 +1267,8 @@ def get_artifact(
 ) -> dict[str, Any]:
     """Artifact manifest: file checksums, base/head shas, producer identity."""
     try:
-        manifest = artifacts.manifest(artifact_id)
+        with observe("v1.artifact.get", artifact_id=artifact_id):
+            manifest = artifacts.manifest(artifact_id)
     except ArtifactNotFoundError as exc:
         raise not_found("artifact not found") from exc
     except ArtifactCorruptError as exc:
@@ -1277,7 +1287,8 @@ def download_artifact(
     ``repo.bundle``, or ``files/<path>``). Checksum-verified on read; works
     after the producing sandbox is gone."""
     try:
-        data = artifacts.read(artifact_id, member)
+        with observe("v1.artifact.download", artifact_id=artifact_id, member=member):
+            data = artifacts.read(artifact_id, member)
     except ArtifactNotFoundError as exc:
         raise not_found("artifact or member not found") from exc
     except ArtifactCorruptError as exc:
@@ -1618,8 +1629,14 @@ def list_models(
 ) -> dict[str, Any]:
     """Advertised models come from account declarations; availability counts
     active accounts with a free slot that list the model."""
+    enabled = frozenset(selected_providers())
     counts: dict[tuple[str, str], int] = {}
     for account in registry.list():
+        # Durable registries can retain accounts from an earlier deployment
+        # with a wider provider set. Never advertise a provider whose image
+        # and credential mounts are intentionally absent from this deploy.
+        if account.provider not in enabled:
+            continue
         free = (
             account.status == "active"
             and _running_or_zero(registry, account.id) < account.max_concurrent

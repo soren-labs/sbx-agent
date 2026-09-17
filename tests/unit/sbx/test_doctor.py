@@ -2,22 +2,28 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from sbx.config import BootstrapConfig, key_path
+from sbx.deploy import deploy
 from sbx.doctor import failed, run_doctor
+from sbx.errors import BootstrapError
 from sbx.keys import generate_key, load_or_create_key
 from sbx.plane import SandboxInfo
 from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
 
 
-def _healthy(tmp_path, token=None):
+def _healthy(tmp_path, token=None, providers=("codex",)):
     env = make_env(tmp_path)
     token = token or generate_key()
     load_or_create_key(key_path(env))  # creates the state dir + file
     key_path(env).write_text(token + "\n")
     plane = FakePlane()
-    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     plane.secrets["sbx-basic-auth"] = {"SBX_BASIC_USER": "sbx", "SBX_BASIC_PASS": "x"}
     plane.secrets["sbx-v1-bootstrap"] = {"SBX_V1_BOOTSTRAP_KEY": token}
+    if "codex" in providers:
+        plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     for name in (
         "sbx-sessions",
         "sbx-runs",
@@ -28,7 +34,7 @@ def _healthy(tmp_path, token=None):
     ):
         plane.dicts[name] = {}
     plane.apps["sbx-control"] = "https://ws-test--sbx-control-fastapi-app.modal.run"
-    config = BootstrapConfig(api_base_url=plane.apps["sbx-control"])
+    config = BootstrapConfig(api_base_url=plane.apps["sbx-control"], providers=providers)
     cfg = make_cfg(tmp_path, env=env, config=config)
     return cfg, plane, env, token
 
@@ -216,7 +222,7 @@ def test_doctor_cleanup_capability_reported(tmp_path) -> None:
 
 
 def test_doctor_fails_when_account_secret_is_not_materialized(tmp_path) -> None:
-    cfg, plane, env, token = _healthy(tmp_path)
+    cfg, plane, env, token = _healthy(tmp_path, providers=("codex", "devin"))
     plane.dicts["sbx-accounts"]["account/devin-1"] = {
         "id": "devin-1",
         "provider": "devin",
@@ -235,7 +241,7 @@ def test_doctor_fails_when_account_secret_is_not_materialized(tmp_path) -> None:
 
 
 def test_doctor_reports_materialized_account_secrets(tmp_path) -> None:
-    cfg, plane, env, token = _healthy(tmp_path)
+    cfg, plane, env, token = _healthy(tmp_path, providers=("codex", "devin"))
     plane.dicts["sbx-accounts"]["account/devin-1"] = {
         "id": "devin-1",
         "provider": "devin",
@@ -246,3 +252,93 @@ def test_doctor_reports_materialized_account_secrets(tmp_path) -> None:
     checks = run_doctor(cfg, plane, env=env, transport=transport)
     account = next(c for c in checks if c.name == "account-secrets")
     assert account.ok and "1 referenced" in account.detail
+
+
+def test_doctor_codex_secret_not_required_for_non_codex_deploy(tmp_path) -> None:
+    """An unselected provider's credential must not block onboarding: a
+    devin-only deploy never requires ``sbx-codex-auth`` (SOR-115)."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    del plane.secrets["sbx-codex-auth"]
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(providers=("devin",), api_base_url=cfg.config.api_base_url),
+    )
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    names = [c.name for c in checks]
+    assert "secret:sbx-codex-auth" not in names
+    assert not failed(checks)
+
+
+def test_doctor_scans_local_credentials_advisory(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    cred = next(c for c in checks if c.name == "cred:codex")
+    assert not cred.ok and cred.warn  # clean HOME: guidance, not a failure
+    assert "codex login" in (cred.hint or "")
+    assert not failed(checks)
+
+
+def test_doctor_verify_runs_provider_auth_check(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    home = Path(env["HOME"])
+    auth = home / ".codex" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text("{}")
+    auth.chmod(0o600)
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport, auth_check=lambda p, h: "ok")
+    cred = next(c for c in checks if c.name == "cred:codex")
+    assert cred.ok and "auth check passed" in cred.detail
+
+
+def test_doctor_devin_only_never_requires_codex_secret(tmp_path) -> None:
+    """SOR-116 gate: providers=[devin] → no secret:sbx-codex-auth check."""
+    cfg, plane, env, token = _healthy(tmp_path, providers=("devin",))
+    assert "sbx-codex-auth" not in plane.secrets
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    assert not failed(checks)
+    assert all(c.name != "secret:sbx-codex-auth" for c in checks)
+    provider_check = next(c for c in checks if c.name == "provider-config")
+    assert provider_check.ok and "devin" in provider_check.detail
+
+
+def test_doctor_empty_providers_fail_provider_config(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path, providers=())
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    bad = failed(checks)
+    assert any(c.name == "provider-config" for c in bad)
+
+
+def test_doctor_ignores_disabled_provider_account_secret(tmp_path) -> None:
+    """A devin account's missing Secret is no codex-only doctor failure."""
+    cfg, plane, env, token = _healthy(tmp_path)  # providers=("codex",)
+    plane.dicts["sbx-accounts"]["account/devin-1"] = {
+        "id": "devin-1",
+        "provider": "devin",
+        "secret_name": "sbx-acct-devin-1",
+    }
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    assert not failed(checks)
+    account = next(c for c in checks if c.name == "account-secrets")
+    assert account.ok
+
+
+def test_doctor_and_deploy_agree_on_provider_prereqs(tmp_path) -> None:
+    """Same resolved config drives both commands: providers=[codex,devin]
+    with no sbx-codex-auth → doctor flags the Secret deploy fails on."""
+    cfg, plane, env, token = _healthy(tmp_path, providers=("codex", "devin"))
+    del plane.secrets["sbx-codex-auth"]
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    assert any(c.name == "secret:sbx-codex-auth" for c in failed(checks))
+
+    with pytest.raises(BootstrapError) as exc:
+        deploy(cfg, plane, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "secret_missing"
+    assert plane.secret_create_calls == 0  # fail-before-write preserved

@@ -38,6 +38,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
 from control.config import WORKFLOWS_DICT_NAME
+from control.latency import observe
 
 
 def _iso_now() -> str:
@@ -334,21 +335,30 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
         return self._dict
 
     def _get_agent_raw(self, agent_id: str) -> dict[str, Any] | None:
-        raw = self._d().get(f"{self._AGENT_PREFIX}{agent_id}")
+        key = f"{self._AGENT_PREFIX}{agent_id}"
+        with observe("modal_dict.get", store=self._name, key=key):
+            raw = self._d().get(key)
         return raw if isinstance(raw, dict) else None
 
     def _put_agent_raw(self, record: WorkflowTaskRecord) -> None:
-        self._d().put(f"{self._AGENT_PREFIX}{record.agent_id}", record_to_dict(record))
+        key = f"{self._AGENT_PREFIX}{record.agent_id}"
+        with observe("modal_dict.put", store=self._name, key=key):
+            self._d().put(key, record_to_dict(record))
 
     def _get_index_raw(self, owner: str, workflow_id: str) -> dict[str, Any] | None:
-        raw = self._d().get(f"{self._INDEX_PREFIX}{owner}/{workflow_id}")
+        key = f"{self._INDEX_PREFIX}{owner}/{workflow_id}"
+        with observe("modal_dict.get", store=self._name, key=key):
+            raw = self._d().get(key)
         return raw if isinstance(raw, dict) else None
 
     def _put_index_raw(self, owner: str, workflow_id: str, index: dict[str, Any]) -> None:
-        self._d().put(f"{self._INDEX_PREFIX}{owner}/{workflow_id}", index)
+        key = f"{self._INDEX_PREFIX}{owner}/{workflow_id}"
+        with observe("modal_dict.put", store=self._name, key=key):
+            self._d().put(key, index)
 
     def _iter_agent_raws(self) -> Iterator[dict[str, Any]]:
-        items: Iterator[tuple[Any, Any]] = self._d().items()
+        with observe("modal_dict.items", store=self._name):
+            items = list(self._d().items())
         return (
             raw
             for key, raw in items

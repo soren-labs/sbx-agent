@@ -1,8 +1,11 @@
 # Deployment guide
 
 Everything below deploys into **your own Modal workspace**. You need:
-Python ≥ 3.12, `uv`, the Modal CLI (`uv sync` provides it), and
-`modal token new` completed once.
+Python ≥ 3.12, `uv`, the Modal CLI (`uv sync` provides it), and Modal
+authentication — either an interactive login (`modal token new` once) or
+both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` exported in the environment.
+`sbx doctor` reports which source it found (never the values) and prints
+the remediation when neither is present.
 
 ## One-shot path (bootstrap CLI)
 
@@ -30,7 +33,14 @@ prints the two values clients need: `SBX_BASE_URL` and a `sbx_<key>` API key
 | Modal App (ASGI + reaper cron `*/5`) | `sbx-control` | `SBX_MODAL_APP_NAME` |
 | Runtime images | `sbx-runtime`, `sbx-runtime-devin`, `sbx-runtime-antigravity`, `sbx-runtime-grok`, `sbx-runtime-opencode` | built by `make image*` / `sbx deploy` |
 | Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows` | created on demand by stores |
-| Secrets | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<account_id>` | `modal secret create` |
+| Secrets | `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<account_id>`, plus `sbx-codex-auth` **only when `codex` is enabled** | `modal secret create` |
+
+Which providers a deployment serves is configured by `deploy.providers` in
+the config file (env override `SBX_PROVIDERS`, comma-separated; default
+`codex`). Deploy preconditions derive from that list: the shared Codex
+credential Secret is required iff `codex` is enabled, and only enabled
+providers' account Secrets are checked/materialized. An empty or unknown
+provider list fails `sbx deploy` before anything is written.
 
 Control-plane tunables (env on the Modal app): `SBX_MAX_CONCURRENT` caps
 *live* agents/sandboxes — per key (default 2) and globally in the scheduler
@@ -44,11 +54,15 @@ cleanup (`DELETE /v1/workflows/{id}`), or raising the cap and redeploying.
 `SBX_<PROVIDER>_SLOTS`, `SBX_<PROVIDER>_MODELS`, and multi-account fleets via
 `SBX_<PROVIDER>_ACCOUNTS` (JSON list of `{id, label?, secret_name?, slots?,
 models?}`). Devin's seeded account takes `SBX_DEVIN_BURST_SLOTS` (default 8).
+`SBX_PROVIDERS` (comma list, default `codex`) selects which providers the app
+serves — the shared `sbx-codex-auth` Secret is only required and mounted when
+`codex` is selected, so e.g. a devin-only deploy does not need it.
 
 ## Manual path (what `sbx deploy` wraps)
 
 ```bash
 # 1. Secrets — values never echoed, never committed
+#    (sbx-codex-auth only when codex is an enabled provider)
 modal secret create sbx-codex-auth CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
 modal secret create sbx-basic-auth \
   SBX_BASIC_USER='<user>' SBX_BASIC_PASS='<long-random>'
@@ -68,7 +82,8 @@ make deploy               # = python -m modal deploy -m control.modal_app
 ```
 
 `SBX_V1_BOOTSTRAP_KEY` seeds a hash-only admin API key plus the default
-accounts on first boot (`control/api_v1/bootstrap.py`). Codex keeps the
+accounts on first boot (`control/api_v1/bootstrap.py`) — one seeded account
+per **enabled** provider (`SBX_PROVIDERS`). Codex keeps the
 shared `sbx-codex-auth` path; other providers get a seeded account pointing
 at `sbx-acct-<id>` — create those Secrets with the credential blob, or import
 accounts through the API/CLI instead (see [providers.md](providers.md)).

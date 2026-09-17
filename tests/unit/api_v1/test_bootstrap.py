@@ -11,14 +11,22 @@ from pathlib import Path
 import pytest
 from control.accounts import PersistentAccountRegistry
 from control.api_v1.bootstrap import configure_v1_bootstrap
+from control.api_v1.routes import list_models
 from control.app import create_app
 from control.backend import LocalProcessBackend
+from control.ports import Account, ApiKey
 from control.scheduler import AccountScheduler, ScheduleRefused
 from control.store import InMemoryStore, SessionRecord, empty_usage
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 P2_CORE_PROVIDERS = ("codex", "devin", "antigravity", "grok", "opencode")
+
+
+@pytest.fixture(autouse=True)
+def _select_all_core_providers(monkeypatch) -> None:
+    """Legacy bootstrap coverage is explicit about its all-provider deploy."""
+    monkeypatch.setenv("SBX_PROVIDERS", ",".join(P2_CORE_PROVIDERS))
 
 
 def test_bootstrap_is_disabled_without_secret_env(monkeypatch) -> None:
@@ -88,6 +96,52 @@ def test_bootstrap_seeds_all_providers(monkeypatch) -> None:
     assert isinstance(scheduler, AccountScheduler)
     for provider in P2_CORE_PROVIDERS:
         assert scheduler.decide(provider=provider).account is not None
+
+
+def test_bootstrap_enforces_devin_only_deployment(monkeypatch) -> None:
+    """An unselected provider is neither advertised nor schedulable.
+
+    Include a stale Codex account to cover a durable registry left behind by
+    an earlier wider deployment.
+    """
+    token = "sbx_" + "9" * 40
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", token)
+    monkeypatch.setenv("SBX_PROVIDERS", "devin")
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+    registry = app.state.account_registry
+    assert {a.provider for a in registry.list()} == {"devin"}
+    registry.put(
+        Account(
+            id="codex-stale",
+            provider="codex",
+            label="stale",
+            status="active",
+            max_concurrent=1,
+            models=("gpt-5.6-luna",),
+            created_at=datetime.now(UTC).isoformat(),
+        )
+    )
+    payload = list_models(key=ApiKey(id="test", key_hash=""), registry=registry)
+    assert {item["provider"] for item in payload["models"]} == {"devin"}
+    assert app.state.scheduler.decide(provider="codex").error == "invalid_provider"
+
+
+def test_bootstrap_seeds_only_enabled_providers(monkeypatch) -> None:
+    """SOR-116: SBX_PROVIDERS scopes seeding — a devin-only deploy must not
+    gain accounts for providers whose credentials were never required."""
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "9" * 40)
+    monkeypatch.setenv("SBX_PROVIDERS", "devin")
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+
+    registry = app.state.account_registry
+    assert {a.provider for a in registry.list()} == {"devin"}
+    assert registry.get("devin-1") is not None
+    assert registry.get("codex-1") is None
+    # codex is unselected → the scheduler gate rejects it outright.
+    decision = app.state.scheduler.decide(provider="codex", account="auto")
+    assert decision.error == "invalid_provider"
 
 
 def test_scheduler_decides_each_provider(monkeypatch) -> None:

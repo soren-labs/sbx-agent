@@ -20,6 +20,7 @@ from typing import Any, Protocol
 from sbx.errors import BootstrapError
 
 _WEB_URL_RE = re.compile(r"https://[^\s'\"]+\.modal\.run")
+_ENV_TOKEN_WORKSPACE_UNKNOWN = "env-tokens"
 
 
 @dataclass(frozen=True)
@@ -149,29 +150,63 @@ class ModalPlane:
 
     # ------------------------------------------------------------ plane API
 
+    _ENV_WORKSPACE_RE = re.compile(r"Using\s+(\S+)\s+workspace based on environment", re.IGNORECASE)
+
+    def _env_workspace_name(self, env: Mapping[str, str]) -> str | None:
+        """Workspace a ``MODAL_TOKEN_ID``/``MODAL_TOKEN_SECRET`` pair owns.
+
+        ``modal profile list`` resolves the env tokens through
+        ``WorkspaceNameLookup`` and prints ``Using <ws> workspace based on
+        environment variables``.
+        """
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "modal", "profile", "list"],
+                capture_output=True,
+                text=True,
+                env=dict(env),
+            )
+        except OSError:
+            return None
+        if proc.returncode != 0:
+            return None
+        output = (proc.stdout or "") + (proc.stderr or "")
+        match = self._ENV_WORKSPACE_RE.search(output)
+        return match.group(1) if match else None
+
     def workspace(self) -> str | None:
         """Active workspace name — only when the token actually works.
 
         ``modal profile current`` prints a profile name even with no
-        credentials, so auth is proven with a real API call.
+        credentials, so auth is proven with a real API call. User-owned
+        ``MODAL_TOKEN_ID``/``MODAL_TOKEN_SECRET`` env credentials are an
+        equal auth source: they bypass profiles, so the workspace name is
+        resolved from ``modal profile list``'s env-workspace line instead
+        of the (unrelated) profile name.
         """
+        env = self._env()
+        env_creds = bool(env.get("MODAL_TOKEN_ID") and env.get("MODAL_TOKEN_SECRET"))
         proc = subprocess.run(
             [sys.executable, "-m", "modal", "profile", "current"],
             capture_output=True,
             text=True,
-            env=self._env(),
+            env=env,
         )
         name = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not name:
+        if (proc.returncode != 0 or not name) and not env_creds:
             return None
         probe = subprocess.run(
             [sys.executable, "-m", "modal", "app", "list", "--json"],
             capture_output=True,
             text=True,
-            env=self._env(),
+            env=env,
         )
         if probe.returncode != 0:
             return None
+        if env_creds:
+            # The profile name is unrelated to env-token auth — never report
+            # it as the token's workspace (it feeds app-URL construction).
+            return self._env_workspace_name(env) or _ENV_TOKEN_WORKSPACE_UNKNOWN
         return name
 
     def list_secret_names(self) -> set[str]:
@@ -282,7 +317,10 @@ class ModalPlane:
         ):
             return None
         workspace = self.workspace()
-        if not workspace:
+        # Env-token auth can be proven even when an older/unexpected Modal CLI
+        # does not print its workspace name. That auth-only marker is useful to
+        # onboarding, but it is never a valid URL subdomain.
+        if not workspace or workspace == _ENV_TOKEN_WORKSPACE_UNKNOWN:
             return None
         return f"https://{workspace}--{app_name}-fastapi-app.modal.run"
 

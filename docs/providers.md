@@ -53,6 +53,10 @@ local official CLI login                your Modal workspace
 - One provider can hold **multiple accounts**; `account_id: "auto"` picks a
   free one (LRU + per-account `max_concurrent` slots + cooldown on
   `auth_invalid`/`rate_limited`). Name an account explicitly to pin it.
+- `deploy.providers` (`SBX_PROVIDERS`) selects which providers a deployment
+  serves. Credential prerequisites are scoped to it: `sbx-codex-auth` is
+  required only when `codex` is enabled, account Secrets only for enabled
+  providers, and the control plane seeds/mounts per enabled provider.
 - `POST /v1/accounts/{id}/verify` probes a credential in a throwaway sandbox
   without spending a session.
 - **Never** paste credential material into issues, PRs, logs, fixtures, or
@@ -88,6 +92,47 @@ directory imports take the containing dir):
 | antigravity | `.gemini/antigravity-cli/antigravity-oauth-token` |
 | grok | `.grok/auth.json` |
 | opencode | `.local/share/opencode/auth.json` |
+
+## Local discovery & verification
+
+`sbx credentials` scans the declared paths above under `$HOME` for the
+**selected** providers only (`SBX_PROVIDERS` / `deploy.providers`; unselected
+providers never block onboarding) and reports one status per provider —
+presence, permissions, schema, auth — **never** file contents:
+
+| Status | Meaning |
+| --- | --- |
+| `not_found` | no declared file exists — hint prints the official login command |
+| `permission_invalid` | file is readable by group/other (`chmod 600`, or pass `--allow-open-permissions`) |
+| `schema_invalid` | file exists but is not the shape the CLI writes |
+| `discovered` | valid private file — *not yet checked against the provider* |
+| `verified` | the provider CLI's own auth check accepted it (`--verify`) |
+| `auth_invalid` | the provider CLI rejected it (`--verify`) — re-login and re-import |
+
+A plain scan stops at `discovered`: it proves a well-formed private file
+exists, not that the provider still accepts it. `sbx credentials --verify`
+(also on `sbx init` / `sbx doctor`) runs each provider CLI's own auth
+check — `codex login status`, `devin auth status`, `agy models`,
+`grok models`, `opencode auth list` — so the provider's answer, not file
+shape, decides `verified` vs `auth_invalid`.
+
+The same split exists server-side on `POST /v1/accounts/{id}/verify` /
+`python -m control.onboarding verify`: `--probe static` checks blob schema,
+`--probe sandbox` proves the blob restores and `runner init` accepts it
+(**not** authoritative OAuth verification — the provider is never asked),
+and `--probe auth` additionally execs the provider CLI's auth check inside
+the throwaway sandbox and takes its answer as authoritative.
+
+Official login commands per provider (what the `not_found`/`auth_invalid`
+hints print):
+
+| Provider | Login locally |
+| --- | --- |
+| codex | `codex login` |
+| devin | `devin` (interactive login) |
+| antigravity | `agy` (OAuth login) |
+| grok | `grok` login |
+| opencode | `opencode auth login` |
 
 ## Provider-specific notes
 
