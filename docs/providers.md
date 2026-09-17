@@ -68,10 +68,10 @@ local official CLI login                your Modal workspace
 ```bash
 # onboarding CLI (SOR-99) — validates the blob, writes the account +
 # credential into the store (file store locally; --modal for the workspace Dict)
-python -m control.onboarding --modal import \
+uv run python -m control.onboarding --modal import \
   --provider codex --from ~/.codex/auth.json
 
-python -m control.onboarding --modal import \
+uv run python -m control.onboarding --modal import \
   --provider antigravity --from ~/.gemini/antigravity-cli/ --slots 4
 
 # /v1 API (admin-scoped key; credential never echoed back)

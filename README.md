@@ -72,45 +72,77 @@ contracts (filesystem, events, runner CLI, `/v1` OpenAPI):
 
 ## Quick Start
 
-Prerequisites: Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), a Modal
-account, and at least one provider CLI logged in locally.
+Prerequisites: Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), git, a Modal
+account, and at least one provider CLI logged in locally — the
+[Credentials](#credentials) table lists each provider's login command and
+the file it writes.
 
 ```bash
-git clone <this-repo> && cd sbx-browser
-uv sync                          # install control-plane + client deps
-modal token new                  # authenticate YOUR Modal workspace
+git clone https://github.com/soren-labs/sbx-browser.git && cd sbx-browser
+uv sync                          # control-plane + client deps (provides `modal`)
+uv run modal token new           # authenticate YOUR Modal workspace
 ```
 
-The release ships a bootstrap CLI (`sbx`, SOR-98) that performs init →
-credential import → deploy → health check in one pass:
+Modal auth is either the profile login above or exported `MODAL_TOKEN_ID` +
+`MODAL_TOKEN_SECRET` — both must be set; a partial pair is an explicit
+`init`/`doctor` failure with remediation. All bootstrap commands run as
+`uv run sbx …` (equivalently `python -m sbx …`, or the `sbx` console script
+once installed).
 
 ```bash
-sbx init                         # check env, write local config, pick Modal profile
-# Codex uses the shared Secret path:
+uv run sbx init --providers codex,devin  # toolchain + Modal auth; writes
+                                         # ~/.config/sbx/config.toml; scans the
+                                         # selected providers' local logins
+uv run sbx credentials --verify          # discovery + each provider CLI's own
+                                         # auth check → verified / auth_invalid
+```
+
+`credentials` reports presence / permissions / schema / status per selected
+provider — never file contents. `permission_invalid` means the file is
+group/other readable: `chmod 600 <path>` (or pass
+`--allow-open-permissions`); `not_found` prints the provider's official
+login command; a plain scan caps at `discovered` — only `--verify` (which
+runs `codex login status`, `devin auth status`, `agy models`,
+`grok models`, `opencode auth list`) decides `verified` vs `auth_invalid`.
+
+Import the logins — codex uses the shared Secret path; the other providers
+import as accounts whose blobs `sbx deploy` materializes into
+`sbx-acct-<id>` Secrets:
+
+```bash
 modal secret create sbx-codex-auth \
-  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
-# Other providers use account onboarding (example: Devin):
-python -m control.onboarding --modal import --provider devin \
-  --from ~/.local/share/devin/credentials.toml --account-id devin-1 --experimental
-sbx deploy                       # materialize account Secrets, build images, deploy control
-sbx doctor                       # verify managed + account Secrets, /v1 auth, providers
-sbx smoke --provider devin       # minimal real run through /v1
+  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"        # only when codex is enabled
+uv run python -m control.onboarding --modal import \
+  --provider devin --from ~/.local/share/devin/credentials.toml --account-id devin-1
+uv run python -m control.onboarding --modal verify devin-1 --probe auth
+#  └─ optional authoritative check: runs the provider CLI's own auth command
+#    against the imported credential in a throwaway sandbox
 ```
 
-It prints your `SBX_BASE_URL` and a `sbx_<key>` API key (shown once).
+Then deploy and prove the plane end to end:
 
-> The equivalent manual steps — `modal secret create …`,
-> `make image && make deploy`, key bootstrap via the `sbx-v1-bootstrap`
-> Secret, and `python -m control.onboarding --modal import` — are documented
-> in [docs/deployment.md](docs/deployment.md).
+```bash
+uv run sbx deploy                  # secrets → dicts → images → app → /v1/me probe
+uv run sbx doctor                  # Modal auth, Secrets/Dicts, /v1 auth,
+                                   # providers, live agents vs the cap
+uv run sbx smoke --provider devin  # one minimal agent run to terminal, then cleanup
+```
 
-Then run your first agent:
+`deploy` prints your `SBX_BASE_URL` and mints a `sbx_<key>` admin key saved
+to `<state>/bootstrap.key` (mode 0600 — the control plane stores its sha256
+only):
 
 ```bash
 export SBX_BASE_URL=<printed by sbx deploy / doctor>
-export SBX_API_KEY=sbx_<key>
-python examples/sbx_client.py "Write hello.txt containing hi"
+export SBX_API_KEY=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/sbx/bootstrap.key")
+uv run python examples/sbx_client.py "Write hello.txt containing hi"
 ```
+
+> The equivalent manual steps — `modal secret create …`,
+> `make image && make deploy`, key bootstrap via the `sbx-v1-bootstrap`
+> Secret — are documented in [docs/deployment.md](docs/deployment.md);
+> per-command semantics live in [docs/bootstrap.md](docs/bootstrap.md), and
+> repo-bound agents in [docs/repo-workflow.md](docs/repo-workflow.md).
 
 ## Provider Support Matrix
 
@@ -142,14 +174,14 @@ Everything deploys into your Modal workspace. The deployment creates:
 | --- | --- | --- |
 | Modal App | `sbx-control` (`SBX_MODAL_APP_NAME` to rename) | `/v1` + `/api` ASGI app, reaper cron |
 | Named Images | `sbx-runtime` (+ `-devin` / `-antigravity` / `-grok` / `-opencode`) | per-provider sandbox images |
-| Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows` | durable state |
+| Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows`, `sbx-artifacts`, `sbx-workspaces` | durable state |
 | Secrets | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<id>` | credentials — never committed |
 
 ```bash
-sbx deploy         # idempotent: builds images, seeds Dicts/Secrets, deploys
-sbx upgrade        # re-deploy keeping durable runs/accounts/artifacts
-sbx uninstall      # stop app + sandboxes; durable data stays unless
-                   # --purge-data / --purge-credentials is passed
+uv run sbx deploy         # idempotent: builds images, seeds Dicts/Secrets, deploys
+uv run sbx upgrade        # re-deploy keeping durable runs/accounts/artifacts
+uv run sbx uninstall      # stop app + sandboxes; durable data stays unless
+                          # --purge-data / --purge-credentials is passed
 ```
 
 Manual equivalent (`modal secret create`, `make image*`, `make deploy`),
@@ -168,7 +200,7 @@ CLIs write on `login`:
 | devin | `devin` (interactive login) | `~/.local/share/devin/credentials.toml` |
 | antigravity | `agy` (OAuth login) | `~/.gemini/antigravity-cli/antigravity-oauth-token` |
 | grok | `grok` login | `~/.grok/auth.json` |
-| opencode | `opencode` (login writes `auth.json`) | `~/.local/share/opencode/auth.json` |
+| opencode | `opencode auth login` | `~/.local/share/opencode/auth.json` |
 
 `sbx credentials` discovers these local logins for the selected providers and
 reports presence/permissions/schema/status only — never contents; `--verify`
@@ -178,7 +210,8 @@ command above, and `0644` files get a `chmod 600` remediation (or
 `--allow-open-permissions`).
 
 ```bash
-python -m control.onboarding --modal import --provider <p> --from <path-or-home>
+uv run python -m control.onboarding --modal import \
+  --provider <p> --from <path-or-home>
 # or: POST /v1/accounts {provider, label, credential:{files:{...}}} (admin key)
 ```
 
@@ -189,14 +222,19 @@ refreshed credentials back to the account Secret; **never paste a token into
 an issue, log, PR, or fixture** (`REDACTED` placeholders only). See
 [SECURITY.md](SECURITY.md) and [docs/providers.md](docs/providers.md).
 
-### GitHub auth (optional, opt-in)
+### Repo workflows & GitHub auth (optional, opt-in)
 
-Sandboxes can act on GitHub repos natively — private `git clone`/`push` and
-`control.workspace.create_pull_request` (the GitHub REST API from inside the
-sandbox). The bridge is **off by default**; a public-repo GitHub-less
-workspace works unchanged with no token anywhere near the sandbox.
+`POST /v1/agents` accepts a `workspace: {repo, base_ref, base_sha}`
+declaration — the control plane clones `repo` inside the sandbox and pins
+run-1 to the exact `base_sha` (a mismatch fails explicitly, never silently
+runs the wrong commit). The default path needs **no GitHub auth**: public
+repos clone over plain HTTPS, non-GitHub/local remotes work as declared,
+and code moves between agents through durable artifacts + handoffs — never
+through prompt text.
 
-To enable it, the control-plane process env must carry **both**:
+For **private github.com** work — agent `git clone`/`push` and PR creation
+via `control.workspace.create_pull_request` — the control-plane process env
+must carry **both**:
 
 ```bash
 export GH_TOKEN=...              # or GITHUB_TOKEN
@@ -209,10 +247,12 @@ runtime, so the value never lands in argv, git config, or a cloned repo's
 `.git/config`. The helper covers **HTTPS** github.com git operations (clone,
 fetch, push); SSH remotes are unaffected — declare `https://github.com/…`
 repo URLs when you want the token used. It applies to every provider's
-sandbox (not just Devin);
-caller-supplied exec env can neither inject nor override the GitHub keys.
+sandbox (not just Devin), and caller-supplied exec env can neither inject
+nor override the GitHub keys.
 `GIT_TERMINAL_PROMPT=0` makes a missing credential a fast failure instead of
-a hang. `sbx doctor`/`sbx init` report which auth source exists
+a hang. A remote (`sbx deploy`ed) control plane reads the token from a Modal
+Secret named via `SBX_GITHUB_SECRET_NAME` — `sbx deploy` fails fast if it is
+missing. `sbx doctor`/`sbx init` report which auth source exists
 (`GH_TOKEN`/`GITHUB_TOKEN`, or `gh auth status` under `--verify`) and whether
 the gate is armed — never token material.
 
@@ -221,6 +261,9 @@ to the repositories the agents work on, `Contents: read/write` (+ `Pull
 requests: read/write` only if agents open PRs), and the shortest lifetime
 practical — the bridge is ephemeral per sandbox exec, nothing is persisted
 in Modal. A classic `repo`-scoped PAT works but is broader than needed.
+
+Full repo workflow — workspace lifecycle, artifact/handoff chains, review
+pinning, error codes: [docs/repo-workflow.md](docs/repo-workflow.md).
 
 ## API / SDK examples
 
@@ -256,12 +299,13 @@ the Cursor Cloud Agents field mapping is in [examples/README.md](examples/README
 
 | Symptom | Likely cause / fix |
 | --- | --- |
-| `sbx deploy` can't reach Modal | Not authenticated: `modal token new`, or wrong `MODAL_PROFILE`. `sbx doctor` reports presence/status, never values. |
+| `sbx deploy` can't reach Modal | Not authenticated: `uv run modal token new`, or wrong `MODAL_PROFILE`. `sbx doctor` reports presence/status, never values. |
 | `401 unauthorized` on `/v1` | Missing/wrong `SBX_API_KEY`, or key revoked (`DELETE /v1/api-keys/{id}` earlier). Verify with `GET /v1/me`. |
-| Run `ERROR` with `error.code=auth_invalid` | Provider credential expired/invalid. Re-import (`python -m control.onboarding --modal import`) or probe it: `POST /v1/accounts/{id}/verify`. |
-| `429 provider_exhausted` / `concurrency_limit` | No free account slot, or the `SBX_MAX_CONCURRENT` live-agent cap (per-key default 2 / global default 8; idle agents hold slots until closed). Honor `error.retry_after`, close idle agents (`DELETE /v1/agents/{id}`), run scoped cleanup (`DELETE /v1/workflows/{id}`), add accounts (`SBX_<PROVIDER>_ACCOUNTS`), or raise the cap (`deploy.max_concurrent`) and `sbx deploy`. `sbx status`/`sbx doctor` show live agents vs the cap. |
-| Agent stuck `creating` then `lost` | Sandbox create failed (image missing, Secret missing). Re-run `make image*` / `sbx deploy`, then `sbx doctor`. |
+| Run `ERROR` with `error.code=auth_invalid` | Provider credential expired/invalid. Re-import (`uv run python -m control.onboarding --modal import`) or probe it: `POST /v1/accounts/{id}/verify`. |
+| `429 provider_exhausted` / `concurrency_limit` | No free account slot, or the `SBX_MAX_CONCURRENT` live-agent cap (per-key default 2 / global default 8; idle agents hold slots until closed). Honor `error.retry_after`, close idle agents (`DELETE /v1/agents/{id}`), run scoped cleanup (`DELETE /v1/workflows/{id}`), add accounts (`SBX_<PROVIDER>_ACCOUNTS`), or raise the cap (`deploy.max_concurrent`) and `uv run sbx deploy`. `sbx status`/`sbx doctor` show live agents vs the cap. |
+| Agent stuck `creating` then `lost` | Sandbox create failed (image missing, Secret missing). Re-run `make image*` / `uv run sbx deploy`, then `sbx doctor`. |
 | Agent `timed_out` / `lost` | Idle timeout or reaper sweep — expected lifecycle. History stays read-only; create a new agent. |
+| Run `ERROR` with `repo_unavailable` / `base_sha_mismatch` | Repo unreachable from the sandbox, or `base_ref` didn't resolve to the declared `base_sha`. For private github.com arm the opt-in GitHub bridge — see [docs/repo-workflow.md](docs/repo-workflow.md). |
 | Event stream stalls | `watch` reconnects with `Last-Event-ID` (bounded); after it ends, `wait`/`get_run` is the durable fallback — never retry forever. |
 | Leftover sandboxes | `DELETE /v1/agents/{id}` or `client.close_workflow(id)`; reaper cron sweeps stale records. Verify `modal sandbox list` is empty. |
 

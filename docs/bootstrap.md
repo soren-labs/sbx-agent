@@ -1,19 +1,23 @@
 # Deployment bootstrap (`sbx` CLI) — SOR-98 / Release 0.1
 
-> Doc stub. The commands below are the stable surface; flags may grow but the
-> subcommand names and semantics are fixed for the 0.1 alpha.
-
 `sbx` takes a clean checkout to a callable `/v1` control plane on the user's
 own Modal workspace. Run it as `uv run sbx …`, `python -m sbx …`, or the
-`sbx` console script after install.
+`sbx` console script after install. The full first-run walkthrough is the
+[README Quick Start](../README.md#quick-start); this file is the per-command
+reference.
 
 ## Flow
 
 ```bash
-uv run sbx init --profile <modal-profile>      # checks toolchain, writes config
+git clone https://github.com/soren-labs/sbx-browser.git && cd sbx-browser
+uv sync
+uv run modal token new                         # or export MODAL_TOKEN_ID + MODAL_TOKEN_SECRET
+uv run sbx init --profile <modal-profile>      # checks toolchain + Modal auth, writes config
 uv run sbx credentials --verify                # discover local logins, verify via provider CLIs
 modal secret create sbx-codex-auth \
   CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"  # only when codex is enabled
+uv run python -m control.onboarding --modal import \
+  --provider <p> --from <credential-file>      # other providers: account import
 uv run sbx deploy                              # idempotent: secrets/dicts/image/app
 uv run sbx doctor                              # end-to-end verification
 uv run sbx smoke                               # minimal agent → terminal → cleanup
@@ -41,12 +45,12 @@ plaintext exists only locally.
 
 | Command | Behavior |
 | --- | --- |
-| `init` | Check Python/uv/git/Modal CLI; scan selected providers' local credentials (advisory); write config (idempotent; flags override file values). |
+| `init` | Check Python/uv/git/Modal CLI and Modal auth (profile login or `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` — a partial pair fails with remediation); scan selected providers' local credentials (advisory); report the advisory `github` bridge state; write config (idempotent; flags override file values). |
 | `credentials` | Scan the selected providers' declared credential files under `$HOME` and report presence/permissions/schema/status — never contents. `--verify` runs each provider CLI's own auth check (`codex login status`, `devin auth status`, `agy models`, `grok models`, `opencode auth list`); `--providers a,b` overrides the selection; `--allow-open-permissions` accepts files readable by group/other (default requires `0600`, with `chmod 600` remediation in the hint). |
 | `config` | Print resolved non-sensitive config with per-value source (file/env/default). |
 | `status` | Print deploy record, base URL, key fingerprint (`sha256:` prefix), provider view aggregated per provider (`devin: 1 account, 2 models`), live agents vs `SBX_MAX_CONCURRENT` when configured. |
 | `deploy` | Preflight (provider config, Modal auth, provider-aware Secrets: `sbx-codex-auth` only when `codex` is in `deploy.providers`, plus enabled providers' referenced account Secrets) → bootstrap/basic Secrets → durable Dicts → runtime image(s) → `modal deploy` → `/v1/me` probe. Every step is check-then-act; reruns converge. |
-| `doctor` | Modal auth, provider config + provider-required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability aggregated per provider/account, live agents vs the `SBX_MAX_CONCURRENT` cap (idle agents hold slots until closed), sandbox-list capability, advisory local credential scan (`--verify` upgrades it to provider-CLI auth checks). Never prints secret values. |
+| `doctor` | Modal auth, provider config + provider-required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability aggregated per provider/account, live agents vs the `SBX_MAX_CONCURRENT` cap (idle agents hold slots until closed), sandbox-list capability, advisory local credential scan (`--verify` upgrades it to provider-CLI auth checks) and advisory `github` bridge detection (`--verify` probes `gh auth status`). Never prints secret values. |
 | `smoke` | `POST /v1/agents` with a trivial prompt → poll the run to a terminal status → `DELETE` the agent. A non-`FINISHED` terminal run surfaces the canonical `run.error` fields (`code`/`source`/`message`/`retryable`/`retry_after`) — e.g. `auth_invalid` — re-clipped before printing. |
 | `upgrade` | Snapshot all durable Dicts → redeploy → verify each is still readable with no lost keys. Aborts before touching anything when a store is unreadable. |
 | `uninstall` | Terminate all sandboxes owned by the app, re-list to prove zero leftovers, stop the app. `--purge-data` also deletes Dicts; `--purge-credentials` also deletes Secrets (incl. `sbx-acct-*`), the local credential files, and the deploy record. Defaults preserve both. |
@@ -61,8 +65,8 @@ actionable `hint` (`error[code]: message` on stderr, exit 1).
 
 ```bash
 export SBX_BASE_URL=<printed URL>
-export SBX_API_KEY=$(cat "$XDG_STATE_HOME/sbx/bootstrap.key")
-python examples/sbx_client.py "Write hello.txt containing hi"
+export SBX_API_KEY=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/sbx/bootstrap.key")
+uv run python examples/sbx_client.py "Write hello.txt containing hi"
 ```
 
 ## Key rotation
