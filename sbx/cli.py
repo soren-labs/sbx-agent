@@ -1,9 +1,10 @@
 """``sbx`` CLI dispatch (SOR-98).
 
-Stable entrypoints: ``init``, ``config``, ``status``, ``deploy``, ``doctor``,
-``smoke``, ``upgrade``, ``uninstall``. ``python -m sbx`` and the ``sbx``
-console script both land here. ``main()`` accepts ``plane``/``transport``
-injection so the whole surface is testable without cloud credentials.
+Stable entrypoints: ``init``, ``credentials``, ``config``, ``status``,
+``deploy``, ``doctor``, ``smoke``, ``upgrade``, ``uninstall``. ``python -m
+sbx`` and the ``sbx`` console script both land here. ``main()`` accepts
+``plane``/``transport``/``auth_check`` injection so the whole surface is
+testable without cloud credentials.
 """
 
 from __future__ import annotations
@@ -44,6 +45,8 @@ def _print_check(check: Any) -> None:
     print(f"{label} {check.name} — {check.detail}")
     if check.hint and not check.ok:
         print(f"     hint: {check.hint}")
+    elif check.hint:
+        print(f"     next: {check.hint}")
 
 
 def _emit_json(payload: dict[str, Any]) -> None:
@@ -59,6 +62,17 @@ def _providers_arg(value: str | None) -> tuple[str, ...] | None:
 # --------------------------------------------------------------------- init
 
 
+def _scan_payload(scan: Any) -> dict[str, Any]:
+    return {
+        "provider": scan.provider,
+        "status": scan.status,
+        "path": scan.path,
+        "detail": scan.detail,
+        "hint": scan.hint,
+        "login": scan.login,
+    }
+
+
 def cmd_init(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from sbx.init import init
 
@@ -71,6 +85,9 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         app_name=args.app_name,
         base_url=args.base_url,
         providers=_providers_arg(args.providers),
+        verify=args.verify,
+        allow_open_permissions=args.allow_open_permissions,
+        auth_check=args.auth_check,
     )
     if args.json:
         _emit_json(
@@ -83,6 +100,7 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                     {"name": c.name, "status": c.status, "detail": c.detail, "hint": c.hint}
                     for c in report.checks
                 ],
+                "credentials": [_scan_payload(s) for s in report.credentials],
             }
         )
         return 0
@@ -92,8 +110,45 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     print(f"config {verb}: {report.config_path}")
     if not report.authenticated:
         print("next: authenticate Modal (`modal token new`), then `sbx deploy`")
+    elif any(not s.ok for s in report.credentials):
+        missing = ", ".join(s.provider for s in report.credentials if not s.ok)
+        print(f"next: fix provider credentials ({missing}) — see hints — then `sbx deploy`")
     else:
         print("next: `sbx deploy`")
+    return 0
+
+
+# --------------------------------------------------------------- credentials
+
+
+def cmd_credentials(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    from functools import partial
+
+    from sbx.credentials import cli_auth_check, scan_credentials
+
+    cfg = _resolve(args, env)
+    providers = _providers_arg(args.providers)
+    selected = providers if providers is not None else cfg.config.providers
+    auth_check = args.auth_check or (partial(cli_auth_check, env=env) if args.verify else None)
+    scans = scan_credentials(
+        selected,
+        env=env,
+        allow_open_permissions=args.allow_open_permissions,
+        auth_check=auth_check,
+    )
+    if args.json:
+        _emit_json({"credentials": [_scan_payload(s) for s in scans]})
+        return 0
+    if not scans:
+        print("no providers selected — set deploy.providers or pass --providers")
+        return 0
+    for scan in scans:
+        _print_check(scan.to_check())
+    blocked = [s for s in scans if not s.ok]
+    if blocked:
+        print("next: follow the hints above, then rerun `sbx credentials --verify`")
+    else:
+        print("next: import the credential(s) as hinted, then `sbx deploy`")
     return 0
 
 
@@ -221,7 +276,15 @@ def cmd_doctor(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from sbx.doctor import failed, run_doctor
 
     cfg = _resolve(args, env)
-    checks = run_doctor(cfg, _plane(cfg, args), env=env, transport=args.transport)
+    checks = run_doctor(
+        cfg,
+        _plane(cfg, args),
+        env=env,
+        transport=args.transport,
+        verify=args.verify,
+        allow_open_permissions=args.allow_open_permissions,
+        auth_check=args.auth_check,
+    )
     bad = failed(checks)
     if args.json:
         _emit_json(
@@ -393,7 +456,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--app-name", help="Modal app name")
     p.add_argument("--base-url", help="public API base URL")
     p.add_argument("--providers", help="comma-separated providers to build images for")
+    p.add_argument(
+        "--verify",
+        action="store_true",
+        help="also run each provider CLI's own auth check on discovered credentials",
+    )
+    p.add_argument(
+        "--allow-open-permissions",
+        action="store_true",
+        help="accept credential files readable by group/other",
+    )
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser(
+        "credentials",
+        parents=[sub_common],
+        help="scan selected providers' local credential files (never prints contents)",
+    )
+    p.add_argument("--providers", help="comma-separated providers to scan (default: configured)")
+    p.add_argument(
+        "--verify",
+        action="store_true",
+        help="also run each provider CLI's own auth check on discovered credentials",
+    )
+    p.add_argument(
+        "--allow-open-permissions",
+        action="store_true",
+        help="accept credential files readable by group/other",
+    )
+    p.set_defaults(func=cmd_credentials)
 
     p = sub.add_parser("config", parents=[sub_common], help="show resolved non-sensitive config")
     p.set_defaults(func=cmd_config)
@@ -407,6 +498,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_deploy, probe_attempts=5)
 
     p = sub.add_parser("doctor", parents=[sub_common], help="verify the deployment end to end")
+    p.add_argument(
+        "--verify",
+        action="store_true",
+        help="also run each provider CLI's own auth check on discovered credentials",
+    )
+    p.add_argument(
+        "--allow-open-permissions",
+        action="store_true",
+        help="accept credential files readable by group/other",
+    )
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("smoke", parents=[sub_common], help="run a minimal /v1 agent to terminal")
@@ -440,16 +541,25 @@ def main(
     plane: Plane | None = None,
     transport: httpx.BaseTransport | None = None,
     sleep: Any = None,
+    auth_check: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     # SUPPRESS'd subparser flags may leave attrs unset; normalize them.
-    for name, default in (("json", False), ("config", None), ("state_dir", None)):
+    for name, default in (
+        ("json", False),
+        ("config", None),
+        ("state_dir", None),
+        ("verify", False),
+        ("allow_open_permissions", False),
+        ("providers", None),
+    ):
         if not hasattr(args, name):
             setattr(args, name, default)
     # Injectable seams for tests; argparse Namespace carries them along.
     args.plane = plane
     args.transport = transport
+    args.auth_check = auth_check
     if sleep is not None:
         args.sleep = sleep
     elif not hasattr(args, "sleep"):

@@ -74,7 +74,7 @@ from control.artifacts import (
     ArtifactSecretError,
     manifest_to_dict,
 )
-from control.config import TERMINAL_STATUSES
+from control.config import TERMINAL_STATUSES, selected_providers
 from control.devin_pool import ScheduleRefused
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.run_errors import run_error_for_run
@@ -1614,8 +1614,14 @@ def list_models(
 ) -> dict[str, Any]:
     """Advertised models come from account declarations; availability counts
     active accounts with a free slot that list the model."""
+    enabled = frozenset(selected_providers())
     counts: dict[tuple[str, str], int] = {}
     for account in registry.list():
+        # Durable registries can retain accounts from an earlier deployment
+        # with a wider provider set. Never advertise a provider whose image
+        # and credential mounts are intentionally absent from this deploy.
+        if account.provider not in enabled:
+            continue
         free = (
             account.status == "active"
             and _running_or_zero(registry, account.id) < account.max_concurrent

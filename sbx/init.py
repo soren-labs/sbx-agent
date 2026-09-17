@@ -3,13 +3,19 @@
 Idempotent: an existing config keeps its file values; only explicit flags
 overwrite. Tool problems are reported with remediation hints, not hidden —
 init itself still writes config so the workflow stays resumable.
+
+Init also scans the *selected* providers' local credential files
+(``sbx.credentials`` — SOR-115): presence/permission/schema per declared
+path, plus the provider CLI's own auth check under ``--verify``. Discovery
+is advisory — it guides, it never blocks, and it never prints contents.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 
 from sbx.config import (
@@ -19,6 +25,7 @@ from sbx.config import (
     save,
     state_dir,
 )
+from sbx.credentials import CredentialScan, cli_auth_check, scan_credentials
 from sbx.plane import Plane
 from sbx.prereqs import Check, check_modal_auth, tool_checks
 
@@ -30,6 +37,7 @@ class InitReport:
     config_created: bool
     state_dir: Path
     authenticated: bool
+    credentials: tuple[CredentialScan, ...] = ()
 
 
 def _merge_flags(
@@ -61,6 +69,9 @@ def init(
     app_name: str | None = None,
     base_url: str | None = None,
     providers: tuple[str, ...] | None = None,
+    verify: bool = False,
+    allow_open_permissions: bool = False,
+    auth_check: Callable[[str, Path], str] | None = None,
 ) -> InitReport:
     env = os.environ if env is None else env
     checks = tool_checks()
@@ -84,11 +95,24 @@ def init(
         workspace = plane.workspace()
     except Exception:
         workspace = None
-    auth = check_modal_auth(workspace)
+    auth = check_modal_auth(workspace, env=env)
+
+    # Local credential discovery — only the providers the deployment will
+    # actually build participate; unselected providers never block.
+    selected = providers if providers is not None else cfg.config.providers
+    if auth_check is None and verify:
+        auth_check = partial(cli_auth_check, env=env)
+    scans = scan_credentials(
+        selected,
+        env=env,
+        allow_open_permissions=allow_open_permissions,
+        auth_check=auth_check,
+    )
     return InitReport(
-        checks=tuple([*checks, auth]),
+        checks=tuple([*checks, auth, *(s.to_check() for s in scans)]),
         config_path=cfg.path,
         config_created=not cfg.file_exists,
         state_dir=state_dir(env),
         authenticated=auth.ok,
+        credentials=tuple(scans),
     )

@@ -125,6 +125,25 @@ def append_hello(cwd: Path, content: str) -> None:
         fh.write(content)
 
 
+def auth_check(argv: list[str], subcommand: tuple[str, ...], credential: Path) -> None:
+    """Dispatch the provider's auth-check subcommand; no-op for other argv.
+
+    Reflects only the restored credential file — present and non-empty
+    means logged in. The credential itself is never printed.
+    """
+    if tuple(argv[: len(subcommand)]) != subcommand:
+        return
+    try:
+        ok = credential.is_file() and bool(credential.read_bytes().strip())
+    except OSError:
+        ok = False
+    if ok:
+        print("Logged in")
+        sys.exit(0)
+    print("Not logged in")
+    sys.exit(1)
+
+
 def run_scenario(
     *,
     provider: str,

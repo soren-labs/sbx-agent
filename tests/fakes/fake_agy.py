@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from _fake_native import (
+    auth_check,
     install_term_handler,
     rewrite_json,
     run_scenario,
@@ -38,6 +39,11 @@ def _rewrite_session(line: str, session_id: str) -> str:
 
 def main() -> None:
     install_term_handler()
+    auth_check(
+        sys.argv[1:],
+        ("models",),
+        Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token",
+    )
     positionals, values, _seen = scan_argv(
         sys.argv[1:], bool_flags=_BOOL_FLAGS, value_flags=_VALUE_FLAGS
     )

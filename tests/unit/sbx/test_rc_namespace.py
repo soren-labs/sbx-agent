@@ -70,6 +70,7 @@ def test_deploy_env_covers_every_namespace_name() -> None:
         "SBX_IMAGE_ANTIGRAVITY": "rc-runtime-antigravity",
         "SBX_IMAGE_GROK": "rc-runtime-grok",
         "SBX_IMAGE_OPENCODE": "rc-runtime-opencode",
+        "SBX_PROVIDERS": "codex",
     }
 
 
