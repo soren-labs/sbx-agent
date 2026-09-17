@@ -32,8 +32,15 @@ prints the two values clients need: `SBX_BASE_URL` and a `sbx_<key>` API key
 | Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows` | created on demand by stores |
 | Secrets | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<account_id>` | `modal secret create` |
 
-Control-plane tunables (env on the Modal app): `SBX_MAX_CONCURRENT` (global
-cap, default 2), `SBX_IDLE_TIMEOUT_S` (default 1800), per-provider
+Control-plane tunables (env on the Modal app): `SBX_MAX_CONCURRENT` caps
+*live* agents/sandboxes — per key (default 2) and globally in the scheduler
+(default 8). "Live" means `creating`/`idle`/`running`: an idle agent waiting
+for a follow-up still occupies a slot until it is closed
+(`DELETE /v1/agents/{id}`) or reaped. `sbx status`/`sbx doctor` show live
+agents against the cap when configured (`deploy.max_concurrent` or the env
+var); `429 concurrency_limit` remediation is closing idle agents, scoped
+cleanup (`DELETE /v1/workflows/{id}`), or raising the cap and redeploying.
+`SBX_IDLE_TIMEOUT_S` (default 1800), per-provider
 `SBX_<PROVIDER>_SLOTS`, `SBX_<PROVIDER>_MODELS`, and multi-account fleets via
 `SBX_<PROVIDER>_ACCOUNTS` (JSON list of `{id, label?, secret_name?, slots?,
 models?}`). Devin's seeded account takes `SBX_DEVIN_BURST_SLOTS` (default 8).

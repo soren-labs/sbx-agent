@@ -51,7 +51,100 @@ def test_doctor_reads_contract_fields(tmp_path) -> None:
     auth = next(c for c in checks if c.name == "api-auth")
     providers = next(c for c in checks if c.name == "providers")
     assert auth.ok and "key_test" in auth.detail
-    assert providers.ok and "codex:1" in providers.detail
+    assert providers.ok and "codex: 1 account, 1 model" in providers.detail
+
+
+def test_doctor_aggregates_providers_per_account(tmp_path) -> None:
+    """Multi-model providers collapse to one line — no ``devin:1, devin:1``."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(
+        token=token,
+        models=[
+            {"provider": "devin", "model": "swe-2-high", "accounts_available": 1},
+            {"provider": "devin", "model": "swe-2-medium", "accounts_available": 1},
+        ],
+    )
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    providers = next(c for c in checks if c.name == "providers")
+    assert "devin: 1 account, 2 models (swe-2-high, swe-2-medium)" in providers.detail
+    assert providers.detail.count("devin") == 1
+
+
+def test_doctor_provider_availability_range(tmp_path) -> None:
+    """Divergent per-model availability renders as a min–max range."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(
+        token=token,
+        models=[
+            {"provider": "devin", "model": "swe-2-high", "accounts_available": 0},
+            {"provider": "devin", "model": "swe-2-medium", "accounts_available": 2},
+        ],
+    )
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    providers = next(c for c in checks if c.name == "providers")
+    assert "devin: 0–2 accounts, 2 models" in providers.detail
+
+
+def test_doctor_live_agents_reports_count_and_cap(tmp_path) -> None:
+    """Idle + running agents hold slots; closed/lost ones are released."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(
+        token=token,
+        agents=[
+            {"id": "a1", "status": "idle"},
+            {"id": "a2", "status": "running"},
+            {"id": "a3", "status": "closed"},  # slot released
+            {"id": "a4", "status": "timed_out"},  # slot released
+        ],
+    )
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(api_base_url=plane.apps["sbx-control"], max_concurrent=4),
+    )
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    live = next(c for c in checks if c.name == "live-agents")
+    assert live.ok
+    assert "2 live agents" in live.detail
+    assert "cap 4" in live.detail
+    assert "idle agents hold slots" in live.detail
+
+
+def test_doctor_live_agents_warns_at_cap(tmp_path) -> None:
+    """At the cap the check warns with concurrency_limit remediation."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(
+        token=token,
+        agents=[{"id": "a1", "status": "idle"}, {"id": "a2", "status": "idle"}],
+    )
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(api_base_url=plane.apps["sbx-control"], max_concurrent=2),
+    )
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    live = next(c for c in checks if c.name == "live-agents")
+    assert not live.ok and live.warn  # advisory, not a doctor failure
+    assert live not in failed(checks)
+    assert "SBX_MAX_CONCURRENT" in live.detail
+    assert "DELETE /v1/agents/{id}" in (live.hint or "")
+    assert "deploy.max_concurrent" in (live.hint or "")
+
+
+def test_doctor_live_agents_paginates(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(
+        token=token,
+        agents=[
+            {"id": "a1", "status": "idle"},
+            {"id": "a2", "status": "running"},
+            {"id": "a3", "status": "idle"},
+        ],
+        agents_page_size=1,
+    )
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    live = next(c for c in checks if c.name == "live-agents")
+    assert live.ok and "3 live agents" in live.detail
 
 
 def test_doctor_falls_back_to_deploy_state_url(tmp_path) -> None:

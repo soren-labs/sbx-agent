@@ -587,7 +587,8 @@ def _raise_schedule_error(
         raise V1ApiError(
             429,
             "concurrency_limit",
-            "global concurrent-agent cap reached",
+            "global live-agent cap (SBX_MAX_CONCURRENT) reached — "
+            "idle agents hold slots until closed",
             retry_after=retry_after,
         )
     raise V1ApiError(
@@ -886,7 +887,10 @@ def _create_agent_once(
     except ConcurrencyLimit as exc:
         _release_lease(lease)
         raise V1ApiError(
-            429, "concurrency_limit", "per-key concurrent sandbox cap reached"
+            429,
+            "concurrency_limit",
+            "per-key live-agent cap (SBX_MAX_CONCURRENT) reached — "
+            "idle agents hold slots until closed",
         ) from exc
     except Exception:
         _release_lease(lease)

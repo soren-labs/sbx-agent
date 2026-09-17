@@ -42,10 +42,10 @@ plaintext exists only locally.
 | --- | --- |
 | `init` | Check Python/uv/git/Modal CLI; write config (idempotent; flags override file values). |
 | `config` | Print resolved non-sensitive config with per-value source (file/env/default). |
-| `status` | Print deploy record, base URL, key fingerprint (`sha256:` prefix), provider view. |
+| `status` | Print deploy record, base URL, key fingerprint (`sha256:` prefix), provider view aggregated per provider (`devin: 1 account, 2 models`), live agents vs `SBX_MAX_CONCURRENT` when configured. |
 | `deploy` | Preflight (Modal auth + `sbx-codex-auth` Secret) → bootstrap/basic Secrets → durable Dicts → runtime image(s) → `modal deploy` → `/v1/me` probe. Every step is check-then-act; reruns converge. |
-| `doctor` | Modal auth, required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability, sandbox-list capability. Never prints secret values. |
-| `smoke` | `POST /v1/agents` with a trivial prompt → poll the run to a terminal status → `DELETE` the agent. |
+| `doctor` | Modal auth, required Secrets, durable Dicts, local key fingerprint, `/v1` reachability + auth, provider availability aggregated per provider/account, live agents vs the `SBX_MAX_CONCURRENT` cap (idle agents hold slots until closed), sandbox-list capability. Never prints secret values. |
+| `smoke` | `POST /v1/agents` with a trivial prompt → poll the run to a terminal status → `DELETE` the agent. A non-`FINISHED` terminal run surfaces the canonical `run.error` fields (`code`/`source`/`message`/`retryable`/`retry_after`) — e.g. `auth_invalid` — re-clipped before printing. |
 | `upgrade` | Snapshot all durable Dicts → redeploy → verify each is still readable with no lost keys. Aborts before touching anything when a store is unreadable. |
 | `uninstall` | Terminate all sandboxes owned by the app, re-list to prove zero leftovers, stop the app. `--purge-data` also deletes Dicts; `--purge-credentials` also deletes Secrets (incl. `sbx-acct-*`), the local credential files, and the deploy record. Defaults preserve both. |
 

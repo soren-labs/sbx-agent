@@ -120,13 +120,18 @@ def cmd_config(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         return 0
     print(f"config: {cfg.path} ({'file' if cfg.file_exists else 'defaults only'})")
     for name, value, source in rows:
-        rendered = ",".join(value) if isinstance(value, tuple) else str(value) or "-"
+        rendered = (
+            ",".join(value)
+            if isinstance(value, tuple)
+            else ((str(value) or "-") if value is not None else "-")
+        )
         print(f"  {name} = {rendered}   ({source})")
     return 0
 
 
 def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from sbx.deploy import read_deploy_state
+    from sbx.doctor import live_agent_count, provider_summaries
     from sbx.httpapi import V1Client
     from sbx.keys import fingerprint, resolve_api_key
 
@@ -135,15 +140,19 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     token = resolve_api_key(env)
     base_url = cfg.config.api_base_url or state.get("app_url") or ""
     providers: Any = "unknown"
+    live_agents: int | None = None
     if base_url and token:
         try:
             with V1Client(base_url, token, transport=args.transport, timeout=10.0) as client:
                 models = client.models().get("models", [])
-            providers = [
-                f"{m.get('provider', '?')}:{m.get('model', m.get('id', '?'))}" for m in models
-            ]
+                providers = provider_summaries(models)
+                try:
+                    live_agents = live_agent_count(client)
+                except Exception:
+                    live_agents = None
         except Exception:
             providers = "unreachable"
+    cap = cfg.config.max_concurrent
     payload = {
         "config_path": str(cfg.path),
         "config_exists": cfg.file_exists,
@@ -153,6 +162,8 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         "deployed_at": state.get("deployed_at"),
         "key_fingerprint": fingerprint(token) if token else None,
         "providers": providers,
+        "live_agents": live_agents,
+        "concurrency_cap": cap,
     }
     if args.json:
         _emit_json(payload)
@@ -164,6 +175,13 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     print(f"key:       {payload['key_fingerprint'] or 'none (run `sbx deploy`)'}")
     rendered = ", ".join(providers) if isinstance(providers, list) else providers
     print(f"providers: {rendered or '-'}")
+    if live_agents is None:
+        agents_line = "-"
+    elif cap is not None:
+        agents_line = f"{live_agents} live / cap {cap} (SBX_MAX_CONCURRENT)"
+    else:
+        agents_line = f"{live_agents} live (SBX_MAX_CONCURRENT unset — remote defaults apply)"
+    print(f"agents:    {agents_line}")
     return 0
 
 

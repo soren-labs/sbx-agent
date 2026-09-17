@@ -85,6 +85,17 @@ BYO Modal workspace + BYO official provider subscriptions behind one
   `--max-seconds` bound plus a 300 s grace, and a dead-sandbox follow-up
   maps to `409 session_not_runnable` instead of a bare 500 — found by the
   Release 0.1 grok gate.
+- `sbx smoke` surfaces the canonical `run.error` (`code`/`source`/
+  `message`/`retryable`/`retry_after`) on a non-FINISHED terminal —
+  `auth_invalid` now names the credential fix instead of a bare
+  "ended ERROR" (SOR-119).
+- `sbx doctor` / `sbx status` aggregate `/v1/models` by provider/account
+  (`devin: 1 account, 2 models`) instead of repeating the provider per
+  model, and report live agents against `SBX_MAX_CONCURRENT` —
+  `idle`/`running`/`creating` agents each hold a slot until closed —
+  with `concurrency_limit` remediation pointing at `DELETE /v1/agents/{id}`
+  / scoped `DELETE /v1/workflows/{id}` / raising `deploy.max_concurrent`
+  (SOR-119).
 
 ### Known limitations
 

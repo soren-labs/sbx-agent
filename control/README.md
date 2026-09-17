@@ -38,6 +38,6 @@ uv run python -c "from control.deploy import deploy; deploy()"
 | `SBX_BACKEND` | `local`（默认）或 `modal` |
 | `SBX_RUNNER_CMD` | runner 可执行前缀；WP1-B 未合入时指向 `tests/fakes/stub_runner.py` |
 | `SBX_SSE_KEEPALIVE_SECONDS` | SSE `: keepalive` 间隔，默认 15 |
-| `SBX_MAX_CONCURRENT` | 每 owner 并发 Sandbox 上限，默认 2 |
+| `SBX_MAX_CONCURRENT` | live agent/sandbox 上限：每 key 默认 2，scheduler 全局默认 8；`creating`/`idle`/`running` 都占槽位——idle 等 follow-up 的 agent 关闭（`DELETE /v1/agents/{id}`）或被回收前仍占槽 |
 | `SBX_IDLE_TIMEOUT_S` | 空闲回收阈值，默认 1800 |
 | `SBX_RUN_STORE_DIR` | 本地 run ledger 落盘目录；默认 `$XDG_STATE_HOME/sbx-browser/runs`（modal 后端用 `sbx-runs` Dict） |

@@ -28,6 +28,35 @@ def test_status_json(tmp_path, capsys) -> None:
     assert payload["base_url"] == "https://x.modal.run"
 
 
+def test_status_aggregates_providers_and_shows_live_cap(tmp_path, capsys, monkeypatch) -> None:
+    """Multi-model providers collapse; live agents render against the cap."""
+    monkeypatch.delenv("SBX_MAX_CONCURRENT", raising=False)
+    write_state(tmp_path, {"version": "0.1.0", "app_url": "https://x.modal.run"})
+    from sbx.config import key_path
+
+    key_path({"SBX_STATE_DIR": str(tmp_path / "state")}).write_text("sbx_cli\n")
+    transport, _ = make_v1(
+        models=[
+            {"provider": "devin", "model": "swe-2-high", "accounts_available": 1},
+            {"provider": "devin", "model": "swe-2-medium", "accounts_available": 1},
+        ],
+        agents=[
+            {"id": "a1", "status": "idle"},
+            {"id": "a2", "status": "closed"},
+        ],
+    )
+    rc = main(
+        [*_args(tmp_path), "status"],
+        plane=FakePlane(),
+        transport=transport,
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "devin: 1 account, 2 models (swe-2-high, swe-2-medium)" in out
+    assert out.count("devin") == 1  # no per-model duplication
+    assert "agents:    1 live (SBX_MAX_CONCURRENT unset" in out
+
+
 def test_deploy_end_to_end_via_cli(tmp_path, capsys) -> None:
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
