@@ -40,13 +40,15 @@ import shutil
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
 from control.config import ARTIFACTS_DICT_NAME
+from control.latency import observe
 
 ARTIFACT_FORMAT_PATCH = "patch"
 MANIFEST_MEMBER = "manifest.json"
@@ -56,6 +58,10 @@ SCHEMA_VERSION = 1
 
 _ARTIFACT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+# Bounded concurrency for the Modal Dict member fan-out (SOR-118): enough
+# to hide per-RPC latency without turning one request into a Dict burst.
+_DICT_FANOUT = 8
 
 # Always-on denylist. Applied to every collection regardless of the
 # caller's allowlist so provider credentials, auth stores and key material
@@ -758,18 +764,48 @@ class ModalDictArtifactStore:
     def _mkey(artifact_id: str, member: str) -> str:
         return f"{artifact_id}/member/{member}"
 
+    def _get(self, key: str) -> Any:
+        with observe("modal_dict.get", store=self._name, key=key):
+            return self._d().get(key)
+
+    def _put(self, key: str, value: Any) -> None:
+        with observe("modal_dict.put", store=self._name, key=key):
+            self._d().put(key, value)
+
+    def _pop(self, key: str) -> None:
+        try:
+            with observe("modal_dict.pop", store=self._name, key=key):
+                self._d().pop(key)
+        except KeyError:
+            pass
+
     def put(self, manifest: ArtifactManifest, members: Mapping[str, bytes]) -> ArtifactManifest:
         _validate_artifact_id(manifest.artifact_id)
         _verify_members(manifest, members)
         aid = manifest.artifact_id
-        for name, data in members.items():
-            self._d().put(self._mkey(aid, name), data)
-        self._d().put(f"{aid}/members", sorted(members))
-        self._d().put(f"{aid}/manifest", manifest_dumps(manifest))
+        # One Dict RPC per member serialized artifact create behind N network
+        # round-trips (SOR-118); a bounded pool keeps the commit order —
+        # manifest last — while the member fan-out runs concurrently.
+        with observe(
+            "modal_dict.put_members",
+            store=self._name,
+            key=aid,
+            members=len(members),
+            bytes=sum(len(data) for data in members.values()),
+        ):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                futures = [
+                    pool.submit(self._d().put, self._mkey(aid, name), data)
+                    for name, data in members.items()
+                ]
+                for future in futures:
+                    future.result()
+        self._put(f"{aid}/members", sorted(members))
+        self._put(f"{aid}/manifest", manifest_dumps(manifest))
         return manifest
 
     def manifest(self, artifact_id: str) -> ArtifactManifest:
-        raw = self._d().get(f"{artifact_id}/manifest")
+        raw = self._get(f"{artifact_id}/manifest")
         if raw is None:
             raise ArtifactNotFoundError(f"unknown artifact {artifact_id!r}")
         decoded = manifest_loads(raw)
@@ -781,9 +817,16 @@ class ModalDictArtifactStore:
 
     def open(self, artifact_id: str) -> ArtifactPackage:
         manifest = self.manifest(artifact_id)
+        names = list(_declared_members(manifest))
+        with observe(
+            "modal_dict.get_members", store=self._name, key=artifact_id, members=len(names)
+        ):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                datas = list(
+                    pool.map(lambda name: self._d().get(self._mkey(artifact_id, name)), names)
+                )
         members: dict[str, bytes] = {}
-        for name in _declared_members(manifest):
-            data = self._d().get(self._mkey(artifact_id, name))
+        for name, data in zip(names, datas):
             if data is None:
                 raise ArtifactCorruptError(
                     f"artifact {artifact_id} member {name!r} missing from store"
@@ -796,7 +839,7 @@ class ModalDictArtifactStore:
             return manifest_dumps(self.manifest(artifact_id))
         manifest = self.manifest(artifact_id)
         digest, size = _read_declared(manifest, member)
-        data = self._d().get(self._mkey(artifact_id, member))
+        data = self._get(self._mkey(artifact_id, member))
         if data is None:
             raise ArtifactCorruptError(f"member {member!r} missing from store")
         if size is not None and len(data) != size:
@@ -807,31 +850,29 @@ class ModalDictArtifactStore:
 
     def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
         out: list[ArtifactManifest] = []
-        items: Iterator[tuple[Any, Any]] = self._d().items()
-        for key, _raw in items:
+        with observe("modal_dict.items", store=self._name):
+            items = list(self._d().items())
+        for key, raw in items:
             if not isinstance(key, str) or not key.endswith("/manifest"):
                 continue
+            # ``items()`` already returns the manifest bytes — decode them
+            # directly instead of re-fetching each manifest with its own RPC.
             try:
-                manifest = self.manifest(key[: -len("/manifest")])
+                manifest = manifest_loads(raw)
             except ArtifactError:
+                continue
+            if manifest.artifact_id != key[: -len("/manifest")]:
                 continue
             if agent_id is None or manifest.producer_agent_id == agent_id:
                 out.append(manifest)
         return sorted(out, key=lambda m: (m.created_at, m.artifact_id))
 
     def delete(self, artifact_id: str) -> None:
-        d = self._d()
-        members = d.get(f"{artifact_id}/members") or []
+        members = self._get(f"{artifact_id}/members") or []
         for name in members:
-            try:
-                d.pop(self._mkey(artifact_id, name))
-            except KeyError:
-                pass
-        for key in (f"{artifact_id}/members", f"{artifact_id}/manifest"):
-            try:
-                d.pop(key)
-            except KeyError:
-                pass
+            self._pop(self._mkey(artifact_id, name))
+        self._pop(f"{artifact_id}/members")
+        self._pop(f"{artifact_id}/manifest")
 
 
 def _to_bytes(value: bytes | str) -> bytes:

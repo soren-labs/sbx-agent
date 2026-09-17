@@ -19,6 +19,16 @@ Thin HTTP surface plus the SOR-84/C2 SDK verbs:
 * ``client.artifacts.list`` / ``client.artifacts.download`` — SOR-83 seam
   over ``GET /v1/artifacts`` and ``GET /v1/artifacts/{id}/download``.
 
+Every normal verb runs under a finite connect/read/write/pool timeout
+(SOR-118): a stalled server surfaces as ``SbxTransportError`` — never an
+unbounded wait. The read bound is an inactivity gap, not a total transfer
+budget, so large downloads still complete while bytes flow. A timed-out
+mutation may already be persisted server-side — the error's ``check`` field
+names the durable GET to run before any retry. ``watch``/SSE keep their own
+long-lived read semantics (``read_timeout_s``) on top of the same finite
+connect/write/pool bounds. ``SBX_HTTP_TIMEOUT_S`` overrides the default
+budget with a single seconds value.
+
 Usage:
     SBX_API_KEY=sbx_... SBX_BASE_URL=https://sbx.sorenforge.com \
         python examples/sbx_client.py "Write hello.txt containing hi"
@@ -40,6 +50,12 @@ from typing import Any
 import httpx
 
 DEFAULT_BASE_URL = "https://sbx.sorenforge.com"
+
+# Finite transport budget for every non-stream verb (SOR-118). ``read`` is
+# the max inactivity gap between bytes, not a total budget. ``watch``/SSE
+# reuse the connect/write/pool bounds with their own longer read gap.
+DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=10.0)
+TIMEOUT_ENV = "SBX_HTTP_TIMEOUT_S"
 
 # ``RunStatus`` from docs/contracts/api-v1.yaml: FINISHED/ERROR/CANCELLED/
 # EXPIRED are persisted terminal states that never change once written.
@@ -65,6 +81,71 @@ class SbxApiError(RuntimeError):
         self.status = status
         self.code = code
         self.retry_after = retry_after
+
+
+class SbxTransportError(RuntimeError):
+    """A bounded HTTP call failed at the transport layer (timeout/drop).
+
+    The request may still have completed server-side: ``check`` names the
+    durable GET to run before retrying (a timed-out POST can already be
+    persisted — blindly re-POSTing would double-apply it). ``idempotent``
+    marks calls a blind retry cannot double-apply (GETs, idempotent
+    DELETE/cancel/review shapes, keyed creates). ``original`` is the httpx
+    failure.
+    """
+
+    def __init__(
+        self,
+        method: str,
+        path: str,
+        *,
+        check: str | None = None,
+        idempotent: bool = False,
+        original: httpx.TransportError | None = None,
+    ) -> None:
+        self.method = method
+        self.path = path
+        self.check = check
+        self.idempotent = idempotent
+        self.original = original
+        if check:
+            hint = (
+                f"the mutation may already be persisted — run {check} to read "
+                "durable state before retrying"
+            )
+        elif idempotent:
+            hint = "safe to retry"
+        else:
+            hint = "read durable state before retrying"
+        super().__init__(f"{method} {path} failed: {original}; {hint}")
+
+
+def _resolve_timeout(
+    timeout: httpx.Timeout | float | None, client: httpx.Client | None
+) -> httpx.Timeout:
+    """Finite ``httpx.Timeout`` for the normal verbs — never ``None``.
+
+    ``timeout`` wins, then ``SBX_HTTP_TIMEOUT_S`` (one seconds value for all
+    four phases), then an injected client's own timeout when it is finite,
+    then ``DEFAULT_TIMEOUT``.
+    """
+    if isinstance(timeout, httpx.Timeout):
+        return timeout
+    if timeout is not None:
+        return httpx.Timeout(float(timeout))
+    raw = os.environ.get(TIMEOUT_ENV)
+    if raw:
+        try:
+            return httpx.Timeout(float(raw))
+        except ValueError:
+            pass
+    if client is not None:
+        inherited = client.timeout
+        if isinstance(inherited, httpx.Timeout) and any(
+            getattr(inherited, part) is not None for part in ("connect", "read", "write", "pool")
+        ):
+            return inherited
+    return DEFAULT_TIMEOUT
 
 
 class _StreamRetry(Exception):
@@ -150,19 +231,26 @@ def _sse_frames(lines: Iterable[str]) -> Iterator[SseEvent | str]:
 
 
 class SbxClient:
-    """Public ``/v1`` client. Pass ``client=`` to inject a transport."""
+    """Public ``/v1`` client. Pass ``client=`` to inject a transport.
+
+    ``timeout`` bounds every non-stream call (default ``DEFAULT_TIMEOUT`` /
+    ``SBX_HTTP_TIMEOUT_S``); streams keep their own long-lived read gap.
+    """
 
     def __init__(
         self,
         base_url: str | None = None,
         api_key: str | None = None,
         client: httpx.Client | None = None,
+        *,
+        timeout: httpx.Timeout | float | None = None,
     ) -> None:
         self._owns = client is None
+        self._timeout = _resolve_timeout(timeout, client)
         self.http = client or httpx.Client(
             base_url=(base_url or os.environ.get("SBX_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
             headers={"Authorization": f"Bearer {api_key or os.environ['SBX_API_KEY']}"},
-            timeout=None,
+            timeout=self._timeout,
         )
         self.artifacts = _Artifacts(self)
 
@@ -190,6 +278,35 @@ class SbxClient:
                 error.get("retry_after"),
             )
         return resp.json() if resp.content else {}
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        check: str | None = None,
+        idempotent: bool = False,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """One bounded non-stream call.
+
+        Transport failures (timeout, drop, refused connect) become
+        ``SbxTransportError`` carrying ``check`` — the durable GET to run
+        before retrying — so a caller never re-POSTs a mutation that may
+        already be persisted.
+        """
+        try:
+            return self.http.request(method, path, timeout=self._timeout, **kwargs)
+        except httpx.TransportError as exc:
+            raise SbxTransportError(
+                method, path, check=check, idempotent=idempotent, original=exc
+            ) from exc
+
+    def _stream_timeout(self, read_s: float | None) -> httpx.Timeout:
+        """Stream budget: the normal connect/write/pool bounds plus the
+        caller's long-lived SSE read gap (``None`` = unbounded reads)."""
+        base = self._timeout
+        return httpx.Timeout(connect=base.connect, write=base.write, pool=base.pool, read=read_s)
 
     # ------------------------------------------------------------- agents
 
@@ -237,7 +354,18 @@ class SbxClient:
             # {"artifact_id": ...} or {"head_sha": ...} — cross-agent handoff.
             body["handoff"] = dict(handoff)
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        return self._check(self.http.post("/v1/agents", json=body, headers=headers))
+        return self._check(
+            self._request(
+                "POST",
+                "/v1/agents",
+                json=body,
+                headers=headers,
+                # A keyed retry replays the original response; an unkeyed one
+                # can double-create — list agents before retrying.
+                check="GET /v1/agents",
+                idempotent=idempotency_key is not None,
+            )
+        )
 
     def create(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Orchestration alias for ``create_agent``."""
@@ -245,13 +373,20 @@ class SbxClient:
 
     def list_agents(self, **params: Any) -> dict[str, Any]:
         clean = {k: v for k, v in params.items() if v is not None}
-        return self._check(self.http.get("/v1/agents", params=clean))
+        return self._check(self._request("GET", "/v1/agents", params=clean))
 
     def get_agent(self, agent_id: str) -> dict[str, Any]:
-        return self._check(self.http.get(f"/v1/agents/{agent_id}"))
+        return self._check(self._request("GET", f"/v1/agents/{agent_id}"))
 
     def delete_agent(self, agent_id: str) -> dict[str, Any]:
-        return self._check(self.http.delete(f"/v1/agents/{agent_id}"))
+        return self._check(
+            self._request(
+                "DELETE",
+                f"/v1/agents/{agent_id}",
+                check=f"GET /v1/agents/{agent_id}",
+                idempotent=True,  # re-close returns the closed record
+            )
+        )
 
     def close_agent(self, agent_id: str) -> dict[str, Any]:
         """Close an agent — reclaim the sandbox; history stays read-only."""
@@ -266,37 +401,60 @@ class SbxClient:
         body: dict[str, Any] = {"prompt": {"text": text}}
         if metadata:
             body["metadata"] = dict(metadata)
-        return self._check(self.http.post(f"/v1/agents/{agent_id}/runs", json=body))
+        return self._check(
+            self._request(
+                "POST",
+                f"/v1/agents/{agent_id}/runs",
+                json=body,
+                # A retry would queue a second run — confirm none landed.
+                check=f"GET /v1/agents/{agent_id}/runs",
+            )
+        )
 
     def create_run(self, agent_id: str, text: str) -> dict[str, Any]:
         return self.followup(agent_id, text)
 
     def list_runs(self, agent_id: str) -> list[dict[str, Any]]:
-        return self._check(self.http.get(f"/v1/agents/{agent_id}/runs"))["runs"]
+        return self._check(self._request("GET", f"/v1/agents/{agent_id}/runs"))["runs"]
 
     def get_run(self, agent_id: str, run_id: str) -> dict[str, Any]:
-        return self._check(self.http.get(f"/v1/agents/{agent_id}/runs/{run_id}"))
+        return self._check(self._request("GET", f"/v1/agents/{agent_id}/runs/{run_id}"))
 
     def cancel_run(self, agent_id: str, run_id: str) -> dict[str, Any]:
-        return self._check(self.http.post(f"/v1/agents/{agent_id}/runs/{run_id}/cancel"))
+        return self._check(
+            self._request(
+                "POST",
+                f"/v1/agents/{agent_id}/runs/{run_id}/cancel",
+                check=f"GET /v1/agents/{agent_id}/runs/{run_id}",
+                idempotent=True,  # cancel on a terminal run returns latest state
+            )
+        )
 
     def cancel(self, agent_id: str, run_id: str) -> dict[str, Any]:
         """Explicitly cancel a run — the only cancel path; ``watch`` never does."""
         return self.cancel_run(agent_id, run_id)
 
     def usage(self, agent_id: str) -> dict[str, Any]:
-        return self._check(self.http.get(f"/v1/agents/{agent_id}/usage"))
+        return self._check(self._request("GET", f"/v1/agents/{agent_id}/usage"))
 
     # --- SOR-83: workspaces, handoffs, artifacts ---------------------------
 
     def get_workspace(self, agent_id: str) -> dict:
-        return self._check(self.http.get(f"/v1/agents/{agent_id}/workspace"))["workspace"]
+        return self._check(self._request("GET", f"/v1/agents/{agent_id}/workspace"))["workspace"]
 
     def review_workspace(self, agent_id: str, head_sha: str | None = None) -> dict:
         body = {"head_sha": head_sha} if head_sha else {}
-        return self._check(self.http.post(f"/v1/agents/{agent_id}/workspace/review", json=body))[
-            "workspace"
-        ]
+        return self._check(
+            self._request(
+                "POST",
+                f"/v1/agents/{agent_id}/workspace/review",
+                json=body,
+                # Pinning the same reviewed head twice is a no-op — durable
+                # truth is the record's ``reviewed_head_sha``.
+                check=f"GET /v1/agents/{agent_id}/workspace (inspect reviewed_head_sha)",
+                idempotent=True,
+            )
+        )["workspace"]
 
     def apply_handoff(
         self,
@@ -313,34 +471,49 @@ class SbxClient:
             body["head_sha"] = head_sha
         if workspace:
             body["workspace"] = workspace
-        return self._check(self.http.post(f"/v1/agents/{agent_id}/handoff", json=body))["workspace"]
+        return self._check(
+            self._request(
+                "POST",
+                f"/v1/agents/{agent_id}/handoff",
+                json=body,
+                check=f"GET /v1/agents/{agent_id}/workspace",
+            )
+        )["workspace"]
 
     def create_artifact(
         self, agent_id: str, run_id: str | None = None, test_command: str | None = None
     ) -> dict:
         body = {k: v for k, v in {"run_id": run_id, "test_command": test_command}.items() if v}
-        return self._check(self.http.post(f"/v1/agents/{agent_id}/artifacts", json=body))[
-            "artifact"
-        ]
+        return self._check(
+            self._request(
+                "POST",
+                f"/v1/agents/{agent_id}/artifacts",
+                json=body,
+                # A retry would snapshot a second artifact — list first.
+                check=f"GET /v1/artifacts?agent_id={agent_id}",
+            )
+        )["artifact"]
 
     def list_artifacts(self, agent_id: str | None = None) -> list[dict]:
         params = {"agent_id": agent_id} if agent_id else {}
-        return self._check(self.http.get("/v1/artifacts", params=params))["artifacts"]
+        return self._check(self._request("GET", "/v1/artifacts", params=params))["artifacts"]
 
     def get_artifact(self, artifact_id: str) -> dict:
-        return self._check(self.http.get(f"/v1/artifacts/{artifact_id}"))
+        return self._check(self._request("GET", f"/v1/artifacts/{artifact_id}"))
 
     def download_artifact(self, artifact_id: str, member: str = "patch.diff") -> bytes:
-        resp = self.http.get(f"/v1/artifacts/{artifact_id}/download", params={"member": member})
+        resp = self._request(
+            "GET", f"/v1/artifacts/{artifact_id}/download", params={"member": member}
+        )
         if resp.status_code >= 400:
             self._check(resp)
         return resp.content
 
     def models(self) -> list[dict[str, Any]]:
-        return self._check(self.http.get("/v1/models"))["models"]
+        return self._check(self._request("GET", "/v1/models"))["models"]
 
     def me(self) -> dict[str, Any]:
-        return self._check(self.http.get("/v1/me"))
+        return self._check(self._request("GET", "/v1/me"))
 
     # ------------------------------------------------------------ waiting
 
@@ -356,16 +529,28 @@ class SbxClient:
 
         Returns the last observed run payload. When ``timeout_s`` elapses the
         status may still be non-terminal — it is returned as observed, never
-        inferred; callers inspect ``run["status"]``.
+        inferred; callers inspect ``run["status"]``. A transient transport
+        failure costs one poll, not the whole wait; when no GET ever
+        succeeded the last transport error is raised.
         """
         deadline = time.monotonic() + timeout_s
+        last_run: dict[str, Any] | None = None
+        last_error: SbxTransportError | None = None
         while True:
-            run = self.get_run(agent_id, run_id)
-            if run.get("status") in RUN_DONE:
-                return run
+            try:
+                run = self.get_run(agent_id, run_id)
+            except SbxTransportError as exc:
+                last_error = exc
+            else:
+                last_run = run
+                if run.get("status") in RUN_DONE:
+                    return run
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return run
+                if last_run is not None:
+                    return last_run
+                assert last_error is not None
+                raise last_error
             time.sleep(min(poll_s, remaining))
 
     def wait_many(
@@ -391,7 +576,7 @@ class SbxClient:
             for handle in sorted(pending):
                 try:
                     run = self.get_run(*handle)
-                except SbxApiError:
+                except (SbxApiError, SbxTransportError):
                     continue
                 done[handle] = run
                 if run.get("status") in RUN_DONE:
@@ -425,17 +610,24 @@ class SbxClient:
         agent_id: str,
         run_id: str,
         last_event_id: str | int | None = None,
+        *,
+        read_timeout_s: float | None = 90.0,
     ) -> Iterator[SseEvent]:
         """Single SSE pass yielding ``SseEvent`` until the stream ends.
 
         No reconnect — ``watch`` adds ``Last-Event-ID`` resume and the
         terminal fallback. ``last_event_id`` resumes after that line.
+        ``read_timeout_s`` is the inactivity gap bound (server keepalives
+        reset it); ``None`` opts back into unbounded reads.
         """
         headers = {"Accept": "text/event-stream"}
         if last_event_id is not None:
             headers["Last-Event-ID"] = str(last_event_id)
         with self.http.stream(
-            "GET", f"/v1/agents/{agent_id}/runs/{run_id}/stream", headers=headers
+            "GET",
+            f"/v1/agents/{agent_id}/runs/{run_id}/stream",
+            headers=headers,
+            timeout=self._stream_timeout(read_timeout_s),
         ) as resp:
             resp.raise_for_status()
             for frame in _sse_frames(resp.iter_lines()):
@@ -468,7 +660,7 @@ class SbxClient:
         """
         path = f"/v1/agents/{agent_id}/runs/{run_id}/stream"
         last_id = str(last_event_id) if last_event_id is not None else None
-        timeout = httpx.Timeout(None, read=read_timeout_s)
+        timeout = self._stream_timeout(read_timeout_s)
         attempts = 0
         while True:
             try:
@@ -598,7 +790,7 @@ class _Artifacts:
     def list(self, agent_id: str, run_id: str | None = None) -> list[dict[str, Any]]:
         """Artifact descriptors for an agent (optionally scoped to a run)."""
         body = self._client._check(
-            self._client.http.get("/v1/artifacts", params={"agent_id": agent_id})
+            self._client._request("GET", "/v1/artifacts", params={"agent_id": agent_id})
         )
         artifacts = list(body.get("artifacts") or [])
         if run_id is not None:
@@ -617,7 +809,7 @@ class _Artifacts:
         require the producing agent's sandbox to still exist. ``agent_id``
         is accepted for call-site symmetry; the route is artifact-scoped.
         """
-        resp = self._client.http.get(f"/v1/artifacts/{artifact_id}/download")
+        resp = self._client._request("GET", f"/v1/artifacts/{artifact_id}/download")
         if resp.status_code >= 400:
             self._client._check(resp)
         data = resp.content

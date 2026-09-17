@@ -13,7 +13,13 @@ from typing import Any
 
 import httpx
 import pytest
-from examples.sbx_client import SbxApiError, SbxClient, SseEvent, WorkflowRecovery
+from examples.sbx_client import (
+    SbxApiError,
+    SbxClient,
+    SbxTransportError,
+    SseEvent,
+    WorkflowRecovery,
+)
 
 BASE = "http://sbx.test"
 
@@ -502,3 +508,159 @@ def test_error_unwraps_canonical_body() -> None:
         client.get_agent("nope")
     assert excinfo.value.status == 404
     assert excinfo.value.code == "not_found"
+
+
+# ---------------------------------------------------- SOR-118: timeouts
+
+
+def test_normal_verbs_carry_finite_timeout() -> None:
+    """GET/POST/DELETE all ride a finite connect/read/write/pool budget."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "DELETE":
+            return httpx.Response(200, json=agent_payload("a1"))
+        if request.method == "POST":
+            return httpx.Response(
+                200, json={"workspace": {"agent_id": "a1", "reviewed_head_sha": "h"}}
+            )
+        return httpx.Response(200, json=agent_payload("a1"))
+
+    client = make_client(handler)
+    client.get_agent("a1")
+    client.review_workspace("a1")
+    client.close_agent("a1")
+
+    assert [r.method for r in seen] == ["GET", "POST", "DELETE"]
+    for request in seen:
+        budget = request.extensions["timeout"]
+        for phase in ("connect", "read", "write", "pool"):
+            assert budget[phase] is not None and budget[phase] > 0
+
+
+def test_env_var_sets_uniform_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SBX_HTTP_TIMEOUT_S", "2.5")
+    seen: list[httpx.Request] = []
+
+    client = make_client(
+        lambda req: (seen.append(req), httpx.Response(200, json=agent_payload("a1")))[1]
+    )
+    client.get_agent("a1")
+
+    budget = seen[0].extensions["timeout"]
+    assert budget == {"connect": 2.5, "read": 2.5, "write": 2.5, "pool": 2.5}
+
+
+def test_review_timeout_names_durable_get() -> None:
+    """A review that may have persisted must point at GET + reviewed_head_sha."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SbxTransportError) as excinfo:
+        client.review_workspace("a1", head_sha="h" * 8)
+
+    err = excinfo.value
+    assert err.check == "GET /v1/agents/a1/workspace (inspect reviewed_head_sha)"
+    assert err.idempotent is True
+    assert "reviewed_head_sha" in str(err)
+    assert "durable state" in str(err)
+    assert isinstance(err.original, httpx.ReadTimeout)
+
+
+def test_artifact_create_timeout_directs_to_list_not_repost() -> None:
+    """Artifact create is not idempotent — the hint is 'list first'."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SbxTransportError) as excinfo:
+        client.create_artifact("a1", run_id="run-1")
+
+    err = excinfo.value
+    assert err.check == "GET /v1/artifacts?agent_id=a1"
+    assert err.idempotent is False
+    assert "may already be persisted" in str(err)
+
+
+def test_response_loss_after_persisted_review_recovers_via_get() -> None:
+    """The mutation landed but the response was lost: GET reveals the pin."""
+    state = {"reviewed_head_sha": None}
+    head = "a" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/workspace/review"):
+            state["reviewed_head_sha"] = json.loads(request.content)["head_sha"]
+            raise httpx.ReadTimeout("response lost", request=request)
+        assert request.url.path == "/v1/agents/a1/workspace"
+        return httpx.Response(
+            200,
+            json={
+                "workspace": {
+                    "agent_id": "a1",
+                    "repo": "o/r",
+                    "base_ref": "main",
+                    "base_sha": "b" * 40,
+                    "reviewed_head_sha": state["reviewed_head_sha"],
+                }
+            },
+        )
+
+    client = make_client(handler)
+    with pytest.raises(SbxTransportError):
+        client.review_workspace("a1", head_sha=head)
+    assert client.get_workspace("a1")["reviewed_head_sha"] == head
+
+
+def test_artifact_download_timeout_is_bounded() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow download", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SbxTransportError):
+        client.artifacts.download("a1", "art-1")
+
+
+def test_stream_uses_long_read_gap_not_unbounded_connect() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200, content=iter([frame(1, "sbx.turn_finished", {"type": "sbx.turn_finished"})])
+        )
+
+    client = make_client(handler)
+    list(client.stream_run("a1", "run-1"))
+
+    budget = seen[0].extensions["timeout"]
+    assert budget["read"] == 90.0  # the stream's own long-lived read gap
+    for phase in ("connect", "write", "pool"):
+        assert budget[phase] is not None and budget[phase] > 0
+
+
+def test_wait_survives_a_transient_transport_error() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json=run_payload("ag-1", "run-1", "FINISHED"))
+
+    client = make_client(handler)
+    run = client.wait("ag-1", "run-1", poll_s=0)
+    assert run["status"] == "FINISHED"
+    assert calls["n"] == 2
+
+
+def test_wait_raises_last_transport_error_when_no_get_succeeded() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SbxTransportError):
+        client.wait("ag-1", "run-1", timeout_s=0.02, poll_s=0)
