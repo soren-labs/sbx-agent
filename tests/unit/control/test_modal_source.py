@@ -56,7 +56,8 @@ def test_modal_app_source_has_decorators() -> None:
     assert "@modal.asgi_app()" in src
     assert "@modal.concurrent(max_inputs=20)" in src
     assert 'modal.Cron("*/5 * * * *")' in src
-    assert "sbx-basic-auth" in src or "BASIC_SECRET_NAME" in src
+    # Secrets resolve via the provider-gated name list (SOR-115).
+    assert "app_secret_names" in src
     assert "from control.app import create_app" in src
     assert "CONTROL_IMAGE" in src
     assert "image=CONTROL_IMAGE" in src

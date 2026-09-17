@@ -63,10 +63,31 @@ def _fixture(scenario: str) -> Path:
     return path
 
 
+def _auth_status() -> None:
+    """``codex login status`` — the provider CLI's own auth check.
+
+    Reflects the restored credential file only: ``$CODEX_HOME`` (else
+    ``$HOME/.codex``) ``auth.json`` must exist and hold a JSON object.
+    """
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    auth = home / "auth.json"
+    try:
+        ok = auth.is_file() and isinstance(json.loads(auth.read_text()), dict)
+    except (OSError, json.JSONDecodeError):
+        ok = False
+    if ok:
+        print("Logged in using ChatGPT")
+        sys.exit(0)
+    print("Not logged in")
+    sys.exit(1)
+
+
 def parse_argv(argv: list[str]) -> dict:
     tokens = list(argv[1:])
     if tokens and Path(tokens[0]).name in {"codex", "fake_codex.py"}:
         tokens = tokens[1:]
+    if tokens[:2] == ["login", "status"]:
+        _auth_status()
     if not tokens or tokens[0] != "exec":
         print("expected: exec [--json] ... [resume] [PROMPT]", file=sys.stderr)
         sys.exit(2)

@@ -88,6 +88,40 @@ def test_uninstall_via_cli(tmp_path, capsys) -> None:
     assert payload["ok"] and payload["app_stopped"]
 
 
+def test_credentials_json_clean_home(tmp_path, capsys) -> None:
+    """``sbx credentials`` scans selected providers without a deployment."""
+    rc = main(
+        [*_args(tmp_path), "credentials", "--providers", "codex,grok", "--json"],
+        plane=FakePlane(),
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    creds = {c["provider"]: c for c in payload["credentials"]}
+    assert set(creds) == {"codex", "grok"}
+    for entry in creds.values():
+        assert entry["status"] == "not_found"
+        assert entry["login"]  # official login guidance attached
+
+
+def test_credentials_verify_reports_status(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    auth = home / ".codex" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text('{"tokens": {}}')
+    auth.chmod(0o600)
+    # The scan resolves HOME from os.environ (conftest isolates it); point it
+    # at the fixture home instead.
+    monkeypatch.setenv("HOME", str(home))
+    rc = main(
+        [*_args(tmp_path), "credentials", "--providers", "codex", "--verify", "--json"],
+        plane=FakePlane(),
+        auth_check=lambda p, h: "ok",
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["credentials"][0]["status"] == "verified"
+
+
 def test_error_is_machine_readable(tmp_path, capsys) -> None:
     rc = main(
         [*_args(tmp_path), "deploy", "--json"],

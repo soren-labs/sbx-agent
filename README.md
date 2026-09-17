@@ -170,6 +170,13 @@ CLIs write on `login`:
 | grok | `grok` login | `~/.grok/auth.json` |
 | opencode | `opencode` (login writes `auth.json`) | `~/.local/share/opencode/auth.json` |
 
+`sbx credentials` discovers these local logins for the selected providers and
+reports presence/permissions/schema/status only — never contents; `--verify`
+runs each provider CLI's own auth check so the provider's answer (not file
+shape) decides `verified` vs `auth_invalid`. Hints include the official login
+command above, and `0644` files get a `chmod 600` remediation (or
+`--allow-open-permissions`).
+
 ```bash
 python -m control.onboarding --modal import --provider <p> --from <path-or-home>
 # or: POST /v1/accounts {provider, label, credential:{files:{...}}} (admin key)

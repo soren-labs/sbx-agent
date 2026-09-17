@@ -13,7 +13,9 @@ from control.backends.modal import _codex_secrets, _resolve_image, _sandbox_secr
 from control.config import (
     MODAL_APP_NAME,
     account_secret_prefix,
+    app_secret_names,
     remote_env_overlay,
+    selected_providers,
 )
 
 
@@ -121,6 +123,39 @@ def test_provider_image_env_overrides(monkeypatch) -> None:
 def test_codex_image_env_override(monkeypatch) -> None:
     monkeypatch.setenv("SBX_IMAGE_CODEX", "rc-runtime")
     assert _resolve_image(_FakeModal, "codex") == ("image", "rc-runtime")
+
+
+def test_app_secret_names_gate_codex_on_selected_providers() -> None:
+    """The shared Codex Secret mounts only when codex is a selected
+    provider — an unselected credential must not block a deploy (SOR-115)."""
+    assert app_secret_names({"SBX_PROVIDERS": "codex"}) == [
+        "sbx-codex-auth",
+        "sbx-basic-auth",
+        "sbx-v1-bootstrap",
+    ]
+    assert app_secret_names({"SBX_PROVIDERS": "devin,grok"}) == [
+        "sbx-basic-auth",
+        "sbx-v1-bootstrap",
+    ]
+    # Default is codex-only (BootstrapConfig.providers default).
+    assert app_secret_names({}) == [
+        "sbx-codex-auth",
+        "sbx-basic-auth",
+        "sbx-v1-bootstrap",
+    ]
+    # Renamed secrets honor the configured names.
+    assert app_secret_names(
+        {
+            "SBX_PROVIDERS": "codex",
+            "SBX_CODEX_SECRET_NAME": "rc-codex-auth",
+            "SBX_BASIC_SECRET_NAME": "rc-basic",
+        }
+    ) == ["rc-codex-auth", "rc-basic", "sbx-v1-bootstrap"]
+
+
+def test_selected_providers_parses_csv() -> None:
+    assert selected_providers({}) == ("codex",)
+    assert selected_providers({"SBX_PROVIDERS": " devin , grok "}) == ("devin", "grok")
 
 
 def test_custom_codex_secret_name_still_filtered_from_account_sandboxes(

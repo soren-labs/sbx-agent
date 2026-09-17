@@ -19,14 +19,18 @@ from control.accounts import (
 )
 from control.backend import LocalProcessBackend
 from control.onboarding import (
+    PROVIDER_AUTH_CHECKS,
     PROVIDER_DESCRIPTORS,
     OnboardingError,
     OnboardingService,
     ProbeResult,
+    SandboxAuthVerifyProbe,
     SandboxVerifyProbe,
     StaticCredentialProbe,
+    classify_auth_output,
     collect_credential_blob,
     descriptor_for,
+    provider_auth_argv,
     validate_credential_blob,
 )
 from control.onboarding import main as onboarding_main
@@ -402,6 +406,107 @@ class TestSandboxVerifyProbe:
         result, updated = svc.verify(account.id)
         assert result.status == "provider_unavailable"
         assert updated.status == "active"
+
+
+class TestAuthCheckArgV:
+    """Provider-owned auth commands — the authoritative seam (SOR-115)."""
+
+    def test_every_release_provider_has_an_auth_check(self) -> None:
+        for provider in ("codex", "devin", "antigravity", "grok", "opencode"):
+            argv = provider_auth_argv(provider, env={})
+            assert argv is not None
+            assert argv[-len(PROVIDER_AUTH_CHECKS[provider]) :] == list(
+                PROVIDER_AUTH_CHECKS[provider]
+            )
+
+    def test_unknown_provider_has_no_check(self) -> None:
+        assert provider_auth_argv("claude", env={}) is None
+
+    def test_bin_override_splits_tokens(self) -> None:
+        argv = provider_auth_argv("grok", env={"GROK_BIN": "/opt/grok --fast"})
+        assert argv == ["/opt/grok", "--fast", "models"]
+
+    def test_py_bin_uses_current_interpreter(self) -> None:
+        argv = provider_auth_argv("codex", env={"CODEX_BIN": "/fakes/fake_codex.py"})
+        assert argv == [sys.executable, "/fakes/fake_codex.py", "login", "status"]
+
+
+class TestClassifyAuthOutput:
+    def test_rc_zero_is_ok_for_default_providers(self) -> None:
+        assert classify_auth_output("codex", 0, "Logged in using ChatGPT") == "ok"
+        assert classify_auth_output("antigravity", 0, "gemini-3.8") == "ok"
+
+    def test_nonzero_is_auth_invalid(self) -> None:
+        assert classify_auth_output("codex", 1, "") == "auth_invalid"
+
+    def test_fail_marker_wins_over_rc(self) -> None:
+        assert classify_auth_output("codex", 0, "Not logged in") == "auth_invalid"
+        assert classify_auth_output("antigravity", 0, "Error: unauthorized") == "auth_invalid"
+
+    def test_devin_grok_need_positive_marker(self) -> None:
+        # These CLIs print a status page at rc 0 — rc alone is not proof.
+        assert classify_auth_output("devin", 0, "Logged in as user@x") == "ok"
+        assert classify_auth_output("grok", 0, "logged in: yes") == "ok"
+        assert classify_auth_output("devin", 0, "some other status page") == "probe_unavailable"
+        assert classify_auth_output("grok", 1, "") == "auth_invalid"
+
+    def test_opencode_empty_listing_is_inconclusive(self) -> None:
+        assert classify_auth_output("opencode", 0, "openai") == "ok"
+        assert classify_auth_output("opencode", 0, "") == "probe_unavailable"
+        assert classify_auth_output("opencode", 1, "") == "auth_invalid"
+
+
+class TestSandboxAuthVerifyProbe:
+    """``--probe auth``: runner init restores the blob, then the provider
+    CLI's own auth check decides — the restore alone proves nothing."""
+
+    def test_auth_probe_ok_when_cli_accepts(
+        self, tmp_path: Path, stub_runner: Path, repo_root: Path
+    ) -> None:
+        backend = LocalProcessBackend()
+        probe = SandboxAuthVerifyProbe(
+            backend,
+            [sys.executable, str(stub_runner)],
+            bin_env={"GROK_BIN": str(repo_root / "tests" / "fakes" / "fake_grok.py")},
+        )
+        svc = _service(probe=probe)
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        account = svc.add("grok", src)
+        result, updated = svc.verify(account.id)
+        assert result.status == "ok"
+        assert updated.status == "active"
+        assert backend.list() == []
+
+    def test_auth_probe_invalid_when_cli_rejects(self, tmp_path: Path, stub_runner: Path) -> None:
+        backend = LocalProcessBackend()
+        probe = SandboxAuthVerifyProbe(
+            backend,
+            [sys.executable, str(stub_runner)],
+            # A CLI that always rejects: rc != 0 -> auth_invalid.
+            bin_env={"GROK_BIN": f"{sys.executable} -c 'import sys; sys.exit(1)'"},
+        )
+        svc = _service(probe=probe)
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        account = svc.add("grok", src)
+        result, updated = svc.verify(account.id)
+        assert result.status == "auth_invalid"
+        assert updated.status == "invalid"
+        assert updated.last_error == "auth_invalid"
+        assert backend.list() == []
+
+    def test_auth_probe_unavailable_for_unknown_provider(
+        self, tmp_path: Path, stub_runner: Path
+    ) -> None:
+        backend = LocalProcessBackend()
+        probe = SandboxAuthVerifyProbe(backend, [sys.executable, str(stub_runner)], bin_env={})
+        svc = _service(probe=probe)
+        src = _write(tmp_path / "creds.json", '{"token": "x"}')
+        account = svc.add("claude", src, experimental_ok=True)
+        # claude has no PROVIDER_AUTH_CHECKS entry; stub_runner also rejects
+        # the provider at init — either way the account is not verified.
+        result, updated = svc.verify(account.id)
+        assert result.status in ("probe_unavailable", "init_failed")
+        assert backend.list() == []
 
 
 class TestRefresh:

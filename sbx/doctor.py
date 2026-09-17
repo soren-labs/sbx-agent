@@ -2,17 +2,21 @@
 
 Reports presence, hash prefixes, and reachability only. It never prints a
 token, password, or credential value — the bootstrap key appears solely as
-its ``sha256:`` fingerprint.
+its ``sha256:`` fingerprint, and local credential discovery (SOR-115)
+reports presence/permission/schema/status only.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import partial
+from pathlib import Path
 
 import httpx
 
 from sbx.config import ResolvedConfig, key_path
+from sbx.credentials import cli_auth_check, scan_credentials
 from sbx.deploy import read_deploy_state
 from sbx.httpapi import ApiError, V1Client
 from sbx.keys import fingerprint, resolve_api_key
@@ -180,6 +184,9 @@ def run_doctor(
     *,
     env: Mapping[str, str] | None = None,
     transport: httpx.BaseTransport | None = None,
+    verify: bool = False,
+    allow_open_permissions: bool = False,
+    auth_check: Callable[[str, Path], str] | None = None,
 ) -> list[Check]:
     """Run every check; the caller decides how to render and exit."""
     env = os.environ if env is None else env
@@ -191,7 +198,7 @@ def run_doctor(
         workspace = plane.workspace()
     except Exception:
         workspace = None
-    checks.append(check_modal_auth(workspace))
+    checks.append(check_modal_auth(workspace, env=env))
 
     secret_names: set[str] = set()
     secret_list_failed = False
@@ -220,6 +227,10 @@ def run_doctor(
         )
     elif not secret_list_failed:
         for name in config.secret_names():
+            # The shared Codex Secret only gates a codex deploy — an
+            # unselected provider must not block onboarding (SOR-115).
+            if name == config.codex_secret and "codex" not in config.providers:
+                continue
             checks.append(check_secret_present(name in secret_names, name))
         for name in config.dict_names():
             try:
@@ -251,6 +262,19 @@ def run_doctor(
                 detail=f"{fingerprint(token)} (mode {mode})",
             )
         )
+
+    # Local credential discovery for the selected providers — advisory
+    # only: the deployment may be serving credentials imported earlier, so
+    # a missing local file is guidance, not a failed deployment.
+    if auth_check is None and verify:
+        auth_check = partial(cli_auth_check, env=env)
+    for scan in scan_credentials(
+        config.providers,
+        env=env,
+        allow_open_permissions=allow_open_permissions,
+        auth_check=auth_check,
+    ):
+        checks.append(scan.to_check())
 
     # Same resolution order as `sbx status`: configured URL, else the last
     # deployed URL recorded in the state dir.

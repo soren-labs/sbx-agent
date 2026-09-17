@@ -13,11 +13,9 @@ import modal
 
 from control.app import create_app
 from control.config import (
-    BASIC_SECRET_NAME,
-    CODEX_SECRET_NAME,
     MODAL_APP_NAME,
     RUN_GRACE_S,
-    V1_BOOTSTRAP_SECRET_NAME,
+    app_secret_names,
     remote_env_overlay,
 )
 from control.reaper import reap
@@ -28,10 +26,10 @@ app = modal.App(_APP_NAME)
 
 # Secret names resolve at deploy time so a parallel deployment (the bootstrap
 # config's ``secrets.*`` values) mounts its own Secrets instead of sharing the
-# contract defaults.
-_CODEX_SECRET = os.environ.get("SBX_CODEX_SECRET_NAME") or CODEX_SECRET_NAME
-_BASIC_SECRET = os.environ.get("SBX_BASIC_SECRET_NAME") or BASIC_SECRET_NAME
-_BOOTSTRAP_SECRET = os.environ.get("SBX_V1_BOOTSTRAP_SECRET_NAME") or V1_BOOTSTRAP_SECRET_NAME
+# contract defaults. The shared Codex Secret mounts only when ``codex`` is a
+# selected provider (``SBX_PROVIDERS``) — an unselected provider's credential
+# must never block a deploy (SOR-115).
+_secrets = [modal.Secret.from_name(name) for name in app_secret_names()]
 
 CONTROL_IMAGE = modal.Image.debian_slim(python_version="3.12").pip_install(
     "fastapi",
@@ -46,12 +44,6 @@ CONTROL_IMAGE = modal.Image.debian_slim(python_version="3.12").pip_install(
 # names, account seeding). ``remote_env_overlay`` is an allowlist — credential
 # material only ever arrives through the Secret mounts above.
 _REMOTE_ENV = remote_env_overlay(app_name=_APP_NAME)
-
-_secrets = [
-    modal.Secret.from_name(_CODEX_SECRET),
-    modal.Secret.from_name(_BASIC_SECRET),
-    modal.Secret.from_name(_BOOTSTRAP_SECRET),
-]
 
 
 @app.function(image=CONTROL_IMAGE, secrets=_secrets, env=_REMOTE_ENV)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sbx.config import BootstrapConfig, key_path
 from sbx.doctor import failed, run_doctor
 from sbx.keys import generate_key, load_or_create_key
@@ -153,3 +155,43 @@ def test_doctor_reports_materialized_account_secrets(tmp_path) -> None:
     checks = run_doctor(cfg, plane, env=env, transport=transport)
     account = next(c for c in checks if c.name == "account-secrets")
     assert account.ok and "1 referenced" in account.detail
+
+
+def test_doctor_codex_secret_not_required_for_non_codex_deploy(tmp_path) -> None:
+    """An unselected provider's credential must not block onboarding: a
+    devin-only deploy never requires ``sbx-codex-auth`` (SOR-115)."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    del plane.secrets["sbx-codex-auth"]
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(providers=("devin",), api_base_url=cfg.config.api_base_url),
+    )
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    names = [c.name for c in checks]
+    assert "secret:sbx-codex-auth" not in names
+    assert not failed(checks)
+
+
+def test_doctor_scans_local_credentials_advisory(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    cred = next(c for c in checks if c.name == "cred:codex")
+    assert not cred.ok and cred.warn  # clean HOME: guidance, not a failure
+    assert "codex login" in (cred.hint or "")
+    assert not failed(checks)
+
+
+def test_doctor_verify_runs_provider_auth_check(tmp_path) -> None:
+    cfg, plane, env, token = _healthy(tmp_path)
+    home = Path(env["HOME"])
+    auth = home / ".codex" / "auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text("{}")
+    auth.chmod(0o600)
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport, auth_check=lambda p, h: "ok")
+    cred = next(c for c in checks if c.name == "cred:codex")
+    assert cred.ok and "auth check passed" in cred.detail

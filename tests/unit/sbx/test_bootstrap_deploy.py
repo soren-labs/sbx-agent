@@ -129,6 +129,29 @@ def test_deploy_missing_codex_secret_is_actionable(tmp_path) -> None:
     assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
 
 
+def test_deploy_missing_codex_secret_guides_login_on_clean_home(tmp_path) -> None:
+    """When no local credential exists the remediation starts at the
+    official login, not a bare secret-create command (SOR-115)."""
+    plane = FakePlane()
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane)
+    assert "codex login" in (exc.value.hint or "")
+    assert "~/.codex/auth.json" in (exc.value.hint or "")
+    assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
+
+
+def test_deploy_non_codex_providers_skip_codex_secret(tmp_path) -> None:
+    """Only selected providers gate onboarding: a devin-only deploy must
+    not require ``sbx-codex-auth`` (SOR-115)."""
+    plane = FakePlane()  # no sbx-codex-auth — and none needed
+    config = BootstrapConfig(providers=("devin",))
+    report, _, _ = _deploy(tmp_path, plane, config=config)
+    assert plane.image_calls == ["devin"]
+    names = [s.name for s in report.steps]
+    assert "secret:codex" not in names
+    assert plane.deploy_env["SBX_PROVIDERS"] == "devin"
+
+
 def test_deploy_missing_modal_auth_is_actionable(tmp_path) -> None:
     plane = FakePlane(workspace=None)
     with pytest.raises(BootstrapError) as exc:

@@ -11,12 +11,18 @@ Flow (``python -m control.onboarding``)::
 
     providers            list supported provider descriptors
     add --provider P --from SRC   import a credential file/dir/blob (alias: import)
-    verify ACCOUNT_ID    probe the stored credential (static or sandbox seam)
+    verify ACCOUNT_ID    probe the stored credential (static / sandbox / auth seam)
     list / status        metadata only — never credential content
     refresh ACCOUNT_ID --from SRC   atomic write-back of a refreshed blob
     export ACCOUNT_ID --out PATH    write the stored blob to a 0600 file
     disable / enable     scheduling-safe status flips
     remove ACCOUNT_ID --yes         refuse while sessions are running
+
+``--probe sandbox`` proves the blob restores and ``runner init`` accepts it —
+it is NOT authoritative OAuth verification (the provider is never asked).
+``--probe auth`` is the authoritative seam: after init it runs the provider
+CLI's own auth check inside the same throwaway sandbox, so the provider's
+answer decides ``ok`` vs ``auth_invalid``.
 
 Import/refresh validation rejects unknown providers, provider/blob mismatch,
 undeclared or escaping relpaths, symlinks, non-regular files, group/other
@@ -153,6 +159,82 @@ PROBE_STATUSES = (
     "init_failed",
     "probe_unavailable",
 )
+
+# The smallest real request each provider CLI answers using only the
+# restored credential — the fast probes the e2e gates run for agy/grok plus
+# the CLIs' own auth-status commands. ``verify --probe auth`` execs them
+# inside the throwaway sandbox; ``sbx`` discovery reuses the same argv on
+# the host. Not every CLI exits non-zero on a dead login — grok/devin print
+# a status page at rc 0, so ``classify_auth_output`` reads the output too.
+PROVIDER_AUTH_CHECKS: dict[str, tuple[str, ...]] = {
+    "codex": ("login", "status"),
+    "devin": ("auth", "status"),
+    "antigravity": ("models",),
+    "grok": ("models",),
+    "opencode": ("auth", "list"),
+}
+
+# provider -> (*_BIN env override, default binary) — mirrors the runner
+# adapters so tests can point the check at a fake CLI.
+_PROVIDER_BINS: dict[str, tuple[str, str]] = {
+    "codex": ("CODEX_BIN", "codex"),
+    "devin": ("DEVIN_BIN", "devin"),
+    "antigravity": ("AGY_BIN", "agy"),
+    "grok": ("GROK_BIN", "grok"),
+    "opencode": ("OPENCODE_BIN", "opencode"),
+}
+
+# Output markers that mean the credential itself is rejected, whatever the
+# exit code says.
+_AUTH_FAIL_MARKERS = (
+    "not authenticated",
+    "not logged in",
+    "unauthorized",
+    "authentication failed",
+    "invalid api key",
+    "no credentials",
+)
+
+# CLIs that can exit 0 while reporting a logged-out status page — a passing
+# rc alone is not proof; require the positive marker.
+_MARKER_REQUIRED_PROVIDERS = ("devin", "grok")
+
+
+def provider_auth_argv(provider: str, env: Mapping[str, str] | None = None) -> list[str] | None:
+    """Argv for the provider's own auth check; None when unsupported.
+
+    ``*_BIN`` overrides mirror the runner adapters; a single ``.py`` token
+    is re-executed with the current interpreter.
+    """
+    env = os.environ if env is None else env
+    tail = PROVIDER_AUTH_CHECKS.get(provider)
+    if tail is None:
+        return None
+    bin_env, default_bin = _PROVIDER_BINS.get(provider, ("", provider))
+    tokens = shlex.split(env.get(bin_env) or default_bin)
+    if not tokens:
+        return None
+    if len(tokens) == 1 and tokens[0].endswith(".py"):
+        return [sys.executable, tokens[0], *tail]
+    return [*tokens, *tail]
+
+
+def classify_auth_output(provider: str, returncode: int, output: str) -> str:
+    """Map an auth check to ``ok`` / ``auth_invalid`` / ``probe_unavailable``."""
+    low = output.lower()
+    if any(marker in low for marker in _AUTH_FAIL_MARKERS):
+        return "auth_invalid"
+    if provider in _MARKER_REQUIRED_PROVIDERS:
+        if returncode == 0 and "logged in" in low:
+            return "ok"
+        return "auth_invalid" if returncode != 0 else "probe_unavailable"
+    if provider == "opencode":
+        # ``auth list`` prints the CLI's credential registry; empty output
+        # means it never registered the file (inconclusive, not rejected).
+        if returncode == 0 and output.strip():
+            return "ok"
+        return "auth_invalid" if returncode != 0 else "probe_unavailable"
+    return "ok" if returncode == 0 else "auth_invalid"
 
 
 class OnboardingError(Exception):
@@ -448,8 +530,10 @@ class SandboxVerifyProbe:
     Mirrors the ``/v1/accounts/{id}/verify`` route: create a throwaway
     sandbox, run ``runner init`` (restores the blob; fails on provider
     mismatch / malformed credential / missing adapter), terminate. The
-    provider CLI itself is never invoked, keeping the probe cheap; real
-    auth/model probes slot behind the same ``CredentialProbe`` seam.
+    provider CLI itself is never invoked, keeping the probe cheap — the
+    result proves restore + runner setup only, NOT that the credential
+    still authenticates. The authoritative provider check slots behind the
+    ``_after_init`` hook — see :class:`SandboxAuthVerifyProbe`.
     """
 
     def __init__(
@@ -464,6 +548,14 @@ class SandboxVerifyProbe:
         self._runner_cmd = list(runner_cmd)
         self._env = dict(env or {})
         self._model = model
+
+    def _after_init(self, handle: Any, account: Account, env: Mapping[str, str]) -> ProbeResult:
+        """Hook once ``runner init`` succeeded, before sandbox teardown.
+
+        ``env`` is the init exec env — it may carry the credential blob, so
+        subclasses must strip it before exec'ing the provider CLI.
+        """
+        return ProbeResult("ok")
 
     def probe(self, account: Account, blob: dict[str, Any] | None) -> ProbeResult:
         from control.backend import SandboxSpec
@@ -505,6 +597,11 @@ class SandboxVerifyProbe:
             for _ in proc.stdout:
                 pass
             code = proc.wait()
+            if code == 0:
+                return self._after_init(handle, account, env)
+            if code == 5:
+                return ProbeResult("auth_invalid")
+            return ProbeResult("init_failed", f"runner init exited {code}")
         except NotImplementedError:
             return ProbeResult("probe_unavailable", "sandbox backend not implemented")
         except Exception:
@@ -515,11 +612,71 @@ class SandboxVerifyProbe:
                     self._backend.terminate(handle)
                 except Exception:
                     pass
-        if code == 0:
-            return ProbeResult("ok")
-        if code == 5:
-            return ProbeResult("auth_invalid")
-        return ProbeResult("init_failed", f"runner init exited {code}")
+
+
+class SandboxAuthVerifyProbe(SandboxVerifyProbe):
+    """Authoritative probe: ``runner init`` + the provider's own auth check.
+
+    After the credential restores cleanly, execs the provider CLI's auth
+    command (``PROVIDER_AUTH_CHECKS`` — e.g. ``codex login status``,
+    ``agy models``) inside the same throwaway sandbox with ``HOME`` pointed
+    at the restored home. The provider's answer — not the restore — decides
+    ``ok`` vs ``auth_invalid``.
+    """
+
+    def __init__(
+        self,
+        backend: Any,
+        runner_cmd: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        model: str | None = None,
+        bin_env: Mapping[str, str] | None = None,
+    ) -> None:
+        super().__init__(backend, runner_cmd, env=env, model=model)
+        self._bin_env = bin_env
+
+    def _after_init(self, handle: Any, account: Account, env: Mapping[str, str]) -> ProbeResult:
+        argv = provider_auth_argv(account.provider, env=self._bin_env)
+        if argv is None:
+            return ProbeResult(
+                "probe_unavailable", f"no auth check for provider {account.provider!r}"
+            )
+        home = handle.root / "home"
+        # Never forward credential env to the provider CLI — the restored
+        # files under the sandbox HOME are the only credential source.
+        check_env = {
+            k: v
+            for k, v in env.items()
+            if k
+            not in (
+                CREDENTIAL_ENV,
+                ACCOUNT_ID_ENV,
+                "CODEX_AUTH_JSON",
+                "SBX_PROVIDER_API_KEY",
+                "SBX_PROVIDER_BASE_URL",
+            )
+        }
+        check_env["HOME"] = str(home)
+        check_env.setdefault("PATH", os.environ.get("PATH", os.defpath))
+        if account.provider in ("devin", "opencode"):
+            # XDG-data credentials (same pinning as runtime.image
+            # devin_runtime_env) — keeps the lookup at the restored home.
+            check_env.update(
+                {
+                    "XDG_CONFIG_HOME": str(home / ".config"),
+                    "XDG_CACHE_HOME": str(home / ".cache"),
+                    "XDG_DATA_HOME": str(home / ".local" / "share"),
+                    "XDG_STATE_HOME": str(home / ".local" / "state"),
+                }
+            )
+        try:
+            proc = self._backend.exec(handle, argv, env=check_env)
+            output = "\n".join(proc.stdout)
+            code = proc.wait()
+        except Exception:
+            return ProbeResult("probe_unavailable", "auth_check_exec_failed")
+        return ProbeResult(classify_auth_output(account.provider, code, output))
 
 
 # ------------------------------------------------------------------ service
@@ -763,12 +920,13 @@ def _print_account_row(entry: dict[str, Any]) -> None:
 
 
 def _default_probe(probe_kind: str, runner_cmd: str | None) -> CredentialProbe:
-    if probe_kind == "sandbox":
+    if probe_kind in ("sandbox", "auth"):
         from control.backend import LocalProcessBackend
 
         cmd = shlex.split(runner_cmd) if runner_cmd else [sys.executable, "-m", "runtime.runner"]
         repo_root = str(Path(__file__).resolve().parent.parent)
-        return SandboxVerifyProbe(LocalProcessBackend(), cmd, env={"PYTHONPATH": repo_root})
+        cls = SandboxAuthVerifyProbe if probe_kind == "auth" else SandboxVerifyProbe
+        return cls(LocalProcessBackend(), cmd, env={"PYTHONPATH": repo_root})
     return StaticCredentialProbe()
 
 
@@ -804,9 +962,11 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("account_id")
     p_verify.add_argument(
         "--probe",
-        choices=["static", "sandbox"],
+        choices=["static", "sandbox", "auth"],
         default="static",
-        help="static = schema check; sandbox = minimal runner-init sandbox",
+        help="static = schema check; sandbox = runner-init restore check "
+        "(not authoritative auth); auth = init + the provider CLI's own "
+        "auth check (authoritative)",
     )
     p_verify.add_argument("--runner-cmd", default=None, help="runner argv prefix (sandbox probe)")
     p_verify.add_argument("--json", action="store_true")

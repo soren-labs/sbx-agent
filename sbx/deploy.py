@@ -32,6 +32,7 @@ from sbx.config import (
     key_path,
     save,
 )
+from sbx.credentials import scan_credentials
 from sbx.errors import BootstrapError
 from sbx.httpapi import ApiError, V1Client
 from sbx.keys import fingerprint, load_or_create_key
@@ -159,18 +160,33 @@ def _ensure_basic_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, s
     return StepResult("secret:basic", True, f"{cfg.basic_secret} created (local copy saved)")
 
 
-def _require_codex_secret(cfg: BootstrapConfig, plane: Plane) -> StepResult:
-    if cfg.codex_secret not in plane.list_secret_names():
-        raise BootstrapError(
-            f"provider credential Secret {cfg.codex_secret!r} is missing",
-            hint=(
-                f"create it with `modal secret create {cfg.codex_secret} "
-                'CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"`, or set '
-                "SBX_CODEX_SECRET_NAME to an existing Secret, then rerun `sbx deploy`"
-            ),
-            code="secret_missing",
+def _require_codex_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, str]) -> StepResult:
+    """Preflight the shared Codex credential Secret.
+
+    Only runs when ``codex`` is a selected provider. When missing, the hint
+    reflects the local scan: no ``~/.codex/auth.json`` → ``codex login``
+    first; unusable file → its remediation; clean file → the create
+    command. Never exposes credential contents (SOR-115).
+    """
+    if cfg.codex_secret in plane.list_secret_names():
+        return StepResult("secret:codex", False, f"{cfg.codex_secret} present")
+    scan = scan_credentials(("codex",), env=env)[0]
+    create = f'`modal secret create {cfg.codex_secret} CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"`'
+    if scan.ok:
+        hint = (
+            f"create it with {create}, or set "
+            "SBX_CODEX_SECRET_NAME to an existing Secret, then rerun `sbx deploy`"
         )
-    return StepResult("secret:codex", False, f"{cfg.codex_secret} present")
+    else:
+        hint = (
+            f"{scan.hint}; then create the Secret with {create}, or set "
+            "SBX_CODEX_SECRET_NAME to an existing Secret"
+        )
+    raise BootstrapError(
+        f"provider credential Secret {cfg.codex_secret!r} is missing ({scan.detail})",
+        hint=hint,
+        code="secret_missing",
+    )
 
 
 def _materialize_account_secrets(cfg: BootstrapConfig, plane: Plane) -> StepResult:
@@ -279,8 +295,12 @@ def deploy(
     steps.append(StepResult("modal-auth", False, f"workspace {workspace}"))
 
     # Preflight: everything that must exist before the first write, so a
-    # missing prerequisite aborts with zero resources created.
-    steps.append(_require_codex_secret(config, plane))
+    # missing prerequisite aborts with zero resources created. The shared
+    # Codex Secret is only mounted when codex is a selected provider
+    # (``control.config.app_secret_names``) — unselected providers never
+    # block onboarding.
+    if "codex" in config.providers:
+        steps.append(_require_codex_secret(config, plane, env))
 
     step, key_created, key_rotated = _ensure_bootstrap_secret(config, plane, env)
     steps.append(step)

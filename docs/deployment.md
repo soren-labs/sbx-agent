@@ -1,8 +1,11 @@
 # Deployment guide
 
 Everything below deploys into **your own Modal workspace**. You need:
-Python ≥ 3.12, `uv`, the Modal CLI (`uv sync` provides it), and
-`modal token new` completed once.
+Python ≥ 3.12, `uv`, the Modal CLI (`uv sync` provides it), and Modal
+authentication — either an interactive login (`modal token new` once) or
+both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` exported in the environment.
+`sbx doctor` reports which source it found (never the values) and prints
+the remediation when neither is present.
 
 ## One-shot path (bootstrap CLI)
 
@@ -37,6 +40,9 @@ cap, default 2), `SBX_IDLE_TIMEOUT_S` (default 1800), per-provider
 `SBX_<PROVIDER>_SLOTS`, `SBX_<PROVIDER>_MODELS`, and multi-account fleets via
 `SBX_<PROVIDER>_ACCOUNTS` (JSON list of `{id, label?, secret_name?, slots?,
 models?}`). Devin's seeded account takes `SBX_DEVIN_BURST_SLOTS` (default 8).
+`SBX_PROVIDERS` (comma list, default `codex`) selects which providers the app
+serves — the shared `sbx-codex-auth` Secret is only required and mounted when
+`codex` is selected, so e.g. a devin-only deploy does not need it.
 
 ## Manual path (what `sbx deploy` wraps)
 

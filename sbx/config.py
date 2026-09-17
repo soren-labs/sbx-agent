@@ -144,7 +144,11 @@ class BootstrapConfig:
             "image_grok",
             "image_opencode",
         )
-        return {_FIELD_MAP[name][1][0]: str(getattr(self, name)) for name in fields}
+        out = {_FIELD_MAP[name][1][0]: str(getattr(self, name)) for name in fields}
+        # ``control.modal_app`` reads this at deploy time to skip mounting
+        # the shared Codex Secret on codex-less deploys (SOR-115).
+        out["SBX_PROVIDERS"] = ",".join(self.providers)
+        return out
 
 
 @dataclass(frozen=True)

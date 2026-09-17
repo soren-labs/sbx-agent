@@ -92,6 +92,30 @@ def account_secret_prefix() -> str:
     return env_str("SBX_ACCOUNT_SECRET_PREFIX", ACCOUNT_SECRET_PREFIX)
 
 
+def selected_providers(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Deploy-selected providers (``SBX_PROVIDERS``, comma-separated)."""
+    env = os.environ if env is None else env
+    raw = env.get("SBX_PROVIDERS", "codex")
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def app_secret_names(env: Mapping[str, str] | None = None) -> list[str]:
+    """Secrets the control app mounts at deploy time (``control/modal_app.py``).
+
+    The shared Codex credential Secret is only required when ``codex`` is a
+    selected provider (``SBX_PROVIDERS``) — an unselected provider's
+    credential must never block a deploy (SOR-115).
+    """
+    env = os.environ if env is None else env
+    names = [
+        env.get("SBX_BASIC_SECRET_NAME") or BASIC_SECRET_NAME,
+        env.get("SBX_V1_BOOTSTRAP_SECRET_NAME") or V1_BOOTSTRAP_SECRET_NAME,
+    ]
+    if "codex" in selected_providers(env):
+        names.insert(0, env.get("SBX_CODEX_SECRET_NAME") or CODEX_SECRET_NAME)
+    return names
+
+
 def basic_credentials() -> tuple[str, str]:
     user = os.environ.get("SBX_BASIC_USER") or os.environ.get("SBX_API_USER", "sbx")
     # SBX_BASIC_PASSWORD: pre-0.1 docs used this name; keep accepting it so a
