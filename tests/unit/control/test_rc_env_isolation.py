@@ -45,6 +45,7 @@ def test_remote_env_overlay_only_forwards_allowlisted_names() -> None:
         "SBX_SESSIONS_DICT": "rc-sessions",
         "SBX_IMAGE_GROK": "rc-runtime-grok",
         "SBX_ACCOUNT_SECRET_PREFIX": "rc-acct-",
+        "SBX_PROVIDERS": "devin,grok",
         "SBX_DEVIN_ACCOUNT_ID": "devin-rc-1",
         # credential material — must never enter a function env
         "SBX_API_KEY": "sbx_deadbeef",
@@ -61,6 +62,7 @@ def test_remote_env_overlay_only_forwards_allowlisted_names() -> None:
     assert out["SBX_SESSIONS_DICT"] == "rc-sessions"
     assert out["SBX_IMAGE_GROK"] == "rc-runtime-grok"
     assert out["SBX_ACCOUNT_SECRET_PREFIX"] == "rc-acct-"
+    assert out["SBX_PROVIDERS"] == "devin,grok"
     assert out["SBX_DEVIN_ACCOUNT_ID"] == "devin-rc-1"
     for denied in (
         "SBX_API_KEY",
@@ -95,6 +97,7 @@ def test_seeded_accounts_use_custom_prefix(monkeypatch) -> None:
 
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "c" * 40)
     monkeypatch.setenv("SBX_ACCOUNT_SECRET_PREFIX", "rc-acct-")
+    monkeypatch.setenv("SBX_PROVIDERS", "codex,devin,antigravity,grok,opencode")
     app = FastAPI()
     assert configure_v1_bootstrap(app) is True
     registry = app.state.account_registry

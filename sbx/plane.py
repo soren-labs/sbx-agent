@@ -20,6 +20,7 @@ from typing import Any, Protocol
 from sbx.errors import BootstrapError
 
 _WEB_URL_RE = re.compile(r"https://[^\s'\"]+\.modal\.run")
+_ENV_TOKEN_WORKSPACE_UNKNOWN = "env-tokens"
 
 
 @dataclass(frozen=True)
@@ -205,7 +206,7 @@ class ModalPlane:
         if env_creds:
             # The profile name is unrelated to env-token auth — never report
             # it as the token's workspace (it feeds app-URL construction).
-            return self._env_workspace_name(env) or "env-tokens"
+            return self._env_workspace_name(env) or _ENV_TOKEN_WORKSPACE_UNKNOWN
         return name
 
     def list_secret_names(self) -> set[str]:
@@ -316,7 +317,10 @@ class ModalPlane:
         ):
             return None
         workspace = self.workspace()
-        if not workspace:
+        # Env-token auth can be proven even when an older/unexpected Modal CLI
+        # does not print its workspace name. That auth-only marker is useful to
+        # onboarding, but it is never a valid URL subdomain.
+        if not workspace or workspace == _ENV_TOKEN_WORKSPACE_UNKNOWN:
             return None
         return f"https://{workspace}--{app_name}-fastapi-app.modal.run"
 

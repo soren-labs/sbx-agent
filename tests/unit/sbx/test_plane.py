@@ -100,7 +100,7 @@ class TestWorkspace:
         env = {"MODAL_TOKEN_ID": "ak-x", "MODAL_TOKEN_SECRET": "as-x"}
         assert ModalPlane(env=env).workspace() == "env-ws"
 
-    def test_env_tokens_unparseable_workspace_falls_back(
+    def test_env_tokens_unparseable_workspace_uses_auth_only_marker(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Auth proved by ``app list``; the profile name is unrelated to the
@@ -125,6 +125,14 @@ def test_app_url_ignores_stopped_app() -> None:
 def test_app_url_for_deployed_app() -> None:
     plane = _plane([{"description": "sbx-control", "state": "deployed"}])
     assert plane.app_url("sbx-control") == ("https://ws-test--sbx-control-fastapi-app.modal.run")
+
+
+def test_app_url_rejects_env_token_auth_only_marker() -> None:
+    plane = _plane(
+        [{"description": "sbx-control", "state": "deployed"}],
+        workspace="env-tokens",
+    )
+    assert plane.app_url("sbx-control") is None
 
 
 def test_app_url_missing_state_field_treated_as_deployed() -> None:

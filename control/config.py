@@ -140,6 +140,10 @@ _PROVIDER_SEED_SUFFIXES = ("ACCOUNT_ID", "SECRET_NAME", "SLOTS", "MODELS", "ACCO
 
 REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_MODAL_APP_NAME",
+    # The provider selection is runtime policy as well as deploy-time image /
+    # Secret configuration. The remote API must seed and schedule only the
+    # providers whose images and credentials were deployed.
+    "SBX_PROVIDERS",
     "SBX_SESSIONS_DICT",
     "SBX_RUNS_DICT",
     "SBX_ACCOUNTS_DICT",

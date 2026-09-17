@@ -1,10 +1,10 @@
 """Modal-only bootstrap wiring for the P2 real /v1 gate.
 
 Nothing is enabled by default. When ``SBX_V1_BOOTSTRAP_KEY`` is injected via
-a Modal Secret, seed a hash-only API key plus accounts per P2 Core provider —
-codex, devin, antigravity, grok, opencode — so the frozen candidate can
-schedule all five through the product ``/v1`` path. A provider seeds one
-account by default; ``SBX_<PROVIDER>_ACCOUNTS`` (a JSON list of ``{"id",
+a Modal Secret, seed a hash-only API key plus accounts for the deploy-selected
+P2 Core providers (``SBX_PROVIDERS``) so ``/v1`` never schedules an image or
+credential mount that was intentionally omitted. A selected provider seeds
+one account by default; ``SBX_<PROVIDER>_ACCOUNTS`` (a JSON list of ``{"id",
 "label"?, "secret_name"?, "slots"?, "models"?}``) seeds a real multi-account
 fleet — the Antigravity-4 / Grok-2 gate shape.
 
@@ -27,7 +27,7 @@ from typing import Any
 
 from control.accounts import PersistentAccountRegistry, select_store
 from control.api_v1.state import InMemoryApiKeyStore
-from control.config import account_secret_prefix, env_int
+from control.config import account_secret_prefix, env_int, selected_providers
 from control.ports import Account
 from control.scheduler import AccountScheduler, session_running_source
 
@@ -232,13 +232,17 @@ def configure_v1_bootstrap(app: Any) -> bool:
     # credential path (``SBX_CODEX_SECRET_NAME`` can name a per-account
     # Secret instead). ``SBX_<PROVIDER>_ACCOUNTS`` JSON switches any provider
     # to a multi-account fleet.
-    for provider, default_secret_name, default_slots in (
+    provider_specs = (
         ("devin", None, env_int("SBX_DEVIN_BURST_SLOTS", 8)),
         ("codex", "", _DEFAULT_PROVIDER_SLOTS),
         ("antigravity", None, _DEFAULT_PROVIDER_SLOTS),
         ("grok", None, _DEFAULT_PROVIDER_SLOTS),
         ("opencode", None, _DEFAULT_PROVIDER_SLOTS),
-    ):
+    )
+    enabled = selected_providers()
+    for provider, default_secret_name, default_slots in provider_specs:
+        if provider not in enabled:
+            continue
         _seed_accounts(
             registry,
             provider,
@@ -255,6 +259,7 @@ def configure_v1_bootstrap(app: Any) -> bool:
     session_store = getattr(getattr(app.state, "plane", None), "store", None)
     app.state.scheduler = AccountScheduler(
         registry,
+        providers=enabled,
         external_running=(
             session_running_source(session_store) if session_store is not None else None
         ),
