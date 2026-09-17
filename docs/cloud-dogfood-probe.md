@@ -1,8 +1,7 @@
-# Cloud dogfood probe
+# Cloud Dogfood Probe
 
-- Date: 2026-09-17
-- Integration target branch: `dogfood-e2e-20260917`
+This is a temporary cloud-development dogfood probe. It exists only to exercise
+the author-side cloud workflow (branch, commit, push, PR) and carries no product
+changes.
 
-This file exists purely to exercise the remote author/review/integrate/e2e
-pipeline. It carries no product content and can be removed once the pipeline
-run is validated.
+Base commit: `a309f9d9f4721812bfb7ba5afd1ccade1ec9ede9`
