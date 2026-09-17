@@ -254,6 +254,36 @@ def test_deploy_empty_providers_fails_before_any_write(tmp_path) -> None:
     assert not key_path(env).exists()  # not even the local key was minted
 
 
+def test_deploy_github_bridge_secret_preflight(tmp_path) -> None:
+    """SOR-117: a named GitHub bridge Secret must exist when the gate is
+    armed — fail-before-write, never a silently inert remote bridge."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(
+        tmp_path,
+        {"SBX_GITHUB_EPHEMERAL": "1", "SBX_GITHUB_SECRET_NAME": "sbx-github"},
+    )
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, env=env)
+    assert exc.value.code == "secret_missing"
+    assert "sbx-github" in str(exc.value)
+    assert plane.secret_create_calls == 0  # fail-before-write
+
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    report, _, _ = _deploy(tmp_path, plane, env=env)
+    assert any(s.name == "secret:github" for s in report.steps)
+
+
+def test_deploy_github_gate_alone_needs_no_secret(tmp_path) -> None:
+    """The local-gate path (token in the control-plane env, no named Secret)
+    deploys unchanged — the GitHub preflight is opt-in, not ambient."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "1"})
+    report, _, _ = _deploy(tmp_path, plane, env=env)
+    assert all(s.name != "secret:github" for s in report.steps)
+
+
 def test_deploy_unknown_provider_fails_before_any_write(tmp_path) -> None:
     plane = FakePlane()
     with pytest.raises(BootstrapError) as exc:

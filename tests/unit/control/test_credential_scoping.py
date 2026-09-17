@@ -208,7 +208,25 @@ def test_devin_aux_bridges_stack_with_named_secret_but_not_blob(monkeypatch) -> 
     secrets = _sandbox_secrets(_FakeModal, spec)
     assert secrets[0] == ("secret", "sbx-acct-1")
     assert ("dict", {"SBX_ACCOUNT_CREDENTIAL": _blob("devin")}) not in secrets
-    assert ("dict", {"GH_TOKEN": "REDACTED_GITHUB", "GITHUB_TOKEN": "REDACTED_GITHUB"}) in secrets
+    gh = [payload for tag, payload in secrets if tag == "dict" and "GH_TOKEN" in payload]
+    assert gh and gh[0]["GITHUB_TOKEN"] == "REDACTED_GITHUB"
+
+
+def test_github_bridge_is_provider_agnostic(monkeypatch) -> None:
+    """SOR-117: the opt-in GitHub env stacks on EVERY provider's sandbox,
+    not just devin — codex included."""
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL_FILE", raising=False)
+    monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+    monkeypatch.setenv("GH_TOKEN", "REDACTED_GITHUB")
+    for provider in ("codex", "devin", "antigravity", "grok", "opencode"):
+        spec = SandboxSpec(tags={"provider": provider})
+        secrets = _sandbox_secrets(_FakeModal, spec)
+        gh = [p for tag, p in secrets if tag == "dict" and p.get("GH_TOKEN")]
+        assert gh, f"provider {provider} missing the GitHub aux secret"
+        assert gh[0]["GH_TOKEN"] == "REDACTED_GITHUB"
+        # Provider isolation is untouched: no account blob leaked in.
+        assert all("SBX_ACCOUNT_CREDENTIAL" not in p for _, p in secrets)
 
 
 def test_sandbox_env_extra_cannot_reintroduce_foreign_credentials(monkeypatch) -> None:

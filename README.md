@@ -189,6 +189,39 @@ refreshed credentials back to the account Secret; **never paste a token into
 an issue, log, PR, or fixture** (`REDACTED` placeholders only). See
 [SECURITY.md](SECURITY.md) and [docs/providers.md](docs/providers.md).
 
+### GitHub auth (optional, opt-in)
+
+Sandboxes can act on GitHub repos natively — private `git clone`/`push` and
+`control.workspace.create_pull_request` (the GitHub REST API from inside the
+sandbox). The bridge is **off by default**; a public-repo GitHub-less
+workspace works unchanged with no token anywhere near the sandbox.
+
+To enable it, the control-plane process env must carry **both**:
+
+```bash
+export GH_TOKEN=...              # or GITHUB_TOKEN
+export SBX_GITHUB_EPHEMERAL=1    # explicit opt-in gate
+```
+
+When armed, the token travels as an env var only — a `GIT_CONFIG_*`
+credential helper scoped to `https://github.com` echoes `$GH_TOKEN` at git
+runtime, so the value never lands in argv, git config, or a cloned repo's
+`.git/config`. The helper covers **HTTPS** github.com git operations (clone,
+fetch, push); SSH remotes are unaffected — declare `https://github.com/…`
+repo URLs when you want the token used. It applies to every provider's
+sandbox (not just Devin);
+caller-supplied exec env can neither inject nor override the GitHub keys.
+`GIT_TERMINAL_PROMPT=0` makes a missing credential a fast failure instead of
+a hang. `sbx doctor`/`sbx init` report which auth source exists
+(`GH_TOKEN`/`GITHUB_TOKEN`, or `gh auth status` under `--verify`) and whether
+the gate is armed — never token material.
+
+**Least privilege:** prefer a fine-grained PAT (or GitHub App token) scoped
+to the repositories the agents work on, `Contents: read/write` (+ `Pull
+requests: read/write` only if agents open PRs), and the shortest lifetime
+practical — the bridge is ephemeral per sandbox exec, nothing is persisted
+in Modal. A classic `repo`-scoped PAT works but is broader than needed.
+
 ## API / SDK examples
 
 `examples/sbx_client.py` is a dependency-free (`httpx` only) reference client

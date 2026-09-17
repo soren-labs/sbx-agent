@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from control import github
 from control.backend import Process, SandboxBackend, SandboxHandle
 
 
@@ -103,6 +104,8 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
         "SBX_WORK": str(handle.root),
         "CODEX_HOME": str(handle.root / ".codex"),
         "PYTHONUNBUFFERED": "1",
+        # Sandbox execs have no stdin — an auth prompt must fail fast, not hang.
+        "GIT_TERMINAL_PROMPT": "0",
     }
     # Modal ``exec(..., env=)`` replaces the process env and can hide a named
     # Secret. Forward the control-plane copy when present so Codex still
@@ -128,6 +131,11 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
     credential = _credential_for(provider, account_id)
     if credential is not None:
         env[_ACCOUNT_CREDENTIAL_ENV] = credential
+    # SOR-117: the opt-in GitHub bridge is provider-agnostic. Modal
+    # ``exec(env=)`` replaces the process env (hiding Secret-mounted vars), so
+    # the token + credential-helper wiring is forwarded here for every exec —
+    # runner (the agent sees it) and control-plane git ops alike.
+    env.update(github.exec_env())
     if extra:
         safe_extra = dict(extra)
         # Never let callers re-introduce credentials that violate the
@@ -145,6 +153,11 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
             blob = parse_credential_blob(extra_credential)
             if blob is None or blob.get("provider") != provider:
                 safe_extra.pop(_ACCOUNT_CREDENTIAL_ENV, None)
+        # The GitHub token/helper env enters only through the opt-in seam —
+        # a caller's ``extra`` must not smuggle it in or clobber the wiring.
+        for key in list(safe_extra):
+            if github.owns_env_key(key):
+                safe_extra.pop(key, None)
         env.update(safe_extra)
     return env
 

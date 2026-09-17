@@ -113,6 +113,15 @@ def app_secret_names(env: Mapping[str, str] | None = None) -> list[str]:
     ]
     if "codex" in selected_providers(env):
         names.insert(0, env.get("SBX_CODEX_SECRET_NAME") or CODEX_SECRET_NAME)
+    # SOR-117: the GitHub bridge is opt-in end to end. A named Modal Secret
+    # holding GH_TOKEN/GITHUB_TOKEN mounts on the control app only when the
+    # operator armed the gate AND named the Secret — the remote function
+    # then sees the token in its env and forwards it into sandboxes via
+    # ``control.github.exec_env`` (local-gate control planes read the token
+    # straight from their own env and need no Secret).
+    github_secret = env.get("SBX_GITHUB_SECRET_NAME")
+    if env.get("SBX_GITHUB_EPHEMERAL") == "1" and github_secret:
+        names.append(github_secret)
     return names
 
 
@@ -168,6 +177,7 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_RUNNER_CMD",
     "SBX_DEVIN_TRANSPORT",
     "SBX_GITHUB_EPHEMERAL",
+    "SBX_GITHUB_SECRET_NAME",
     "SBX_LINEAR_MCP_EPHEMERAL",
     *(
         f"SBX_{provider}_{suffix}"

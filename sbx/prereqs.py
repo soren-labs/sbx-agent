@@ -13,6 +13,9 @@ import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
+
+import control.github as gh
 
 from sbx.config import KNOWN_PROVIDERS
 from sbx.errors import BootstrapError
@@ -140,6 +143,70 @@ def check_provider_config(providers: Sequence[str]) -> Check:
         name="provider-config",
         ok=True,
         detail="enabled: " + ", ".join(enabled),
+    )
+
+
+def check_github(
+    env: Mapping[str, str] | None = None,
+    *,
+    verify: bool = False,
+    runner: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> Check:
+    """Optional GitHub auth bridge (SOR-117): advisory detection only.
+
+    Reports which auth source exists (``GH_TOKEN``/``GITHUB_TOKEN`` env var
+    name, ``gh auth status`` under ``verify``) and whether the
+    ``SBX_GITHUB_EPHEMERAL`` opt-in is armed — never token material. Always
+    warn-or-ok: the GitHub-less path is fully supported.
+    """
+    env = os.environ if env is None else env
+    kwargs: dict[str, Any] = {"probe_gh": verify, "which": which}
+    if runner is not None:
+        kwargs["runner"] = runner
+    det = gh.detect(env, **kwargs)
+    if det.opted_in:
+        if det.token_env:
+            return Check(
+                name="github",
+                ok=True,
+                detail=f"{det.token_env} detected; SBX_GITHUB_EPHEMERAL=1 — sandboxes "
+                "get GH_TOKEN/GITHUB_TOKEN + a github.com credential helper",
+            )
+        return Check(
+            name="github",
+            ok=False,
+            warn=True,
+            detail="SBX_GITHUB_EPHEMERAL=1 but no GH_TOKEN/GITHUB_TOKEN in the env",
+            hint="export GH_TOKEN (or `export GH_TOKEN=$(gh auth token)` when the gh "
+            "CLI is logged in); for a remote deploy, name a Modal Secret via "
+            "SBX_GITHUB_SECRET_NAME instead — or unset SBX_GITHUB_EPHEMERAL",
+        )
+    if det.token_env:
+        return Check(
+            name="github",
+            ok=False,
+            warn=True,
+            detail=f"{det.token_env} detected — sandbox GitHub injection is off",
+            hint="export SBX_GITHUB_EPHEMERAL=1 to inject it into sandboxes "
+            "(private-repo clone/push/PR on github.com)",
+        )
+    if det.gh_authenticated:
+        return Check(
+            name="github",
+            ok=False,
+            warn=True,
+            detail="gh CLI is authenticated — no GH_TOKEN/GITHUB_TOKEN exported",
+            hint="export GH_TOKEN=$(gh auth token) and SBX_GITHUB_EPHEMERAL=1 to "
+            "enable sandbox GitHub auth",
+        )
+    tail = ""
+    if det.gh_on_path:
+        tail = "; gh CLI on PATH" + ("" if verify else " (auth not probed — pass --verify)")
+    return Check(
+        name="github",
+        ok=True,
+        detail=f"no GitHub auth detected — private-repo clone/push/PR disabled (optional){tail}",
     )
 
 

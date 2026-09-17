@@ -26,6 +26,7 @@ from sbx.plane import Plane
 from sbx.prereqs import (
     Check,
     check_dict_present,
+    check_github,
     check_modal_auth,
     check_modal_package,
     check_provider_config,
@@ -376,6 +377,10 @@ def run_doctor(
         auth_check=auth_check,
     ):
         checks.append(scan.to_check())
+
+    # Optional GitHub bridge (SOR-117): advisory detection — never prints a
+    # token; the ``gh auth status`` probe only runs under --verify.
+    checks.append(check_github(env, verify=verify))
 
     # Same resolution order as `sbx status`: configured URL, else the last
     # deployed URL recorded in the state dir.

@@ -168,6 +168,25 @@ def test_selected_providers_parses_csv() -> None:
     assert selected_providers({"SBX_PROVIDERS": " devin , grok "}) == ("devin", "grok")
 
 
+def test_app_secret_names_github_bridge_is_opt_in() -> None:
+    """SOR-117: a named GitHub Secret mounts on the control app only when
+    the operator armed the gate AND named the Secret — a remote deploy gets
+    GH_TOKEN in the function env without baking the value anywhere."""
+    base = {"SBX_PROVIDERS": "devin"}
+    # Secret named but gate off → not mounted.
+    assert "sbx-github" not in app_secret_names({**base, "SBX_GITHUB_SECRET_NAME": "sbx-github"})
+    # Gate on but no Secret named → nothing extra mounts.
+    assert "sbx-github" not in app_secret_names({**base, "SBX_GITHUB_EPHEMERAL": "1"})
+    # Both → the named Secret mounts on the control app.
+    assert app_secret_names(
+        {
+            **base,
+            "SBX_GITHUB_EPHEMERAL": "1",
+            "SBX_GITHUB_SECRET_NAME": "sbx-github",
+        }
+    ) == ["sbx-basic-auth", "sbx-v1-bootstrap", "sbx-github"]
+
+
 def test_custom_codex_secret_name_still_filtered_from_account_sandboxes(
     monkeypatch,
 ) -> None:

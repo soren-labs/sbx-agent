@@ -190,6 +190,29 @@ def _require_codex_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, 
     )
 
 
+def _require_github_secret(env: Mapping[str, str], existing: set[str]) -> StepResult | None:
+    """Fail-before-write check for the optional GitHub bridge Secret (SOR-117).
+
+    Only applies when the operator armed ``SBX_GITHUB_EPHEMERAL=1`` AND named
+    ``SBX_GITHUB_SECRET_NAME`` — the named Secret holds GH_TOKEN/GITHUB_TOKEN
+    so a *remote* control app sees the token in its env and forwards it into
+    sandboxes. A missing named Secret is an explicit deploy failure rather
+    than a silently inert bridge.
+    """
+    name = env.get("SBX_GITHUB_SECRET_NAME")
+    if env.get("SBX_GITHUB_EPHEMERAL") != "1" or not name:
+        return None
+    if name in existing:
+        return StepResult("secret:github", False, f"{name} present")
+    raise BootstrapError(
+        f"GitHub bridge Secret {name!r} is missing",
+        hint=f"create it with `modal secret create {name} GH_TOKEN=...` "
+        "(least privilege: a fine-grained PAT scoped to the agent repos), or "
+        "unset SBX_GITHUB_SECRET_NAME, then rerun `sbx deploy`",
+        code="secret_missing",
+    )
+
+
 def _require_account_secrets(cfg: BootstrapConfig, plane: Plane, existing: set[str]) -> StepResult:
     """Fail-before-write check for enabled providers' account Secrets.
 
@@ -373,6 +396,9 @@ def deploy(
     if "codex" in config.providers:
         steps.append(_require_codex_secret(config, plane, env))
     steps.append(_require_account_secrets(config, plane, existing_secrets))
+    github_step = _require_github_secret(env, existing_secrets)
+    if github_step is not None:
+        steps.append(github_step)
 
     step, key_created, key_rotated = _ensure_bootstrap_secret(config, plane, env)
     steps.append(step)

@@ -107,10 +107,12 @@ def test_named_devin_secret_can_stack_ephemeral_github(monkeypatch) -> None:
     spec = SandboxSpec(tags={"provider": "devin"}, secrets=["sbx-acct-1"])
     secrets = _sandbox_secrets(_FakeModal, spec)
     assert secrets[0] == ("secret", "sbx-acct-1")
-    assert secrets[1] == (
-        "dict",
-        {"GH_TOKEN": "REDACTED_GITHUB", "GITHUB_TOKEN": "REDACTED_GITHUB"},
-    )
+    # SOR-117: the aux dict carries the token under both names plus the
+    # github.com-scoped GIT_CONFIG_* credential-helper wiring.
+    payload = secrets[1][1]
+    assert payload["GH_TOKEN"] == "REDACTED_GITHUB"
+    assert payload["GITHUB_TOKEN"] == "REDACTED_GITHUB"
+    assert payload["GIT_CONFIG_COUNT"] == "2"
 
 
 def test_devin_linear_key_requires_explicit_gate_flag(monkeypatch) -> None:

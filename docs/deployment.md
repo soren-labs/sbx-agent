@@ -58,6 +58,31 @@ models?}`). Devin's seeded account takes `SBX_DEVIN_BURST_SLOTS` (default 8).
 serves — the shared `sbx-codex-auth` Secret is only required and mounted when
 `codex` is selected, so e.g. a devin-only deploy does not need it.
 
+### Optional GitHub bridge (SOR-117)
+
+Sandboxes can clone/push **private** GitHub repos and open pull requests when
+the control-plane env carries **both** `GH_TOKEN` (or `GITHUB_TOKEN`) **and**
+the explicit opt-in `SBX_GITHUB_EPHEMERAL=1`. The token rides the ephemeral
+Secret/exec env only — never a named Modal Secret, never argv, never disk —
+and a `GIT_CONFIG_*` credential helper scoped to `https://github.com` answers
+git's credential prompt at runtime. Without the gate nothing is injected and
+public-repo workspaces are unaffected; PR creation then fails fast with
+`repo_unavailable`. Least privilege: a fine-grained PAT limited to the agent
+repositories with `Contents` (+ `Pull requests` if agents open PRs)
+read/write and a short lifetime. `sbx doctor` reports the detected auth
+source and gate state — never the token.
+
+For a **remote** control plane (a `sbx deploy`ed Modal app — the token env
+on the deploy host does not follow the function), store it as a Modal Secret
+and name it via `SBX_GITHUB_SECRET_NAME`; `sbx deploy` fails fast if the
+named Secret does not exist:
+
+```bash
+modal secret create sbx-github GH_TOKEN='<fine-grained PAT>'
+export SBX_GITHUB_EPHEMERAL=1 SBX_GITHUB_SECRET_NAME=sbx-github
+sbx deploy
+```
+
 ## Manual path (what `sbx deploy` wraps)
 
 ```bash

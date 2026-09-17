@@ -53,6 +53,7 @@ _CLOUD_KEYS = frozenset(
         # Control-plane secrets and credential-forwarding triggers.
         "SBX_V1_BOOTSTRAP_KEY",
         "SBX_GITHUB_EPHEMERAL",
+        "SBX_GITHUB_SECRET_NAME",
         "SBX_LINEAR_MCP_EPHEMERAL",
         "SBX_API_USER",
         "SBX_API_PASSWORD",

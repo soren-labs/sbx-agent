@@ -25,6 +25,7 @@ import base64
 import hashlib
 import json
 import re
+import shlex
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
@@ -32,9 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
+from control import github
 from control.backend import Process, SandboxBackend, SandboxHandle
 from control.config import WORKSPACES_DICT_NAME
 from control.latency import observe
+from control.run_errors import clip_message
 from control.sandbox_io import drain, is_local_root, sandbox_env
 
 # Machine-readable failure codes. ``base_sha_mismatch`` is the contract's
@@ -375,6 +378,94 @@ def git_is_ancestor(
     return res.code == 0
 
 
+def git_push(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    workdir: str,
+    refspec: str,
+    *,
+    remote: str = "origin",
+) -> None:
+    """Push ``refspec`` (e.g. ``HEAD:refs/heads/sbx/review``) to ``remote``.
+
+    For github.com remotes the opt-in ``SBX_GITHUB_EPHEMERAL`` bridge (when
+    armed) supplies the credential helper via the exec env — the token never
+    appears in argv or on disk. ``GIT_TERMINAL_PROMPT=0`` (set by
+    ``sandbox_env``) makes a missing credential a fast explicit failure.
+    """
+    if remote.startswith("-") or refspec.startswith("-"):
+        raise WorkspaceError(WORKSPACE_INVALID, "push remote/refspec must not look like an option")
+    res = run_git(backend, handle, ["push", remote, refspec], cwd=workdir)
+    if res.code != 0:
+        raise WorkspaceError(
+            REPO_UNAVAILABLE, f"git push {remote} {refspec} failed (exit {res.code})"
+        )
+
+
+def create_pull_request(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    repo: str,
+    *,
+    head: str,
+    base: str,
+    title: str,
+    body: str = "",
+    draft: bool = False,
+) -> dict[str, Any]:
+    """Open a GitHub pull request from inside the sandbox via the REST API.
+
+    ``repo`` is the declared clone URL (``https://github.com/owner/repo`` or
+    ``git@github.com:owner/repo``); ``head`` is a branch already pushed to
+    ``origin`` (see :func:`git_push`). Requires the opt-in GitHub bridge —
+    the request runs as ``curl`` under ``bash -c`` so ``$GH_TOKEN`` expands
+    inside the sandbox env and never appears in argv.
+    """
+    if not github.injection_enabled():
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            "GitHub injection is off — export SBX_GITHUB_EPHEMERAL=1 with a "
+            "GH_TOKEN/GITHUB_TOKEN to open pull requests from sandboxes",
+        )
+    slug = github.repo_slug(repo)
+    if slug is None:
+        raise WorkspaceError(
+            WORKSPACE_INVALID,
+            f"not a github.com repo URL: {github.redact_url_credentials(repo)!r}",
+        )
+    payload = json.dumps({"title": title, "head": head, "base": base, "body": body, "draft": draft})
+    script = (
+        "curl -sS -X POST "
+        f"https://api.github.com/repos/{slug}/pulls "
+        '-H "Accept: application/vnd.github+json" '
+        '-H "Authorization: Bearer $GH_TOKEN" '
+        f"--data {shlex.quote(payload)} "
+        "-w '\\n%{http_code}'"
+    )
+    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle))
+    lines = list(proc.stdout)
+    code = proc.wait()
+    http_code = lines[-1].strip() if lines else ""
+    text = "\n".join(lines[:-1])
+    if code != 0 or not http_code.isdigit() or not (200 <= int(http_code) < 300):
+        # The response body is GitHub's, but it lands on a run record — clip
+        # + redact it through the same seam as run errors (SOR-82) so no
+        # token-shaped fragment can echo back.
+        detail = clip_message(text)[:200]
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            f"GitHub PR create for {slug} failed "
+            f"(exit {code}, http {http_code or '?'})" + (f": {detail}" if detail else ""),
+        )
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise WorkspaceError(
+            REPO_UNAVAILABLE, f"GitHub PR create for {slug} returned no JSON"
+        ) from exc
+    return data if isinstance(data, dict) else {"result": data}
+
+
 def write_payload(
     backend: SandboxBackend, handle: SandboxHandle, relative: str, data: bytes
 ) -> None:
@@ -561,9 +652,14 @@ class WorkspaceService:
         return record
 
     def _clone(self, handle: SandboxHandle, repo: str, workdir: str) -> None:
+        # ``repo`` may carry userinfo (https://user:TOKEN@…); the credential
+        # portion never belongs in an error that lands on a run record.
+        safe_repo = github.redact_url_credentials(repo)
         res = run_git(self._backend, handle, ["clone", "--", repo, workdir])
         if res.code != 0:
-            raise WorkspaceError(REPO_UNAVAILABLE, f"git clone {repo!r} failed (exit {res.code})")
+            raise WorkspaceError(
+                REPO_UNAVAILABLE, f"git clone {safe_repo!r} failed (exit {res.code})"
+            )
 
     def _resolve_ref(self, handle: SandboxHandle, workdir: str, base_ref: str) -> str:
         """Resolve ``base_ref`` to a commit sha in the fresh clone.
@@ -601,9 +697,11 @@ __all__ = [
     "WorkspaceService",
     "WorkspaceSpec",
     "WorkspaceStore",
+    "create_pull_request",
     "git_checkout",
     "git_head",
     "git_is_ancestor",
+    "git_push",
     "git_rev_parse",
     "is_commit_sha",
     "is_safe_relpath",

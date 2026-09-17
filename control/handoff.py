@@ -30,6 +30,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from control import github
 from control.backend import SandboxHandle
 from control.workspace import (
     ARTIFACT_INVALID,
@@ -243,7 +244,9 @@ class HandoffService:
         self._assert_at_recorded_head(handle, record)
         if git_rev_parse(backend, handle, record.workdir, head_sha) != head_sha:
             raise WorkspaceError(
-                CHECKOUT_FAILED, f"head_sha {head_sha} is not a commit in {record.repo!r}"
+                CHECKOUT_FAILED,
+                f"head_sha {head_sha} is not a commit in "
+                f"{github.redact_url_credentials(record.repo)!r}",
             )
         if not git_is_ancestor(backend, handle, record.workdir, record.base_sha, head_sha):
             raise WorkspaceError(
@@ -280,7 +283,8 @@ class HandoffService:
         if spec is not None and manifest.repo != spec.repo:
             raise WorkspaceError(
                 ARTIFACT_INVALID,
-                f"artifact repo {manifest.repo!r} does not match declared repo {spec.repo!r}",
+                f"artifact repo {github.redact_url_credentials(manifest.repo)!r} does not "
+                f"match declared repo {github.redact_url_credentials(spec.repo)!r}",
             )
         payload = self._artifacts.read_payload(artifact_id)
         if payload is None:
@@ -296,7 +300,8 @@ class HandoffService:
         if manifest.repo != record.repo:
             raise WorkspaceError(
                 ARTIFACT_INVALID,
-                f"artifact repo {manifest.repo!r} does not match workspace repo {record.repo!r}",
+                f"artifact repo {github.redact_url_credentials(manifest.repo)!r} does not "
+                f"match workspace repo {github.redact_url_credentials(record.repo)!r}",
             )
         current = self._assert_at_recorded_head(handle, record)
         if manifest.base_sha != current:
