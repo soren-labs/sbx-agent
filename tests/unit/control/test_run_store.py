@@ -395,6 +395,52 @@ class TestOutputContract:
         assert again.status == "ERROR"
         assert again.error["code"] == CODE_CONTRACT_VIOLATION
 
+    def test_pathological_output_fails_closed_not_crashes(self) -> None:
+        """A message with pathological nesting yields ERROR + violation —
+        the enforcement seam must never raise on sandbox-written text."""
+        deep = "[" * 5000 + "]" * 5000
+        status, error, structured, meta = apply_output_contract("FINISHED", None, deep, CONTRACT)
+        assert status == "ERROR"
+        assert error["code"] == CODE_CONTRACT_VIOLATION
+        assert meta["status"] == CONTRACT_INVALID
+        # Parsed-then-depth-checked → max_depth; a scanner that trips at
+        # parse time → not_json. Both are diagnosable invalids.
+        assert meta["violations"][0]["code"] in ("max_depth", "not_json")
+
+    def test_tampered_contract_fails_closed(self) -> None:
+        """A ledger record whose schema is missing/non-object can never
+        become a trivially-valid contract — strict flips to ERROR."""
+        for contract in (
+            {"enforcement": "strict", "schema_digest": "sha256:x"},
+            {"enforcement": "strict", "schema": "not a dict"},
+            {"enforcement": "strict", "schema": {}},
+        ):
+            status, error, _, meta = apply_output_contract("FINISHED", None, VALID_JSON, contract)
+            assert status == "ERROR"
+            assert error["code"] == CODE_CONTRACT_VIOLATION
+            assert meta["status"] == CONTRACT_INVALID
+            assert meta["violations"][0]["code"] == "evaluation_error"
+
+    def test_terminal_record_without_verdict_reports_skipped(self) -> None:
+        """A cancelled contracted run must not read ``pending`` forever."""
+        ledger = RunLedger(InMemoryRunStore(), clock=_clock())
+        ledger.begin(agent_id="a1", n=1, output_contract=CONTRACT)
+        cancelled = ledger.cancel("a1", 1)
+        assert contract_view(cancelled)["status"] == CONTRACT_SKIPPED
+        got = ledger.get("a1", 1)
+        assert contract_view(got)["status"] == CONTRACT_SKIPPED
+
+    def test_outcome_corrupt_usage_degrades_not_crashes(self) -> None:
+        """Corrupt usage fields are dropped — evidence problems must never
+        wedge the terminal persist."""
+        status, error, _, usage = outcome_from_turn_payload(
+            {"status": "success", "message": "ok", "usage": {"input_tokens": "abc"}}
+        )
+        assert status == "FINISHED"
+        assert usage == {}
+        status, _, _, _ = outcome_from_turn_payload(["not", "a", "dict"])
+        assert status == "ERROR"
+
     def test_record_from_dict_roundtrips_contract_fields(self) -> None:
         raw = {
             "agent_id": "a1",

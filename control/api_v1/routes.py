@@ -17,12 +17,13 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, Header, Request
 from fastapi.responses import Response
-from runtime.runner.contract import ContractError, normalize_contract
+from runtime.runner.contract import STATUS_SKIPPED, ContractError, normalize_contract
 
 from control.api_v1 import router
 from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
@@ -259,6 +260,25 @@ def _fallback_status(rec: Any) -> str:
     return "UNKNOWN"
 
 
+def _with_skipped_contract(record: RunRecord) -> RunRecord:
+    """Render-side copy of an open record whose run is reported terminal.
+
+    The ledger record stays open (the verdict was never evaluated), so the
+    contract must not read ``pending`` on a terminal run — report the same
+    ``skipped`` a non-FINISHED persist would have written.
+    """
+    if record.output_contract is None or record.contract_result is not None:
+        return record
+    verdict = {
+        "enforcement": record.output_contract.get("enforcement", "strict"),
+        "schema_digest": record.output_contract.get("schema_digest"),
+        "status": STATUS_SKIPPED,
+        "extraction": None,
+        "violations": [],
+    }
+    return replace(record, contract_result=verdict)
+
+
 def _run_error_public(
     status: str,
     *,
@@ -337,7 +357,7 @@ def _render_run(
             return _record_public(record, pub, meta)
         if n in cancelled:
             return _record_public(
-                record,
+                _with_skipped_contract(record),
                 pub,
                 meta,
                 status="CANCELLED",
@@ -375,7 +395,7 @@ def _render_run(
             # fall back to the session-derived terminal status.
             status = _fallback_status(rec)
             return _record_public(
-                record,
+                _with_skipped_contract(record),
                 pub,
                 meta,
                 status=status,
@@ -750,6 +770,13 @@ def _normalize_contract(contract: OutputContract | None) -> dict[str, Any] | Non
         return normalize_contract(contract.model_dump(by_alias=True))
     except ContractError as exc:
         raise V1ApiError(400, "invalid_output_contract", str(exc)) from exc
+    except Exception as exc:
+        # normalize_contract only raises ContractError by design; anything
+        # else (e.g. a schema too deep to serialize) is still a refused
+        # contract — 400, never an uncaught 500.
+        raise V1ApiError(
+            400, "invalid_output_contract", f"unusable output contract: {type(exc).__name__}"
+        ) from exc
 
 
 @router.post("/agents", status_code=201)

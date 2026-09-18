@@ -340,16 +340,6 @@ def _write_turn_finished(
         session["native_session_id"] = state.thread_id
         session["codex_session_id"] = state.thread_id
     save_session(root, session)
-    emit(
-        root,
-        {
-            "type": "sbx.turn_finished",
-            "status": status,
-            "exit_code": code,
-            "duration_s": duration_s,
-            "usage": dict(state.usage),
-        },
-    )
     turn_path = root / "turns" / f"{n}.json"
     detail = "" if status == STATUS_SUCCESS else (error_hint or redact_text(state.last_error))
     payload = {
@@ -391,4 +381,17 @@ def _write_turn_finished(
                 "extraction": None,
                 "violations": [],
             }
+    # The payload is written before the terminal event so a crashed write
+    # can never emit a success the evidence does not back — turns/<n>.json
+    # is the authoritative outcome the control plane persists from.
     atomic_write(turn_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    emit(
+        root,
+        {
+            "type": "sbx.turn_finished",
+            "status": status,
+            "exit_code": code,
+            "duration_s": duration_s,
+            "usage": dict(state.usage),
+        },
+    )

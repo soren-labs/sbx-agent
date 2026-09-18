@@ -7,6 +7,7 @@ normalize/extract/validate/evaluate seams are exercised directly.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from runtime.runner.contract import (
@@ -253,3 +254,118 @@ def test_violation_summary() -> None:
     verdict = evaluate_output("nope", SCHEMA)
     summary = violation_summary(verdict)
     assert "not_json" in summary
+
+
+# ------------------------------------------------- robustness (totality)
+
+
+def _nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+def _nested_schema(depth: int) -> dict:
+    schema: dict = {"type": "object"}
+    for _ in range(depth):
+        schema = {"allOf": [schema]}
+    return schema
+
+
+def test_compile_schema_rejects_deep_nesting() -> None:
+    """A schema deeper than the compile bound is refused, not crashed on."""
+    with pytest.raises(ContractError, match="deeper"):
+        compile_schema(_nested_schema(3000))
+    with pytest.raises(ContractError):
+        normalize_contract({"schema": _nested_schema(3000)})
+    # A shallow-enough schema still compiles.
+    compile_schema(_nested_schema(50))
+
+
+def test_evaluate_output_deep_instance_is_invalid_not_crash() -> None:
+    """A message carrying pathologically nested JSON yields a diagnosable
+    ``max_depth`` verdict — never an uncaught RecursionError."""
+    verdict = evaluate_output(_nested(5000), {"items": {}})
+    assert verdict["status"] == "invalid"
+    # Parsed-then-depth-checked → max_depth; a build whose scanner trips
+    # first → not_json. Both are diagnosable invalids, never a crash.
+    assert verdict["violations"][0]["code"] in ("max_depth", "not_json")
+    # Embedded form hits the same bound.
+    verdict = evaluate_output(f"see {_nested(5000)} done", {"type": "array"})
+    assert verdict["status"] == "invalid"
+    assert verdict["violations"][0]["code"] in ("max_depth", "not_json")
+
+
+def test_evaluate_output_is_total_on_unusable_schema() -> None:
+    """Schemas that never saw compile_schema (tampered ledger records)
+    produce ``evaluation_error`` verdicts instead of raising."""
+    for schema in (None, [], "x", {}, {"type": 5}):
+        verdict = evaluate_output('{"a": 1}', schema)
+        assert verdict["status"] == "invalid", schema
+        assert verdict["violations"], schema
+        assert all(v["code"] for v in verdict["violations"])
+    # A bad regex only fires on instances the keyword applies to — a string
+    # instance surfaces the evaluation_error; a dict legitimately validates.
+    verdict = evaluate_output('"text"', {"pattern": "("})
+    assert verdict["status"] == "invalid"
+    assert verdict["violations"][0]["code"] == "evaluation_error"
+
+
+def test_validate_reports_evaluation_error_not_exception() -> None:
+    """``validate`` is total: a bad regex or malformed keyword shape in a
+    tampered schema becomes a violation, not a raise."""
+    assert validate("x", {"pattern": "("})[0]["code"] == "evaluation_error"
+    assert validate({"a": 1}, {"properties": 5})[0]["code"] == "evaluation_error"
+    assert validate(1, {"minimum": "x"})[0]["code"] == "evaluation_error"
+
+
+def test_extract_json_bounded_scan_is_not_quadratic() -> None:
+    """A ``{``-heavy unparseable message is rejected inside the scan budget
+    instead of burning raw_decode per position (was ~1.6s at 5k starts)."""
+    text = '{"key": ' * 5000
+    start = time.monotonic()
+    assert extract_json(text) == (None, None)
+    assert time.monotonic() - start < 5.0  # generous; previously quadratic
+
+
+def test_extract_json_rejects_nonstandard_constants() -> None:
+    """``NaN``/``Infinity`` are not JSON and must not reach structured output."""
+    for text in ("NaN", "Infinity", "-Infinity", '{"x": NaN}', "[1, Infinity]"):
+        value, how = extract_json(text)
+        assert value is None and how is None, text
+    # Verdict is the diagnosable not_json invalid, not a leaked float.
+    verdict = evaluate_output('{"x": NaN}', {"type": "object"})
+    assert verdict["status"] == "invalid"
+    assert verdict["violations"][0]["code"] == "not_json"
+
+
+def test_compile_schema_rejects_nested_quantifier_pattern() -> None:
+    """Catastrophic-backtracking regex shapes are refused at request time —
+    ``re`` has no execution budget for the caller to bound instead."""
+    for pattern in ("(a+)+$", "(x?y)*z", "(\\d+){3}$", "((a*)b)+c"):
+        with pytest.raises(ContractError, match="quantif"):
+            compile_schema({"pattern": pattern})
+    # Ordinary patterns — including grouped/braced quantifiers — still pass.
+    for pattern in ("^[a-z0-9_-]+$", "(?P<y>\\d{2})-(\\d{2})", "a{2,4}b+c?"):
+        compile_schema({"pattern": pattern})
+    # And a pattern over the length bound is refused too.
+    with pytest.raises(ContractError):
+        compile_schema({"pattern": "a" * 3000})
+
+
+def test_unique_items_is_linear_not_quadratic() -> None:
+    """uniqueItems dedupes via canonical keys — a large array stays cheap."""
+    items = [{"k": i, "v": [i, i + 0.0]} for i in range(5000)]
+    start = time.monotonic()
+    assert validate(items, {"uniqueItems": True}) == []
+    assert time.monotonic() - start < 5.0
+    # 1 and 1.0 still collapse to the same JSON value.
+    assert validate([1, 1.0], {"uniqueItems": True})[0]["code"] == "uniqueItems"
+
+
+def test_evaluate_output_never_raises() -> None:
+    """Fuzz the totality contract: arbitrary junk in, verdict out."""
+    for text in (None, "", "{}", _nested(50), "\x00\xff", "🎉" * 100):
+        verdict = evaluate_output(text, SCHEMA)
+        assert verdict["status"] in ("valid", "invalid")
+    for schema in ({"const": _nested_schema(3)}, {"enum": [_nested_schema(3)]}):
+        verdict = evaluate_output('{"a": 1}', schema)
+        assert verdict["status"] == "invalid"  # schema-shaped junk can't match

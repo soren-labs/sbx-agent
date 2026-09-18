@@ -78,7 +78,16 @@ class V1Route(APIRoute):
                 return await original(request)
             except V1ApiError as exc:
                 return exc.response()
-            except RequestValidationError:
+            except RequestValidationError as exc:
+                # SOR-130: a body that only fails inside ``output_contract``
+                # reports the dedicated code; anything else stays the
+                # canonical malformed-request fallback.
+                locs = [tuple(err.get("loc") or ()) for err in exc.errors()]
+                if locs and all("output_contract" in loc for loc in locs):
+                    return JSONResponse(
+                        status_code=400,
+                        content=error_body("invalid_output_contract", "invalid output contract"),
+                    )
                 return JSONResponse(
                     status_code=400,
                     content=error_body("invalid_provider", "malformed request"),

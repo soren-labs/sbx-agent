@@ -30,7 +30,8 @@ def _contract(enforcement: str = "strict") -> dict:
 
 class TestContractValidation:
     def test_malformed_contract_rejected_400(self, client, auth) -> None:
-        # Non-dict schema fails pydantic validation → canonical 400.
+        # Non-dict schema fails pydantic validation — still a contract
+        # failure, so it reports the dedicated code, not the generic 400.
         body = {
             "prompt": {"text": "hi"},
             "agent": {"provider": "codex"},
@@ -38,7 +39,7 @@ class TestContractValidation:
         }
         resp = client.post("/v1/agents", json=body, headers=auth)
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_output_contract"
 
     def test_unsupported_schema_keyword_rejected_400(self, client, auth) -> None:
         # A dict schema that parses but uses keywords outside the
@@ -69,6 +70,38 @@ class TestContractValidation:
         }
         resp = client.post("/v1/agents", json=body, headers=auth)
         assert resp.status_code in (400, 422)
+
+    def test_deep_schema_rejected_400_not_500(self, client, auth) -> None:
+        """A schema nested deeper than the compile bound is refused as
+        ``invalid_output_contract`` — request-time validation must not
+        propagate a RecursionError into a 500."""
+        schema: dict = {"type": "object"}
+        for _ in range(3000):
+            schema = {"allOf": [schema]}
+        body = {
+            "prompt": {"text": "hi"},
+            "agent": {"provider": "codex"},
+            "output_contract": {"schema": schema},
+        }
+        resp = client.post("/v1/agents", json=body, headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_output_contract"
+        # Same bound on create-run.
+        agent = create_agent(client, auth)["agent"]
+        resp = client.post(
+            f"/v1/agents/{agent['id']}/runs",
+            json={"prompt": {"text": "again"}, "output_contract": {"schema": schema}},
+            headers=auth,
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_output_contract"
+
+    def test_non_contract_validation_error_stays_generic(self, client, auth) -> None:
+        # Errors outside output_contract keep the canonical malformed code.
+        body = {"agent": {"provider": "codex"}, "output_contract": {"schema": "x"}}
+        resp = client.post("/v1/agents", json=body, headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_provider"
 
 
 class TestContractVerdict:
@@ -134,6 +167,24 @@ class TestContractVerdict:
         assert run1["status"] == "FINISHED"
         assert run1["structured_output"] is None
         assert run1["output_contract"] is None
+
+    def test_pathological_output_is_diagnosed_not_wedged(self, client, auth, monkeypatch) -> None:
+        """The turn payload's ``message`` is sandbox-written and untrusted:
+        JSON nested past the eval bound must produce a terminal ERROR +
+        contract_violation, never kill the watcher or wedge the run open."""
+        monkeypatch.setenv("FAKE_CODEX_SCENARIO", "structured_deep")
+        agent = create_agent(client, auth, output_contract=_contract())["agent"]
+        run = wait_run(client, auth, agent["id"], "run-1")
+        assert run["status"] == "ERROR"
+        assert run["error"]["code"] == "contract_violation"
+        verdict = run["output_contract"]
+        assert verdict["status"] == "invalid"
+        # Parsed-then-depth-checked → max_depth; a scanner that trips at
+        # parse time → not_json. Both are diagnosable invalids.
+        assert verdict["violations"][0]["code"] in ("max_depth", "not_json")
+        # A second GET re-renders the persisted record without error.
+        again = client.get(f"/v1/agents/{agent['id']}/runs/run-1", headers=auth).json()
+        assert again["status"] == "ERROR"
 
     def test_failed_turn_contract_is_skipped(self, client, auth, monkeypatch) -> None:
         monkeypatch.setenv("FAKE_CODEX_SCENARIO", "nonzero")

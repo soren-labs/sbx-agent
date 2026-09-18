@@ -210,7 +210,9 @@ def read_json(
         return None
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        # RecursionError: a sandbox-written file with pathological nesting
+        # is unreadable evidence, not a crash — same as unparseable JSON.
         return None
     return data if isinstance(data, dict) else None
 

@@ -23,6 +23,7 @@ from control.run_store import (
     RunLedger,
     apply_output_contract,
     outcome_from_turn_payload,
+    run_error,
 )
 from control.sandbox_io import drain, read_json, sandbox_env, write_file
 from control.store import SessionRecord, SessionStore, merge_usage
@@ -681,8 +682,19 @@ class ControlPlane:
                     payload = None
             now = self.clock()
             if active and payload is not None:
-                rec.usage = merge_usage(rec.usage, payload.get("usage"))
-                rec.turns = max(rec.turns, int(payload.get("n") or n))
+                # The turn payload is sandbox-written evidence: corrupt
+                # fields degrade individually, they never wedge the finish.
+                try:
+                    turn_usage = payload.get("usage")
+                    rec.usage = merge_usage(
+                        rec.usage, turn_usage if isinstance(turn_usage, dict) else None
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    pass
+                try:
+                    rec.turns = max(rec.turns, int(payload.get("n") or n))
+                except (TypeError, ValueError):
+                    rec.turns = max(rec.turns, n)
                 message = payload.get("message") or ""
                 if message and rec.current_turn_id == turn_id:
                     rec.messages.append(
@@ -708,15 +720,51 @@ class ControlPlane:
                 # evidence. Inside the lock so it serializes against
                 # stop()/close() ledger cancels; finish() is monotonic, so a
                 # recorded cancel still wins over a late success.
-                status, error, result_text, usage = outcome_from_turn_payload(payload)
-                # SOR-130: enforce the run's output contract on the recorded
-                # message — a strict violation becomes ERROR +
-                # contract_violation, never a silent FINISHED.
-                record = self.run_ledger.get(session_id, n)
-                contract = record.output_contract if record is not None else None
-                status, error, structured_output, contract_result = apply_output_contract(
-                    status, error, result_text, contract
-                )
+                contract = None
+                try:
+                    status, error, result_text, usage = outcome_from_turn_payload(payload)
+                    # SOR-130: enforce the run's output contract on the recorded
+                    # message — a strict violation becomes ERROR +
+                    # contract_violation, never a silent FINISHED.
+                    record = self.run_ledger.get(session_id, n)
+                    contract = record.output_contract if record is not None else None
+                    status, error, structured_output, contract_result = apply_output_contract(
+                        status, error, result_text, contract
+                    )
+                except Exception:
+                    # The enforcement seam judges sandbox-written evidence,
+                    # so it is designed total — this guard is the last
+                    # resort: a failure to evaluate fails closed, the run
+                    # still terminates diagnosably instead of wedging open.
+                    status, result_text, usage, structured_output = (
+                        "ERROR",
+                        None,
+                        None,
+                        None,
+                    )
+                    error = run_error(
+                        "runtime_error",
+                        "turn outcome could not be evaluated",
+                        source="control",
+                        retryable=True,
+                    )
+                    contract_result = (
+                        {
+                            "enforcement": str(contract.get("enforcement") or "strict"),
+                            "schema_digest": contract.get("schema_digest"),
+                            "status": "invalid",
+                            "extraction": None,
+                            "violations": [
+                                {
+                                    "path": "$",
+                                    "code": "evaluation_error",
+                                    "message": "turn outcome could not be evaluated",
+                                }
+                            ],
+                        }
+                        if isinstance(contract, dict)
+                        else None
+                    )
                 self.run_ledger.finish(
                     session_id,
                     n,

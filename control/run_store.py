@@ -26,9 +26,12 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from runtime.runner.contract import (
+    _MAX_EVAL_DEPTH,
+    STATUS_INVALID,
     STATUS_PENDING,
     STATUS_SKIPPED,
     STATUS_VALID,
+    _json_depth,
     evaluate_output,
     violation_summary,
 )
@@ -88,6 +91,19 @@ def default_artifact_refs(n: int) -> list[str]:
     ]
 
 
+def _usage_from(raw: dict[str, Any]) -> dict[str, int]:
+    """Coerce a turn payload's usage dict; unreadable fields are dropped —
+    corrupt evidence must never wedge the terminal persist."""
+    usage: dict[str, int] = {}
+    for key in _USAGE_KEYS:
+        if key in raw:
+            try:
+                usage[key] = int(raw[key])
+            except (TypeError, ValueError):
+                continue
+    return usage
+
+
 def outcome_from_turn_payload(
     payload: dict[str, Any] | None,
 ) -> tuple[str, dict[str, Any] | None, str | None, dict[str, int] | None]:
@@ -96,7 +112,7 @@ def outcome_from_turn_payload(
     A missing/unreadable payload is explicit ``ERROR`` +
     ``runtime_error`` — never inferred success.
     """
-    if payload is None:
+    if not isinstance(payload, dict):
         return (
             "ERROR",
             RunError(
@@ -112,11 +128,7 @@ def outcome_from_turn_payload(
     message = payload.get("message")
     result_text = str(message) if message else None
     usage_raw = payload.get("usage")
-    usage = (
-        {k: int(usage_raw[k]) for k in _USAGE_KEYS if k in usage_raw}
-        if isinstance(usage_raw, dict)
-        else None
-    )
+    usage = _usage_from(usage_raw) if isinstance(usage_raw, dict) else None
     if turn_status == "success":
         # Completeness confirmed by the turn record; a recorded parse failure
         # stays visible as an explicit warning on the FINISHED run.
@@ -189,8 +201,23 @@ def apply_output_contract(
             None,
             {**meta, "status": STATUS_SKIPPED, "extraction": None, "violations": []},
         )
-    schema = contract.get("schema")
-    verdict = evaluate_output(result_text or "", schema if isinstance(schema, dict) else {})
+    try:
+        verdict = evaluate_output(result_text or "", contract.get("schema"))
+    except Exception as exc:
+        # evaluate_output is total; this backstop guarantees the seam that
+        # judges untrusted output can never wedge the terminal persist.
+        verdict = {
+            "status": STATUS_INVALID,
+            "value": None,
+            "extraction": None,
+            "violations": [
+                {
+                    "path": "$",
+                    "code": "evaluation_error",
+                    "message": f"evaluation crashed: {type(exc).__name__}",
+                }
+            ],
+        }
     result = {
         **meta,
         "status": verdict["status"],
@@ -215,16 +242,28 @@ def contract_view(record: RunRecord) -> dict[str, Any] | None:
 
     ``None`` when the run carries no contract. While the run is still open
     the verdict is ``pending`` — the contract is attached but unevaluated.
+    A terminal record that never wrote a verdict (cancelled, or finalized
+    before contract fields existed) reports ``skipped`` — never ``pending``
+    on a finished run.
     """
     contract = record.output_contract
     if contract is None:
         return None
     result = record.contract_result or {}
+    status = result.get("status")
+    if status is None:
+        status = STATUS_SKIPPED if record.terminal else STATUS_PENDING
+    schema = contract.get("schema")
+    if not isinstance(schema, dict) or _json_depth(schema) > _MAX_EVAL_DEPTH:
+        # A normalized contract is always shallower than the eval bound —
+        # anything deeper is a corrupt record; don't echo it into a
+        # response it could make unserializable.
+        schema = None
     return {
-        "schema": contract.get("schema"),
+        "schema": schema,
         "enforcement": contract.get("enforcement", "strict"),
         "schema_digest": contract.get("schema_digest"),
-        "status": result.get("status") or STATUS_PENDING,
+        "status": status,
         "extraction": result.get("extraction"),
         "violations": result.get("violations") or [],
     }
@@ -433,7 +472,7 @@ class FileRunStore:
             return None
         try:
             raw = json.loads(text)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             return corrupt_record(agent_id, n, f"invalid json: {exc}")
         return _decode(raw, agent_id, n)
 
