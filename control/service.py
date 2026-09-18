@@ -121,6 +121,13 @@ class ControlPlane:
         # store while the sandbox is still readable. Best-effort: failures are
         # swallowed — a broken snapshot must never wedge teardown.
         self.snapshot_hook: Callable[[SessionRecord, SandboxHandle], None] | None = None
+        # SOR-127 environment build/snapshot cache — optional, wired by the
+        # app layer. ``snapshot_provider`` restores a sandbox from a build
+        # record's snapshot ref; ``environments`` is the build-record
+        # service the /v1 worker resolves/fills through. Both None means
+        # the cache is disabled and provisioning is unchanged.
+        self.snapshot_provider: Any = None
+        self.environments: Any = None
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
         # Per-session provider/account/model context for run records. Lost on
@@ -318,6 +325,7 @@ class ControlPlane:
         secret_name: str | None = None,
         resource_secrets: list[str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        env_snapshot: str | None = None,
     ) -> None:
         """Create the sandbox and run ``runner init`` for an open session.
 
@@ -331,6 +339,13 @@ class ControlPlane:
         account credential Secrets); ``mcp_servers`` are the resolved MCP
         config templates forwarded to ``runner init`` via
         ``SBX_MCP_SERVERS`` (env indirection, never values).
+
+        SOR-127: ``env_snapshot`` is a prepared-environment snapshot ref —
+        the sandbox is restored from it through ``snapshot_provider``
+        instead of a cold ``backend.create``. Restoring still mounts this
+        session's own Secrets (account credential channels are per-sandbox
+        env, never filesystem state), and the restored base still has to
+        pass the workspace ``base_sha`` gate at prepare time.
         """
         with self._lock:
             rec = self.store.get(session_id)
@@ -340,14 +355,20 @@ class ControlPlane:
                 raise SessionConflict("session_not_runnable")
             tags = dict(rec.sandbox_tags)
         secrets = [secret_name] if secret_name else []
+        spec = SandboxSpec(
+            tags=tags,
+            secrets=secrets,
+            resource_secrets=list(resource_secrets or ()),
+        )
         try:
-            handle = self.backend.create(
-                SandboxSpec(
-                    tags=tags,
-                    secrets=secrets,
-                    resource_secrets=list(resource_secrets or ()),
-                )
-            )
+            if env_snapshot is not None:
+                if self.snapshot_provider is None:
+                    raise RuntimeError(
+                        "env_snapshot restore requested but no snapshot provider is configured"
+                    )
+                handle = self.snapshot_provider.restore(env_snapshot, spec)
+            else:
+                handle = self.backend.create(spec)
         except Exception:
             self._mark_create_failed(rec)
             raise

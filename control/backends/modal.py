@@ -21,6 +21,8 @@ from control.config import (
     CODEX_SECRET_NAME,
     CPU,
     DEVIN_IMAGE_NAME,
+    ENV_SNAPSHOT_TIMEOUT_S,
+    ENV_SNAPSHOT_TTL_S,
     GROK_IMAGE_NAME,
     IDLE_TIMEOUT_S,
     MEMORY_MIB,
@@ -31,6 +33,8 @@ from control.config import (
     WORK_DIR,
     env_str,
 )
+from control.environment import ENV_BUILD_TAG
+from control.workspace import CHECKOUT_FAILED, REPO_UNAVAILABLE, WorkspaceError
 
 _GONE_ERROR_NAMES = frozenset({"ConflictError", "NotFoundError"})
 
@@ -189,6 +193,16 @@ def _spec_provider(spec: SandboxSpec) -> str:
     return spec.tags.get("provider", "codex")
 
 
+def _is_env_build(tags: Mapping[str, str] | None) -> bool:
+    """SOR-127 credential-free environment-build sandbox marker.
+
+    Build sandboxes produce the filesystem a snapshot captures, so they
+    must never carry credentials: no named Secret, no ambient account
+    blob, no Codex auth Secret — on create or on any exec (including the
+    kill exec)."""
+    return bool(tags) and tags.get(ENV_BUILD_TAG) == "1"
+
+
 def _secrets_for(modal: Any, provider: str, secret_names: Iterable[str]) -> list[Any]:
     """Secrets for ``Sandbox.create`` / ``exec`` / the kill exec.
 
@@ -227,7 +241,14 @@ def _resource_secrets(modal: Any, secret_names: Iterable[str]) -> list[Any]:
 
 
 def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
-    """Secrets for ``Sandbox.create``: see :func:`_secrets_for`."""
+    """Secrets for ``Sandbox.create``: see :func:`_secrets_for`.
+
+    SOR-127: ``env_build`` sandboxes attach nothing at all — the filesystem
+    they produce becomes a reusable snapshot, so even env-only credential
+    mounts are refused.
+    """
+    if _is_env_build(spec.tags):
+        return []
     return [
         *_secrets_for(modal, _spec_provider(spec), spec.secrets),
         *_resource_secrets(modal, spec.resource_secrets),
@@ -331,12 +352,14 @@ class ModalProcess:
         pid_file: str,
         secret_names: tuple[str, ...] = (),
         provider: str = "codex",
+        env_build: bool = False,
     ) -> None:
         self._proc = proc
         self._sandbox_id = sandbox_id
         self._pid_file = pid_file
         self._secret_names = secret_names
         self._provider = provider
+        self._env_build = env_build
         self.stdout = _iter_lines(proc.stdout)
 
     def stderr_text(self, limit: int = 2000) -> str:
@@ -376,6 +399,11 @@ class ModalProcess:
             raise
 
     def _exec_secrets(self, modal: Any) -> list[Any]:
+        # SOR-127: the kill exec on a build sandbox carries no credentials
+        # either — nothing credential-shaped is mounted while a snapshot
+        # can be taken.
+        if self._env_build:
+            return []
         return _secrets_for(modal, self._provider, self._secret_names)
 
 
@@ -405,13 +433,17 @@ class ModalBackend:
 
     def create(self, spec: SandboxSpec) -> SandboxHandle:
         modal = _load_modal()
-        tags = dict(spec.tags)
         provider = _spec_provider(spec)
+        return self._create_with_image(modal, spec, _resolve_image(modal, provider))
+
+    def _create_with_image(self, modal: Any, spec: SandboxSpec, image: Any) -> SandboxHandle:
+        """``Sandbox.create`` with an explicit image (SOR-127 snapshot restores)."""
+        tags = dict(spec.tags)
         sb = modal.Sandbox.create(
             "sleep",
             "infinity",
             app=modal.App.lookup(self._app_name, create_if_missing=True),
-            image=_resolve_image(modal, provider),
+            image=image,
             secrets=_sandbox_secrets(modal, spec),
             env=_create_env(spec),
             cpu=CPU,
@@ -439,7 +471,8 @@ class ModalBackend:
         wrapped = ["bash", "-c", f'echo $$ > {pid_file}; exec "$@"', "sbx-exec", *argv]
         secret_names = tuple(self._secrets_by_sandbox.get(handle.id) or ())
         provider = handle.tags.get("provider", "codex")
-        secrets = self._exec_secrets(modal, handle)
+        env_build = _is_env_build(handle.tags)
+        secrets = [] if env_build else self._exec_secrets(modal, handle)
         if env:
             proc = sb.exec(*wrapped, bufsize=1, env=dict(env), secrets=secrets)
         else:
@@ -451,9 +484,12 @@ class ModalBackend:
             pid_file=pid_file,
             secret_names=secret_names,
             provider=provider,
+            env_build=env_build,
         )
 
     def _exec_secrets(self, modal: Any, handle: SandboxHandle) -> list[Any]:
+        if _is_env_build(handle.tags):
+            return []
         names = self._secrets_by_sandbox.get(handle.id) or []
         provider = handle.tags.get("provider", "codex")
         resource_names = self._resource_secrets_by_sandbox.get(handle.id) or []
@@ -500,3 +536,50 @@ class ModalBackend:
                 continue
             found.append(SandboxHandle(id=sb.object_id, root=Path(WORK_DIR), tags=sb_tags))
         return found
+
+
+class ModalSnapshotProvider:
+    """SOR-127 environment snapshot/restore on Modal-native primitives.
+
+    ``snapshot`` calls ``Sandbox.snapshot_filesystem`` — Modal's native
+    filesystem snapshot, which returns an ``Image`` carrying the sandbox's
+    entire filesystem; the image id is the durable ``snapshot_ref`` stored
+    on the environment build record. ``restore`` rehydrates it with
+    ``Image.from_id`` and creates a fresh sandbox through the same
+    parameter path as :meth:`ModalBackend.create`, so a restored sandbox
+    is identical modulo its filesystem.
+
+    All Modal control credentials stay on the control plane — the worker
+    inside the sandbox never sees a Modal client. Tests must not
+    instantiate or call this class (``import modal`` is deferred).
+    """
+
+    def __init__(
+        self,
+        backend: ModalBackend,
+        *,
+        timeout_s: int = ENV_SNAPSHOT_TIMEOUT_S,
+        ttl_s: int | None = ENV_SNAPSHOT_TTL_S,
+    ) -> None:
+        self._backend = backend
+        self._timeout_s = timeout_s
+        self._ttl_s = ttl_s
+
+    def snapshot(self, handle: SandboxHandle) -> str:
+        """``sb.snapshot_filesystem`` → durable image id (the snapshot ref)."""
+        modal = _load_modal()
+        sb = modal.Sandbox.from_id(handle.id)
+        image = sb.snapshot_filesystem(timeout=self._timeout_s, ttl=self._ttl_s)
+        ref = getattr(image, "object_id", None)
+        if not ref:
+            raise WorkspaceError(CHECKOUT_FAILED, "filesystem snapshot returned no image id")
+        return str(ref)
+
+    def restore(self, snapshot_ref: str, spec: SandboxSpec) -> SandboxHandle:
+        """``Image.from_id`` + ``Sandbox.create`` — the snapshot's filesystem."""
+        modal = _load_modal()
+        from_id = getattr(modal.Image, "from_id", None)
+        if not callable(from_id):
+            raise WorkspaceError(REPO_UNAVAILABLE, "modal.Image.from_id is unavailable on this SDK")
+        image = from_id(snapshot_ref)
+        return self._backend._create_with_image(modal, spec, image)

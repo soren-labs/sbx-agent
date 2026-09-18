@@ -374,6 +374,7 @@ def _prepare_workspace(
     workspace: dict[str, Any],
     handoff: dict[str, Any] | None,
     git: dict[str, Any] | None = None,
+    env_restored: bool = False,
 ) -> None:
     """Prepare the declared workspace on the fresh sandbox (SOR-83).
 
@@ -383,6 +384,11 @@ def _prepare_workspace(
     declared base, then applies the referenced artifact or checks out the
     referenced commit. ``git`` (SOR-128) is the collaboration policy the
     prepare persists on the workspace record.
+
+    SOR-127: ``env_restored`` means the sandbox was provisioned from a
+    prepared-environment snapshot — the clone is skipped and
+    ``prepare_restored`` verifies the restored HEAD against the declared
+    ``base_sha`` (fail closed) before any handoff applies on top.
     """
     workspaces = getattr(plane, "workspaces", None)
     if workspaces is None:
@@ -398,6 +404,8 @@ def _prepare_workspace(
         base_ref=str(workspace.get("base_ref") or ""),
         base_sha=str(workspace.get("base_sha") or ""),
     )
+    if env_restored:
+        workspaces.prepare_restored(handle, session_id, spec, git=git)
     handoff = handoff or {}
     artifact_id = handoff.get("artifact_id")
     head_sha = handoff.get("head_sha")
@@ -419,7 +427,10 @@ def _prepare_workspace(
             )
         else:
             handoffs.prepare_from_head(handle, session_id, str(head_sha), spec=spec, git=git)
-    else:
+    elif not env_restored:
+        # A restored environment already has the workspace prepared via
+        # ``prepare_restored`` above — a fresh clone would collide with the
+        # snapshotted checkout.
         workspaces.prepare(handle, session_id, spec, git=git)
 
 
@@ -446,6 +457,21 @@ def _first_run_worker(
     failure is an explicit run-1 ``ERROR`` and the agent is closed rather
     than left to run on the wrong version.
     """
+    # SOR-127: when the environment cache is wired and a workspace is
+    # declared, resolve the last-known-good build record first — a usable
+    # snapshot restores the sandbox instead of a cold create, and the
+    # prepare step below still verifies the exact ``base_sha``.
+    envs = getattr(plane, "environments", None)
+    env_spec = None
+    env_record = None
+    if workspace is not None and envs is not None:
+        try:
+            env_spec = envs.spec_for(workspace, provider=provider)
+            env_record = envs.resolve(env_spec)
+        except Exception:
+            env_spec = None
+            env_record = None
+    env_snapshot = env_record.snapshot_ref if env_record is not None else None
     try:
         plane.provision_session(
             session_id,
@@ -454,6 +480,7 @@ def _first_run_worker(
             secret_name=secret_name,
             resource_secrets=(resources or {}).get("secrets"),
             mcp_servers=(resources or {}).get("mcp"),
+            env_snapshot=env_snapshot,
         )
     except KeyError:
         _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
@@ -469,6 +496,14 @@ def _first_run_worker(
         return
     except Exception as exc:
         _persist_run1_terminal(run_states, session_id, "ERROR", _runtime_error(exc))
+        # SOR-127: a provision failure on a snapshot restore means the
+        # record's snapshot may be dead (expired/corrupt) — invalidate it so
+        # subsequent runs rebuild instead of wedging on the same ref.
+        if env_snapshot is not None and envs is not None and env_spec is not None:
+            try:
+                envs.invalidate(env_spec.key)
+            except Exception:
+                pass
         _release_session_lease(v1, session_id)
         return
     finally:
@@ -488,15 +523,38 @@ def _first_run_worker(
             if state is not None and state.status in RUN_TERMINAL:
                 plane.discard_queued_first_turn(session_id)
                 return
-            _prepare_workspace(plane, session_id, workspace, handoff, git)
+            _prepare_workspace(
+                plane,
+                session_id,
+                workspace,
+                handoff,
+                git,
+                env_restored=env_snapshot is not None,
+            )
         except Exception as exc:
             _persist_run1_terminal(run_states, session_id, "ERROR", _workspace_error(exc))
+            # SOR-127: a restored environment that fails the base_sha gate
+            # is a poisoned snapshot — drop the record so the next run
+            # rebuilds rather than re-serving it.
+            if env_snapshot is not None and envs is not None and env_spec is not None:
+                try:
+                    envs.invalidate(env_spec.key)
+                except Exception:
+                    pass
             try:
                 plane.close(session_id)
             except Exception:
                 pass
             _release_session_lease(v1, session_id)
             return
+        # SOR-127: cache fill — a successful cold prepare means this
+        # workspace's environment can be snapshotted for reuse. Best-effort:
+        # the record carries the outcome; a failed build never fails the run.
+        if envs is not None and env_spec is not None and env_record is None:
+            try:
+                envs.try_build(env_spec)
+            except Exception:
+                pass
 
     # Provisioned → idle. A cancel/delete may have landed during cold start;
     # the run-state read itself is guarded so a store hiccup cannot kill the
