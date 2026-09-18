@@ -216,9 +216,22 @@ def _secrets_for(modal: Any, provider: str, secret_names: Iterable[str]) -> list
     return [*secrets, modal.Secret.from_dict(aux)] if aux else secrets
 
 
+def _resource_secrets(modal: Any, secret_names: Iterable[str]) -> list[Any]:
+    """SOR-129 session-resource Secrets for ``Sandbox.create`` / ``exec``.
+
+    Attached *alongside* the provider account/auth resolution in
+    :func:`_secrets_for` — a resource ref can never shadow or strip the
+    sandbox's own credential chain. Names only; values never leave Modal.
+    """
+    return [modal.Secret.from_name(name) for name in dict.fromkeys(secret_names)]
+
+
 def _sandbox_secrets(modal: Any, spec: SandboxSpec) -> list[Any]:
     """Secrets for ``Sandbox.create``: see :func:`_secrets_for`."""
-    return _secrets_for(modal, _spec_provider(spec), spec.secrets)
+    return [
+        *_secrets_for(modal, _spec_provider(spec), spec.secrets),
+        *_resource_secrets(modal, spec.resource_secrets),
+    ]
 
 
 def _create_env(spec: SandboxSpec) -> dict[str, str]:
@@ -385,6 +398,10 @@ class ModalBackend:
     def __init__(self, app_name: str | None = None) -> None:
         self._app_name = app_name or os.environ.get("SBX_MODAL_APP_NAME", MODAL_APP_NAME)
         self._secrets_by_sandbox: dict[str, list[str]] = {}
+        # SOR-129 session-resource Secret names per sandbox — re-attached on
+        # every ``exec`` (Modal ``exec(env=)`` replaces the process env, so
+        # create-time mounts alone would vanish from later execs).
+        self._resource_secrets_by_sandbox: dict[str, list[str]] = {}
 
     def create(self, spec: SandboxSpec) -> SandboxHandle:
         modal = _load_modal()
@@ -406,6 +423,8 @@ class ModalBackend:
         )
         if spec.secrets:
             self._secrets_by_sandbox[sb.object_id] = list(spec.secrets)
+        if spec.resource_secrets:
+            self._resource_secrets_by_sandbox[sb.object_id] = list(spec.resource_secrets)
         return SandboxHandle(id=sb.object_id, root=Path(WORK_DIR), tags=tags)
 
     def exec(
@@ -437,11 +456,16 @@ class ModalBackend:
     def _exec_secrets(self, modal: Any, handle: SandboxHandle) -> list[Any]:
         names = self._secrets_by_sandbox.get(handle.id) or []
         provider = handle.tags.get("provider", "codex")
-        return _secrets_for(modal, provider, names)
+        resource_names = self._resource_secrets_by_sandbox.get(handle.id) or []
+        return [
+            *_secrets_for(modal, provider, names),
+            *_resource_secrets(modal, resource_names),
+        ]
 
     def terminate(self, handle: SandboxHandle) -> None:
         modal = _load_modal()
         self._secrets_by_sandbox.pop(handle.id, None)
+        self._resource_secrets_by_sandbox.pop(handle.id, None)
         try:
             sb = modal.Sandbox.from_id(handle.id)
             sb.terminate()

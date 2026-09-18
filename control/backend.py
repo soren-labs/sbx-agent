@@ -34,11 +34,15 @@ class SandboxSpec:
     ``secrets`` names Modal Secrets to attach (P2: one per account,
     ``sbx-acct-<account_id>``). ``env`` is a baseline environment applied to
     every ``exec`` in this sandbox; the per-call ``env`` argument overrides it.
+    ``resource_secrets`` (SOR-129) names per-agent session-resource Secrets:
+    attached alongside — never instead of — the provider account/auth
+    Secrets, and re-attached on every ``exec`` in this sandbox only.
     """
 
     tags: dict[str, str] = field(default_factory=dict)
     secrets: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    resource_secrets: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -150,6 +154,7 @@ class _Record:
     handle: SandboxHandle
     spec_env: dict[str, str] = field(default_factory=dict)
     secrets: list[str] = field(default_factory=list)
+    resource_secrets: list[str] = field(default_factory=list)
     procs: list[LocalProcess] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -174,6 +179,7 @@ class LocalProcessBackend:
                 handle=handle,
                 spec_env=dict(spec.env),
                 secrets=list(spec.secrets),
+                resource_secrets=list(spec.resource_secrets),
             )
         return handle
 

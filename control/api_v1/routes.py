@@ -37,6 +37,7 @@ from control.api_v1.deps import (
     get_key_store,
     get_plane,
     get_registry,
+    get_resources,
     get_run_reporter,
     get_run_states,
     get_scheduler,
@@ -81,6 +82,7 @@ from control.config import TERMINAL_STATUSES, selected_providers
 from control.devin_pool import ScheduleRefused
 from control.latency import observe
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
+from control.resources import ResourceError, resolve_resources, resource_refs
 from control.run_errors import run_error_for_run
 from control.run_store import (
     UNKNOWN_RUN_STATUS,
@@ -161,9 +163,19 @@ def _meta_for(v1: V1State, rec: Any) -> AgentMeta:
     if meta is not None:
         return meta
     tags = getattr(rec, "sandbox_tags", None) or {}
+    resources: dict[str, Any] | None = None
+    raw_resources = tags.get("resources")
+    if raw_resources:
+        try:
+            parsed = json.loads(raw_resources)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            resources = parsed
     return AgentMeta(
         provider=tags.get("provider") or "codex",
         account_id=tags.get("account_id") or "auto",
+        resources=resources,
     )
 
 
@@ -779,6 +791,19 @@ def _normalize_contract(contract: OutputContract | None) -> dict[str, Any] | Non
         ) from exc
 
 
+def _validate_resources(body: CreateAgentRequest, registry: Any) -> dict[str, Any] | None:
+    """Validate + resolve SOR-129 ``resources`` refs against the registry.
+
+    Unknown/disallowed refs fail as ``400 invalid_resource``; MCP refs on a
+    provider with no MCP channel fail as ``400 unsupported`` — both before
+    any claim or sandbox work begins, never silently ignored.
+    """
+    try:
+        return resolve_resources(body.resources, provider=body.agent.provider, registry=registry)
+    except ResourceError as exc:
+        raise V1ApiError(400, exc.code, exc.message) from exc
+
+
 @router.post("/agents", status_code=201)
 def create_agent(
     body: CreateAgentRequest,
@@ -791,6 +816,7 @@ def create_agent(
     reporter: RunFailureReporter = Depends(get_run_reporter),
     artifacts: Any = Depends(get_artifact_store),
     workflows: WorkflowService = Depends(get_workflow_service),
+    resources_registry: Any = Depends(get_resources),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Create an agent and queue its first run (SOR-82 A2).
@@ -806,6 +832,7 @@ def create_agent(
     """
     workspace, handoff, git = _validate_workspace_decl(body, artifacts)
     contract = _normalize_contract(body.output_contract)
+    resources = _validate_resources(body, resources_registry)
     if contract is not None and _ledger(plane) is None:
         # Contracted runs need the durable ledger for both dispatch and the
         # persisted verdict — refuse rather than run uncontracted.
@@ -892,6 +919,7 @@ def create_agent(
             handoff=handoff,
             git=git,
             output_contract=contract,
+            resources=resources,
         )
     except Exception:
         if owned is not None:
@@ -927,6 +955,7 @@ def _create_agent_once(
     handoff: dict[str, Any] | None = None,
     git: dict[str, Any] | None = None,
     output_contract: dict[str, Any] | None = None,
+    resources: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -975,6 +1004,7 @@ def _create_agent_once(
             idempotency_key=idempotency_key,
             idempotency_fingerprint=idempotency_fingerprint,
             output_contract=output_contract,
+            resource_refs=resource_refs(resources),
         )
     except ConcurrencyLimit as exc:
         _release_lease(lease)
@@ -998,6 +1028,7 @@ def _create_agent_once(
                 account_id=resolved,
                 name=body.name,
                 idle_timeout_s=body.idle_timeout_s,
+                resources=resource_refs(resources),
             ),
         )
         if account is not None:
@@ -1031,6 +1062,7 @@ def _create_agent_once(
             workspace=workspace,
             handoff=handoff,
             git=git,
+            resources=resources,
         )
     except Exception:
         _discard_agent(plane, v1, session_id, lease)
