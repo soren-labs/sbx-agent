@@ -28,6 +28,7 @@ x-canonical:
     - event_parse_error
     - timeout
     - cancelled
+    - contract_violation
   run_error_sources: [provider, runtime, control, telemetry]
   error_subcodes:
     - unauthorized
@@ -52,6 +53,7 @@ x-canonical:
     - artifact_not_found
     - artifact_invalid
     - artifact_secret
+    - invalid_output_contract
   providers: [codex, antigravity, grok, opencode, devin]
   keepalives_s: 15
   sse:
@@ -1002,6 +1004,31 @@ components:
           $ref: "#/components/schemas/GitPolicy"
         metadata:
           $ref: "#/components/schemas/WorkflowMetadata"
+        output_contract:
+          $ref: "#/components/schemas/OutputContract"
+    OutputContract:
+      type: object
+      required: [schema]
+      description: |
+        SOR-130 structured output contract. `schema` is a JSON Schema the
+        run's final agent message must satisfy — enforced subset only
+        (assertion keywords; `pattern`, `$ref`, `if`/`then`/`else`,
+        `patternProperties`, ... are refused as `400
+        invalid_output_contract`). `enforcement` selects verdict handling:
+        `strict` (default) turns invalid/malformed output into run `ERROR`
+        + `contract_violation` — never a silent success; `warn` keeps the
+        run `FINISHED` but attaches the same `contract_violation`
+        diagnostic. The verdict is computed on the control plane from the
+        recorded message and persisted on the terminal run as
+        `output_contract` + `structured_output`.
+      properties:
+        schema:
+          type: object
+          description: JSON Schema (enforced subset) the output must satisfy.
+        enforcement:
+          type: string
+          enum: [strict, warn]
+          default: strict
     GitPolicy:
       type: object
       description: |
@@ -1274,6 +1301,8 @@ components:
           $ref: "#/components/schemas/Prompt"
         metadata:
           $ref: "#/components/schemas/WorkflowMetadata"
+        output_contract:
+          $ref: "#/components/schemas/OutputContract"
     WorkflowMetadata:
       type: object
       required: [workflow_id, task_id, role]
@@ -1404,6 +1433,14 @@ components:
             (``turns/<n>.json``, ``inbox/<n>.md``, ``events.jsonl``,
             ``events.raw.jsonl``). Refs may be dangling after the sandbox is
             reclaimed; the ledger record is the durable truth.
+        structured_output:
+          nullable: true
+          description: |
+            SOR-130: the JSON value extracted from the run's final agent
+            message — any JSON type. ``null`` when the run carried no
+            output contract or the message held no parseable JSON.
+        output_contract:
+          $ref: "#/components/schemas/OutputContractResult"
     RunError:
       type: object
       nullable: true
@@ -1431,6 +1468,7 @@ components:
             - event_parse_error
             - timeout
             - cancelled
+            - contract_violation
         source:
           type: string
           enum: [provider, runtime, control, telemetry]
@@ -1441,6 +1479,50 @@ components:
         retry_after:
           type: number
           description: Seconds; present when the provider supplied a retry hint
+    OutputContractResult:
+      type: object
+      nullable: true
+      required: [enforcement, status]
+      description: |
+        SOR-130 output-contract verdict persisted on a run. ``status`` is
+        ``pending`` while the run is open, ``valid`` / ``invalid`` once the
+        terminal verdict is evaluated, ``skipped`` when the run ended
+        without evaluable output. ``violations`` is a bounded list of
+        machine-diagnosable ``{path, code, message}`` entries — an
+        ``invalid`` verdict under ``strict`` enforcement also surfaces as
+        run ``ERROR`` + ``contract_violation``.
+      properties:
+        schema:
+          type: object
+          nullable: true
+          description: The requested JSON Schema (echoed for diagnosis).
+        enforcement:
+          type: string
+          enum: [strict, warn]
+        schema_digest:
+          type: string
+          nullable: true
+          description: '"sha256:<hex>" over the canonical schema.'
+        status:
+          type: string
+          enum: [pending, valid, invalid, skipped]
+        extraction:
+          type: string
+          nullable: true
+          enum: [raw, fence, embedded]
+          description: How the JSON value was recovered from the message.
+        violations:
+          type: array
+          items:
+            type: object
+            required: [path, code, message]
+            properties:
+              path:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
     AgentUsage:
       type: object
       required: [usage, cost_estimate_usd, sandbox_seconds]
@@ -1717,6 +1799,7 @@ components:
                 - artifact_not_found
                 - artifact_invalid
                 - artifact_secret
+                - invalid_output_contract
             message:
               type: string
             retry_after:

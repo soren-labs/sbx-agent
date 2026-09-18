@@ -30,8 +30,8 @@ Normalization rules:
   generic success.
 
 SOR-130 adds ``contract_violation`` (source ``control``): a terminal run
-whose output contract evaluated ``invalid``. Pending a contract-change
-request for ``api-v1.yaml`` ``x-canonical.run_error_codes``.
+whose output contract evaluated ``invalid``. Recorded in ``api-v1.yaml``
+``x-canonical.run_error_codes``.
 """
 
 from __future__ import annotations

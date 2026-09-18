@@ -194,6 +194,30 @@ class TestContractVerdict:
         assert run["error"]["code"] == "runtime_error"  # provider error, not contract
         assert run["output_contract"]["status"] == "skipped"
 
+    def test_contract_verdict_computed_outside_plane_lock(
+        self, client, auth, v1_env, monkeypatch
+    ) -> None:
+        """Regression (SOR-130 review): the verdict judges untrusted
+        schema × agent output — it must never run under the plane's global
+        lock, so a pathological contract can strand only the turn's watcher
+        thread, never the whole control plane."""
+        import control.service as service_module
+
+        plane = v1_env.app.state.plane
+        real = service_module.apply_output_contract
+        owned: list[bool] = []
+
+        def checking(*args, **kwargs):
+            owned.append(plane._lock._is_owned())
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(service_module, "apply_output_contract", checking)
+        agent = create_agent(client, auth, output_contract=_contract())["agent"]
+        run = wait_run(client, auth, agent["id"], "run-1")
+        assert run["status"] in ("FINISHED", "ERROR")
+        assert owned, "the contract seam never ran for this run"
+        assert not any(owned), "apply_output_contract ran under the plane lock"
+
     def test_contract_verdict_survives_ledger_backfill(
         self, client, auth, v1_env, monkeypatch
     ) -> None:

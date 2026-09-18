@@ -22,13 +22,17 @@ Schema subset (fail-closed): ``type`` / ``enum`` / ``const`` /
 / ``minProperties`` / ``maxProperties`` / ``dependentRequired`` / ``items``
 / ``prefixItems`` / ``minItems`` / ``maxItems`` / ``uniqueItems`` /
 ``contains`` / ``minContains`` / ``maxContains`` / ``minLength`` /
-``maxLength`` / ``pattern`` / ``minimum`` / ``maximum`` /
-``exclusiveMinimum`` / ``exclusiveMaximum`` / ``multipleOf`` / ``allOf`` /
-``anyOf`` / ``oneOf`` / ``not``. Annotation keywords (``$schema``, ``$id``,
-``title``, ``description``, ``default``, ``format``, ...) are accepted and
-ignored. Anything else — ``$ref``, ``if``/``then``/``else``,
-``patternProperties``, ... — is rejected at compile time so a contract can
-never silently validate more than it declares.
+``maxLength`` / ``minimum`` / ``maximum`` / ``exclusiveMinimum`` /
+``exclusiveMaximum`` / ``multipleOf`` / ``allOf`` / ``anyOf`` / ``oneOf`` /
+``not``. Annotation keywords (``$schema``, ``$id``, ``title``,
+``description``, ``default``, ``format``, ...) are accepted and ignored.
+Anything else — ``$ref``, ``if``/``then``/``else``, ``patternProperties``,
+... — is rejected at compile time so a contract can never silently validate
+more than it declares. ``pattern`` is deliberately outside the subset:
+stdlib ``re`` offers no execution budget and no linear-time engine, so a
+client-controlled regex could stall the evaluator on agent output (ReDoS)
+— string contracts express bounds via ``minLength`` / ``maxLength`` /
+``enum`` / ``const`` instead.
 """
 
 from __future__ import annotations
@@ -54,10 +58,14 @@ _MESSAGE_LIMIT = 300
 # Evaluation budgets. The verdict seam judges untrusted input — a client-
 # supplied schema at request time and a sandbox-written agent message at
 # persist time — so every recursive/scanning step is bounded. Exceeding a
-# bound is a verdict (``max_depth`` / failed extraction), never an exception.
+# bound is a verdict (``max_depth`` / ``instance_too_large`` /
+# ``evaluation_budget`` / failed extraction), never an exception and never
+# a stall.
 _MAX_SCHEMA_DEPTH = 100  # compile bound on schema-keyword nesting
+_MAX_SCHEMA_BYTES = 64 << 10  # canonical-size bound on the client schema
 _MAX_EVAL_DEPTH = 200  # instance container nesting the validator will judge
-_MAX_PATTERN_LEN = 2000  # bound on a client-supplied regex source
+_MAX_EVAL_NODES = 50_000  # total JSON nodes in the instance to judge
+_MAX_EVAL_STEPS = 200_000  # node-visits/atom-checks per evaluate_output
 _EMBED_SCAN_BUDGET = 4 << 20  # total chars examined across embedded candidates
 _EMBED_MAX_ATTEMPTS = 4096  # raw_decode attempts per message
 
@@ -84,7 +92,6 @@ _ASSERTION_KEYWORDS = frozenset(
         "maxContains",
         "minLength",
         "maxLength",
-        "pattern",
         "minimum",
         "maximum",
         "exclusiveMinimum",
@@ -155,7 +162,15 @@ def normalize_contract(raw: Any) -> dict[str, Any]:
         raise ContractError(f"enforcement must be one of {list(ENFORCEMENTS)}")
     try:
         compile_schema(schema)
-        digest = schema_digest(schema)
+        canonical = _canonical_json(schema)
+        if len(canonical) > _MAX_SCHEMA_BYTES:
+            # An unbounded schema buys the client unbounded per-run
+            # evaluation fanout — refuse it at request time like any
+            # other unenforceable contract.
+            raise ContractError(
+                f"output_contract.schema serializes past the {_MAX_SCHEMA_BYTES}-byte bound"
+            )
+        digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     except ContractError:
         raise
     except Exception as exc:
@@ -258,20 +273,6 @@ def compile_schema(schema: Any, *, _path: str = "$", _depth: int = 0) -> None:
         or schema["multipleOf"] <= 0
     ):
         raise ContractError(f"multipleOf at {_path} must be a positive number")
-    if "pattern" in schema:
-        if not isinstance(schema["pattern"], str):
-            raise ContractError(f"pattern at {_path} must be a string")
-        if len(schema["pattern"]) > _MAX_PATTERN_LEN:
-            raise ContractError(f"pattern at {_path} exceeds {_MAX_PATTERN_LEN} chars")
-        try:
-            re.compile(schema["pattern"])
-        except re.error as exc:
-            raise ContractError(f"pattern at {_path} is not a valid regex: {exc}") from exc
-        if _has_nested_quantifier(schema["pattern"]):
-            raise ContractError(
-                f"pattern at {_path} nests a quantifier inside a quantified group"
-                " — refused (backtracking risk)"
-            )
     if "uniqueItems" in schema and not isinstance(schema["uniqueItems"], bool):
         raise ContractError(f"uniqueItems at {_path} must be a boolean")
 
@@ -315,87 +316,6 @@ def _check_type_decl(decl: Any, path: str) -> None:
     names = decl if isinstance(decl, list) else [decl]
     if not names or any(name not in _INSTANCE_TYPES for name in names):
         raise ContractError(f"type at {path} must be one of {list(_INSTANCE_TYPES)}")
-
-
-# Special-group prefixes — scanned past so their marker characters (the ``?``
-# in ``(?:``/``(?i:``/``(?>``/lookarounds/``(?P<name>``/``(?P=name``/``(?#``/
-# conditionals) are never read as quantifiers.
-_GROUP_PREFIX = re.compile(r"\?(?:[aiLmsux]+:|:|=|!|<=|<!|>|\(|#|P<[A-Za-z_]\w*>|P=[A-Za-z_]\w*)")
-_QUANTIFIER_BRACE = re.compile(r"\d+(?:,\d*)?|,\d+")
-
-
-def _has_nested_quantifier(pattern: str) -> bool:
-    """Detect the classic catastrophic-backtracking shape: a quantified group
-    whose body already contains a quantifier — ``(a+)+``, ``(x?y)*``,
-    ``(\\d+){3}``. Refused at compile time because ``re`` offers no execution
-    budget, so a pathological pattern could otherwise stall the caller.
-    Conservative: some refused compositions are technically linear, but a
-    contract never needs them."""
-    stack: list[bool] = []  # open groups → body already holds a quantifier
-    in_class = False
-    i, n = 0, len(pattern)
-    while i < n:
-        char = pattern[i]
-        if char == "\\":
-            i += 2
-            continue
-        if in_class:
-            in_class = char != "]"
-            i += 1
-            continue
-        if char == "[":
-            in_class = True
-            i += 1
-            continue
-        if char == "(":
-            stack.append(False)
-            i += 1
-            if i < n and pattern[i] == "?":
-                match = _GROUP_PREFIX.match(pattern, i)
-                if match is not None:
-                    i = match.end()
-            continue
-        if char == ")":
-            if stack:
-                inner_quantified = stack.pop()
-                j = i + 1
-                quantified = False
-                if j < n and pattern[j] in "*+?":
-                    quantified = True
-                    j += 1
-                    if j < n and pattern[j] in "?+":  # lazy / possessive marker
-                        j += 1
-                elif j < n and pattern[j] == "{":
-                    end = pattern.find("}", j)
-                    if end != -1 and _QUANTIFIER_BRACE.fullmatch(pattern[j + 1 : end]):
-                        quantified = True
-                        j = end + 1
-                if quantified and inner_quantified:
-                    return True
-                if (quantified or inner_quantified) and stack:
-                    stack[-1] = True
-                i = j if quantified else i + 1
-                continue
-            i += 1
-            continue
-        if char in "*+?":
-            if stack:
-                stack[-1] = True
-            i += 1
-            if i < n and pattern[i] in "?+":  # lazy / possessive marker
-                i += 1
-            continue
-        if char == "{":
-            end = pattern.find("}", i)
-            if end != -1 and _QUANTIFIER_BRACE.fullmatch(pattern[i + 1 : end]):
-                if stack:
-                    stack[-1] = True
-                i = end + 1
-                continue
-            i += 1
-            continue
-        i += 1
-    return False
 
 
 def _reject_constant(name: str) -> Any:
@@ -510,30 +430,95 @@ def _json_depth(value: Any) -> int:
     return depth
 
 
+class _EvalBudgetExceeded(Exception):
+    """Internal: the per-evaluation work budget ran out."""
+
+
+class _Budget:
+    """Deterministic work budget for one validation.
+
+    Every recursive step and every loop iteration driven by untrusted input
+    (instance members, schema-driven enumeration, equality walks) debits
+    the counter; exhaustion is a verdict, never an exception escaping.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, steps: int) -> None:
+        self.remaining = steps
+
+    def tick(self, n: int = 1) -> None:
+        self.remaining -= n
+        if self.remaining < 0:
+            raise _EvalBudgetExceeded
+
+
+def _eval_limit_breach(value: Any) -> str | None:
+    """One iterative walk over the instance; returns the violated bound's
+    code — ``max_depth`` or ``instance_too_large`` — or ``None``.
+
+    Early-exits past the bound, so measuring a hostile instance is itself
+    bounded work.
+    """
+    depth = 0
+    nodes = 0
+    stack = [(value, 0)]
+    while stack:
+        node, level = stack.pop()
+        nodes += 1
+        if nodes > _MAX_EVAL_NODES:
+            return "instance_too_large"
+        if isinstance(node, (dict, list)):
+            if level > depth:
+                depth = level
+                if depth > _MAX_EVAL_DEPTH:
+                    return "max_depth"
+            children = node.values() if isinstance(node, dict) else node
+            stack.extend((child, level + 1) for child in children)
+    return None
+
+
+_LIMIT_BREACH_MESSAGES = {
+    "max_depth": f"instance nests deeper than the evaluation bound {_MAX_EVAL_DEPTH}",
+    "instance_too_large": f"instance has more than {_MAX_EVAL_NODES} nodes",
+}
+
+
 def validate(instance: Any, schema: Any) -> list[dict[str, str]]:
     """Validate ``instance`` against the compiled-subset schema.
 
     Returns a bounded list of ``{"path", "code", "message"}`` violations;
     empty means valid. ``schema`` must already pass :func:`compile_schema`.
-    Total: an instance nesting past ``_MAX_EVAL_DEPTH`` reports ``max_depth``
-    and any other failure inside the check reports ``evaluation_error`` —
-    pathological input is a verdict, never an exception.
+    Total: an instance past ``_MAX_EVAL_DEPTH``/``_MAX_EVAL_NODES`` reports
+    ``max_depth``/``instance_too_large``, a schema × instance fanout past
+    ``_MAX_EVAL_STEPS`` reports ``evaluation_budget``, and any other failure
+    inside the check reports ``evaluation_error`` — pathological input is a
+    verdict, never an exception or a stall.
     """
     violations: list[dict[str, str]] = []
     try:
-        if _json_depth(instance) > _MAX_EVAL_DEPTH:
-            _viol(
-                violations,
-                "$",
-                "max_depth",
-                f"instance nests deeper than the evaluation bound {_MAX_EVAL_DEPTH}",
-            )
+        breach = _eval_limit_breach(instance)
+        if breach is not None:
+            _viol(violations, "$", breach, _LIMIT_BREACH_MESSAGES[breach])
         else:
-            _validate(instance, schema, "$", violations)
+            _validate(instance, schema, "$", violations, _Budget(_MAX_EVAL_STEPS))
+    except _EvalBudgetExceeded:
+        # Bounded-work verdict: keep the diagnoses gathered so far and pin
+        # the breach itself as the last violation — a contract too
+        # expensive to judge is a diagnosable invalid, never a stall.
+        violations[:] = [
+            *violations[: _MAX_VIOLATIONS - 1],
+            {
+                "path": "$",
+                "code": "evaluation_budget",
+                "message": f"evaluation exceeded the work bound {_MAX_EVAL_STEPS} steps",
+            },
+        ]
     except Exception as exc:
         # A schema that never saw compile_schema (a tampered ledger record)
-        # can still carry a bad regex or deep const — fail closed with a
-        # diagnosable violation rather than crashing the enforcement seam.
+        # can still carry a deep const or malformed keyword shape — fail
+        # closed with a diagnosable violation rather than crashing the
+        # enforcement seam.
         _viol(violations, "$", "evaluation_error", f"validation failed: {type(exc).__name__}")
     return violations[:_MAX_VIOLATIONS]
 
@@ -579,8 +564,9 @@ def _type_matches(value: Any, name: str) -> bool:
     return False
 
 
-def _json_equal(left: Any, right: Any) -> bool:
+def _json_equal(left: Any, right: Any, budget: _Budget) -> bool:
     """JSON-equality: 1 == 1.0, dict/list order-insensitive per spec."""
+    budget.tick()
     if isinstance(left, bool) or isinstance(right, bool):
         return left is right
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
@@ -588,18 +574,21 @@ def _json_equal(left: Any, right: Any) -> bool:
     if type(left) is not type(right):
         return False
     if isinstance(left, dict):
-        return left.keys() == right.keys() and all(_json_equal(left[k], right[k]) for k in left)
+        return left.keys() == right.keys() and all(
+            _json_equal(left[k], right[k], budget) for k in left
+        )
     if isinstance(left, list):
         return len(left) == len(right) and all(
-            _json_equal(a, b) for a, b in zip(left, right, strict=True)
+            _json_equal(a, b, budget) for a, b in zip(left, right, strict=True)
         )
     return left == right
 
 
-def _eq_key(value: Any) -> Any:
+def _eq_key(value: Any, budget: _Budget) -> Any:
     """Hashable canonical form honoring JSON equality (``1 == 1.0``, dict
     order-insensitive) — lets ``uniqueItems`` dedupe in O(n) instead of
     pairwise ``_json_equal``."""
+    budget.tick()
     if isinstance(value, bool):
         return (0, value)
     if value is None:
@@ -611,16 +600,42 @@ def _eq_key(value: Any) -> Any:
     if isinstance(value, str):
         return (3, value)
     if isinstance(value, list):
-        return (4, tuple(_eq_key(item) for item in value))
+        return (4, tuple(_eq_key(item, budget) for item in value))
     if isinstance(value, dict):
-        return (5, frozenset((key, _eq_key(item)) for key, item in value.items()))
+        return (5, frozenset((key, _eq_key(item, budget)) for key, item in value.items()))
     return (6, repr(value))
 
 
-def _validate(instance: Any, schema: Any, path: str, violations: list[dict[str, str]]) -> None:
+def _validate(
+    instance: Any,
+    schema: Any,
+    path: str,
+    violations: list[dict[str, str]],
+    budget: _Budget,
+) -> None:
+    # One step per visited (instance, schema) pair plus one per direct
+    # container member — pre-pays every per-visit linear pass below so the
+    # total work is bounded by _MAX_EVAL_STEPS whatever the fanout.
+    budget.tick(1 + len(instance) if isinstance(instance, (dict, list)) else 1)
     if isinstance(schema, bool):
         if not schema:
             _viol(violations, path, "false_schema", "value rejected by false schema")
+        return
+    if not isinstance(schema, dict):
+        _viol(violations, path, "evaluation_error", "subschema is not an object")
+        return
+    unknown = set(schema) - _ASSERTION_KEYWORDS - _ANNOTATION_KEYWORDS
+    if unknown:
+        # A schema that never saw compile_schema (a tampered ledger record)
+        # carrying keywords outside the enforced subset must fail closed —
+        # silently ignoring an assertion keyword could pass output the
+        # contract meant to reject.
+        _viol(
+            violations,
+            path,
+            "evaluation_error",
+            f"unsupported schema keyword {sorted(unknown)[0]!r} reached evaluation",
+        )
         return
 
     if "type" in schema:
@@ -634,15 +649,17 @@ def _validate(instance: Any, schema: Any, path: str, violations: list[dict[str, 
             )
             return  # downstream keywords would cascade noise
 
-    if "const" in schema and not _json_equal(instance, schema["const"]):
+    if "const" in schema and not _json_equal(instance, schema["const"], budget):
         _viol(violations, path, "const", f"value must equal {_canonical_json(schema['const'])}")
-    if "enum" in schema and not any(_json_equal(instance, option) for option in schema["enum"]):
+    if "enum" in schema and not any(
+        _json_equal(instance, option, budget) for option in schema["enum"]
+    ):
         _viol(violations, path, "enum", "value is not one of the declared enum values")
 
     if isinstance(instance, dict):
-        _validate_object(instance, schema, path, violations)
+        _validate_object(instance, schema, path, violations, budget)
     elif isinstance(instance, list):
-        _validate_array(instance, schema, path, violations)
+        _validate_array(instance, schema, path, violations, budget)
     elif isinstance(instance, str):
         _validate_string(instance, schema, path, violations)
     elif isinstance(instance, (int, float)) and not isinstance(instance, bool):
@@ -652,7 +669,9 @@ def _validate(instance: Any, schema: Any, path: str, violations: list[dict[str, 
         if keyword not in schema:
             continue
         subs = schema[keyword]
-        counts = sum(1 for sub in subs if not _collect(lambda v: _validate(instance, sub, path, v)))
+        counts = sum(
+            1 for sub in subs if not _collect(lambda v: _validate(instance, sub, path, v, budget))
+        )
         if keyword == "allOf" and counts != len(subs):
             _viol(violations, path, "allOf", "value fails an allOf subschema")
         if keyword == "anyOf" and counts == 0:
@@ -665,7 +684,7 @@ def _validate(instance: Any, schema: Any, path: str, violations: list[dict[str, 
                 f"value matches {counts} oneOf subschemas (exactly one required)",
             )
     if "not" in schema:
-        if not _collect(lambda v: _validate(instance, schema["not"], path, v)):
+        if not _collect(lambda v: _validate(instance, schema["not"], path, v, budget)):
             _viol(violations, path, "not", "value matches the forbidden not subschema")
 
 
@@ -676,16 +695,21 @@ def _collect(check: Any) -> list[dict[str, str]]:
 
 
 def _validate_object(
-    instance: dict[str, Any], schema: dict[str, Any], path: str, violations: list[dict[str, str]]
+    instance: dict[str, Any],
+    schema: dict[str, Any],
+    path: str,
+    violations: list[dict[str, str]],
+    budget: _Budget,
 ) -> None:
     for name in schema.get("required") or ():
+        budget.tick()
         if name not in instance:
             _viol(violations, path, "required", f"missing required property {name!r}")
     props = schema.get("properties") or {}
     for name in instance:
         subschema = props.get(name)
         if subschema is not None:
-            _validate(instance[name], subschema, f"{path}.{name}", violations)
+            _validate(instance[name], subschema, f"{path}.{name}", violations, budget)
     additional = schema.get("additionalProperties", True)
     extras = [name for name in instance if name not in props]
     if additional is False and extras:
@@ -697,17 +721,19 @@ def _validate_object(
         )
     elif isinstance(additional, dict):
         for name in extras:
-            _validate(instance[name], additional, f"{path}.{name}", violations)
+            _validate(instance[name], additional, f"{path}.{name}", violations, budget)
     if "propertyNames" in schema:
         for name in instance:
-            _validate(name, schema["propertyNames"], f"{path}.{name}", violations)
+            _validate(name, schema["propertyNames"], f"{path}.{name}", violations, budget)
     if "minProperties" in schema and len(instance) < schema["minProperties"]:
         _viol(violations, path, "minProperties", "object has too few properties")
     if "maxProperties" in schema and len(instance) > schema["maxProperties"]:
         _viol(violations, path, "maxProperties", "object has too many properties")
     for name, deps in (schema.get("dependentRequired") or {}).items():
+        budget.tick()
         if name in instance:
             for dep in deps:
+                budget.tick()
                 if dep not in instance:
                     _viol(
                         violations,
@@ -718,14 +744,18 @@ def _validate_object(
 
 
 def _validate_array(
-    instance: list[Any], schema: dict[str, Any], path: str, violations: list[dict[str, str]]
+    instance: list[Any],
+    schema: dict[str, Any],
+    path: str,
+    violations: list[dict[str, str]],
+    budget: _Budget,
 ) -> None:
     prefix = schema.get("prefixItems") or []
     for index, subschema in enumerate(prefix[: len(instance)]):
-        _validate(instance[index], subschema, f"{path}[{index}]", violations)
+        _validate(instance[index], subschema, f"{path}[{index}]", violations, budget)
     if "items" in schema:
         for index in range(len(prefix), len(instance)):
-            _validate(instance[index], schema["items"], f"{path}[{index}]", violations)
+            _validate(instance[index], schema["items"], f"{path}[{index}]", violations, budget)
     if "minItems" in schema and len(instance) < schema["minItems"]:
         _viol(violations, path, "minItems", "array has too few items")
     if "maxItems" in schema and len(instance) > schema["maxItems"]:
@@ -733,7 +763,7 @@ def _validate_array(
     if schema.get("uniqueItems"):
         seen: set[Any] = set()
         for item in instance:
-            key = _eq_key(item)
+            key = _eq_key(item, budget)
             if key in seen:
                 _viol(violations, path, "uniqueItems", "array items are not unique")
                 break
@@ -742,7 +772,7 @@ def _validate_array(
         matched = sum(
             1
             for item in instance
-            if not _collect(lambda v: _validate(item, schema["contains"], path, v))
+            if not _collect(lambda v: _validate(item, schema["contains"], path, v, budget))
         )
         minimum = schema.get("minContains", 1)
         if matched < minimum:
@@ -769,8 +799,6 @@ def _validate_string(
         _viol(violations, path, "minLength", "string is shorter than minLength")
     if "maxLength" in schema and len(instance) > schema["maxLength"]:
         _viol(violations, path, "maxLength", "string is longer than maxLength")
-    if "pattern" in schema and not re.search(schema["pattern"], instance):
-        _viol(violations, path, "pattern", "string does not match pattern")
 
 
 def _validate_number(
@@ -828,11 +856,12 @@ def evaluate_output(text: str | None, schema: Any) -> dict[str, Any]:
     contract can never pass on one side and fail on the other.
 
     Total: this seam judges untrusted output, so it never raises. A missing
-    or unusable schema, unparseable/pathological output, or an unexpected
-    failure inside evaluation all yield an ``invalid`` verdict with a
-    machine-diagnosable violation (``not_json`` / ``max_depth`` /
-    ``evaluation_error``) — strict enforcement then fails closed instead of
-    wedging or silently succeeding.
+    or unusable schema, unparseable/pathological output, an input past the
+    evaluation bounds, or an unexpected failure inside evaluation all yield
+    an ``invalid`` verdict with a machine-diagnosable violation
+    (``not_json`` / ``max_depth`` / ``instance_too_large`` /
+    ``evaluation_budget`` / ``evaluation_error``) — strict enforcement then
+    fails closed instead of wedging or silently succeeding.
     """
     try:
         if not isinstance(schema, dict) or not schema:
@@ -847,10 +876,10 @@ def evaluate_output(text: str | None, schema: Any) -> dict[str, Any]:
         return {
             "status": status,
             # An extracted-but-invalid value is kept for diagnosis — except
-            # one deeper than the eval bound (the max_depth path): it is
-            # never safe to hand downstream serializers, and the raw
+            # one breaching the eval bounds (max_depth / instance_too_large):
+            # it is never safe to hand downstream serializers, and the raw
             # message remains the evidence of record.
-            "value": None if violations and _json_depth(value) > _MAX_EVAL_DEPTH else value,
+            "value": None if violations and _eval_limit_breach(value) else value,
             "extraction": how,
             "violations": violations,
         }

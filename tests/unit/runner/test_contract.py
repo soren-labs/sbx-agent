@@ -11,6 +11,9 @@ import time
 
 import pytest
 from runtime.runner.contract import (
+    _MAX_EVAL_NODES,
+    _MAX_EVAL_STEPS,
+    _MAX_SCHEMA_BYTES,
     ContractError,
     compile_schema,
     contract_instruction,
@@ -71,12 +74,19 @@ def test_compile_schema_rejects_unsupported_keywords() -> None:
         {"type": "object", "patternProperties": {"^x": {}}},
         {"if": {"type": "string"}, "then": {}},
         {"properties": {"a": {"$ref": "#/defs/a"}}},
+        # ``pattern`` is outside the subset entirely: stdlib ``re`` has no
+        # execution budget, so a client-controlled regex could stall the
+        # evaluator — refused whatever its shape.
+        {"type": "string", "pattern": "^a+$"},
+        {"properties": {"s": {"pattern": "(a|aa)+$"}}},
     ):
         with pytest.raises(ContractError):
             compile_schema(schema)
     # ...but the error message names the offending keyword for diagnosis.
     with pytest.raises(ContractError, match=r"\$ref"):
         compile_schema({"$ref": "#/defs/x"})
+    with pytest.raises(ContractError, match="pattern"):
+        compile_schema({"pattern": "a*a*a*a*b"})
 
 
 def test_compile_schema_rejects_malformed_keywords() -> None:
@@ -85,13 +95,23 @@ def test_compile_schema_rejects_malformed_keywords() -> None:
     with pytest.raises(ContractError):
         compile_schema({"required": "field"})
     with pytest.raises(ContractError):
-        compile_schema({"pattern": "("})
-    with pytest.raises(ContractError):
         compile_schema({"minLength": -1})
     with pytest.raises(ContractError):
         compile_schema({"multipleOf": 0})
     with pytest.raises(ContractError):
         compile_schema({"allOf": []})
+
+
+def test_normalize_contract_rejects_oversized_schema() -> None:
+    """The canonical schema serialization is size-bounded — an unbounded
+    schema buys unbounded evaluation fanout, so it is refused at request
+    time like any other unenforceable contract."""
+    big = {"type": "string", "enum": ["x" * _MAX_SCHEMA_BYTES]}
+    with pytest.raises(ContractError, match="byte"):
+        normalize_contract({"schema": big})
+    # Just under the bound still normalizes.
+    ok = {"type": "string", "maxLength": 5}
+    assert normalize_contract({"schema": ok})["schema"] == ok
 
 
 def test_load_contract_file(tmp_path) -> None:
@@ -176,7 +196,7 @@ def test_validate_ok() -> None:
         ({"summary": 1, "ok": True}, SCHEMA, "type"),
         ({"summary": "", "ok": True}, SCHEMA, "minLength"),
         ({"summary": "x", "ok": True, "score": 2}, SCHEMA, "maximum"),
-        ("abc", {"type": "string", "pattern": "^a+$"}, "pattern"),
+        ("abc", {"type": "string", "maxLength": 2}, "maxLength"),
         ("x", {"enum": ["a", "b"]}, "enum"),
         ("x", {"const": "y"}, "const"),
         ([1, 2, 2], {"type": "array", "uniqueItems": True}, "uniqueItems"),
@@ -190,7 +210,7 @@ def test_validate_ok() -> None:
         ([1, 2], {"prefixItems": [{"type": "string"}]}, "type"),
         (3, {"type": "integer", "multipleOf": 2}, "multipleOf"),
         ([1, 2], {"contains": {"const": 3}}, "contains"),
-        ({"x": 1}, {"propertyNames": {"pattern": "^y"}}, "pattern"),
+        ({"x": 1}, {"propertyNames": {"minLength": 2}}, "minLength"),
         ([True, True], {"uniqueItems": True}, "uniqueItems"),
     ],
 )
@@ -302,17 +322,18 @@ def test_evaluate_output_is_total_on_unusable_schema() -> None:
         assert verdict["status"] == "invalid", schema
         assert verdict["violations"], schema
         assert all(v["code"] for v in verdict["violations"])
-    # A bad regex only fires on instances the keyword applies to — a string
-    # instance surfaces the evaluation_error; a dict legitimately validates.
-    verdict = evaluate_output('"text"', {"pattern": "("})
+    # An assertion keyword outside the enforced subset fails closed even
+    # when it never saw compile_schema — silently ignoring it could pass
+    # output the contract meant to reject.
+    verdict = evaluate_output('"text"', {"pattern": "^a+$"})
     assert verdict["status"] == "invalid"
     assert verdict["violations"][0]["code"] == "evaluation_error"
 
 
 def test_validate_reports_evaluation_error_not_exception() -> None:
-    """``validate`` is total: a bad regex or malformed keyword shape in a
-    tampered schema becomes a violation, not a raise."""
-    assert validate("x", {"pattern": "("})[0]["code"] == "evaluation_error"
+    """``validate`` is total: an out-of-subset keyword or malformed keyword
+    shape in a tampered schema becomes a violation, not a raise."""
+    assert validate("x", {"pattern": "^a+$"})[0]["code"] == "evaluation_error"
     assert validate({"a": 1}, {"properties": 5})[0]["code"] == "evaluation_error"
     assert validate(1, {"minimum": "x"})[0]["code"] == "evaluation_error"
 
@@ -337,18 +358,43 @@ def test_extract_json_rejects_nonstandard_constants() -> None:
     assert verdict["violations"][0]["code"] == "not_json"
 
 
-def test_compile_schema_rejects_nested_quantifier_pattern() -> None:
-    """Catastrophic-backtracking regex shapes are refused at request time —
-    ``re`` has no execution budget for the caller to bound instead."""
-    for pattern in ("(a+)+$", "(x?y)*z", "(\\d+){3}$", "((a*)b)+c"):
-        with pytest.raises(ContractError, match="quantif"):
-            compile_schema({"pattern": pattern})
-    # Ordinary patterns — including grouped/braced quantifiers — still pass.
-    for pattern in ("^[a-z0-9_-]+$", "(?P<y>\\d{2})-(\\d{2})", "a{2,4}b+c?"):
-        compile_schema({"pattern": pattern})
-    # And a pattern over the length bound is refused too.
-    with pytest.raises(ContractError):
-        compile_schema({"pattern": "a" * 3000})
+def test_evaluate_output_oversized_instance_is_bounded_verdict() -> None:
+    """An instance past the node bound reports ``instance_too_large`` —
+    counted iteratively with early exit — and the oversized value is not
+    echoed into the verdict."""
+    verdict = evaluate_output(json.dumps(list(range(_MAX_EVAL_NODES + 5))), {"type": "array"})
+    assert verdict["status"] == "invalid"
+    assert verdict["violations"][0]["code"] == "instance_too_large"
+    assert verdict["value"] is None
+    assert verdict["extraction"] == "raw"
+
+
+def test_validate_work_budget_is_bounded_verdict() -> None:
+    """Schema × instance fanout (``items`` × ``allOf``) exhausts the work
+    budget deterministically — a diagnosable invalid, never a stall."""
+    schema = {
+        "type": "array",
+        "items": {"allOf": [{"type": "object"} for _ in range(50)]},
+    }
+    compile_schema(schema)
+    # ~50 steps per item → the budget trips partway through, every time.
+    instance = [{} for _ in range(_MAX_EVAL_STEPS // 40)]
+    violations = validate(instance, schema)
+    assert violations[-1]["code"] == "evaluation_budget"
+    # Same input, same verdict — the budget is a deterministic bound.
+    assert validate(instance, schema) == violations
+
+
+def test_evaluate_output_never_raises_on_hostile_schema_fanout() -> None:
+    """``contains`` × ``allOf`` fanout stays inside the budget too."""
+    schema = {
+        "type": "array",
+        "contains": {"allOf": [{"type": "integer"} for _ in range(100)]},
+    }
+    compile_schema(schema)
+    verdict = evaluate_output(json.dumps([0] * 2000), schema)
+    assert verdict["status"] == "invalid"
+    assert verdict["violations"][-1]["code"] == "evaluation_budget"
 
 
 def test_unique_items_is_linear_not_quadratic() -> None:
