@@ -117,7 +117,11 @@ def cmd_init(
 
     try:
         credential_files = _credential_relpaths(provider)
-    except CredentialError as exc:
+        # SOR-129: resolved MCP refs reach init as config templates via
+        # ``SBX_MCP_SERVERS`` (devin only — the control plane refuses MCP
+        # for other providers). Malformed payloads fail closed.
+        mcp_names = mcp.session_server_names() if provider == "devin" else []
+    except (CredentialError, mcp.McpConfigError) as exc:
         print(f"runner init: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
 
@@ -148,9 +152,7 @@ def cmd_init(
     session["provider"] = provider
     session["account_id"] = account_id or os.environ.get(ACCOUNT_ID_ENV)
     session["credential_files"] = credential_files
-    session["mcp_servers"] = (
-        [mcp.LINEAR_SERVER_NAME] if provider == "devin" and mcp.linear_mcp_enabled() else []
-    )
+    session["mcp_servers"] = mcp_names
     save_session(root, session)
     return EXIT_OK
 

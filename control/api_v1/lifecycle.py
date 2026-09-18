@@ -296,6 +296,7 @@ def launch_first_run(
     workspace: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
     git: dict[str, Any] | None = None,
+    resources: dict[str, Any] | None = None,
 ) -> None:
     """Spawn the background create → init → first-turn worker (SOR-82 A2).
 
@@ -308,6 +309,9 @@ def launch_first_run(
     after the sandbox is provisioned the worker prepares the declared
     checkout (and applies the handoff) before run-1 may dispatch. ``git``
     carries the SOR-128 collaboration policy the prepare persists.
+    ``resources`` carries the resolved SOR-129 session-resource refs
+    (``{"secrets": [names], "mcp": [entries]}``) — injected into this
+    sandbox only.
     """
     thread = threading.Thread(
         target=_first_run_worker,
@@ -323,6 +327,7 @@ def launch_first_run(
             workspace,
             handoff,
             git,
+            resources,
         ),
         daemon=True,
         name=f"sbx-v1-create-{session_id[:8]}",
@@ -430,6 +435,7 @@ def _first_run_worker(
     workspace: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
     git: dict[str, Any] | None = None,
+    resources: dict[str, Any] | None = None,
 ) -> None:
     """Advance run-1 CREATING → RUNNING → (terminal) around sandbox startup.
 
@@ -442,7 +448,12 @@ def _first_run_worker(
     """
     try:
         plane.provision_session(
-            session_id, provider=provider, account_id=account_id, secret_name=secret_name
+            session_id,
+            provider=provider,
+            account_id=account_id,
+            secret_name=secret_name,
+            resource_secrets=(resources or {}).get("secrets"),
+            mcp_servers=(resources or {}).get("mcp"),
         )
     except KeyError:
         _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())

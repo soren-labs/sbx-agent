@@ -217,6 +217,7 @@ class ControlPlane:
         idempotency_key: str | None = None,
         idempotency_fingerprint: str | None = None,
         output_contract: dict[str, Any] | None = None,
+        resource_refs: dict[str, Any] | None = None,
     ) -> str:
         """Publish a ``creating`` record without provisioning the sandbox.
 
@@ -256,6 +257,11 @@ class ControlPlane:
             # the correct image and reattach the per-account Secret on exec.
             if provider != "codex" or account_id != "auto":
                 tags.update({"provider": provider, "account_id": account_id})
+            if resource_refs:
+                # SOR-129: declared resource *refs* (names only — never
+                # values) ride the durable sandbox tags so the agent view
+                # stays truthful across control-plane restarts.
+                tags["resources"] = json.dumps(resource_refs)
             now = self.clock()
             messages: list[dict[str, Any]] = []
             if first_prompt is not None:
@@ -310,6 +316,8 @@ class ControlPlane:
         provider: str = "codex",
         account_id: str = "auto",
         secret_name: str | None = None,
+        resource_secrets: list[str] | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         """Create the sandbox and run ``runner init`` for an open session.
 
@@ -317,6 +325,12 @@ class ControlPlane:
         On failure the record is terminal ``lost`` with sandbox metadata kept
         for the reaper; ``SessionConflict`` means the session was closed while
         provisioning ran.
+
+        SOR-129 session resources: ``resource_secrets`` are Modal Secret
+        names attached to this sandbox only (validated upstream — never
+        account credential Secrets); ``mcp_servers`` are the resolved MCP
+        config templates forwarded to ``runner init`` via
+        ``SBX_MCP_SERVERS`` (env indirection, never values).
         """
         with self._lock:
             rec = self.store.get(session_id)
@@ -327,7 +341,13 @@ class ControlPlane:
             tags = dict(rec.sandbox_tags)
         secrets = [secret_name] if secret_name else []
         try:
-            handle = self.backend.create(SandboxSpec(tags=tags, secrets=secrets))
+            handle = self.backend.create(
+                SandboxSpec(
+                    tags=tags,
+                    secrets=secrets,
+                    resource_secrets=list(resource_secrets or ()),
+                )
+            )
         except Exception:
             self._mark_create_failed(rec)
             raise
@@ -355,6 +375,10 @@ class ControlPlane:
                 if account_id != "auto":
                     init_args += ["--account-id", account_id]
                     init_env["SBX_ACCOUNT_ID"] = account_id
+            if mcp_servers:
+                # SOR-129: resolved MCP config templates (${env:VAR}
+                # indirection only — no secret values) for ``runner init``.
+                init_env["SBX_MCP_SERVERS"] = json.dumps(list(mcp_servers))
             init = self.backend.exec(
                 handle,
                 self.runner(*init_args),

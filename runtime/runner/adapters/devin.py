@@ -192,12 +192,12 @@ class DevinAdapter:
         if model:
             agent["model"] = model
         data.setdefault("shell", {}).setdefault("setup_complete", True)
-        linear = mcp.linear_mcp_enabled()
-        if linear:
-            mcp.apply_linear_permissions(data)
+        mcp_names = mcp.session_server_names()
+        if mcp_names:
+            mcp.apply_mcp_permissions(data, mcp_names)
         atomic_write(cfg_path, json.dumps(data, indent=2) + "\n")
-        if linear:
-            mcp.write_linear_mcp_config(home)
+        if mcp_names:
+            mcp.write_session_mcp_config(home)
 
     def first_turn_argv(self, prompt: str, model: str) -> list[str]:
         if use_acp():

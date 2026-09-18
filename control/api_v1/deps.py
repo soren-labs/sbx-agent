@@ -26,6 +26,7 @@ from control.artifacts import InMemoryArtifactStore
 from control.auth_bearer import bearer_scheme, bearer_token, has_scope, lookup_key
 from control.handoff import HandoffService
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
+from control.resources import ResourceRegistry
 from control.scheduler import AccountScheduler, session_running_source
 from control.workflow_store import WorkflowStore
 from control.workspace import InMemoryWorkspaceStore, WorkspaceService
@@ -212,6 +213,17 @@ def get_workflow_store(request: Request) -> WorkflowStore:
     if store is None:
         store = get_v1_state(request).workflows
     return store
+
+
+def get_resources(request: Request) -> ResourceRegistry:
+    """Session-resource registry (SOR-129): ``app.state.resource_registry``
+    when a test/deploy injects one, else the env-configured allowlist.
+    Built per request — env is process-level and the parse is cheap, so an
+    injected registry stays swappable at any point."""
+    registry = getattr(request.app.state, "resource_registry", None)
+    if registry is None:
+        registry = ResourceRegistry.from_env()
+    return registry
 
 
 def get_workflow_service(

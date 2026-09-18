@@ -54,6 +54,8 @@ x-canonical:
     - artifact_invalid
     - artifact_secret
     - invalid_output_contract
+    - invalid_resource
+    - unsupported
   providers: [codex, antigravity, grok, opencode, devin]
   keepalives_s: 15
   sse:
@@ -1006,6 +1008,34 @@ components:
           $ref: "#/components/schemas/WorkflowMetadata"
         output_contract:
           $ref: "#/components/schemas/OutputContract"
+        resources:
+          $ref: "#/components/schemas/SessionResources"
+    SessionResources:
+      type: object
+      description: |
+        SOR-129 per-agent resource refs declared at create time.
+        `secrets` names Modal Secrets attached to this agent's sandbox
+        only (allowlist-validated via `SBX_RESOURCE_SECRETS`; account
+        `sbx-acct-*` and control-plane credential Secrets are refused as
+        `invalid_resource`). `mcp` names MCP server entries in the
+        deployment registry (`SBX_MCP_REGISTRY`); resolved config is
+        written into the sandbox with `${env:VAR}` indirection — refs are
+        names only, never values. MCP refs on a provider with no MCP
+        channel (every provider except `devin`) fail as `unsupported`
+        rather than being silently ignored. Unknown or disallowed refs
+        fail as `invalid_resource`. Injected resources are never returned
+        or logged as values and never baked into artifacts/snapshots.
+      properties:
+        secrets:
+          type: array
+          items:
+            type: string
+          description: Modal Secret names (allowlisted session resources).
+        mcp:
+          type: array
+          items:
+            type: string
+          description: MCP server registry refs.
     OutputContract:
       type: object
       required: [schema]
@@ -1370,6 +1400,12 @@ components:
           $ref: "#/components/schemas/WorkflowMetadata"
           nullable: true
           description: The persisted workflow binding, when attached.
+        resources:
+          $ref: "#/components/schemas/SessionResources"
+          nullable: true
+          description: |
+            SOR-129: the declared session-resource refs (names only —
+            never values), ``null`` when the agent declared none.
     AgentList:
       type: object
       required: [agents]

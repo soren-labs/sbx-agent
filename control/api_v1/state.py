@@ -237,6 +237,9 @@ class AgentMeta:
     account_id: str = "auto"
     name: str | None = None
     idle_timeout_s: int | None = None
+    # SOR-129: declared session-resource refs (``{"secrets": [...],
+    # "mcp": [...]}``, names only) echoed on the agent view.
+    resources: dict[str, Any] | None = None
 
 
 @dataclass

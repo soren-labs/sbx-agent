@@ -162,12 +162,30 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "codex_session_id": None,  # v1 compatibility alias
                 "turn": 0,
                 "credential_files": credential_files,
+                # SOR-129: mirror runtime.runner.bootstrap — declared MCP
+                # refs reach the sandbox as SBX_MCP_SERVERS (devin only);
+                # session.json records server names, never config values.
+                "mcp_servers": _declared_mcp_names() if args.provider == "devin" else [],
             }
         )
         + "\n",
         encoding="utf-8",
     )
     return EXIT_OK
+
+
+def _declared_mcp_names() -> list:
+    """Names in ``SBX_MCP_SERVERS`` (SOR-129) + the SOR-77 Linear gate."""
+    names: list = []
+    raw = os.environ.get("SBX_MCP_SERVERS")
+    if raw:
+        for entry in json.loads(raw):
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if name and name not in names:
+                names.append(name)
+    if os.environ.get("SBX_LINEAR_API_KEY") and "linear" not in names:
+        names.append("linear")
+    return names
 
 
 def _redact_tokens(obj: object) -> None:

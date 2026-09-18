@@ -126,6 +126,22 @@ class OutputContract(BaseModel):
     enforcement: Literal["strict", "warn"] = "strict"
 
 
+class SessionResources(BaseModel):
+    """SOR-129 per-agent resource refs on agent create (``api-v1.yaml``).
+
+    ``secrets`` names Modal Secrets to attach to this agent's sandbox only
+    (allowlist-validated — never account credential Secrets); ``mcp`` names
+    MCP server entries in the deployment registry. Both are *references* —
+    no secret value ever crosses the API. MCP refs on a provider with no
+    MCP channel are refused as ``unsupported``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    secrets: list[str] = Field(default_factory=list, max_length=32)
+    mcp: list[str] = Field(default_factory=list, max_length=32)
+
+
 class CreateAgentRequest(BaseModel):
     prompt: Prompt
     agent: AgentSpec
@@ -136,6 +152,7 @@ class CreateAgentRequest(BaseModel):
     git: GitPolicy | None = None
     metadata: WorkflowMetadata | None = None
     output_contract: OutputContract | None = None
+    resources: SessionResources | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -224,6 +241,9 @@ def agent_public(
         "usage": usage_public(usage),
         "cost_estimate_usd": pub.get("cost_estimate_usd", 0.0),
         "metadata": metadata,
+        # SOR-129: echo the declared resource *refs* (names only — never
+        # values, never the resolved MCP config templates).
+        "resources": getattr(meta, "resources", None) if meta is not None else None,
     }
 
 
