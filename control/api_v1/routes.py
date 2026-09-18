@@ -93,6 +93,8 @@ from control.workspace import (
     WORKSPACE_NOT_FOUND,
     WorkspaceError,
     WorkspaceSpec,
+    is_safe_ref,
+    validate_git_policy,
 )
 from control.workspace import record_to_dict as workspace_record_to_dict
 
@@ -655,16 +657,19 @@ def _workspace_error(exc: WorkspaceError) -> V1ApiError:
 
 def _validate_workspace_decl(
     body: CreateAgentRequest, artifacts: Any
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Validate the SOR-83 ``workspace``/``handoff`` declarations.
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate the SOR-83 ``workspace``/``handoff`` and SOR-128 ``git``
+    declarations.
 
     Handoff without a workspace is meaningless at create time (there is no
-    prior record to apply onto), and a referenced artifact must exist in the
-    durable store — both fail fast with explicit errors before any claim or
-    sandbox work begins.
+    prior record to apply onto), a referenced artifact must exist in the
+    durable store, and a git policy only makes sense on a declared repo —
+    all fail fast with explicit errors before any claim or sandbox work
+    begins.
     """
     workspace = body.workspace.model_dump() if body.workspace is not None else None
     handoff = body.handoff.model_dump() if body.handoff is not None else None
+    git = body.git.model_dump(exclude_none=True) if body.git is not None else None
     if workspace is not None:
         try:
             WorkspaceSpec(
@@ -674,15 +679,23 @@ def _validate_workspace_decl(
             )
         except WorkspaceError as exc:
             raise _workspace_error(exc) from exc
+    if git is not None:
+        if workspace is None:
+            raise V1ApiError(400, WORKSPACE_INVALID, "git policy requires a workspace declaration")
+        try:
+            validate_git_policy(git)
+        except WorkspaceError as exc:
+            raise _workspace_error(exc) from exc
     if handoff is not None:
         handoff.pop("workspace", None)  # only meaningful on the handoff route
         has_artifact = bool(handoff.get("artifact_id"))
         has_head = bool(handoff.get("head_sha"))
-        if has_artifact == has_head:
+        has_pr = bool(handoff.get("pull_request"))
+        if sum((has_artifact, has_head, has_pr)) != 1:
             raise V1ApiError(
                 400,
                 WORKSPACE_INVALID,
-                "handoff needs exactly one of artifact_id or head_sha",
+                "handoff needs exactly one of artifact_id, head_sha or pull_request",
             )
         if workspace is None:
             raise V1ApiError(400, WORKSPACE_INVALID, "handoff requires a workspace declaration")
@@ -695,7 +708,13 @@ def _validate_workspace_decl(
                 ) from exc
             except ArtifactError as exc:
                 raise V1ApiError(409, "artifact_invalid", str(exc)) from exc
-    return workspace, handoff
+        if has_pr:
+            pr = handoff["pull_request"]
+            if not is_safe_ref(pr.get("ref")):
+                raise V1ApiError(
+                    400, WORKSPACE_INVALID, f"unsafe pull_request ref: {pr.get('ref')!r}"
+                )
+    return workspace, handoff, git
 
 
 @router.post("/agents", status_code=201)
@@ -723,7 +742,7 @@ def create_agent(
     SOR-83: ``workspace`` declares the checkout the run must start on;
     ``handoff`` makes run-1 start from a referenced artifact or commit.
     """
-    workspace, handoff = _validate_workspace_decl(body, artifacts)
+    workspace, handoff, git = _validate_workspace_decl(body, artifacts)
     owned = None
     fingerprint = request_fingerprint(body)
     if idempotency_key:
@@ -804,6 +823,7 @@ def create_agent(
             on_provisioned=on_provisioned,
             workspace=workspace,
             handoff=handoff,
+            git=git,
         )
     except Exception:
         if owned is not None:
@@ -837,6 +857,7 @@ def _create_agent_once(
     on_provisioned: Any = None,
     workspace: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
+    git: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -939,6 +960,7 @@ def _create_agent_once(
             on_provisioned=on_provisioned,
             workspace=workspace,
             handoff=handoff,
+            git=git,
         )
     except Exception:
         _discard_agent(plane, v1, session_id, lease)
@@ -1117,11 +1139,48 @@ def review_workspace(
     ``head_sha`` defaults to the recorded head; an explicit value that
     disagrees with it is an explicit ``head_sha_mismatch``, never a silent
     mislabel.
+
+    ``comment`` (SOR-128) additionally posts a machine-readable comment on
+    the workspace's recorded pull request — never a formal review approval
+    under the shared GitHub identity. Commenting requires the agent's live
+    sandbox.
     """
-    _require_agent(plane, agent_id)
+    comment = body.comment if body else None
+    rec = _require_agent(plane, agent_id)
     try:
         with observe("v1.workspace.review", agent_id=agent_id):
             record = workspaces.mark_reviewed(agent_id, body.head_sha if body else None)
+            if comment:
+                if rec.status == "running":
+                    raise V1ApiError(409, "turn_in_progress", "a run is in progress")
+                handle = rec.handle()
+                if handle is None:
+                    raise V1ApiError(409, "session_not_runnable", "comment needs a live sandbox")
+                record = workspaces.post_review_comment(handle, agent_id, comment)
+    except WorkspaceError as exc:
+        raise _workspace_error(exc) from exc
+    return {"workspace": workspace_record_to_dict(record)}
+
+
+@router.post("/agents/{agent_id}/git/publish")
+def publish_git(
+    agent_id: str,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    workspaces: Any = Depends(get_workspaces),
+) -> dict[str, Any]:
+    """Execute the agent's declared git policy (SOR-128).
+
+    Refreshes the recorded head, pushes the work branch to the workspace
+    repo's remote, verifies the remote head (drift fails closed), and —
+    when the policy's ``auto_create_pr`` is set — opens the declared pull
+    request. ``pushed_head_sha`` / ``pull_request`` land on the durable
+    workspace record so a reviewer can pin the exact published head.
+    """
+    rec = _require_live_idle(plane, agent_id)
+    try:
+        with observe("v1.git.publish", agent_id=agent_id):
+            record = workspaces.publish(rec.handle(), agent_id)
     except WorkspaceError as exc:
         raise _workspace_error(exc) from exc
     return {"workspace": workspace_record_to_dict(record)}
@@ -1139,17 +1198,21 @@ def apply_handoff(
     """Apply a second-agent handoff into a live agent's workspace.
 
     ``artifact_id`` applies a durable artifact package; ``head_sha`` checks
-    out an exact commit. Both validate the artifact's declared base against
-    the workspace's recorded head before touching the workdir — a gap is an
-    explicit ``base_sha_mismatch``.
+    out an exact commit; ``pull_request`` fetches a remote ref pinned to an
+    exact head (SOR-128 — drift fails closed). All validate against the
+    workspace's recorded head before touching the workdir — a gap is an
+    explicit ``base_sha_mismatch`` / ``head_sha_mismatch``.
     """
     rec = _require_live_idle(plane, agent_id)
     handle = rec.handle()
     has_artifact = bool(body.artifact_id)
     has_head = bool(body.head_sha)
-    if has_artifact == has_head:
+    has_pr = body.pull_request is not None
+    if sum((has_artifact, has_head, has_pr)) != 1:
         raise V1ApiError(
-            400, WORKSPACE_INVALID, "handoff needs exactly one of artifact_id or head_sha"
+            400,
+            WORKSPACE_INVALID,
+            "handoff needs exactly one of artifact_id, head_sha or pull_request",
         )
     spec = None
     if body.workspace is not None:
@@ -1166,6 +1229,14 @@ def apply_handoff(
             if has_artifact:
                 record = handoffs.prepare_from_artifact(
                     handle, agent_id, body.artifact_id, spec=spec
+                )
+            elif has_pr:
+                record = handoffs.prepare_from_pull_request(
+                    handle,
+                    agent_id,
+                    body.pull_request.ref,
+                    body.pull_request.head_sha,
+                    spec=spec,
                 )
             else:
                 record = handoffs.prepare_from_head(handle, agent_id, body.head_sha, spec=spec)

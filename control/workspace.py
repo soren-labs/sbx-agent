@@ -67,6 +67,13 @@ WORKSPACE_ERROR_CODES = (
 _COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
+# ``git check-ref-format`` essentials: no option-like leading '-', no control
+# chars / space / ~^:?*[\, no '..' / '@{' / trailing '.lock', no empty or
+# dot-prefixed components, no leading/trailing '/' or trailing '.'.  Shell
+# metacharacters `; $ ' `` are refused too — refs only ever reach git via
+# argv, but nothing legitimate uses them.
+_REF_FORBIDDEN = re.compile(r"[\x00-\x20 ~^:?*\[\\;$'`]|\.\.|\@\{")
+
 DEFAULT_WORKDIR = "repo"
 
 
@@ -93,6 +100,25 @@ def is_safe_relpath(value: Any) -> bool:
         return False
     path = PurePosixPath(value)
     return bool(path.parts) and not path.is_absolute() and ".." not in path.parts
+
+
+def is_safe_ref(value: Any) -> bool:
+    """Whether ``value`` is a usable git ref name (branch / fetch refspec src).
+
+    Mirrors ``git check-ref-format``'s load-bearing rules so a declared
+    branch, target or PR ref can never smuggle an option, a path escape or
+    config syntax into a git invocation.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if value == "@" or value.startswith(("-", "/")) or value.endswith(("/", ".")):
+        return False
+    if _REF_FORBIDDEN.search(value):
+        return False
+    return all(
+        part and not part.startswith(".") and not part.endswith(".lock")
+        for part in value.split("/")
+    )
 
 
 def require_relpath(value: Any, *, code: str, what: str) -> str:
@@ -126,6 +152,74 @@ class WorkspaceSpec:
             )
 
 
+# SOR-128 git collaboration policy keys (``git`` on agent create). The
+# resolved policy is persisted verbatim on the workspace record so a later
+# publish needs no restating — and so drift between declaration and record
+# is inspectable.
+GIT_POLICY_KEYS = (
+    "branch",
+    "push",
+    "auto_create_pr",
+    "target",
+    "draft",
+    "title",
+    "body",
+)
+
+
+def validate_git_policy(git: Any) -> None:
+    """Shape/cross-field check of a declared git policy dict.
+
+    Route-time validation: refuses a non-dict, unknown keys, unsafe ref
+    names and ``auto_create_pr`` without ``push`` before any sandbox work
+    starts. ``WorkspaceError(WORKSPACE_INVALID)`` on violation.
+    """
+    if not isinstance(git, dict):
+        raise WorkspaceError(WORKSPACE_INVALID, "git policy must be an object")
+    unknown = set(git) - set(GIT_POLICY_KEYS)
+    if unknown:
+        raise WorkspaceError(WORKSPACE_INVALID, f"unknown git policy keys: {sorted(unknown)!r}")
+    if git.get("auto_create_pr") and not git.get("push"):
+        raise WorkspaceError(WORKSPACE_INVALID, "git.auto_create_pr requires git.push")
+    for key in ("branch", "target"):
+        value = git.get(key)
+        if value is not None and not is_safe_ref(value):
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"git.{key} is not a safe git ref name: {value!r}"
+            )
+    for key in ("title", "body"):
+        value = git.get(key)
+        if value is not None and not isinstance(value, str):
+            raise WorkspaceError(WORKSPACE_INVALID, f"git.{key} must be a string")
+
+
+def normalize_git_policy(git: Any, *, agent_id: str, base_ref: str) -> dict[str, Any] | None:
+    """Resolve a declared git policy to its durable form (None passes through).
+
+    ``branch`` defaults to ``sbx/<agent_id>`` and ``target`` to the
+    workspace's declared ``base_ref`` — the record always carries the
+    resolved values, never the caller's omissions.
+    """
+    if git is None:
+        return None
+    validate_git_policy(git)
+    branch = git.get("branch") or f"sbx/{agent_id}"
+    if not is_safe_ref(branch):
+        raise WorkspaceError(
+            WORKSPACE_INVALID, f"resolved git.branch is not a safe ref name: {branch!r}"
+        )
+    target = git.get("target") or base_ref
+    return {
+        "branch": branch,
+        "push": bool(git.get("push")),
+        "auto_create_pr": bool(git.get("auto_create_pr")),
+        "target": target,
+        "draft": bool(git.get("draft")),
+        "title": git.get("title"),
+        "body": git.get("body"),
+    }
+
+
 @dataclass
 class WorkspaceRecord:
     """Durable workspace state for one agent (one agent = one sandbox).
@@ -133,6 +227,13 @@ class WorkspaceRecord:
     ``checkout_sha``/``head_sha`` are None until ``prepare`` finishes — a
     record with only the declaration persisted means prepare never completed
     (the raise that interrupted it carried the reason).
+
+    SOR-128 fields: ``git`` is the resolved collaboration policy (None when
+    the agent declared none); ``branch`` the work branch the workspace
+    materializes and publishes; ``pushed_head_sha`` the head last verified
+    on the remote; ``pull_request`` the structured PR metadata a publish
+    recorded — ``{number, url, state, ref, head_sha, base, draft,
+    review_comment_url?}``.
     """
 
     agent_id: str
@@ -143,6 +244,10 @@ class WorkspaceRecord:
     checkout_sha: str | None = None
     head_sha: str | None = None
     reviewed_head_sha: str | None = None
+    git: dict[str, Any] | None = None
+    branch: str | None = None
+    pushed_head_sha: str | None = None
+    pull_request: dict[str, Any] | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -175,17 +280,87 @@ def record_from_dict(data: Any) -> WorkspaceRecord:
     if not is_safe_relpath(workdir):
         raise ValueError("workspace record field workdir must be a safe relative path")
     record.workdir = str(PurePosixPath(workdir))
-    for key in ("checkout_sha", "head_sha", "reviewed_head_sha"):
+    for key in ("checkout_sha", "head_sha", "reviewed_head_sha", "pushed_head_sha"):
         value = data.get(key)
         if value is not None and not is_commit_sha(value):
             raise ValueError(f"workspace record field {key} must be a commit sha")
         setattr(record, key, value)
+    branch = data.get("branch")
+    if branch is not None and not is_safe_ref(branch):
+        raise ValueError("workspace record field branch must be a safe git ref")
+    record.branch = branch
+    record.git = _git_policy_from_dict(data.get("git"))
+    record.pull_request = _pull_request_from_dict(data.get("pull_request"))
     for key in ("created_at", "updated_at"):
         value = data.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"workspace record field {key} must be a string")
         setattr(record, key, value or "")
     return record
+
+
+def _git_policy_from_dict(data: Any) -> dict[str, Any] | None:
+    """Strict decode of a stored git policy; None passes through."""
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("workspace record field git must be an object")
+    unknown = set(data) - set(GIT_POLICY_KEYS)
+    if unknown:
+        raise ValueError(f"workspace record field git has unknown keys: {sorted(unknown)!r}")
+    out: dict[str, Any] = {}
+    for key in ("push", "auto_create_pr", "draft"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, bool):
+            raise ValueError(f"workspace record field git.{key} must be a bool")
+        out[key] = bool(value)
+    for key in ("branch", "target", "title", "body"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"workspace record field git.{key} must be a string")
+        out[key] = value
+    return out
+
+
+_PULL_REQUEST_KEYS = (
+    "number",
+    "url",
+    "state",
+    "ref",
+    "head_sha",
+    "base",
+    "draft",
+    "review_comment_url",
+)
+
+
+def _pull_request_from_dict(data: Any) -> dict[str, Any] | None:
+    """Strict decode of stored PR metadata; None passes through."""
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("workspace record field pull_request must be an object")
+    unknown = set(data) - set(_PULL_REQUEST_KEYS)
+    if unknown:
+        raise ValueError(
+            f"workspace record field pull_request has unknown keys: {sorted(unknown)!r}"
+        )
+    number = data.get("number")
+    if number is not None and (isinstance(number, bool) or not isinstance(number, int)):
+        raise ValueError("pull_request.number must be an int")
+    head_sha = data.get("head_sha")
+    if head_sha is not None and not is_commit_sha(head_sha):
+        raise ValueError("pull_request.head_sha must be a commit sha")
+    draft = data.get("draft")
+    if draft is not None and not isinstance(draft, bool):
+        raise ValueError("pull_request.draft must be a bool")
+    out: dict[str, Any] = {"number": number, "head_sha": head_sha, "draft": bool(draft)}
+    for key in ("url", "state", "ref", "base", "review_comment_url"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"pull_request.{key} must be a string")
+        out[key] = value
+    return out
 
 
 def _required_str(data: dict[str, Any], key: str) -> str:
@@ -362,8 +537,22 @@ def git_head(backend: SandboxBackend, handle: SandboxHandle, workdir: str) -> st
     return git_rev_parse(backend, handle, workdir, "HEAD")
 
 
-def git_checkout(backend: SandboxBackend, handle: SandboxHandle, workdir: str, sha: str) -> None:
-    res = run_git(backend, handle, ["checkout", "--detach", sha], cwd=workdir)
+def git_checkout(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    workdir: str,
+    sha: str,
+    *,
+    branch: str | None = None,
+) -> None:
+    """Check out ``sha`` — onto ``branch`` (``-B``, created/reset) when the
+    workspace's git policy declares one, detached otherwise."""
+    if branch is not None:
+        if not is_safe_ref(branch):
+            raise WorkspaceError(WORKSPACE_INVALID, f"unsafe branch name: {branch!r}")
+        res = run_git(backend, handle, ["checkout", "-B", branch, sha], cwd=workdir)
+    else:
+        res = run_git(backend, handle, ["checkout", "--detach", sha], cwd=workdir)
     if res.code != 0:
         raise WorkspaceError(
             CHECKOUT_FAILED, f"git checkout {sha} failed in {workdir} (exit {res.code})"
@@ -376,6 +565,63 @@ def git_is_ancestor(
     """True when ``base`` is an ancestor of (or equal to) ``head``."""
     res = run_git(backend, handle, ["merge-base", "--is-ancestor", base, head], cwd=workdir)
     return res.code == 0
+
+
+def git_fetch_ref(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    workdir: str,
+    ref: str,
+    *,
+    remote: str = "origin",
+) -> str:
+    """Fetch ``ref`` from ``remote`` into ``FETCH_HEAD``; return its commit sha.
+
+    Covers PR refs (``refs/pull/<n>/head`` / ``pull/<n>/head``) and branch
+    names alike — the refspec is passed to ``git fetch`` verbatim after the
+    ref-name safety check. A fetch failure is ``REPO_UNAVAILABLE``; a
+    fetched object that is not a commit is ``CHECKOUT_FAILED``.
+    """
+    if not is_safe_ref(ref):
+        raise WorkspaceError(WORKSPACE_INVALID, f"unsafe fetch ref: {ref!r}")
+    if remote.startswith("-"):
+        raise WorkspaceError(WORKSPACE_INVALID, "fetch remote must not look like an option")
+    res = run_git(backend, handle, ["fetch", "--no-tags", remote, ref], cwd=workdir)
+    if res.code != 0:
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            f"git fetch {remote} {ref} failed in {workdir} (exit {res.code})",
+        )
+    sha = git_rev_parse(backend, handle, workdir, "FETCH_HEAD")
+    if sha is None:
+        raise WorkspaceError(CHECKOUT_FAILED, f"fetched ref {ref} did not resolve to a commit")
+    return sha
+
+
+def git_ls_remote(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    workdir: str,
+    ref: str,
+    *,
+    remote: str = "origin",
+) -> str | None:
+    """Resolve ``ref`` on ``remote`` (``git ls-remote``); None when absent."""
+    if not is_safe_ref(ref):
+        raise WorkspaceError(WORKSPACE_INVALID, f"unsafe remote ref: {ref!r}")
+    if remote.startswith("-"):
+        raise WorkspaceError(WORKSPACE_INVALID, "ls-remote must not look like an option")
+    res = run_git(backend, handle, ["ls-remote", remote, ref], cwd=workdir)
+    if res.code != 0:
+        raise WorkspaceError(
+            REPO_UNAVAILABLE, f"git ls-remote {remote} {ref} failed (exit {res.code})"
+        )
+    for line in res.lines:
+        parts = line.split("\t", 1) if "\t" in line else line.split(None, 1)
+        if len(parts) == 2 and parts[1].strip() == ref:
+            sha = parts[0].strip()
+            return sha if is_commit_sha(sha) else None
+    return None
 
 
 def git_push(
@@ -462,6 +708,65 @@ def create_pull_request(
     except json.JSONDecodeError as exc:
         raise WorkspaceError(
             REPO_UNAVAILABLE, f"GitHub PR create for {slug} returned no JSON"
+        ) from exc
+    return data if isinstance(data, dict) else {"result": data}
+
+
+def create_issue_comment(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    repo: str,
+    *,
+    number: int,
+    body: str,
+) -> dict[str, Any]:
+    """Post a comment on a GitHub issue/PR from inside the sandbox.
+
+    This is the SOR-128 review surface: a machine-readable *comment*, never
+    a formal ``/reviews`` approval — every sandbox shares one GitHub
+    identity, so an approval would read as the PR author approving their own
+    work. Same opt-in + token-safety rules as :func:`create_pull_request`.
+    """
+    if not github.injection_enabled():
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            "GitHub injection is off — export SBX_GITHUB_EPHEMERAL=1 with a "
+            "GH_TOKEN/GITHUB_TOKEN to comment on pull requests from sandboxes",
+        )
+    slug = github.repo_slug(repo)
+    if slug is None:
+        raise WorkspaceError(
+            WORKSPACE_INVALID,
+            f"not a github.com repo URL: {github.redact_url_credentials(repo)!r}",
+        )
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise WorkspaceError(WORKSPACE_INVALID, f"invalid PR/issue number: {number!r}")
+    payload = json.dumps({"body": body})
+    script = (
+        "curl -sS -X POST "
+        f"https://api.github.com/repos/{slug}/issues/{number}/comments "
+        '-H "Accept: application/vnd.github+json" '
+        '-H "Authorization: Bearer $GH_TOKEN" '
+        f"--data {shlex.quote(payload)} "
+        "-w '\\n%{http_code}'"
+    )
+    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle))
+    lines = list(proc.stdout)
+    code = proc.wait()
+    http_code = lines[-1].strip() if lines else ""
+    text = "\n".join(lines[:-1])
+    if code != 0 or not http_code.isdigit() or not (200 <= int(http_code) < 300):
+        detail = clip_message(text)[:200]
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            f"GitHub comment on {slug}#{number} failed "
+            f"(exit {code}, http {http_code or '?'})" + (f": {detail}" if detail else ""),
+        )
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise WorkspaceError(
+            REPO_UNAVAILABLE, f"GitHub comment on {slug}#{number} returned no JSON"
         ) from exc
     return data if isinstance(data, dict) else {"result": data}
 
@@ -564,14 +869,21 @@ class WorkspaceService:
         spec: WorkspaceSpec,
         *,
         workdir: str = DEFAULT_WORKDIR,
+        git: dict[str, Any] | None = None,
     ) -> WorkspaceRecord:
         """Clone ``spec.repo`` into ``workdir``, verify the declared base,
         check it out, and record the actual ``checkout_sha``/``head_sha``.
 
         The declaration is persisted before any git work runs, so a failed
         prepare still leaves an inspectable (unprepared) record.
+
+        SOR-128: ``git`` is the create-time collaboration policy. It is
+        resolved (``branch`` defaults to ``sbx/<agent_id>``, ``target`` to
+        ``base_ref``) and persisted on the record; the checkout lands on the
+        work branch so a later ``publish`` pushes where the policy declared.
         """
         workdir = require_relpath(workdir, code=WORKSPACE_INVALID, what="workdir")
+        policy = normalize_git_policy(git, agent_id=agent_id, base_ref=spec.base_ref)
         if self._store.get(agent_id) is not None:
             raise WorkspaceError(
                 WORKSPACE_INVALID, f"workspace already declared for agent {agent_id}"
@@ -583,6 +895,8 @@ class WorkspaceService:
             base_ref=spec.base_ref,
             base_sha=spec.base_sha,
             workdir=workdir,
+            git=policy,
+            branch=(policy or {}).get("branch"),
             created_at=now,
             updated_at=now,
         )
@@ -594,7 +908,7 @@ class WorkspaceService:
                 BASE_SHA_MISMATCH,
                 f"declared base_sha {spec.base_sha} does not match {spec.base_ref} at {resolved}",
             )
-        git_checkout(self._backend, handle, workdir, spec.base_sha)
+        git_checkout(self._backend, handle, workdir, spec.base_sha, branch=record.branch)
         actual = git_head(self._backend, handle, workdir)
         if actual != spec.base_sha:
             raise WorkspaceError(
@@ -645,6 +959,108 @@ class WorkspaceService:
         record.reviewed_head_sha = sha
         return self.save(record)
 
+    def publish(self, handle: SandboxHandle, agent_id: str) -> WorkspaceRecord:
+        """Execute the recorded git policy: push the work branch, then open
+        the declared pull request.
+
+        Fails closed at every step: no push-enabled policy is
+        ``workspace_invalid``; a failed push/ls-remote/PR call is
+        ``repo_unavailable``; a remote head that disagrees with what was
+        pushed is an explicit ``repo_unavailable`` rather than a silently
+        recorded drift. ``pushed_head_sha`` is only recorded after the
+        remote verifies it — it is the sha a reviewer can pin.
+        """
+        record = self._require(agent_id)
+        if not record.prepared:
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"workspace for agent {agent_id} is not prepared"
+            )
+        policy = record.git
+        if not policy or not policy.get("push"):
+            raise WorkspaceError(
+                WORKSPACE_INVALID,
+                f"agent {agent_id} declared no push-enabled git policy",
+            )
+        branch = record.branch or policy.get("branch") or f"sbx/{agent_id}"
+        if not is_safe_ref(branch):
+            raise WorkspaceError(WORKSPACE_INVALID, f"unsafe branch name: {branch!r}")
+        head = git_head(self._backend, handle, record.workdir)
+        if head is None:
+            raise WorkspaceError(
+                CHECKOUT_FAILED, f"no HEAD in workdir {record.workdir} for agent {agent_id}"
+            )
+        git_push(self._backend, handle, record.workdir, f"HEAD:refs/heads/{branch}")
+        remote_sha = git_ls_remote(self._backend, handle, record.workdir, f"refs/heads/{branch}")
+        if remote_sha != head:
+            raise WorkspaceError(
+                REPO_UNAVAILABLE,
+                f"pushed {branch} but remote resolves to {remote_sha}, expected {head}",
+            )
+        record.head_sha = head
+        record.branch = branch
+        record.pushed_head_sha = head
+        # The verified push is a durable fact — persist it before the PR
+        # step so a PR failure never masks where the head actually landed.
+        self.save(record)
+        if policy.get("auto_create_pr"):
+            pr = record.pull_request
+            if pr is None:
+                data = create_pull_request(
+                    self._backend,
+                    handle,
+                    record.repo,
+                    head=branch,
+                    base=str(policy.get("target") or record.base_ref),
+                    title=str(policy.get("title") or f"sbx {agent_id}"),
+                    body=str(policy.get("body") or ""),
+                    draft=bool(policy.get("draft")),
+                )
+                number = data.get("number")
+                record.pull_request = {
+                    "number": number if isinstance(number, int) else None,
+                    "url": data.get("html_url"),
+                    "state": data.get("state") or "open",
+                    "ref": (f"refs/pull/{number}/head" if isinstance(number, int) else None),
+                    "head_sha": head,
+                    "base": str(policy.get("target") or record.base_ref),
+                    "draft": bool(policy.get("draft")),
+                }
+            else:
+                # The PR tracks the branch — a fresh push moved its head.
+                # Record the new pinned head rather than recreating.
+                pr = dict(pr)
+                pr["head_sha"] = head
+                record.pull_request = pr
+        return self.save(record)
+
+    def post_review_comment(
+        self, handle: SandboxHandle, agent_id: str, body: str
+    ) -> WorkspaceRecord:
+        """Post a machine-readable review comment on the recorded PR.
+
+        Deliberately an *issue comment* — never a formal GitHub review
+        approval: every sandbox shares one GitHub identity, so an approval
+        event would fake a review by the PR's own author. The comment URL is
+        stamped on ``pull_request.review_comment_url``.
+        """
+        record = self._require(agent_id)
+        pr = record.pull_request
+        number = (pr or {}).get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise WorkspaceError(
+                WORKSPACE_INVALID,
+                f"agent {agent_id} has no recorded pull request to comment on",
+            )
+        if not isinstance(body, str) or not body:
+            raise WorkspaceError(WORKSPACE_INVALID, "review comment body must be non-empty")
+        data = create_issue_comment(self._backend, handle, record.repo, number=number, body=body)
+        url = data.get("html_url")
+        pr = dict(record.pull_request or {})
+        if isinstance(url, str) and url:
+            pr["review_comment_url"] = url
+        record.pull_request = pr
+        return self.save(record)
+
     def _require(self, agent_id: str) -> WorkspaceRecord:
         record = self._store.get(agent_id)
         if record is None:
@@ -683,6 +1099,7 @@ __all__ = [
     "CHECKSUM_MISMATCH",
     "DEFAULT_WORKDIR",
     "FileWorkspaceStore",
+    "GIT_POLICY_KEYS",
     "GitResult",
     "HEAD_SHA_MISMATCH",
     "InMemoryWorkspaceStore",
@@ -697,19 +1114,25 @@ __all__ = [
     "WorkspaceService",
     "WorkspaceSpec",
     "WorkspaceStore",
+    "create_issue_comment",
     "create_pull_request",
     "git_checkout",
+    "git_fetch_ref",
     "git_head",
     "git_is_ancestor",
+    "git_ls_remote",
     "git_push",
     "git_rev_parse",
     "is_commit_sha",
+    "is_safe_ref",
     "is_safe_relpath",
     "is_sha256",
+    "normalize_git_policy",
     "record_from_dict",
     "record_to_dict",
     "require_relpath",
     "run_git",
     "sha256_file",
+    "validate_git_policy",
     "write_payload",
 ]

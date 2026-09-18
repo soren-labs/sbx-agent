@@ -295,6 +295,7 @@ def launch_first_run(
     on_provisioned: Callable[[], None] | None = None,
     workspace: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
+    git: dict[str, Any] | None = None,
 ) -> None:
     """Spawn the background create → init → first-turn worker (SOR-82 A2).
 
@@ -303,9 +304,10 @@ def launch_first_run(
     idempotent duplicate waits on it so a retry never races the worker.
 
     ``workspace``/``handoff`` carry the SOR-83 declarations
-    (``{repo, base_ref, base_sha}`` / ``{artifact_id|head_sha}``): after the
-    sandbox is provisioned the worker prepares the declared checkout (and
-    applies the handoff) before run-1 may dispatch.
+    (``{repo, base_ref, base_sha}`` / ``{artifact_id|head_sha|pull_request}``):
+    after the sandbox is provisioned the worker prepares the declared
+    checkout (and applies the handoff) before run-1 may dispatch. ``git``
+    carries the SOR-128 collaboration policy the prepare persists.
     """
     thread = threading.Thread(
         target=_first_run_worker,
@@ -320,6 +322,7 @@ def launch_first_run(
             on_provisioned,
             workspace,
             handoff,
+            git,
         ),
         daemon=True,
         name=f"sbx-v1-create-{session_id[:8]}",
@@ -365,13 +368,16 @@ def _prepare_workspace(
     session_id: str,
     workspace: dict[str, Any],
     handoff: dict[str, Any] | None,
+    git: dict[str, Any] | None = None,
 ) -> None:
     """Prepare the declared workspace on the fresh sandbox (SOR-83).
 
     Runs after ``provision_session`` bound the sandbox and before run-1
-    dispatches. A handoff (``artifact_id`` or exact ``head_sha``) replaces
-    the plain clone: it still validates the declared base, then applies the
-    referenced artifact or checks out the referenced commit.
+    dispatches. A handoff (``artifact_id``, exact ``head_sha`` or a pinned
+    ``pull_request`` ref) replaces the plain clone: it still validates the
+    declared base, then applies the referenced artifact or checks out the
+    referenced commit. ``git`` (SOR-128) is the collaboration policy the
+    prepare persists on the workspace record.
     """
     workspaces = getattr(plane, "workspaces", None)
     if workspaces is None:
@@ -390,16 +396,26 @@ def _prepare_workspace(
     handoff = handoff or {}
     artifact_id = handoff.get("artifact_id")
     head_sha = handoff.get("head_sha")
-    if artifact_id or head_sha:
+    pull_request = handoff.get("pull_request")
+    if artifact_id or head_sha or pull_request:
         handoffs = getattr(plane, "handoffs", None)
         if handoffs is None:
             raise WorkspaceError(WORKSPACE_INVALID, "handoff service is not configured")
         if artifact_id:
-            handoffs.prepare_from_artifact(handle, session_id, str(artifact_id), spec=spec)
+            handoffs.prepare_from_artifact(handle, session_id, str(artifact_id), spec=spec, git=git)
+        elif pull_request:
+            handoffs.prepare_from_pull_request(
+                handle,
+                session_id,
+                str(pull_request.get("ref") or ""),
+                str(pull_request.get("head_sha") or ""),
+                spec=spec,
+                git=git,
+            )
         else:
-            handoffs.prepare_from_head(handle, session_id, str(head_sha), spec=spec)
+            handoffs.prepare_from_head(handle, session_id, str(head_sha), spec=spec, git=git)
     else:
-        workspaces.prepare(handle, session_id, spec)
+        workspaces.prepare(handle, session_id, spec, git=git)
 
 
 def _first_run_worker(
@@ -413,6 +429,7 @@ def _first_run_worker(
     on_provisioned: Callable[[], None] | None = None,
     workspace: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
+    git: dict[str, Any] | None = None,
 ) -> None:
     """Advance run-1 CREATING → RUNNING → (terminal) around sandbox startup.
 
@@ -460,7 +477,7 @@ def _first_run_worker(
             if state is not None and state.status in RUN_TERMINAL:
                 plane.discard_queued_first_turn(session_id)
                 return
-            _prepare_workspace(plane, session_id, workspace, handoff)
+            _prepare_workspace(plane, session_id, workspace, handoff, git)
         except Exception as exc:
             _persist_run1_terminal(run_states, session_id, "ERROR", _workspace_error(exc))
             try:
