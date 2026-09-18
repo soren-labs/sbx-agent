@@ -28,6 +28,10 @@ Normalization rules:
   (``turns/<n>.json.error`` written by the runner, plus ``health``); the
   unclassifiable remainder falls back to ``runtime_error`` — never to a
   generic success.
+
+SOR-130 adds ``contract_violation`` (source ``control``): a terminal run
+whose output contract evaluated ``invalid``. Pending a contract-change
+request for ``api-v1.yaml`` ``x-canonical.run_error_codes``.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ RunErrorCode = Literal[
     "event_parse_error",
     "timeout",
     "cancelled",
+    "contract_violation",
 ]
 RunErrorSource = Literal["provider", "runtime", "control", "telemetry"]
 
@@ -61,6 +66,7 @@ CODE_RUNTIME_ERROR: RunErrorCode = "runtime_error"
 CODE_EVENT_PARSE_ERROR: RunErrorCode = "event_parse_error"
 CODE_TIMEOUT: RunErrorCode = "timeout"
 CODE_CANCELLED: RunErrorCode = "cancelled"
+CODE_CONTRACT_VIOLATION: RunErrorCode = "contract_violation"
 
 SOURCE_PROVIDER: RunErrorSource = "provider"
 SOURCE_RUNTIME: RunErrorSource = "runtime"
@@ -78,6 +84,7 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     CODE_EVENT_PARSE_ERROR,
     CODE_TIMEOUT,
     CODE_CANCELLED,
+    CODE_CONTRACT_VIOLATION,
 )
 RUN_ERROR_SOURCES: tuple[str, ...] = (
     SOURCE_PROVIDER,

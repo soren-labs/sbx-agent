@@ -25,9 +25,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from runtime.runner.contract import (
+    STATUS_PENDING,
+    STATUS_SKIPPED,
+    STATUS_VALID,
+    evaluate_output,
+    violation_summary,
+)
+
 from control.config import RUNS_DICT_NAME
 from control.latency import observe
 from control.run_errors import (
+    CODE_CONTRACT_VIOLATION,
     CODE_EVENT_PARSE_ERROR,
     RunError,
     run_error_from_turn,
@@ -138,6 +147,89 @@ def outcome_from_turn_payload(
     return "ERROR", err.public(), result_text, usage
 
 
+def apply_output_contract(
+    status: str,
+    error: dict[str, Any] | None,
+    result_text: str | None,
+    contract: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any] | None, Any, dict[str, Any] | None]:
+    """Enforce a run's output contract at terminal persist (SOR-130).
+
+    ``contract`` is the normalized request (``{schema, enforcement,
+    schema_digest}``) persisted on the open record. Returns ``(status,
+    error, structured_output, contract_result)`` where ``contract_result``
+    is the public ``output_contract`` metadata
+    (``{enforcement, schema_digest, status, extraction, violations}``).
+
+    Semantics:
+
+    - Non-FINISHED outcomes keep their status; the contract is ``skipped``
+      (there was no evaluable success to judge).
+    - ``valid`` keeps FINISHED and persists the extracted JSON value.
+    - ``invalid`` under ``strict`` flips the run to ``ERROR`` +
+      ``contract_violation`` — machine-diagnosable, never a silent success.
+    - ``invalid`` under ``warn`` keeps FINISHED but attaches the same
+      diagnostic error, so the violation is explicit either way.
+
+    The verdict is computed here — on the control plane, from the recorded
+    message — rather than trusting ``turns/<n>.json.output_contract``, so a
+    forged or stale sandbox payload cannot rewrite the decision.
+    """
+    if contract is None:
+        return status, error, None, None
+    enforcement = str(contract.get("enforcement") or "strict")
+    meta = {
+        "enforcement": enforcement,
+        "schema_digest": contract.get("schema_digest"),
+    }
+    if status != "FINISHED":
+        return (
+            status,
+            error,
+            None,
+            {**meta, "status": STATUS_SKIPPED, "extraction": None, "violations": []},
+        )
+    schema = contract.get("schema")
+    verdict = evaluate_output(result_text or "", schema if isinstance(schema, dict) else {})
+    result = {
+        **meta,
+        "status": verdict["status"],
+        "extraction": verdict["extraction"],
+        "violations": verdict["violations"],
+    }
+    if verdict["status"] == STATUS_VALID:
+        return status, error, verdict["value"], result
+    violation = RunError(
+        CODE_CONTRACT_VIOLATION,
+        "control",
+        f"agent output failed the output contract ({violation_summary(verdict)})",
+        retryable=True,
+    ).public()
+    if enforcement == "warn":
+        return status, violation, verdict["value"], result
+    return "ERROR", violation, verdict["value"], result
+
+
+def contract_view(record: RunRecord) -> dict[str, Any] | None:
+    """Public ``output_contract`` metadata for a run record (SOR-130).
+
+    ``None`` when the run carries no contract. While the run is still open
+    the verdict is ``pending`` — the contract is attached but unevaluated.
+    """
+    contract = record.output_contract
+    if contract is None:
+        return None
+    result = record.contract_result or {}
+    return {
+        "schema": contract.get("schema"),
+        "enforcement": contract.get("enforcement", "strict"),
+        "schema_digest": contract.get("schema_digest"),
+        "status": result.get("status") or STATUS_PENDING,
+        "extraction": result.get("extraction"),
+        "violations": result.get("violations") or [],
+    }
+
+
 @dataclass
 class RunRecord:
     """One durable run (``agent ≙ session``, ``run ≙ turn``).
@@ -160,6 +252,15 @@ class RunRecord:
     account_id: str | None = None
     model: str | None = None
     artifact_refs: list[str] = field(default_factory=list)
+    # SOR-130: normalized output contract requested for the run
+    # ({schema, enforcement, schema_digest}); None when absent.
+    output_contract: dict[str, Any] | None = None
+    # Extracted JSON value from the agent message (any JSON type; None when
+    # the message carried no parseable JSON or no contract was attached).
+    structured_output: Any = None
+    # Terminal verdict {enforcement, schema_digest, status, extraction,
+    # violations}; None until a contracted run reaches a terminal state.
+    contract_result: dict[str, Any] | None = None
 
     @property
     def id(self) -> str:
@@ -213,6 +314,14 @@ def record_from_dict(data: Any) -> RunRecord:
         if not isinstance(refs, list) or any(not isinstance(r, str) for r in refs):
             raise ValueError("run record field artifact_refs must be a string list")
         record.artifact_refs = list(refs)
+    for key in ("output_contract", "contract_result"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(f"run record field {key} must be a dict")
+        setattr(record, key, dict(value) if value is not None else None)
+    if "structured_output" in data:
+        # Any JSON value is legal (including null); only presence is checked.
+        record.structured_output = data.get("structured_output")
     return record
 
 
@@ -461,6 +570,7 @@ class RunLedger:
         model: str | None = None,
         status: str = "RUNNING",
         artifact_refs: list[str] | None = None,
+        output_contract: dict[str, Any] | None = None,
     ) -> RunRecord:
         if status not in OPEN_RUN_STATUSES:
             raise ValueError(f"begin status must be open, got {status!r}")
@@ -482,6 +592,7 @@ class RunLedger:
                 artifact_refs=list(artifact_refs)
                 if artifact_refs is not None
                 else default_artifact_refs(n),
+                output_contract=dict(output_contract) if output_contract is not None else None,
             )
             self._store.put(record)
             return record
@@ -514,6 +625,8 @@ class RunLedger:
         model: str | None = None,
         created_at: str | None = None,
         started_at: str | None = None,
+        structured_output: Any = None,
+        contract_result: dict[str, Any] | None = None,
     ) -> RunRecord:
         """Persist a terminal outcome; a terminal record is never rewritten."""
         if status not in TERMINAL_RUN_STATUSES:
@@ -542,6 +655,12 @@ class RunLedger:
                 record.error = error
             if usage is not None:
                 record.usage = dict(usage)
+            if contract_result is not None:
+                # SOR-130: contract_result is the terminal verdict marker —
+                # when present, structured_output is persisted verbatim
+                # (a valid contract may legitimately produce JSON null).
+                record.contract_result = dict(contract_result)
+                record.structured_output = structured_output
             if artifact_refs:
                 record.artifact_refs = list(artifact_refs)
             for key, value in (

@@ -281,6 +281,96 @@ def test_credential_env_not_forwarded_to_cli(
     assert "REDACTED" not in raw or "windsurf_api_key" not in raw
 
 
+def test_output_contract_devin_path(work: Path, devin_env: dict[str, str]) -> None:
+    """SOR-130: the contract path is provider-neutral — Devin's ``-p``
+    transport gets the same instruction + normalized verdict as Codex."""
+    contract = work / "_contract_1.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "schema": {
+                    "type": "object",
+                    "required": ["summary", "ok"],
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "ok": {"type": "boolean"},
+                        "files": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "enforcement": "strict",
+            }
+        ),
+        encoding="utf-8",
+    )
+    init_devin(devin_env)
+    devin_env["FAKE_DEVIN_SCENARIO"] = "structured"
+    msg = work / "msg1.md"
+    msg.write_text("summarize your work\n", encoding="utf-8")
+    result = run_runner(
+        ["turn", "--n", "1", "--message-file", str(msg), "--output-contract", str(contract)],
+        devin_env,
+    )
+    assert result.returncode == 0
+    doc = load_json(work / "turns" / "1.json")
+    assert doc["status"] == "success"
+    assert doc["native_session_id"] == DEVIN_SESSION
+    assert doc["structured_output"] == {
+        "summary": "created hello.txt",
+        "ok": True,
+        "files": ["hello.txt"],
+    }
+    verdict = doc["output_contract"]
+    assert verdict["status"] == "valid"
+    assert verdict["extraction"] == "raw"
+    assert verdict["violations"] == []
+    # inbox keeps the user text; the instruction only rides the provider argv.
+    assert (work / "inbox" / "1.md").read_text(encoding="utf-8") == "summarize your work\n"
+
+
+def test_output_contract_instruction_reaches_devin_argv(
+    work: Path, devin_env: dict[str, str]
+) -> None:
+    """The contract instruction is appended to the ``-p`` prompt for Devin."""
+    argv_file = work / "argv.json"
+    recorder = work / "argv_recorder.py"
+    recorder.write_text(
+        "import json, os, sys, runpy\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['ARGV_OUT']).write_text(json.dumps(sys.argv[1:]))\n"
+        "sys.argv[0] = os.environ['DEVIN_FAKE']\n"
+        "sys.path.insert(0, os.path.dirname(sys.argv[0]))\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    contract = work / "_contract_1.json"
+    contract.write_text(
+        json.dumps({"schema": {"type": "object", "required": ["ok"]}}),
+        encoding="utf-8",
+    )
+    devin_env.update(
+        {
+            "DEVIN_BIN": str(recorder),
+            "DEVIN_FAKE": str(Path(__file__).resolve().parents[2] / "fakes" / "fake_devin.py"),
+            "ARGV_OUT": str(argv_file),
+            "FAKE_DEVIN_SCENARIO": "structured",
+        }
+    )
+    init_devin(devin_env)
+    msg = work / "msg1.md"
+    msg.write_text("summarize\n", encoding="utf-8")
+    result = run_runner(
+        ["turn", "--n", "1", "--message-file", str(msg), "--output-contract", str(contract)],
+        devin_env,
+    )
+    assert result.returncode == 0
+    argv = json.loads(argv_file.read_text())
+    assert argv[0] == "-p"
+    prompt = argv[1]
+    assert prompt.startswith("summarize\n")
+    assert "[output-contract]" in prompt
+    assert '"required":["ok"]' in prompt
+
+
 def test_cli_transport_argv_is_devin_p(work: Path, devin_env: dict[str, str]) -> None:
     """cli transport uses the fake's ``-p`` / ``--resume`` argv contract."""
     argv_file = work / "argv.json"

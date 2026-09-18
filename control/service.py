@@ -19,7 +19,11 @@ from control.config import (
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
 )
-from control.run_store import RunLedger, outcome_from_turn_payload
+from control.run_store import (
+    RunLedger,
+    apply_output_contract,
+    outcome_from_turn_payload,
+)
 from control.sandbox_io import drain, read_json, sandbox_env, write_file
 from control.store import SessionRecord, SessionStore, merge_usage
 
@@ -211,6 +215,7 @@ class ControlPlane:
         first_prompt: str | None = None,
         idempotency_key: str | None = None,
         idempotency_fingerprint: str | None = None,
+        output_contract: dict[str, Any] | None = None,
     ) -> str:
         """Publish a ``creating`` record without provisioning the sandbox.
 
@@ -289,6 +294,7 @@ class ControlPlane:
                     account_id=account_id,
                     model=rec.model,
                     status="CREATING",
+                    output_contract=output_contract,
                 )
             # Publish the record before the sandbox exists: the reaper
             # distinguishes an in-flight create from an orphan sandbox via
@@ -432,7 +438,13 @@ class ControlPlane:
                     pass
         return max(known) + 1
 
-    def post_message(self, session_id: str, text: str) -> str:
+    def post_message(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        output_contract: dict[str, Any] | None = None,
+    ) -> str:
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
@@ -469,6 +481,7 @@ class ControlPlane:
                     or rec.sandbox_tags.get("account_id")
                     or "auto",
                     model=meta.get("model") or rec.model,
+                    output_contract=output_contract,
                 )
         try:
             return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
@@ -553,19 +566,41 @@ class ControlPlane:
         drop_message: bool,
     ) -> str:
         rel = f"_prompt_{n}.md"
+        # SOR-130: the run's normalized output contract (persisted on the
+        # ledger record at begin) rides into the sandbox as _contract_<n>.json
+        # so the runner can steer + evaluate the provider's final message.
+        contract = None
+        if self.run_ledger is not None:
+            record = self.run_ledger.get(session_id, n)
+            contract = record.output_contract if record is not None else None
+        turn_args = [
+            "turn",
+            "--n",
+            str(n),
+            "--message-file",
+            str(handle.root / rel),
+            "--max-seconds",
+            str(self.turn_max_seconds),
+        ]
         try:
             write_file(self.backend, handle, rel, text)
+            if contract is not None:
+                contract_rel = f"_contract_{n}.json"
+                write_file(
+                    self.backend,
+                    handle,
+                    contract_rel,
+                    json.dumps(
+                        {
+                            "schema": contract.get("schema"),
+                            "enforcement": contract.get("enforcement", "strict"),
+                        }
+                    ),
+                )
+                turn_args += ["--output-contract", str(handle.root / contract_rel)]
             proc = self.backend.exec(
                 handle,
-                self.runner(
-                    "turn",
-                    "--n",
-                    str(n),
-                    "--message-file",
-                    str(handle.root / rel),
-                    "--max-seconds",
-                    str(self.turn_max_seconds),
-                ),
+                self.runner(*turn_args),
                 env=sandbox_env(handle),
             )
         except Exception:
@@ -674,6 +709,14 @@ class ControlPlane:
                 # stop()/close() ledger cancels; finish() is monotonic, so a
                 # recorded cancel still wins over a late success.
                 status, error, result_text, usage = outcome_from_turn_payload(payload)
+                # SOR-130: enforce the run's output contract on the recorded
+                # message — a strict violation becomes ERROR +
+                # contract_violation, never a silent FINISHED.
+                record = self.run_ledger.get(session_id, n)
+                contract = record.output_contract if record is not None else None
+                status, error, structured_output, contract_result = apply_output_contract(
+                    status, error, result_text, contract
+                )
                 self.run_ledger.finish(
                     session_id,
                     n,
@@ -681,6 +724,8 @@ class ControlPlane:
                     result_text=result_text,
                     error=error,
                     usage=usage,
+                    structured_output=structured_output,
+                    contract_result=contract_result,
                 )
             self._live.pop(session_id, None)
 

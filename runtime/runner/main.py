@@ -40,6 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_SECONDS,
         help="Soft timeout in seconds (default 900)",
     )
+    p_turn.add_argument(
+        "--output-contract",
+        default=None,
+        help="JSON file with a structured output contract "
+        "({schema, enforcement}) — the turn's final message is "
+        "extracted and validated against it (SOR-130)",
+    )
 
     sub.add_parser("stop", help="SIGTERM the current provider pid, then SIGKILL after 30s")
     sub.add_parser(
@@ -60,7 +67,12 @@ def run(argv: list[str] | None = None) -> int:
             account_id=args.account_id,
         )
     if args.cmd == "turn":
-        return cmd_turn(n=args.n, message_file=args.message_file, max_seconds=args.max_seconds)
+        return cmd_turn(
+            n=args.n,
+            message_file=args.message_file,
+            max_seconds=args.max_seconds,
+            output_contract=args.output_contract,
+        )
     if args.cmd == "stop":
         return cmd_stop()
     if args.cmd == "export-credentials":

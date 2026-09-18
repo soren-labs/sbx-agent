@@ -6,13 +6,28 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from control.run_errors import CODE_CONTRACT_VIOLATION
 from control.run_store import (
     TERMINAL_RUN_STATUSES,
     FileRunStore,
     InMemoryRunStore,
     RunLedger,
+    apply_output_contract,
+    contract_view,
     outcome_from_turn_payload,
     record_from_dict,
+)
+from runtime.runner.contract import (
+    STATUS_INVALID as CONTRACT_INVALID,
+)
+from runtime.runner.contract import (
+    STATUS_PENDING as CONTRACT_PENDING,
+)
+from runtime.runner.contract import (
+    STATUS_SKIPPED as CONTRACT_SKIPPED,
+)
+from runtime.runner.contract import (
+    STATUS_VALID as CONTRACT_VALID,
 )
 
 
@@ -210,6 +225,191 @@ class TestDurability:
             {"agent_id": "a1", "n": 1, "status": "SUCCEEDED"},
             {"agent_id": "a1", "n": 0, "status": "FINISHED"},
         ):
+            with pytest.raises(ValueError):
+                record_from_dict(bad)
+
+
+CONTRACT = {
+    "schema": {
+        "type": "object",
+        "required": ["summary", "ok"],
+        "properties": {"summary": {"type": "string"}, "ok": {"type": "boolean"}},
+    },
+    "enforcement": "strict",
+    "schema_digest": "sha256:test",
+}
+VALID_JSON = '{"summary": "did the thing", "ok": true}'
+INVALID_JSON = '{"summary": 3}'  # missing "ok", wrong type
+NOT_JSON = "sorry, I could not produce JSON"
+
+
+class TestOutputContract:
+    """SOR-130: ``apply_output_contract`` is the authoritative verdict —
+    computed on the control plane from the recorded message, never trusted
+    from sandbox payload fields."""
+
+    def test_no_contract_passthrough(self) -> None:
+        status, error, structured, meta = apply_output_contract("FINISHED", None, "anything", None)
+        assert (status, error, structured, meta) == ("FINISHED", None, None, None)
+
+    def test_valid_output_persists_structured_value(self) -> None:
+        status, error, structured, meta = apply_output_contract(
+            "FINISHED", None, VALID_JSON, CONTRACT
+        )
+        assert status == "FINISHED"
+        assert error is None
+        assert structured == {"summary": "did the thing", "ok": True}
+        assert meta["status"] == CONTRACT_VALID
+        assert meta["enforcement"] == "strict"
+        assert meta["schema_digest"] == "sha256:test"
+        assert meta["extraction"] == "raw"
+        assert meta["violations"] == []
+
+    def test_strict_schema_violation_flips_to_error(self) -> None:
+        status, error, structured, meta = apply_output_contract(
+            "FINISHED", None, INVALID_JSON, CONTRACT
+        )
+        assert status == "ERROR"
+        assert error["code"] == CODE_CONTRACT_VIOLATION
+        assert error["source"] == "control"
+        assert error["retryable"] is True
+        assert structured == {"summary": 3}  # extracted, but not valid
+        assert meta["status"] == CONTRACT_INVALID
+        codes = {v["code"] for v in meta["violations"]}
+        assert codes == {"required", "type"}
+        # machine-diagnosable fields on every violation
+        for v in meta["violations"]:
+            assert v["path"].startswith("$")
+            assert v["message"]
+
+    def test_strict_malformed_output_is_contract_violation(self) -> None:
+        status, error, structured, meta = apply_output_contract(
+            "FINISHED", None, NOT_JSON, CONTRACT
+        )
+        assert status == "ERROR"
+        assert error["code"] == CODE_CONTRACT_VIOLATION
+        assert "not_json" in error["message"]
+        assert structured is None
+        assert meta["status"] == CONTRACT_INVALID
+        assert meta["extraction"] is None
+        assert meta["violations"] == [
+            {"path": "$", "code": "not_json", "message": meta["violations"][0]["message"]}
+        ]
+
+    def test_warn_keeps_finished_with_diagnostic(self) -> None:
+        warn = {**CONTRACT, "enforcement": "warn"}
+        status, error, structured, meta = apply_output_contract(
+            "FINISHED", None, INVALID_JSON, warn
+        )
+        assert status == "FINISHED"  # not silently valid — diagnostic attached
+        assert error["code"] == CODE_CONTRACT_VIOLATION
+        assert meta["status"] == CONTRACT_INVALID
+        assert meta["enforcement"] == "warn"
+        assert structured == {"summary": 3}
+
+    def test_non_finished_skips_evaluation(self) -> None:
+        for terminal in ("ERROR", "CANCELLED", "EXPIRED"):
+            status, error, structured, meta = apply_output_contract(
+                terminal, {"code": "cancelled"}, VALID_JSON, CONTRACT
+            )
+            assert status == terminal
+            assert error == {"code": "cancelled"}  # original error preserved
+            assert structured is None
+            assert meta["status"] == CONTRACT_SKIPPED
+            assert meta["violations"] == []
+
+    def test_finish_persists_contract_fields(self, tmp_path) -> None:
+        ledger = RunLedger(FileRunStore(tmp_path), clock=_clock())
+        ledger.begin(agent_id="a1", n=1, provider="codex", output_contract=CONTRACT)
+        verdict = {
+            "enforcement": "strict",
+            "schema_digest": "sha256:test",
+            "status": CONTRACT_VALID,
+            "extraction": "raw",
+            "violations": [],
+        }
+        ledger.finish(
+            "a1",
+            1,
+            status="FINISHED",
+            result_text=VALID_JSON,
+            structured_output={"summary": "did the thing", "ok": True},
+            contract_result=verdict,
+        )
+        got = ledger.get("a1", 1)
+        assert got.output_contract == CONTRACT
+        assert got.structured_output == {"summary": "did the thing", "ok": True}
+        assert got.contract_result["status"] == CONTRACT_VALID
+        # contract_view renders the persisted verdict.
+        view = contract_view(got)
+        assert view["status"] == CONTRACT_VALID
+        assert view["schema"] == CONTRACT["schema"]
+
+    def test_contract_view_pending_while_open(self, tmp_path) -> None:
+        ledger = RunLedger(InMemoryRunStore(), clock=_clock())
+        record = ledger.begin(agent_id="a1", n=1, output_contract=CONTRACT)
+        view = contract_view(record)
+        assert view["status"] == CONTRACT_PENDING
+        assert view["violations"] == []
+        assert contract_view(ledger.begin(agent_id="a1", n=2)) is None  # no contract → no view
+
+    def test_null_structured_output_roundtrips(self, tmp_path) -> None:
+        """A valid ``null`` output must persist, not be mistaken for absent."""
+        ledger = RunLedger(FileRunStore(tmp_path), clock=_clock())
+        contract = {"schema": {"type": "null"}, "enforcement": "strict"}
+        ledger.begin(agent_id="a1", n=1, output_contract=contract)
+        status, error, structured, meta = apply_output_contract("FINISHED", None, "null", contract)
+        assert status == "FINISHED" and meta["status"] == CONTRACT_VALID
+        assert structured is None
+        ledger.finish(
+            "a1",
+            1,
+            status=status,
+            result_text="null",
+            structured_output=structured,
+            contract_result=meta,
+        )
+        raw = json.loads((tmp_path / "a1" / "run-1.json").read_text())
+        assert "structured_output" in raw and raw["structured_output"] is None
+        assert raw["contract_result"]["status"] == CONTRACT_VALID
+
+    def test_terminal_monotonicity_survives_contract(self, tmp_path) -> None:
+        """A late contract verdict never rewrites a persisted terminal run."""
+        ledger = RunLedger(FileRunStore(tmp_path), clock=_clock())
+        ledger.begin(agent_id="a1", n=1, output_contract=CONTRACT)
+        ledger.finish(
+            "a1",
+            1,
+            status="ERROR",
+            error={"code": CODE_CONTRACT_VIOLATION},
+            contract_result={"status": CONTRACT_INVALID},
+        )
+        again = ledger.finish(
+            "a1",
+            1,
+            status="FINISHED",
+            result_text=VALID_JSON,
+            structured_output={"ok": True},
+            contract_result={"status": CONTRACT_VALID},
+        )
+        assert again.status == "ERROR"
+        assert again.error["code"] == CODE_CONTRACT_VIOLATION
+
+    def test_record_from_dict_roundtrips_contract_fields(self) -> None:
+        raw = {
+            "agent_id": "a1",
+            "n": 1,
+            "status": "FINISHED",
+            "output_contract": CONTRACT,
+            "structured_output": {"ok": True},
+            "contract_result": {"status": CONTRACT_VALID},
+        }
+        record = record_from_dict(raw)
+        assert record.output_contract == CONTRACT
+        assert record.structured_output == {"ok": True}
+        assert record.contract_result["status"] == CONTRACT_VALID
+        for bad_key in ("output_contract", "contract_result"):
+            bad = {**raw, bad_key: "nope"}
             with pytest.raises(ValueError):
                 record_from_dict(bad)
 
