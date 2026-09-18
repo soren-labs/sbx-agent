@@ -38,6 +38,11 @@ V1_BOOTSTRAP_SECRET_NAME = "sbx-v1-bootstrap"
 # without importing the store modules.
 ARTIFACTS_DICT_NAME = "sbx-artifacts"
 WORKSPACES_DICT_NAME = "sbx-workspaces"
+# SOR-127: environment build/snapshot cache records (last-known-good builds).
+ENVIRONMENTS_DICT_NAME = "sbx-environments"
+# Modal filesystem-snapshot defaults for environment builds.
+ENV_SNAPSHOT_TTL_S = 30 * 24 * 3600  # Modal default retention for filesystem snapshots
+ENV_SNAPSHOT_TIMEOUT_S = 300
 # Naming convention for per-account credential Secrets: ``sbx-acct-<id>``
 # (control/api_v1/bootstrap.py, control/onboarding.py). Operators point it at
 # a deployment-scoped prefix (``SBX_ACCOUNT_SECRET_PREFIX``) so a parallel
@@ -184,6 +189,14 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     # server templates (config refs only — never secret values).
     "SBX_RESOURCE_SECRETS",
     "SBX_MCP_REGISTRY",
+    # SOR-127 environment build/snapshot cache: opt-in gate, durable record
+    # Dict name, deployment-wide setup command and Modal snapshot tunables.
+    # Names/tunables only — build sandboxes never carry Secrets.
+    "SBX_ENV_CACHE",
+    "SBX_ENVIRONMENTS_DICT",
+    "SBX_ENV_SETUP",
+    "SBX_ENV_SNAPSHOT_TTL_S",
+    "SBX_ENV_SNAPSHOT_TIMEOUT_S",
     *(
         f"SBX_{provider}_{suffix}"
         for provider in _PROVIDER_SEED_PROVIDERS

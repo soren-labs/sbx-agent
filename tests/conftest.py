@@ -30,6 +30,9 @@ _CLOUD_PREFIXES = (
     "SBX_PROVIDER_",
     "SBX_LINEAR_",
     "LINEAR_",
+    # SOR-127 env-cache gate/setup — ambient values must never arm the
+    # snapshot cache in tests.
+    "SBX_ENV_",
     # Fake-runner knobs are set per-test; ambient values must never leak in.
     "FAKE_",
 )

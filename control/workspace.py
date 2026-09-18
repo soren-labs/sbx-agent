@@ -919,6 +919,63 @@ class WorkspaceService:
         record.head_sha = actual
         return self.save(record)
 
+    def prepare_restored(
+        self,
+        handle: SandboxHandle,
+        agent_id: str,
+        spec: WorkspaceSpec,
+        *,
+        workdir: str = DEFAULT_WORKDIR,
+        git: dict[str, Any] | None = None,
+    ) -> WorkspaceRecord:
+        """Record + verify a workspace restored from a prepared environment
+        snapshot (SOR-127) instead of freshly cloned.
+
+        No clone runs — the snapshot carries the repo — but the declared
+        ``base_sha`` gate is identical: the restored workdir HEAD must
+        resolve to exactly ``base_sha``, or the prepare fails closed with
+        ``base_sha_mismatch`` and the record stays unprepared. The SOR-128
+        git policy still resolves/persists and the work branch is created
+        at the pinned sha, so a restored workspace is indistinguishable
+        from a fresh ``prepare`` to downstream consumers.
+        """
+        workdir = require_relpath(workdir, code=WORKSPACE_INVALID, what="workdir")
+        policy = normalize_git_policy(git, agent_id=agent_id, base_ref=spec.base_ref)
+        if self._store.get(agent_id) is not None:
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"workspace already declared for agent {agent_id}"
+            )
+        now = self._now()
+        record = WorkspaceRecord(
+            agent_id=agent_id,
+            repo=spec.repo,
+            base_ref=spec.base_ref,
+            base_sha=spec.base_sha,
+            workdir=workdir,
+            git=policy,
+            branch=(policy or {}).get("branch"),
+            created_at=now,
+            updated_at=now,
+        )
+        self._store.put(record)
+        actual = git_head(self._backend, handle, workdir)
+        if actual != spec.base_sha:
+            raise WorkspaceError(
+                BASE_SHA_MISMATCH,
+                f"restored environment HEAD is {actual}, expected {spec.base_sha}",
+            )
+        if record.branch is not None:
+            git_checkout(self._backend, handle, workdir, spec.base_sha, branch=record.branch)
+            actual = git_head(self._backend, handle, workdir)
+            if actual != spec.base_sha:
+                raise WorkspaceError(
+                    BASE_SHA_MISMATCH,
+                    f"checkout drifted: HEAD is {actual}, expected {spec.base_sha}",
+                )
+        record.checkout_sha = actual
+        record.head_sha = actual
+        return self.save(record)
+
     def refresh_head(self, handle: SandboxHandle, agent_id: str) -> WorkspaceRecord:
         """Re-read the workdir HEAD after agent commits; updates ``head_sha``."""
         record = self._require(agent_id)

@@ -183,6 +183,42 @@ def _select_workspace_store() -> Any:
     return FileWorkspaceStore(override or _xdg_state_dir("workspaces"))
 
 
+def _select_environment_store() -> Any:
+    """SOR-127: durable environment build-record store."""
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.config import ENVIRONMENTS_DICT_NAME
+        from control.environment import ModalDictEnvironmentStore
+
+        return ModalDictEnvironmentStore(env_str("SBX_ENVIRONMENTS_DICT", ENVIRONMENTS_DICT_NAME))
+    from control.environment import FileEnvironmentStore
+
+    override = os.environ.get("SBX_ENV_STORE_DIR")
+    return FileEnvironmentStore(override or _xdg_state_dir("environments"))
+
+
+def _select_snapshot_provider(backend: SandboxBackend) -> Any:
+    """SOR-127: filesystem snapshot/restore seam for the environment cache.
+
+    Modal uses the native ``Sandbox.snapshot_filesystem`` primitive (image
+    ids as refs); local dev/tests get directory copies under the snapshot
+    root. The worker sandbox never holds Modal control credentials — both
+    directions are driven control-plane-side.
+    """
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.backends.modal import ModalSnapshotProvider
+        from control.config import ENV_SNAPSHOT_TIMEOUT_S, ENV_SNAPSHOT_TTL_S
+
+        return ModalSnapshotProvider(
+            backend,
+            timeout_s=env_int("SBX_ENV_SNAPSHOT_TIMEOUT_S", ENV_SNAPSHOT_TIMEOUT_S),
+            ttl_s=env_int("SBX_ENV_SNAPSHOT_TTL_S", ENV_SNAPSHOT_TTL_S),
+        )
+    from control.environment import LocalSnapshotProvider
+
+    override = os.environ.get("SBX_ENV_SNAPSHOT_DIR")
+    return LocalSnapshotProvider(backend, override or _xdg_state_dir("env-snapshots"))
+
+
 def _select_workflow_store() -> WorkflowStore:
     """SOR-84 C1: the durable workflow/task metadata index.
 
@@ -303,6 +339,28 @@ def create_app(
         )
 
     plane.snapshot_hook = _snapshot_on_close
+
+    # SOR-127 environment build/snapshot cache — opt-in (``SBX_ENV_CACHE=1``).
+    # When armed, the /v1 worker resolves the workspace's last-known-good
+    # build record before provisioning (restore instead of cold clone) and
+    # fills the cache after a successful cold prepare. Snapshot/restore run
+    # control-plane-side; build sandboxes carry no credentials.
+    app.state.environments = None
+    if os.environ.get("SBX_ENV_CACHE") == "1":
+        from control.environment import EnvironmentService
+
+        snapshot_provider = _select_snapshot_provider(backend)
+        environments = EnvironmentService(
+            backend,
+            _select_environment_store(),
+            snapshots=snapshot_provider,
+            setup=os.environ.get("SBX_ENV_SETUP") or "",
+            clock=clock,
+        )
+        plane.snapshot_provider = snapshot_provider
+        plane.environments = environments
+        app.state.environments = environments
+
     app.state.workflow_store = workflow_store
     # SOR-82 integration: the durable run ledger is the source of truth, and
     # the /v1 run-state seam (begin/get/list/transition) binds to it by
