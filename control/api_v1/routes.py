@@ -17,11 +17,13 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, Header, Request
 from fastapi.responses import Response
+from runtime.runner.contract import STATUS_SKIPPED, ContractError, normalize_contract
 
 from control.api_v1 import router
 from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
@@ -57,6 +59,7 @@ from control.api_v1.schemas import (
     CreateArtifactRequest,
     CreateRunRequest,
     HandoffRef,
+    OutputContract,
     ProviderId,
     ReviewWorkspaceRequest,
     account_public,
@@ -82,6 +85,8 @@ from control.run_errors import run_error_for_run
 from control.run_store import (
     UNKNOWN_RUN_STATUS,
     RunRecord,
+    apply_output_contract,
+    contract_view,
     default_artifact_refs,
     outcome_from_turn_payload,
 )
@@ -230,6 +235,10 @@ def _record_public(
         "account_id": record.account_id or (meta.account_id if meta else None),
         "model": record.model or pub.get("model"),
         "artifact_refs": list(record.artifact_refs),
+        # SOR-130: extracted JSON + the contract verdict metadata (null when
+        # the run carried no output contract).
+        "structured_output": record.structured_output,
+        "output_contract": contract_view(record),
     }
     if record.usage is not None:
         run["usage"] = usage_public(record.usage)
@@ -249,6 +258,25 @@ def _fallback_status(rec: Any) -> str:
     if rec.status == "timed_out":
         return "EXPIRED"
     return "UNKNOWN"
+
+
+def _with_skipped_contract(record: RunRecord) -> RunRecord:
+    """Render-side copy of an open record whose run is reported terminal.
+
+    The ledger record stays open (the verdict was never evaluated), so the
+    contract must not read ``pending`` on a terminal run — report the same
+    ``skipped`` a non-FINISHED persist would have written.
+    """
+    if record.output_contract is None or record.contract_result is not None:
+        return record
+    verdict = {
+        "enforcement": record.output_contract.get("enforcement", "strict"),
+        "schema_digest": record.output_contract.get("schema_digest"),
+        "status": STATUS_SKIPPED,
+        "extraction": None,
+        "violations": [],
+    }
+    return replace(record, contract_result=verdict)
 
 
 def _run_error_public(
@@ -329,7 +357,7 @@ def _render_run(
             return _record_public(record, pub, meta)
         if n in cancelled:
             return _record_public(
-                record,
+                _with_skipped_contract(record),
                 pub,
                 meta,
                 status="CANCELLED",
@@ -338,6 +366,12 @@ def _render_run(
         payload = _turn_payload(plane, rec, n)
         if payload is not None:
             status, error, result_text, usage = outcome_from_turn_payload(payload)
+            # SOR-130: the read-path backfill must apply the same contract
+            # enforcement as _finish_turn — a strict violation persists as
+            # ERROR + contract_violation, never a silent FINISHED.
+            status, error, structured_output, contract_result = apply_output_contract(
+                status, error, result_text, record.output_contract
+            )
             record = ledger.finish(
                 rec.id,
                 n,
@@ -348,6 +382,8 @@ def _render_run(
                 provider=meta.provider if meta else None,
                 account_id=meta.account_id if meta else None,
                 model=pub.get("model"),
+                structured_output=structured_output,
+                contract_result=contract_result,
             )
             return _record_public(record, pub, meta)
         if record.status == UNKNOWN_RUN_STATUS:
@@ -359,7 +395,7 @@ def _render_run(
             # fall back to the session-derived terminal status.
             status = _fallback_status(rec)
             return _record_public(
-                record,
+                _with_skipped_contract(record),
                 pub,
                 meta,
                 status=status,
@@ -474,6 +510,9 @@ def _render_run(
         "account_id": meta.account_id if meta else None,
         "model": pub.get("model"),
         "artifact_refs": default_artifact_refs(n),
+        # SOR-130: no ledger record means no contract could be attached.
+        "structured_output": None,
+        "output_contract": None,
     }
     if run_state is not None and run_state.error is not None:
         run["error"] = run_state.error
@@ -717,6 +756,29 @@ def _validate_workspace_decl(
     return workspace, handoff, git
 
 
+def _normalize_contract(contract: OutputContract | None) -> dict[str, Any] | None:
+    """Validate + normalize an ``output_contract`` declaration (SOR-130).
+
+    A malformed body — bad enforcement, non-object schema, or a schema using
+    keywords outside the deterministic validator subset — is refused as
+    ``400 invalid_output_contract`` before any run is allocated, so an
+    unenforceable contract can never reach a sandbox.
+    """
+    if contract is None:
+        return None
+    try:
+        return normalize_contract(contract.model_dump(by_alias=True))
+    except ContractError as exc:
+        raise V1ApiError(400, "invalid_output_contract", str(exc)) from exc
+    except Exception as exc:
+        # normalize_contract only raises ContractError by design; anything
+        # else (e.g. a schema too deep to serialize) is still a refused
+        # contract — 400, never an uncaught 500.
+        raise V1ApiError(
+            400, "invalid_output_contract", f"unusable output contract: {type(exc).__name__}"
+        ) from exc
+
+
 @router.post("/agents", status_code=201)
 def create_agent(
     body: CreateAgentRequest,
@@ -743,6 +805,11 @@ def create_agent(
     ``handoff`` makes run-1 start from a referenced artifact or commit.
     """
     workspace, handoff, git = _validate_workspace_decl(body, artifacts)
+    contract = _normalize_contract(body.output_contract)
+    if contract is not None and _ledger(plane) is None:
+        # Contracted runs need the durable ledger for both dispatch and the
+        # persisted verdict — refuse rather than run uncontracted.
+        raise V1ApiError(409, "session_not_runnable", "output contracts require the run ledger")
     owned = None
     fingerprint = request_fingerprint(body)
     if idempotency_key:
@@ -824,6 +891,7 @@ def create_agent(
             workspace=workspace,
             handoff=handoff,
             git=git,
+            output_contract=contract,
         )
     except Exception:
         if owned is not None:
@@ -858,6 +926,7 @@ def _create_agent_once(
     workspace: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
     git: dict[str, Any] | None = None,
+    output_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -905,6 +974,7 @@ def _create_agent_once(
             first_prompt=body.prompt.text,
             idempotency_key=idempotency_key,
             idempotency_fingerprint=idempotency_fingerprint,
+            output_contract=output_contract,
         )
     except ConcurrencyLimit as exc:
         _release_lease(lease)
@@ -1389,8 +1459,13 @@ def create_run(
     workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
     _require_agent(plane, agent_id)
+    contract = _normalize_contract(body.output_contract)
+    if contract is not None and _ledger(plane) is None:
+        # Contracted runs need the durable ledger for both dispatch and the
+        # persisted verdict — refuse rather than run uncontracted.
+        raise V1ApiError(409, "session_not_runnable", "output contracts require the run ledger")
     try:
-        turn_id = plane.post_message(agent_id, body.prompt.text)
+        turn_id = plane.post_message(agent_id, body.prompt.text, output_contract=contract)
     except KeyError:
         raise not_found("agent not found") from None
     except SessionConflict as exc:

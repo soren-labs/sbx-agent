@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a09a36-b4fb-7f90-b96e-42adeefa05e0"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc \"printf '%s\\n' 'hello from fake_codex' > hello.txt\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc \"printf '%s\\n' 'hello from fake_codex' > hello.txt\"","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"summary\": \"created hello.txt\", \"ok\": true, \"files\": [\"hello.txt\"]}"}}
+{"type":"turn.completed","usage":{"input_tokens":25996,"cached_input_tokens":22016,"cache_write_input_tokens":0,"output_tokens":325,"reasoning_output_tokens":238}}

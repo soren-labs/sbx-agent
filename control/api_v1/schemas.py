@@ -107,6 +107,25 @@ class WorkflowMetadata(BaseModel):
     parent_task_id: str | None = Field(default=None, max_length=256)
 
 
+class OutputContract(BaseModel):
+    """SOR-130: optional JSON Schema output contract for a run.
+
+    ``schema`` is the JSON Schema the run's final output must satisfy (the
+    runner's deterministic validator subset — unsupported keywords are
+    refused at request time). ``enforcement`` selects the verdict handling:
+
+    - ``strict`` (default): invalid/malformed output → run ``ERROR`` with
+      ``contract_violation`` — never a silent success.
+    - ``warn``: invalid/malformed output → run stays ``FINISHED`` but
+      carries the same ``contract_violation`` diagnostic.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    json_schema: dict[str, Any] = Field(alias="schema")
+    enforcement: Literal["strict", "warn"] = "strict"
+
+
 class CreateAgentRequest(BaseModel):
     prompt: Prompt
     agent: AgentSpec
@@ -116,6 +135,7 @@ class CreateAgentRequest(BaseModel):
     handoff: HandoffRef | None = None
     git: GitPolicy | None = None
     metadata: WorkflowMetadata | None = None
+    output_contract: OutputContract | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -123,6 +143,7 @@ class CreateRunRequest(BaseModel):
     # Optional task re-binding (SOR-84): a follow-up may carry the same
     # workflow metadata shape as agent create.
     metadata: WorkflowMetadata | None = None
+    output_contract: OutputContract | None = None
 
 
 class CreateArtifactRequest(BaseModel):

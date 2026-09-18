@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -204,6 +205,18 @@ def run_scenario(
             write_hello(cwd, hello_content)
         replay(fixture(provider, "badjson"), rewrite=rw)
         sys.exit(0)
+
+    # Extension point: a scenario outside the built-in set replays
+    # ``fixtures/events/<provider>/<scenario>.jsonl`` when one exists
+    # (e.g. SOR-130's ``structured`` output fixtures). Path components are
+    # pinned so the env value can never traverse out of the fixture tree.
+    if re.fullmatch(r"[a-z0-9_]+", scenario):
+        custom = FIXTURE_BASE / provider / f"{scenario}.jsonl"
+        if custom.is_file():
+            if not is_resume:
+                write_hello(cwd, hello_content)
+            replay(custom, rewrite=rw)
+            sys.exit(0)
 
     # success (and unknown scenarios fall back to the success fixture)
     if is_resume:

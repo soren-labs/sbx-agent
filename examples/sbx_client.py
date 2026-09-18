@@ -322,6 +322,7 @@ class SbxClient:
         metadata: dict[str, Any] | None = None,
         workspace: dict[str, Any] | None = None,
         handoff: dict[str, Any] | None = None,
+        output_contract: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Create an agent and queue its first run (SOR-82: may return while
@@ -333,6 +334,14 @@ class SbxClient:
         them. ``idempotency_key`` maps to the ``Idempotency-Key`` contract —
         a retried key replays the original response instead of
         double-creating.
+
+        ``output_contract`` (SOR-130): ``{"schema": <JSON Schema>,
+        "enforcement": "strict"|"warn"}`` — the run's final message must be
+        one JSON value validating against the schema. ``strict`` (default)
+        fails invalid output as ``ERROR``/``contract_violation``; ``warn``
+        keeps ``FINISHED`` with the same diagnostic. The extracted value and
+        the verdict land on the run as ``structured_output`` /
+        ``output_contract``.
         """
         body: dict[str, Any] = {
             "prompt": {"text": text},
@@ -353,6 +362,8 @@ class SbxClient:
         if handoff:
             # {"artifact_id": ...} or {"head_sha": ...} — cross-agent handoff.
             body["handoff"] = dict(handoff)
+        if output_contract:
+            body["output_contract"] = dict(output_contract)
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return self._check(
             self._request(
@@ -395,12 +406,23 @@ class SbxClient:
     # --------------------------------------------------------------- runs
 
     def followup(
-        self, agent_id: str, text: str, *, metadata: dict[str, Any] | None = None
+        self,
+        agent_id: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        output_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Queue a follow-up run on an existing agent (``POST .../runs``)."""
+        """Queue a follow-up run on an existing agent (``POST .../runs``).
+
+        ``output_contract`` (SOR-130) attaches a per-run JSON Schema output
+        contract — see ``create_agent`` for the shape and semantics.
+        """
         body: dict[str, Any] = {"prompt": {"text": text}}
         if metadata:
             body["metadata"] = dict(metadata)
+        if output_contract:
+            body["output_contract"] = dict(output_contract)
         return self._check(
             self._request(
                 "POST",
@@ -411,8 +433,8 @@ class SbxClient:
             )
         )
 
-    def create_run(self, agent_id: str, text: str) -> dict[str, Any]:
-        return self.followup(agent_id, text)
+    def create_run(self, agent_id: str, text: str, **kwargs: Any) -> dict[str, Any]:
+        return self.followup(agent_id, text, **kwargs)
 
     def list_runs(self, agent_id: str) -> list[dict[str, Any]]:
         return self._check(self._request("GET", f"/v1/agents/{agent_id}/runs"))["runs"]

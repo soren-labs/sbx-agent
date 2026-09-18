@@ -37,6 +37,12 @@ from runtime.runner.constants import (
     STATUS_TIMEOUT,
     TERM_GRACE_S,
 )
+from runtime.runner.contract import (
+    ContractError,
+    contract_instruction,
+    evaluate_output,
+    load_contract_file,
+)
 from runtime.runner.events import (
     TurnState,
     parse_event_line,
@@ -125,7 +131,13 @@ def _finish_status(
     return STATUS_SUCCESS, EXIT_OK
 
 
-def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECONDS) -> int:
+def cmd_turn(
+    *,
+    n: int,
+    message_file: str,
+    max_seconds: int = DEFAULT_MAX_SECONDS,
+    output_contract: str | None = None,
+) -> int:
     root = work_root()
     ensure_layout(root)
     home = codex_home(root)
@@ -159,6 +171,19 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
 
     inbox = root / "inbox" / f"{n}.md"
     atomic_write(inbox, prompt)
+
+    # SOR-130: an output contract augments the provider-facing prompt only —
+    # inbox/<n>.md keeps the user text verbatim. An unreadable/malformed
+    # contract file fails closed (EXIT_INTERNAL, no turn payload) rather
+    # than running uncontracted.
+    contract: dict | None = None
+    if output_contract is not None:
+        try:
+            contract = load_contract_file(output_contract)
+        except (OSError, ContractError) as exc:
+            emit(root, {"type": "sbx.error", "message": f"invalid output contract: {exc}"})
+            return EXIT_INTERNAL
+        prompt += contract_instruction(contract["schema"])
 
     if n == 1:
         emit(
@@ -195,6 +220,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
             health="unknown",
             duration_s=round(time.monotonic() - started, 3),
             error_hint=error_hint,
+            contract=contract,
         )
         return code
 
@@ -290,6 +316,7 @@ def cmd_turn(*, n: int, message_file: str, max_seconds: int = DEFAULT_MAX_SECOND
         health=health,
         duration_s=duration,
         error_hint=error_hint,
+        contract=contract,
     )
     return code
 
@@ -305,6 +332,7 @@ def _write_turn_finished(
     health: str,
     duration_s: float,
     error_hint: str = "",
+    contract: dict | None = None,
 ) -> None:
     session["pid"] = None
     session["turn"] = n
@@ -312,16 +340,6 @@ def _write_turn_finished(
         session["native_session_id"] = state.thread_id
         session["codex_session_id"] = state.thread_id
     save_session(root, session)
-    emit(
-        root,
-        {
-            "type": "sbx.turn_finished",
-            "status": status,
-            "exit_code": code,
-            "duration_s": duration_s,
-            "usage": dict(state.usage),
-        },
-    )
     turn_path = root / "turns" / f"{n}.json"
     detail = "" if status == STATUS_SUCCESS else (error_hint or redact_text(state.last_error))
     payload = {
@@ -337,4 +355,43 @@ def _write_turn_finished(
         "error": detail or None,
         "bad_json_lines": state.bad_json_lines,
     }
+    if contract is not None:
+        # SOR-130: turn evidence carries the normalized verdict. The runner
+        # reports but does not enforce — the control plane re-evaluates the
+        # recorded message and applies ``enforcement`` at terminal persist,
+        # so a strict violation can never ride a forged payload to FINISHED.
+        contract_meta = {
+            "enforcement": contract["enforcement"],
+            "schema_digest": contract["schema_digest"],
+        }
+        if status == STATUS_SUCCESS:
+            verdict = evaluate_output(str(payload["message"] or ""), contract["schema"])
+            payload["structured_output"] = verdict["value"]
+            payload["output_contract"] = {
+                **contract_meta,
+                "status": verdict["status"],
+                "extraction": verdict["extraction"],
+                "violations": verdict["violations"],
+            }
+        else:
+            payload["structured_output"] = None
+            payload["output_contract"] = {
+                **contract_meta,
+                "status": "skipped",
+                "extraction": None,
+                "violations": [],
+            }
+    # The payload is written before the terminal event so a crashed write
+    # can never emit a success the evidence does not back — turns/<n>.json
+    # is the authoritative outcome the control plane persists from.
     atomic_write(turn_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    emit(
+        root,
+        {
+            "type": "sbx.turn_finished",
+            "status": status,
+            "exit_code": code,
+            "duration_s": duration_s,
+            "usage": dict(state.usage),
+        },
+    )

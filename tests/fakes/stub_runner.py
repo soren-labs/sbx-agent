@@ -12,10 +12,17 @@ import time
 from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "events"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# Local sandboxes exec this file directly; the repo root must come FIRST for
+# ``runtime.runner.contract`` (SOR-130). A deployed ``/opt/sbx`` copy (or a
+# .pth-installed repo root later in sys.path) lacks the new module, so mere
+# membership is not enough — the repo root must outrank them.
+sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_THREAD_ID = "01a09a36-b4fb-7f90-b96e-42adeefa05e0"
 PROVIDERS = ("codex", "antigravity", "grok", "opencode", "devin")
 
 EXIT_OK = 0
+EXIT_INTERNAL = 1
 EXIT_CODEX = 2
 EXIT_TIMEOUT = 3
 EXIT_BAD_JSON = 4
@@ -335,23 +342,55 @@ def cmd_turn(args: argparse.Namespace) -> int:
             "usage": usage,
         },
     )
+    payload = {
+        "n": args.n,
+        "codex_session_id": thread_id,
+        "native_session_id": thread_id,
+        "status": status,
+        "usage": usage,
+        "message": last_message,
+        "error": (last_error or None) if status != "success" else None,
+        "bad_json_lines": bad_json_lines,
+        "exit_code": code,
+    }
+    if args.output_contract is not None:
+        # SOR-130: mirror runtime.runner.turn — evaluate the final message
+        # against the contract and record the verdict on the turn payload.
+        from runtime.runner.contract import (
+            ContractError,
+            evaluate_output,
+            load_contract_file,
+        )
+
+        try:
+            contract = load_contract_file(args.output_contract)
+        except (OSError, ContractError) as exc:
+            emit(root, {"type": "sbx.error", "message": f"invalid output contract: {exc}"})
+            return EXIT_INTERNAL
+        meta = {
+            "enforcement": contract["enforcement"],
+            "schema_digest": contract["schema_digest"],
+        }
+        if status == "success":
+            verdict = evaluate_output(last_message, contract["schema"])
+            payload["structured_output"] = verdict["value"]
+            payload["output_contract"] = {
+                **meta,
+                "status": verdict["status"],
+                "extraction": verdict["extraction"],
+                "violations": verdict["violations"],
+            }
+        else:
+            payload["structured_output"] = None
+            payload["output_contract"] = {
+                **meta,
+                "status": "skipped",
+                "extraction": None,
+                "violations": [],
+            }
     turn_path = root / "turns" / f"{args.n}.json"
     turn_path.write_text(
-        json.dumps(
-            {
-                "n": args.n,
-                "codex_session_id": thread_id,
-                "native_session_id": thread_id,
-                "status": status,
-                "usage": usage,
-                "message": last_message,
-                "error": (last_error or None) if status != "success" else None,
-                "bad_json_lines": bad_json_lines,
-                "exit_code": code,
-            },
-            indent=2,
-        )
-        + "\n",
+        json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
     )
     try:
@@ -423,6 +462,7 @@ def main() -> None:
     p_turn.add_argument("--n", type=int, required=True)
     p_turn.add_argument("--message-file", required=True)
     p_turn.add_argument("--max-seconds", type=int, default=900)
+    p_turn.add_argument("--output-contract", default=None)
 
     sub.add_parser("stop")
     sub.add_parser("export-credentials")

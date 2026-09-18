@@ -19,7 +19,12 @@ from control.config import (
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
 )
-from control.run_store import RunLedger, outcome_from_turn_payload
+from control.run_store import (
+    RunLedger,
+    apply_output_contract,
+    outcome_from_turn_payload,
+    run_error,
+)
 from control.sandbox_io import drain, read_json, sandbox_env, write_file
 from control.store import SessionRecord, SessionStore, merge_usage
 
@@ -211,6 +216,7 @@ class ControlPlane:
         first_prompt: str | None = None,
         idempotency_key: str | None = None,
         idempotency_fingerprint: str | None = None,
+        output_contract: dict[str, Any] | None = None,
     ) -> str:
         """Publish a ``creating`` record without provisioning the sandbox.
 
@@ -289,6 +295,7 @@ class ControlPlane:
                     account_id=account_id,
                     model=rec.model,
                     status="CREATING",
+                    output_contract=output_contract,
                 )
             # Publish the record before the sandbox exists: the reaper
             # distinguishes an in-flight create from an orphan sandbox via
@@ -432,7 +439,13 @@ class ControlPlane:
                     pass
         return max(known) + 1
 
-    def post_message(self, session_id: str, text: str) -> str:
+    def post_message(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        output_contract: dict[str, Any] | None = None,
+    ) -> str:
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
@@ -469,6 +482,7 @@ class ControlPlane:
                     or rec.sandbox_tags.get("account_id")
                     or "auto",
                     model=meta.get("model") or rec.model,
+                    output_contract=output_contract,
                 )
         try:
             return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
@@ -553,19 +567,41 @@ class ControlPlane:
         drop_message: bool,
     ) -> str:
         rel = f"_prompt_{n}.md"
+        # SOR-130: the run's normalized output contract (persisted on the
+        # ledger record at begin) rides into the sandbox as _contract_<n>.json
+        # so the runner can steer + evaluate the provider's final message.
+        contract = None
+        if self.run_ledger is not None:
+            record = self.run_ledger.get(session_id, n)
+            contract = record.output_contract if record is not None else None
+        turn_args = [
+            "turn",
+            "--n",
+            str(n),
+            "--message-file",
+            str(handle.root / rel),
+            "--max-seconds",
+            str(self.turn_max_seconds),
+        ]
         try:
             write_file(self.backend, handle, rel, text)
+            if contract is not None:
+                contract_rel = f"_contract_{n}.json"
+                write_file(
+                    self.backend,
+                    handle,
+                    contract_rel,
+                    json.dumps(
+                        {
+                            "schema": contract.get("schema"),
+                            "enforcement": contract.get("enforcement", "strict"),
+                        }
+                    ),
+                )
+                turn_args += ["--output-contract", str(handle.root / contract_rel)]
             proc = self.backend.exec(
                 handle,
-                self.runner(
-                    "turn",
-                    "--n",
-                    str(n),
-                    "--message-file",
-                    str(handle.root / rel),
-                    "--max-seconds",
-                    str(self.turn_max_seconds),
-                ),
+                self.runner(*turn_args),
                 env=sandbox_env(handle),
             )
         except Exception:
@@ -631,23 +667,93 @@ class ControlPlane:
         self._finish_turn(session_id, turn_id, n)
 
     def _finish_turn(self, session_id: str, turn_id: str, n: int) -> None:
+        # Phase 1 (locked): snapshot the live handle only. Everything after
+        # this — the backend evidence read and the contract verdict — runs
+        # unlocked, so untrusted work can strand this watcher thread but
+        # never the whole control plane (SOR-130 review).
+        with self._lock:
+            rec = self.store.get(session_id)
+            handle = rec.handle() if rec is not None else None
+        payload = None
+        if handle is not None:
+            try:
+                payload = read_json(self.backend, handle, f"turns/{n}.json")
+            except Exception:
+                # Sandbox reclaimed mid-turn: the turn outcome is
+                # unreadable — the ledger persist below records it as
+                # ERROR, never success.
+                payload = None
+        # Phase 2 (unlocked): judge the evidence. apply_output_contract is
+        # pure and budget-bounded; the backstop keeps even an unforeseen
+        # failure diagnosable instead of wedging the run open.
+        contract = None
+        try:
+            status, error, result_text, usage = outcome_from_turn_payload(payload)
+            # SOR-130: enforce the run's output contract on the recorded
+            # message — a strict violation becomes ERROR +
+            # contract_violation, never a silent FINISHED.
+            if self.run_ledger is not None:
+                record = self.run_ledger.get(session_id, n)
+                contract = record.output_contract if record is not None else None
+            status, error, structured_output, contract_result = apply_output_contract(
+                status, error, result_text, contract
+            )
+        except Exception:
+            # The enforcement seam judges sandbox-written evidence, so it is
+            # designed total — this guard is the last resort: a failure to
+            # evaluate fails closed, the run still terminates diagnosably
+            # instead of wedging open.
+            status, result_text, usage, structured_output = (
+                "ERROR",
+                None,
+                None,
+                None,
+            )
+            error = run_error(
+                "runtime_error",
+                "turn outcome could not be evaluated",
+                source="control",
+                retryable=True,
+            )
+            contract_result = (
+                {
+                    "enforcement": str(contract.get("enforcement") or "strict"),
+                    "schema_digest": contract.get("schema_digest"),
+                    "status": "invalid",
+                    "extraction": None,
+                    "violations": [
+                        {
+                            "path": "$",
+                            "code": "evaluation_error",
+                            "message": "turn outcome could not be evaluated",
+                        }
+                    ],
+                }
+                if isinstance(contract, dict)
+                else None
+            )
+        # Phase 3 (locked): fold the evidence into the session record and
+        # persist the terminal outcome. finish() is monotonic, so a cancel
+        # recorded by a concurrent stop()/close() still wins over this late
+        # success — the verdict computed unlocked cannot resurrect a run.
         with self._lock:
             rec = self.store.get(session_id)
             active = rec is not None and rec.status not in TERMINAL_STATUSES
-            handle = rec.handle() if rec is not None else None
-            payload = None
-            if handle is not None:
-                try:
-                    payload = read_json(self.backend, handle, f"turns/{n}.json")
-                except Exception:
-                    # Sandbox reclaimed mid-turn: the turn outcome is
-                    # unreadable — the ledger persist below records it as
-                    # ERROR, never success.
-                    payload = None
             now = self.clock()
             if active and payload is not None:
-                rec.usage = merge_usage(rec.usage, payload.get("usage"))
-                rec.turns = max(rec.turns, int(payload.get("n") or n))
+                # The turn payload is sandbox-written evidence: corrupt
+                # fields degrade individually, they never wedge the finish.
+                try:
+                    turn_usage = payload.get("usage")
+                    rec.usage = merge_usage(
+                        rec.usage, turn_usage if isinstance(turn_usage, dict) else None
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    pass
+                try:
+                    rec.turns = max(rec.turns, int(payload.get("n") or n))
+                except (TypeError, ValueError):
+                    rec.turns = max(rec.turns, n)
                 message = payload.get("message") or ""
                 if message and rec.current_turn_id == turn_id:
                     rec.messages.append(
@@ -670,10 +776,7 @@ class ControlPlane:
             if self.run_ledger is not None:
                 # Persist the terminal outcome now, while turns/<n>.json may
                 # still be readable; after teardown this record is the only
-                # evidence. Inside the lock so it serializes against
-                # stop()/close() ledger cancels; finish() is monotonic, so a
-                # recorded cancel still wins over a late success.
-                status, error, result_text, usage = outcome_from_turn_payload(payload)
+                # evidence.
                 self.run_ledger.finish(
                     session_id,
                     n,
@@ -681,6 +784,8 @@ class ControlPlane:
                     result_text=result_text,
                     error=error,
                     usage=usage,
+                    structured_output=structured_output,
+                    contract_result=contract_result,
                 )
             self._live.pop(session_id, None)
 
