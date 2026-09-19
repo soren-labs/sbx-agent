@@ -364,6 +364,25 @@ def _render_run(
     ledger = _ledger(plane)
     record = ledger.get(rec.id, n) if ledger is not None else None
     live = rec.current_turn_n == n and rec.status not in TERMINAL_STATUSES
+    if live and rec.status == "running" and (record is None or not record.terminal):
+        # SOR-139: a turn whose watcher died mid-flight (control-plane
+        # restart/cutover) strands the run open while the provider's
+        # terminal turns/<n>.json already exists. Reconcile on read: the
+        # evidence lands the durable run status and returns the agent to
+        # idle/publish-ready. A live watcher owns its turn and reconcile
+        # declines, leaving the persisted open status authoritative.
+        reconcile = getattr(plane, "reconcile_turn", None)
+        if callable(reconcile):
+            try:
+                if reconcile(rec.id, n):
+                    fresh = plane.get(rec.id)
+                    if fresh is not None:
+                        rec = fresh
+                        live = rec.current_turn_n == n and rec.status not in TERMINAL_STATUSES
+                        if ledger is not None:
+                            record = ledger.get(rec.id, n) or record
+            except Exception:
+                pass
     if record is not None:
         if record.terminal or live:
             return _record_public(record, pub, meta)

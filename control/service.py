@@ -712,10 +712,69 @@ class ControlPlane:
         self._finish_turn(session_id, turn_id, n)
 
     def _finish_turn(self, session_id: str, turn_id: str, n: int) -> None:
+        handle, payload = self._read_turn_payload(session_id, n)
+        self._settle_turn(session_id, turn_id, n, handle, payload)
+
+    def reconcile_turn(self, session_id: str, n: int) -> bool:
+        """Finalize a watcher-less in-flight turn from sandbox evidence.
+
+        A provider turn that wrote ``turns/<n>.json`` proved it ended, but a
+        control-plane restart/cutover mid-turn kills the watcher before it
+        can settle: the record strands ``running`` (409s turn_in_progress,
+        blocks publish) until the reaper's stale rule marks the session
+        ``lost`` and tears the sandbox down — ledger truth never lands.
+
+        Reconcile converges the durable truth first: the evidence is folded
+        through the same path a live watcher takes, so a provider success
+        lands a durable FINISHED run, the agent returns to idle with its
+        sandbox kept alive and publish-ready, and a real provider failure
+        records ERROR instead of drifting to ``lost``.
+
+        Returns False when the turn is not eligible (no running claim on
+        ``turns/<n>``, a live watcher owns it in this process, or no terminal
+        evidence exists yet) — callers fall back to the recorded state.
+        """
+        with self._lock:
+            rec = self.store.get(session_id)
+            if (
+                rec is None
+                or rec.status != "running"
+                or rec.current_turn_n != n
+                or session_id in self._live
+            ):
+                return False
+        handle, payload = self._read_turn_payload(session_id, n)
+        if not isinstance(payload, dict):
+            return False
+        self._settle_turn(session_id, f"turn-{n}", n, handle, payload)
+        return True
+
+    def reconcile_turns(self) -> list[str]:
+        """Sweep every running session whose in-flight turn lost its watcher.
+
+        A fresh control plane (restart, or the reaper cron building its own
+        app) has an empty ``_live`` map, so every claimed running record is
+        a candidate; only sessions with terminal turn evidence settle. Runs
+        on the store only — sandbox reads stay per-record in
+        ``reconcile_turn`` so one wedged sandbox cannot stall the sweep.
+        """
+        with self._lock:
+            candidates = [
+                (rec.id, int(rec.current_turn_n))
+                for rec in self.store.list_all()
+                if rec.status == "running"
+                and rec.current_turn_n is not None
+                and rec.id not in self._live
+            ]
+        return [session_id for session_id, n in candidates if self.reconcile_turn(session_id, n)]
+
+    def _read_turn_payload(
+        self, session_id: str, n: int
+    ) -> tuple[SandboxHandle | None, dict[str, Any] | None]:
         # Phase 1 (locked): snapshot the live handle only. Everything after
         # this — the backend evidence read and the contract verdict — runs
-        # unlocked, so untrusted work can strand this watcher thread but
-        # never the whole control plane (SOR-130 review).
+        # unlocked, so untrusted work can strand this caller but never the
+        # whole control plane (SOR-130 review).
         with self._lock:
             rec = self.store.get(session_id)
             handle = rec.handle() if rec is not None else None
@@ -728,6 +787,16 @@ class ControlPlane:
                 # unreadable — the ledger persist below records it as
                 # ERROR, never success.
                 payload = None
+        return handle, payload
+
+    def _settle_turn(
+        self,
+        session_id: str,
+        turn_id: str,
+        n: int,
+        handle: SandboxHandle | None,
+        payload: dict[str, Any] | None,
+    ) -> None:
         # Phase 2 (unlocked): judge the evidence. apply_output_contract is
         # pure and budget-bounded; the backstop keeps even an unforeseen
         # failure diagnosable instead of wedging the run open.
@@ -778,14 +847,22 @@ class ControlPlane:
                 else None
             )
         # Phase 3 (locked): fold the evidence into the session record and
-        # persist the terminal outcome. finish() is monotonic, so a cancel
+        # persist the terminal outcome. Only the holder of the turn's
+        # ``current_turn_id`` claim folds — a reconcile settling the same
+        # evidence as a live watcher elsewhere, or a watcher whose turn was
+        # cancelled/closed mid-flight, must not merge usage or append the
+        # assistant message twice. finish() is monotonic, so a cancel
         # recorded by a concurrent stop()/close() still wins over this late
         # success — the verdict computed unlocked cannot resurrect a run.
         with self._lock:
             rec = self.store.get(session_id)
-            active = rec is not None and rec.status not in TERMINAL_STATUSES
+            claimed = (
+                rec is not None
+                and rec.status not in TERMINAL_STATUSES
+                and rec.current_turn_id == turn_id
+            )
             now = self.clock()
-            if active and payload is not None:
+            if claimed and payload is not None:
                 # The turn payload is sandbox-written evidence: corrupt
                 # fields degrade individually, they never wedge the finish.
                 try:
@@ -800,7 +877,7 @@ class ControlPlane:
                 except (TypeError, ValueError):
                     rec.turns = max(rec.turns, n)
                 message = payload.get("message") or ""
-                if message and rec.current_turn_id == turn_id:
+                if message:
                     rec.messages.append(
                         {
                             "role": "assistant",
@@ -809,10 +886,9 @@ class ControlPlane:
                             "ts": iso(now),
                         }
                     )
-            if active:
-                if rec.current_turn_id == turn_id:
-                    rec.current_turn_id = None
-                    rec.current_turn_n = None
+            if claimed:
+                rec.current_turn_id = None
+                rec.current_turn_n = None
                 if rec.status == "running":
                     rec.status = "idle"
                 rec.updated_at = now
@@ -833,6 +909,25 @@ class ControlPlane:
                     contract_result=contract_result,
                 )
             self._live.pop(session_id, None)
+        if claimed:
+            # A completed turn may have committed workspace changes; refresh
+            # the recorded head while the sandbox is still readable so the
+            # durable record stays publish-ready.
+            self._refresh_workspace_head(session_id, handle)
+
+    def _refresh_workspace_head(self, session_id: str, handle: SandboxHandle | None) -> None:
+        workspaces = self.workspaces
+        if workspaces is None or handle is None:
+            return
+        try:
+            record = workspaces.get(session_id)
+            if record is None or not record.prepared:
+                return
+            workspaces.refresh_head(handle, session_id)
+        except Exception:
+            # Best-effort: an absent/unprepared workspace or a dead sandbox
+            # must never wedge finalization — publish re-reads HEAD anyway.
+            pass
 
     def stop(self, session_id: str) -> str:
         with self._lock:

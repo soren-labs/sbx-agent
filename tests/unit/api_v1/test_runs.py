@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import time
+
+from control.sandbox_io import write_file
 from tests.unit.api_v1.conftest import create_agent, wait_run
 
 
@@ -116,3 +120,71 @@ class TestCancel:
         agent = create_agent(client, auth)["agent"]
         run = wait_run(client, auth, agent["id"], "run-1")
         assert run["status"] == "ERROR"
+
+
+class TestReconcileOnRead:
+    """SOR-139: GET reconciles a watcher-less turn from sandbox evidence."""
+
+    def test_stranded_success_renders_finished_and_agent_idle(
+        self, client, auth, v1_env, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("FAKE_CODEX_SCENARIO", "slow")
+        monkeypatch.setenv("FAKE_CODEX_SLOW_SECONDS", "60")
+        agent = create_agent(client, auth)["agent"]
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            rec = v1_env.store.get(agent["id"])
+            if rec is not None and rec.status == "running":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("run-1 never dispatched")
+
+        # The watcher is gone (control-plane cutover) but the provider wrote
+        # its terminal turn record — the durable evidence a success finished.
+        live = v1_env.app.state.plane._live.pop(agent["id"], None)
+        write_file(
+            v1_env.backend,
+            rec.handle(),
+            "turns/1.json",
+            json.dumps(
+                {
+                    "n": 1,
+                    "status": "success",
+                    "exit_code": 0,
+                    "duration_s": 1.0,
+                    "usage": {"input_tokens": 5, "output_tokens": 2},
+                    "message": "reconciled!",
+                    "error": None,
+                }
+            ),
+        )
+
+        resp = client.get(f"/v1/agents/{agent['id']}/runs/run-1", headers=auth)
+        assert resp.status_code == 200
+        run = resp.json()
+        assert run["status"] == "FINISHED"
+        assert run["result"]["text"] == "reconciled!"
+        rec = v1_env.store.get(agent["id"])
+        assert rec.status == "idle"
+        assert rec.current_turn_n is None
+        # Cleanup: the slow stub turn is still in flight.
+        if live is not None:
+            live.proc.kill()
+
+    def test_stranded_without_evidence_stays_running(self, client, auth, v1_env) -> None:
+        agent = create_agent(client, auth)["agent"]
+        wait_run(client, auth, agent["id"], "run-1")
+        rec = v1_env.store.get(agent["id"])
+        # Fabricate a claimed running state with no turns/<n>.json evidence:
+        # reconcile declines and the persisted RUNNING record stands.
+        rec.status = "running"
+        rec.current_turn_id = "turn-2"
+        rec.current_turn_n = 2
+        v1_env.store.put(rec)
+        v1_env.app.state.run_ledger.begin(agent_id=agent["id"], n=2, status="RUNNING")
+
+        run = client.get(f"/v1/agents/{agent['id']}/runs/run-2", headers=auth).json()
+        assert run["status"] == "RUNNING"
+        rec = v1_env.store.get(agent["id"])
+        assert rec.status == "running"

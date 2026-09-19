@@ -74,6 +74,15 @@ def reap_cron() -> None:
     web = create_app()
     plane = web.state.plane
     v1_state = getattr(web.state, "v1_state", None)
+    # SOR-139: the cron's fresh plane has no in-process watchers, so every
+    # running record looks stranded to the stale rule. Reconcile first:
+    # watcher-less turns with provider evidence settle to their durable
+    # outcome (FINISHED/idle/sandbox kept) instead of being marked lost and
+    # torn down once run_grace_s elapses.
+    try:
+        plane.reconcile_turns()
+    except Exception:
+        pass
     reap(
         plane.store,
         plane.backend,
