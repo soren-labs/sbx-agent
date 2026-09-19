@@ -358,3 +358,65 @@ def test_doctor_reports_github_bridge_without_secret(tmp_path) -> None:
     assert "SBX_GITHUB_EPHEMERAL" in (gh.hint or "")
     blob = "\n".join(f"{c.name} {c.detail} {c.hint}" for c in checks)
     assert "REDACTED_GITHUB" not in blob
+
+
+def test_doctor_requires_persisted_github_secret(tmp_path) -> None:
+    """SOR-133: a file-armed bridge naming a Modal Secret gets the same
+    required-presence check deploy enforces — doctor flags what deploy
+    fails on."""
+    env = make_env(tmp_path)
+    token = generate_key()
+    load_or_create_key(key_path(env))
+    key_path(env).write_text(token + "\n")
+    plane = FakePlane()
+    plane.secrets["sbx-basic-auth"] = {"SBX_BASIC_USER": "sbx", "SBX_BASIC_PASS": "x"}
+    plane.secrets["sbx-v1-bootstrap"] = {"SBX_V1_BOOTSTRAP_KEY": token}
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    for name in (
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    ):
+        plane.dicts[name] = {}
+    plane.apps["sbx-control"] = "https://ws-test--sbx-control-fastapi-app.modal.run"
+    config = BootstrapConfig(
+        api_base_url=plane.apps["sbx-control"],
+        github_bridge=True,
+        github_secret_name="sbx-github",
+    )
+    cfg = make_cfg(tmp_path, env=env, config=config)
+    transport, _ = make_v1(token=token)
+
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    gh_secret = next(c for c in checks if c.name == "secret:sbx-github")
+    assert gh_secret in failed(checks)
+
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    gh_secret = next(c for c in checks if c.name == "secret:sbx-github")
+    assert gh_secret.ok
+    gh = next(c for c in checks if c.name == "github")
+    assert gh.ok and "sbx-github" in gh.detail
+    blob = "\n".join(f"{c.name} {c.detail} {c.hint}" for c in checks)
+    assert "REDACTED_GITHUB" not in blob
+
+
+def test_doctor_github_check_reflects_env_disarm(tmp_path) -> None:
+    """SBX_GITHUB_EPHEMERAL=0 disarms a file-persisted bridge — the advisory
+    and the Secret requirement both follow the resolved value."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    save = BootstrapConfig(
+        api_base_url=cfg.config.api_base_url,
+        github_bridge=True,
+        github_secret_name="sbx-github",
+    )
+    env = {**env, "SBX_GITHUB_EPHEMERAL": "0"}
+    cfg = make_cfg(tmp_path, env=env, config=save)
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    gh = next(c for c in checks if c.name == "github")
+    assert gh.ok  # neutral: bridge off, nothing detected
+    assert all(c.name != "secret:sbx-github" for c in checks)

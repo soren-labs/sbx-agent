@@ -21,6 +21,7 @@ from pathlib import Path
 from sbx.config import (
     BootstrapConfig,
     ResolvedConfig,
+    load,
     load_file_values,
     save,
     state_dir,
@@ -53,6 +54,8 @@ def _merge_flags(
     app_name: str | None,
     base_url: str | None,
     providers: tuple[str, ...] | None,
+    github_bridge: bool | None,
+    github_secret_name: str | None,
 ) -> BootstrapConfig:
     overrides = {}
     if profile is not None:
@@ -63,6 +66,13 @@ def _merge_flags(
         overrides["api_base_url"] = base_url
     if providers is not None:
         overrides["providers"] = providers
+    # SOR-133: tri-state — None preserves the file value; an explicit flag
+    # (incl. `--no-github-bridge`) overwrites it. An empty `--github-secret-name`
+    # clears a persisted name.
+    if github_bridge is not None:
+        overrides["github_bridge"] = github_bridge
+    if github_secret_name is not None:
+        overrides["github_secret_name"] = github_secret_name or None
     return replace(base, **overrides) if overrides else base
 
 
@@ -75,6 +85,8 @@ def init(
     app_name: str | None = None,
     base_url: str | None = None,
     providers: tuple[str, ...] | None = None,
+    github_bridge: bool | None = None,
+    github_secret_name: str | None = None,
     verify: bool = False,
     allow_open_permissions: bool = False,
     auth_check: Callable[[str, Path], str] | None = None,
@@ -91,8 +103,13 @@ def init(
         app_name=app_name,
         base_url=base_url,
         providers=providers,
+        github_bridge=github_bridge,
+        github_secret_name=github_secret_name,
     )
     save(merged, cfg.path, env=env)
+    # Re-resolve post-write so the advisory github check reports what was
+    # actually persisted, with env overrides still winning at run time.
+    resolved = load(cfg.path, env=env)
 
     state_dir(env).mkdir(parents=True, exist_ok=True)
 
@@ -121,8 +138,15 @@ def init(
                 auth,
                 check_provider_config(merged.providers),
                 *(s.to_check() for s in scans),
-                # SOR-117: advisory GitHub-bridge detection (gh probe under --verify).
-                check_github(env, verify=verify),
+                # SOR-117/SOR-133: advisory GitHub-bridge detection against
+                # the just-persisted (and env-overridden) bridge config; the
+                # ``gh auth status`` probe still only runs under --verify.
+                check_github(
+                    env,
+                    verify=verify,
+                    enabled=resolved.config.github_bridge,
+                    secret_name=resolved.config.github_secret_name,
+                ),
             ]
         ),
         config_path=cfg.path,

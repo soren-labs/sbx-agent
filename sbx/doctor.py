@@ -334,6 +334,13 @@ def run_doctor(
             if name == config.codex_secret and "codex" not in config.providers:
                 continue
             checks.append(check_secret_present(name in secret_names, name))
+        # SOR-133: the operator-managed GitHub bridge Secret is not in
+        # ``secret_names()`` (uninstall must never sweep it) — but when the
+        # resolved config arms the bridge and names it, deploy requires it,
+        # so doctor flags the same missing prerequisite.
+        if config.github_bridge and config.github_secret_name:
+            named = config.github_secret_name
+            checks.append(check_secret_present(named in secret_names, named))
         for name in config.dict_names():
             try:
                 present = plane.has_dict(name)
@@ -378,9 +385,17 @@ def run_doctor(
     ):
         checks.append(scan.to_check())
 
-    # Optional GitHub bridge (SOR-117): advisory detection — never prints a
-    # token; the ``gh auth status`` probe only runs under --verify.
-    checks.append(check_github(env, verify=verify))
+    # Optional GitHub bridge (SOR-117/SOR-133): advisory detection driven by
+    # the resolved config — never prints a token; the ``gh auth status``
+    # probe only runs under --verify.
+    checks.append(
+        check_github(
+            env,
+            verify=verify,
+            enabled=config.github_bridge,
+            secret_name=config.github_secret_name,
+        )
+    )
 
     # Same resolution order as `sbx status`: configured URL, else the last
     # deployed URL recorded in the state dir.

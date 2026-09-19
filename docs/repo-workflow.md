@@ -111,9 +111,20 @@ export SBX_GITHUB_EPHEMERAL=1 SBX_GITHUB_SECRET_NAME=sbx-github
 uv run sbx deploy
 ```
 
+- SOR-133: instead of exporting the gate + name in every shell, persist them
+  once — `sbx init --github-bridge --github-secret-name sbx-github` writes
+  `[github] enabled = true / secret_name = "sbx-github"` into `config.toml`,
+  and `sbx deploy` / `sbx upgrade` replay it. Env vars still override the
+  file, so `SBX_GITHUB_EPHEMERAL=0 sbx deploy` disarms for one run; `sbx
+  init --no-github-bridge` clears the persisted gate. Only the Secret name
+  is stored — never token material. `sbx uninstall --purge-credentials`
+  never deletes the named Secret (it is operator-managed, possibly shared).
 - `sbx init` / `sbx doctor` print an advisory `github` check: which auth
   source exists (the `GH_TOKEN`/`GITHUB_TOKEN` var name, or `gh auth status`
-  under `--verify`) and whether the gate is armed — never token material.
+  under `--verify`), whether the gate is armed (env or file), and the named
+  Secret — never token material. `sbx status` prints the same resolved
+  state; `sbx doctor` fails `secret:<name>` when the named Secret is
+  missing, matching `sbx deploy`'s preflight.
 
 **Least privilege:** prefer a fine-grained PAT or GitHub App token scoped to
 the repositories agents work on — `Contents: read/write`, plus

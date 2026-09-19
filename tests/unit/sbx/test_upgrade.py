@@ -59,6 +59,50 @@ def test_upgrade_unreadable_store_aborts_before_deploy(tmp_path) -> None:
     assert plane.deploy_calls == 0  # nothing was touched
 
 
+def test_upgrade_carries_persisted_github_bridge(tmp_path) -> None:
+    """SOR-133: a file-persisted bridge (github.enabled + secret_name) rides
+    the upgrade's deploy — the remote gate + Secret mount are replayed and
+    the named Secret is preflighted exactly like `sbx deploy`."""
+    from sbx.config import BootstrapConfig
+
+    plane = FakePlane()
+    cfg, env = _deployed(tmp_path, plane)
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+    )
+    transport, _ = make_v1()
+    report = upgrade(
+        cfg, plane, env=env, transport=transport, sleep=lambda s: None, version="0.1.1"
+    )
+    assert any(s.name == "secret:github" for s in report.deploy.steps)
+    assert plane.deploy_env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert plane.deploy_env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
+
+
+def test_upgrade_missing_github_secret_aborts_before_write(tmp_path) -> None:
+    """Same fail-before-write contract as deploy: armed + named but absent
+    Secret → the app deploy and Secret writes never happen."""
+    from sbx.config import BootstrapConfig
+
+    plane = FakePlane()
+    cfg, env = _deployed(tmp_path, plane)
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+    )
+    transport, _ = make_v1()
+    with pytest.raises(BootstrapError) as exc:
+        upgrade(cfg, plane, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "secret_missing"
+    assert "sbx-github" in str(exc.value)
+    assert plane.secret_create_calls == 0
+    assert plane.deploy_calls == 0
+
+
 def test_upgrade_detects_key_loss(tmp_path, monkeypatch) -> None:
     plane = FakePlane()
     cfg, env = _deployed(tmp_path, plane)

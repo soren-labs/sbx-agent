@@ -151,6 +151,66 @@ def test_credentials_verify_reports_status(tmp_path, capsys, monkeypatch) -> Non
     assert payload["credentials"][0]["status"] == "verified"
 
 
+def test_init_github_flags_persist_via_cli(tmp_path, capsys) -> None:
+    """SOR-133: `sbx init --github-bridge --github-secret-name` writes the
+    [github] section; a later plain `init` keeps it, and `config` shows it."""
+    rc = main(
+        [*_args(tmp_path), "init", "--github-bridge", "--github-secret-name", "sbx-github"],
+        plane=FakePlane(),
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "github" in out
+
+    from sbx.config import load
+
+    path = tmp_path / "config.toml"
+    resolved = load(path, env={}).config
+    assert resolved.github_bridge is True
+    assert resolved.github_secret_name == "sbx-github"
+    text = path.read_text()
+    assert "enabled = true" in text and 'secret_name = "sbx-github"' in text
+
+    rc = main([*_args(tmp_path), "init"], plane=FakePlane())
+    assert rc == 0
+    capsys.readouterr()
+    resolved = load(path, env={}).config
+    assert resolved.github_bridge is True  # flags absent → file value kept
+
+    rc = main(
+        [*_args(tmp_path), "init", "--no-github-bridge", "--github-secret-name", ""],
+        plane=FakePlane(),
+    )
+    assert rc == 0
+    capsys.readouterr()
+    resolved = load(path, env={}).config
+    assert resolved.github_bridge is False
+    assert resolved.github_secret_name is None
+
+
+def test_status_reports_github_bridge(tmp_path, capsys) -> None:
+    """status surfaces persisted enablement + the Secret name — never a token."""
+    from sbx.config import BootstrapConfig, save
+
+    save(
+        BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+        tmp_path / "config.toml",
+    )
+    write_state(tmp_path, {"version": "0.1.0", "app_url": "https://x.modal.run"})
+    rc = main([*_args(tmp_path), "status", "--json"], plane=FakePlane())
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    bridge = payload["github_bridge"]
+    assert bridge["enabled"] is True
+    assert bridge["secret_name"] == "sbx-github"
+    assert bridge["token_env"] is None  # no GH_TOKEN/GITHUB_TOKEN in env
+
+    rc = main([*_args(tmp_path), "status"], plane=FakePlane())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "github:    enabled — Modal Secret sbx-github" in out
+
+
 def test_error_is_machine_readable(tmp_path, capsys) -> None:
     rc = main(
         [*_args(tmp_path), "deploy", "--json"],

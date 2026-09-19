@@ -85,6 +85,8 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         app_name=args.app_name,
         base_url=args.base_url,
         providers=_providers_arg(args.providers),
+        github_bridge=getattr(args, "github_bridge", None),
+        github_secret_name=getattr(args, "github_secret_name", None),
         verify=args.verify,
         allow_open_permissions=args.allow_open_permissions,
         auth_check=args.auth_check,
@@ -175,16 +177,21 @@ def cmd_config(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         return 0
     print(f"config: {cfg.path} ({'file' if cfg.file_exists else 'defaults only'})")
     for name, value, source in rows:
-        rendered = (
-            ",".join(value)
-            if isinstance(value, tuple)
-            else ((str(value) or "-") if value is not None else "-")
-        )
+        if isinstance(value, tuple):
+            rendered = ",".join(value)
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif value is not None:
+            rendered = str(value) or "-"
+        else:
+            rendered = "-"
         print(f"  {name} = {rendered}   ({source})")
     return 0
 
 
 def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    from control.github import token_source
+
     from sbx.deploy import read_deploy_state
     from sbx.doctor import live_agent_count, provider_summaries
     from sbx.httpapi import V1Client
@@ -208,6 +215,13 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         except Exception:
             providers = "unreachable"
     cap = cfg.config.max_concurrent
+    # SOR-133: persisted bridge state — enablement + Secret *name* + which
+    # env var carries a token (name only, never the value).
+    github = {
+        "enabled": cfg.config.github_bridge,
+        "secret_name": cfg.config.github_secret_name,
+        "token_env": token_source(env),
+    }
     payload = {
         "config_path": str(cfg.path),
         "config_exists": cfg.file_exists,
@@ -219,6 +233,7 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         "providers": providers,
         "live_agents": live_agents,
         "concurrency_cap": cap,
+        "github_bridge": github,
     }
     if args.json:
         _emit_json(payload)
@@ -237,6 +252,17 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     else:
         agents_line = f"{live_agents} live (SBX_MAX_CONCURRENT unset — remote defaults apply)"
     print(f"agents:    {agents_line}")
+    if not github["enabled"]:
+        gh_line = "disabled"
+    elif github["secret_name"]:
+        gh_line = f"enabled — Modal Secret {github['secret_name']}"
+    elif github["token_env"]:
+        gh_line = f"enabled — token from {github['token_env']}"
+    else:
+        gh_line = "enabled — no GH_TOKEN/GITHUB_TOKEN or named Secret"
+    if github["enabled"] and github["token_env"] and github["secret_name"]:
+        gh_line += f" (+ {github['token_env']} in env)"
+    print(f"github:    {gh_line}")
     return 0
 
 
@@ -483,6 +509,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-open-permissions",
         action="store_true",
         help="accept credential files readable by group/other",
+    )
+    gh = p.add_mutually_exclusive_group()
+    gh.add_argument(
+        "--github-bridge",
+        dest="github_bridge",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="persist GitHub bridge enablement (github.enabled) — sandboxes get "
+        "GH_TOKEN/GITHUB_TOKEN + a github.com credential helper",
+    )
+    gh.add_argument(
+        "--no-github-bridge",
+        dest="github_bridge",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help="persist the GitHub bridge as disabled",
+    )
+    p.add_argument(
+        "--github-secret-name",
+        dest="github_secret_name",
+        default=argparse.SUPPRESS,
+        metavar="NAME",
+        help="Modal Secret holding GH_TOKEN for the deployed app "
+        "(github.secret_name; pass '' to clear)",
     )
     p.set_defaults(func=cmd_init)
 

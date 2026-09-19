@@ -136,6 +136,71 @@ def test_deploy_env_forwards_provider_set() -> None:
     assert env["SBX_PROVIDERS"] == "codex,devin"
 
 
+def test_github_bridge_roundtrip_and_env_override(tmp_path) -> None:
+    """SOR-133: github.enabled + github.secret_name persist as file values;
+    SBX_GITHUB_EPHEMERAL / SBX_GITHUB_SECRET_NAME still override."""
+    save(
+        BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+        tmp_path / "c.toml",
+    )
+    text = (tmp_path / "c.toml").read_text()
+    assert "[github]" in text and "enabled = true" in text
+    assert 'secret_name = "sbx-github"' in text
+
+    cfg = load(tmp_path / "c.toml", env={})
+    assert cfg.config.github_bridge is True
+    assert cfg.config.github_secret_name == "sbx-github"
+    assert cfg.sources["github_bridge"] == "file"
+    assert cfg.sources["github_secret_name"] == "file"
+
+    # env wins over file in both directions
+    cfg = load(
+        tmp_path / "c.toml",
+        env={"SBX_GITHUB_EPHEMERAL": "0", "SBX_GITHUB_SECRET_NAME": "other"},
+    )
+    assert cfg.config.github_bridge is False
+    assert cfg.config.github_secret_name == "other"
+    assert cfg.sources["github_bridge"] == "env"
+
+    cfg = load(tmp_path / "missing.toml", env={"SBX_GITHUB_EPHEMERAL": "1"})
+    assert cfg.config.github_bridge is True
+    assert cfg.sources["github_bridge"] == "env"
+
+
+def test_github_bridge_defaults_off_and_unset_secret_stays_absent(tmp_path) -> None:
+    cfg = load(tmp_path / "missing.toml", env={})
+    assert cfg.config.github_bridge is False
+    assert cfg.config.github_secret_name is None
+    env = BootstrapConfig().deploy_env()
+    assert "SBX_GITHUB_EPHEMERAL" not in env
+    assert "SBX_GITHUB_SECRET_NAME" not in env
+
+
+def test_github_bridge_reaches_deploy_env(tmp_path) -> None:
+    """The remote gate only reads "1"; the resolved bool is replayed as such."""
+    env = BootstrapConfig(github_bridge=True, github_secret_name="sbx-github").deploy_env()
+    assert env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
+    # armed without a named Secret still replays the gate (local-token path)
+    env = BootstrapConfig(github_bridge=True).deploy_env()
+    assert env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert "SBX_GITHUB_SECRET_NAME" not in env
+
+
+@pytest.mark.parametrize("flag", ["0", "true", "yes", "off", "2"])
+def test_github_gate_keeps_strict_spelling(tmp_path, flag) -> None:
+    """The config layer resolves to the remote gate's contract: only "1"
+    (or TOML `true`) arms it — anything else is off."""
+    cfg = load(tmp_path / "missing.toml", env={"SBX_GITHUB_EPHEMERAL": flag})
+    assert cfg.config.github_bridge is False
+
+
+def test_github_secret_name_never_holds_token_material(tmp_path) -> None:
+    """The file stores a Secret *name*; an empty flag/file value clears it."""
+    cfg = load(tmp_path / "missing.toml", env={"SBX_GITHUB_SECRET_NAME": ""})
+    assert cfg.config.github_secret_name is None
+
+
 def test_validate_providers_accepts_known_set() -> None:
     validate_providers(("codex",))
     validate_providers(("devin", "grok"))

@@ -152,35 +152,56 @@ def check_github(
     verify: bool = False,
     runner: Callable[..., Any] | None = None,
     which: Callable[[str], str | None] | None = None,
+    enabled: bool | None = None,
+    secret_name: str | None = None,
 ) -> Check:
-    """Optional GitHub auth bridge (SOR-117): advisory detection only.
+    """Optional GitHub auth bridge (SOR-117/SOR-133): advisory detection only.
 
     Reports which auth source exists (``GH_TOKEN``/``GITHUB_TOKEN`` env var
-    name, ``gh auth status`` under ``verify``) and whether the
-    ``SBX_GITHUB_EPHEMERAL`` opt-in is armed — never token material. Always
-    warn-or-ok: the GitHub-less path is fully supported.
+    name, ``gh auth status`` under ``verify``) and whether the bridge is
+    armed — never token material. Always warn-or-ok: the GitHub-less path is
+    fully supported.
+
+    ``enabled``/``secret_name`` carry the *resolved* config (file → env →
+    default). When omitted, the ambient env (``SBX_GITHUB_EPHEMERAL`` /
+    ``SBX_GITHUB_SECRET_NAME``) is read directly.
     """
     env = os.environ if env is None else env
     kwargs: dict[str, Any] = {"probe_gh": verify, "which": which}
     if runner is not None:
         kwargs["runner"] = runner
     det = gh.detect(env, **kwargs)
-    if det.opted_in:
+    armed = det.opted_in if enabled is None else enabled
+    secret = secret_name if secret_name is not None else (env.get("SBX_GITHUB_SECRET_NAME") or None)
+    gate = "SBX_GITHUB_EPHEMERAL=1" if det.opted_in else "github.enabled=true"
+    if armed:
         if det.token_env:
+            via = f"; Modal Secret {secret} mounts on the deployed app" if secret else ""
             return Check(
                 name="github",
                 ok=True,
-                detail=f"{det.token_env} detected; SBX_GITHUB_EPHEMERAL=1 — sandboxes "
-                "get GH_TOKEN/GITHUB_TOKEN + a github.com credential helper",
+                detail=f"{det.token_env} detected; bridge armed ({gate}) — sandboxes "
+                f"get GH_TOKEN/GITHUB_TOKEN + a github.com credential helper{via}",
+            )
+        if secret:
+            return Check(
+                name="github",
+                ok=True,
+                detail=f"bridge armed ({gate}); Modal Secret {secret} supplies the "
+                "token to the deployed app",
+                hint="a local control plane (SBX_BACKEND=local) still needs GH_TOKEN "
+                "in its own env — the named Secret only mounts remotely",
             )
         return Check(
             name="github",
             ok=False,
             warn=True,
-            detail="SBX_GITHUB_EPHEMERAL=1 but no GH_TOKEN/GITHUB_TOKEN in the env",
+            detail=f"bridge armed ({gate}) but no GH_TOKEN/GITHUB_TOKEN in the env "
+            "and no github.secret_name configured",
             hint="export GH_TOKEN (or `export GH_TOKEN=$(gh auth token)` when the gh "
             "CLI is logged in); for a remote deploy, name a Modal Secret via "
-            "SBX_GITHUB_SECRET_NAME instead — or unset SBX_GITHUB_EPHEMERAL",
+            "`sbx init --github-secret-name` / SBX_GITHUB_SECRET_NAME — or disarm "
+            "the bridge (`sbx init --no-github-bridge`)",
         )
     if det.token_env:
         return Check(
@@ -188,7 +209,8 @@ def check_github(
             ok=False,
             warn=True,
             detail=f"{det.token_env} detected — sandbox GitHub injection is off",
-            hint="export SBX_GITHUB_EPHEMERAL=1 to inject it into sandboxes "
+            hint="arm the bridge with `sbx init --github-bridge` or export "
+            "SBX_GITHUB_EPHEMERAL=1 to inject it into sandboxes "
             "(private-repo clone/push/PR on github.com)",
         )
     if det.gh_authenticated:
@@ -197,7 +219,8 @@ def check_github(
             ok=False,
             warn=True,
             detail="gh CLI is authenticated — no GH_TOKEN/GITHUB_TOKEN exported",
-            hint="export GH_TOKEN=$(gh auth token) and SBX_GITHUB_EPHEMERAL=1 to "
+            hint="export GH_TOKEN=$(gh auth token) and arm the bridge "
+            "(`sbx init --github-bridge` or SBX_GITHUB_EPHEMERAL=1) to "
             "enable sandbox GitHub auth",
         )
     tail = ""

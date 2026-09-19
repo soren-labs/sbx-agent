@@ -284,6 +284,40 @@ def test_deploy_github_gate_alone_needs_no_secret(tmp_path) -> None:
     assert all(s.name != "secret:github" for s in report.steps)
 
 
+def test_deploy_github_bridge_persisted_in_config(tmp_path) -> None:
+    """SOR-133: a file-persisted bridge (github.enabled + github.secret_name)
+    drives the same fail-before-write preflight as the env vars — no env
+    needed in the deploy shell."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    config = BootstrapConfig(github_bridge=True, github_secret_name="sbx-github")
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, config=config)
+    assert exc.value.code == "secret_missing"
+    assert "sbx-github" in str(exc.value)
+    assert plane.secret_create_calls == 0
+
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    report, _, _ = _deploy(tmp_path, plane, config=config)
+    assert any(s.name == "secret:github" for s in report.steps)
+    # The resolved gate + Secret name are replayed into the deploy subprocess
+    # env so the remote app mounts the Secret and arms the bridge.
+    assert plane.deploy_env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert plane.deploy_env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
+
+
+def test_deploy_github_env_disarms_persisted_bridge(tmp_path) -> None:
+    """SBX_GITHUB_EPHEMERAL=0 in the deploy shell overrides a file-persisted
+    github.enabled=true — the preflight never runs."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "0"})
+    config = BootstrapConfig(github_bridge=True, github_secret_name="sbx-github")
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=config)
+    assert all(s.name != "secret:github" for s in report.steps)
+    assert "SBX_GITHUB_EPHEMERAL" not in plane.deploy_env
+
+
 def test_deploy_unknown_provider_fails_before_any_write(tmp_path) -> None:
     plane = FakePlane()
     with pytest.raises(BootstrapError) as exc:

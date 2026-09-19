@@ -176,3 +176,47 @@ def test_init_reports_github_bridge_advisory(tmp_path) -> None:
     report = init_mod.init(cfg, FakePlane(), env=env)
     gh = next(c for c in report.checks if c.name == "github")
     assert gh.ok  # nothing detected: advisory-neutral, not a failure
+
+
+def test_init_persists_github_bridge_flags(tmp_path) -> None:
+    """SOR-133: --github-bridge/--github-secret-name write [github] into the
+    config file; the advisory check reports the persisted state."""
+    env = make_env(tmp_path)
+    cfg = make_cfg(tmp_path, env=env, write=False)
+    report = init_mod.init(
+        cfg, FakePlane(), env=env, github_bridge=True, github_secret_name="sbx-github"
+    )
+    reloaded = load(tmp_path / "config.toml", env={}).config
+    assert reloaded.github_bridge is True
+    assert reloaded.github_secret_name == "sbx-github"
+    gh = next(c for c in report.checks if c.name == "github")
+    assert gh.ok and "sbx-github" in gh.detail
+
+
+def test_init_github_flags_clear_persisted_values(tmp_path) -> None:
+    env = make_env(tmp_path)
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+    )
+    init_mod.init(cfg, FakePlane(), env=env, github_bridge=False, github_secret_name="")
+    reloaded = load(tmp_path / "config.toml", env={}).config
+    assert reloaded.github_bridge is False
+    assert reloaded.github_secret_name is None
+    text = (tmp_path / "config.toml").read_text()
+    assert "enabled = false" in text and "secret_name" not in text
+
+
+def test_init_github_env_override_wins_over_file(tmp_path) -> None:
+    """An armed env gate beats a persisted disabled value — the advisory
+    check reports the env-resolved state, not just the file."""
+    env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "1", "GH_TOKEN": "REDACTED_GITHUB"})
+    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig(github_bridge=False))
+    report = init_mod.init(cfg, FakePlane(), env=env)
+    gh = next(c for c in report.checks if c.name == "github")
+    assert gh.ok and "GH_TOKEN" in gh.detail
+    assert "REDACTED_GITHUB" not in f"{gh.detail} {gh.hint}"
+    # and the env override is NOT frozen into the file
+    reloaded = load(tmp_path / "config.toml", env={}).config
+    assert reloaded.github_bridge is False
