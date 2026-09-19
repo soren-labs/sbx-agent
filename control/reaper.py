@@ -45,8 +45,11 @@ def reap(
       bound plus ``run_grace_s`` → ``lost`` (the turn watcher is
       in-process; a control-plane cutover mid-turn strands the record
       ``running`` on a live sandbox forever, holding the account slot)
-    * idle longer than ``idle_timeout_s`` and sandbox still alive → terminate + ``timed_out``
-    * record exists, sandbox gone, status was idle → ``timed_out`` (native idle_timeout)
+    * idle longer than ``idle_timeout_s`` (the post-session retention,
+      SOR-135) and sandbox still alive → terminate + ``timed_out``
+    * record exists, sandbox gone, status was idle → ``timed_out`` (native
+      ``Sandbox.create(idle_timeout=)`` fired — a separate resolved knob,
+      ``sandbox_idle_timeout_s``, that bounds a live sandbox instead)
     * record exists, sandbox gone, status was creating/running → ``lost``
     * live sandbox whose record is terminal → retry terminate (``terminal_cleanup``)
     * sandbox exists with no Dict record → terminate (``orphan_terminate``)

@@ -275,8 +275,10 @@ def create_app(
     from control.handoff import HandoffService
     from control.workspace import WorkspaceService
 
-    # SOR-132/SOR-134: one resolved lifecycle chain — the values here are
-    # the same ones the reaper and ``Sandbox.create`` resolve.
+    # SOR-132/SOR-134 + SOR-135: one resolved lifecycle chain — the values
+    # here are the same ones the reaper and ``Sandbox.create`` resolve
+    # (``plane.idle_timeout_s`` is the post-session retention only; the
+    # sandbox's native bound is ``lifecycle.sandbox_idle_timeout_s``).
     lifecycle = lifecycle_config()
     workspaces = WorkspaceService(backend, workspace_store, clock=clock)
     handoffs = HandoffService(workspaces, HandoffStoreView(artifact_store))

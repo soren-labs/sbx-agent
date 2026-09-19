@@ -85,7 +85,14 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     # (``deploy_env`` → ``remote_env_overlay``), so the reaper, the
     # runner's ``--max-seconds``, and ``Sandbox.create``'s native timers
     # all agree instead of drifting back to contract defaults.
+    # SOR-135: ``idle_timeout_s`` is the post-session idle retention only;
+    # ``sandbox_idle_timeout_s`` is the native ``Sandbox.create`` bound —
+    # two deliberately separate knobs, never one value feeding both.
     "idle_timeout_s": (("deploy", "idle_timeout_s"), ("SBX_IDLE_TIMEOUT_S",)),
+    "sandbox_idle_timeout_s": (
+        ("deploy", "sandbox_idle_timeout_s"),
+        ("SBX_SANDBOX_IDLE_TIMEOUT_S",),
+    ),
     "turn_max_seconds": (("deploy", "turn_max_seconds"), ("SBX_TURN_MAX_SECONDS",)),
     "sandbox_timeout_s": (("deploy", "sandbox_timeout_s"), ("SBX_SANDBOX_TIMEOUT_S",)),
     "create_grace_s": (("deploy", "create_grace_s"), ("SBX_CREATE_GRACE_S",)),
@@ -99,6 +106,7 @@ _POSITIVE_INT_FIELDS = frozenset(
     {
         "max_concurrent",
         "idle_timeout_s",
+        "sandbox_idle_timeout_s",
         "turn_max_seconds",
         "sandbox_timeout_s",
         "create_grace_s",
@@ -140,11 +148,12 @@ class BootstrapConfig:
     # means "not configured" — the remote defaults apply — so it is never
     # written to config.toml or pushed into the deploy env.
     max_concurrent: int | None = None
-    # SOR-132/SOR-134 lifecycle chain, forwarded as SBX_IDLE_TIMEOUT_S /
-    # SBX_TURN_MAX_SECONDS / SBX_SANDBOX_TIMEOUT_S / SBX_CREATE_GRACE_S /
-    # SBX_RUN_GRACE_S. Same ``None``-means-absent semantics as
-    # ``max_concurrent``.
+    # SOR-132/SOR-134/SOR-135 lifecycle chain, forwarded as
+    # SBX_IDLE_TIMEOUT_S / SBX_SANDBOX_IDLE_TIMEOUT_S / SBX_TURN_MAX_SECONDS
+    # / SBX_SANDBOX_TIMEOUT_S / SBX_CREATE_GRACE_S / SBX_RUN_GRACE_S. Same
+    # ``None``-means-absent semantics as ``max_concurrent``.
     idle_timeout_s: int | None = None
+    sandbox_idle_timeout_s: int | None = None
     turn_max_seconds: int | None = None
     sandbox_timeout_s: int | None = None
     create_grace_s: int | None = None
@@ -206,6 +215,7 @@ class BootstrapConfig:
             "image_opencode",
             "max_concurrent",
             "idle_timeout_s",
+            "sandbox_idle_timeout_s",
             "turn_max_seconds",
             "sandbox_timeout_s",
             "create_grace_s",

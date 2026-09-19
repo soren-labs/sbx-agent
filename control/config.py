@@ -10,7 +10,17 @@ from pathlib import Path
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 MAX_CONCURRENT = 2
-IDLE_TIMEOUT_S = 1800
+# SOR-135: post-session idle retention — how long the control plane keeps
+# an ``idle`` session's dev-cloud sandbox warm for a follow-up before the
+# reaper reclaims it (``timed_out``). Cost knob only; it is NOT the native
+# sandbox idle bound below.
+IDLE_TIMEOUT_S = 300
+# SOR-134/SOR-135: the Modal-native ``Sandbox.create(idle_timeout=...)``
+# bound — the sandbox's own inactivity kill while a session is live
+# (including mid-``running`` turn). Deliberately a separate resolved knob
+# from the post-session retention so dropping the retention to 5 min can
+# never shrink the bound a long turn depends on.
+SANDBOX_IDLE_TIMEOUT_S = 1800
 # SOR-80: a ``creating`` record without ``sandbox_id`` is an in-flight create;
 # the reaper leaves it alone for this long before declaring it ``lost``.
 CREATE_GRACE_S = 300
@@ -103,13 +113,16 @@ class LifecycleConfig:
 
     ``turn_max_seconds`` bounds one provider turn (runner ``--max-seconds``);
     ``run_stale_s`` (``turn_max_seconds + run_grace_s``) is the reaper's
-    stranded-``running`` bound; ``idle_timeout_s`` drives both the reaper
-    sweep and ``Sandbox.create(idle_timeout=...)``; ``sandbox_timeout_s``
-    is the Modal hard cap; ``create_grace_s`` is the reaper's in-flight
-    create window.
+    stranded-``running`` bound; ``idle_timeout_s`` is the post-session idle
+    retention the reaper sweep enforces (SOR-135);
+    ``sandbox_idle_timeout_s`` is the native ``Sandbox.create(idle_timeout=)``
+    bound and resolves to at least ``run_stale_s`` so it can never reclaim a
+    sandbox mid-turn (SOR-134); ``sandbox_timeout_s`` is the Modal hard cap;
+    ``create_grace_s`` is the reaper's in-flight create window.
     """
 
     idle_timeout_s: int
+    sandbox_idle_timeout_s: int
     turn_max_seconds: int
     sandbox_timeout_s: int
     create_grace_s: int
@@ -129,14 +142,24 @@ def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
 
 
 def lifecycle_config(env: Mapping[str, str] | None = None) -> LifecycleConfig:
-    """Resolve the lifecycle chain once; consumers share the result."""
+    """Resolve the lifecycle chain once; consumers share the result.
+
+    The native sandbox idle bound is floored at the stranded-``running``
+    bound (``turn_max_seconds + run_grace_s``): anything lower lets Modal
+    reclaim a sandbox out from under an in-bounds turn (SOR-134), so the
+    configured value clamps up rather than disagreeing with the reaper.
+    """
     env = os.environ if env is None else env
+    turn_max_seconds = _env_int(env, "SBX_TURN_MAX_SECONDS", TURN_MAX_SECONDS)
+    run_grace_s = _env_int(env, "SBX_RUN_GRACE_S", RUN_GRACE_S)
+    sandbox_idle = _env_int(env, "SBX_SANDBOX_IDLE_TIMEOUT_S", SANDBOX_IDLE_TIMEOUT_S)
     return LifecycleConfig(
         idle_timeout_s=_env_int(env, "SBX_IDLE_TIMEOUT_S", IDLE_TIMEOUT_S),
-        turn_max_seconds=_env_int(env, "SBX_TURN_MAX_SECONDS", TURN_MAX_SECONDS),
+        sandbox_idle_timeout_s=max(sandbox_idle, turn_max_seconds + run_grace_s),
+        turn_max_seconds=turn_max_seconds,
         sandbox_timeout_s=_env_int(env, "SBX_SANDBOX_TIMEOUT_S", SANDBOX_TIMEOUT_S),
         create_grace_s=_env_int(env, "SBX_CREATE_GRACE_S", CREATE_GRACE_S),
-        run_grace_s=_env_int(env, "SBX_RUN_GRACE_S", RUN_GRACE_S),
+        run_grace_s=run_grace_s,
     )
 
 
@@ -224,6 +247,7 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_PROVIDERS",
     "SBX_MAX_CONCURRENT",
     "SBX_IDLE_TIMEOUT_S",
+    "SBX_SANDBOX_IDLE_TIMEOUT_S",
     "SBX_TURN_MAX_SECONDS",
     "SBX_SANDBOX_TIMEOUT_S",
     "SBX_CREATE_GRACE_S",
