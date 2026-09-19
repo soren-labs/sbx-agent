@@ -849,19 +849,35 @@ class ModalDictArtifactStore:
         return data
 
     def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
+        # Enumerate keys only: ``items()`` streams every value in the Dict —
+        # all member blobs — so one list call used to download the entire
+        # store and materialize it in memory. ``keys()`` carries no values;
+        # manifests are then fetched point-wise through the same bounded
+        # pool as put/open, so a list/query costs O(#artifacts) small reads,
+        # never O(store bytes).
+        with observe("modal_dict.keys", store=self._name):
+            keys = list(self._d().keys())
+        # Artifact ids never contain "/", so ``<id>/manifest`` has exactly
+        # two segments; the ``/`` check also drops ``<id>/member/manifest``.
+        artifact_ids = [
+            key[: -len("/manifest")]
+            for key in keys
+            if isinstance(key, str)
+            and key.endswith("/manifest")
+            and "/" not in key[: -len("/manifest")]
+        ]
+        with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
         out: list[ArtifactManifest] = []
-        with observe("modal_dict.items", store=self._name):
-            items = list(self._d().items())
-        for key, raw in items:
-            if not isinstance(key, str) or not key.endswith("/manifest"):
+        for artifact_id, raw in zip(artifact_ids, raws):
+            if raw is None:
                 continue
-            # ``items()`` already returns the manifest bytes — decode them
-            # directly instead of re-fetching each manifest with its own RPC.
             try:
                 manifest = manifest_loads(raw)
             except ArtifactError:
                 continue
-            if manifest.artifact_id != key[: -len("/manifest")]:
+            if manifest.artifact_id != artifact_id:
                 continue
             if agent_id is None or manifest.producer_agent_id == agent_id:
                 out.append(manifest)
