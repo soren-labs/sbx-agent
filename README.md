@@ -296,7 +296,9 @@ Rules of thumb:
   it to untrusted networks or build new integrations on it. New work goes
   on `/v1`.
 - Both are served by the same `sbx-control` app; the optional edge
-  (`deploy/sbx-edge`) is expected to publish only `/v1`.
+  (`deploy/sbx-edge`) publishes `/v1` for clients and proxies `/api/*` only
+  to serve the bundled dashboard, injecting the shared Basic credential
+  itself from Worker secrets.
 
 ## API / SDK examples
 
