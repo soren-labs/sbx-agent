@@ -1,0 +1,157 @@
+name: Release 0.1.1 Devin Chain
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_key:
+        description: Queue key to launch (blank = wp-a)
+        required: false
+        default: wp-a
+      mode:
+        description: Launch mode
+        type: choice
+        options: [author]
+        default: author
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+  repository_dispatch:
+    types: [r011-complete]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: release-011-devin-chain-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  manual-launch:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Launch Devin session
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          TASK_KEY: ${{ inputs.task_key }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          test -n "$DEVIN_API_KEY" || { echo 'DEVIN_API_KEY Actions secret is missing'; exit 1; }
+          python scripts/release_011_queue.py launch --key "$TASK_KEY" --mode "$MODE" | tee /tmp/devin.json
+          echo "Started $(python -c 'import json; print(json.load(open("/tmp/devin.json"))["url"])')"
+
+  start-review-after-ci:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve PR and launch exact-head reviewer once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.pull_requests[0].number // empty')
+          test -n "$pr" || exit 0
+          body=$(gh pr view "$pr" --json body --jq .body)
+          key=$(printf '%s\n' "$body" | sed -n 's/^R011_TASK: \([^[:space:]]*\).*/\1/p' | head -1)
+          test -n "$key" || exit 0
+          sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+          marker="R011_REVIEW_SESSION_STARTED sha=$sha"
+          if gh api "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments" --paginate --jq '.[].body' | grep -Fxq "$marker"; then
+            echo "Reviewer already started for $sha"
+            exit 0
+          fi
+          result=$(python scripts/release_011_queue.py launch --key "$key" --mode review --pr "$pr" --sha "$sha")
+          url=$(printf '%s' "$result" | python -c 'import json,sys; print(json.load(sys.stdin)["url"])')
+          gh pr comment "$pr" --body "$marker"$'\n'"Devin reviewer: $url"
+
+  handle-review-comment:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'soren-labs' &&
+      startsWith(github.event.comment.body, 'R011_REVIEW:')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate exact head and merge or launch one fixer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          PR: ${{ github.event.issue.number }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          body=$(gh pr view "$PR" --json body --jq .body)
+          key=$(printf '%s\n' "$body" | sed -n 's/^R011_TASK: \([^[:space:]]*\).*/\1/p' | head -1)
+          test -n "$key" || { echo 'Missing R011_TASK marker'; exit 1; }
+          head_sha=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+          review_sha=$(printf '%s\n' "$COMMENT" | head -1 | sed -n 's/.* sha=\([0-9a-f]\{40\}\).*/\1/p')
+          test "$review_sha" = "$head_sha" || { echo "Ignoring stale review for $review_sha; head is $head_sha"; exit 0; }
+          verdict=$(printf '%s\n' "$COMMENT" | head -1 | awk '{print $2}')
+          if [ "$verdict" = "APPROVE" ]; then
+            gh pr merge "$PR" --squash --delete-branch
+            exit 0
+          fi
+          if [ "$verdict" != "REQUEST_CHANGES" ]; then
+            echo "Unknown review verdict: $verdict"; exit 1
+          fi
+          marker="R011_FIXER_SESSION_STARTED"
+          if gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate --jq '.[].body' | grep -Fq "$marker"; then
+            gh pr comment "$PR" --body "R011_STOP: second fixer cycle is not allowed; human intervention required."
+            exit 1
+          fi
+          result=$(python scripts/release_011_queue.py launch --key "$key" --mode fixer --pr "$PR" --sha "$head_sha")
+          url=$(printf '%s' "$result" | python -c 'import json,sys; print(json.load(sys.stdin)["url"])')
+          gh pr comment "$PR" --body "$marker"$'\n'"Devin fixer: $url"
+
+  advance-after-merge:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Launch next queued author/validator/acceptance
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          key=$(printf '%s\n' "$BODY" | sed -n 's/^R011_TASK: \([^[:space:]]*\).*/\1/p' | head -1)
+          test -n "$key" || exit 0
+          next=$(python scripts/release_011_queue.py next "$key")
+          test -n "$next" || { echo 'Release queue complete'; exit 0; }
+          python scripts/release_011_queue.py launch --key "$next" --mode author
+
+  advance-after-no-pr-validation:
+    if: github.event_name == 'repository_dispatch' && github.event.action == 'r011-complete'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Advance queue
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          TASK_KEY: ${{ github.event.client_payload.task_key }}
+          STATUS: ${{ github.event.client_payload.status }}
+        run: |
+          set -euo pipefail
+          test "$STATUS" = pass || { echo "Validation did not pass: $STATUS"; exit 1; }
+          next=$(python scripts/release_011_queue.py next "$TASK_KEY")
+          test -n "$next" || exit 0
+          python scripts/release_011_queue.py launch --key "$next" --mode author
