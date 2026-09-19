@@ -274,6 +274,28 @@ def test_deploy_github_bridge_secret_preflight(tmp_path) -> None:
     assert any(s.name == "secret:github" for s in report.steps)
 
 
+def test_deploy_github_bridge_preflight_from_config_file(tmp_path) -> None:
+    """SOR-133: gate + Secret name resolve from config.toml (not only env),
+    and the resolved pair is replayed into the deploy env for the remote
+    app — still without ever touching the token value."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path)  # no SBX_GITHUB_* env — file is the source
+    config = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, env=env, config=config)
+    assert exc.value.code == "secret_missing"
+    assert "sbx-github" in str(exc.value)
+    assert plane.secret_create_calls == 0  # fail-before-write
+
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=config)
+    assert any(s.name == "secret:github" for s in report.steps)
+    assert plane.deploy_env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert plane.deploy_env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
+    assert all("REDACTED_GITHUB" not in v for v in plane.deploy_env.values())
+
+
 def test_deploy_github_gate_alone_needs_no_secret(tmp_path) -> None:
     """The local-gate path (token in the control-plane env, no named Secret)
     deploys unchanged — the GitHub preflight is opt-in, not ambient."""
