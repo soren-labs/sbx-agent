@@ -306,6 +306,89 @@ class TestRunFailureFeedback:
         client.delete(f"/v1/agents/{bad['id']}", headers=auth)
         client.delete(f"/v1/agents/{healthy['id']}", headers=auth)
 
+    def test_reporter_skips_stale_auth_invalid_after_credential_rotation(self, v1_env) -> None:
+        """SOR-147: an auth_invalid verdict computed against a credential the
+        store has since rotated (a write-back/self-heal commit or a manual
+        refresh) is stale — it must not re-mark the account ``invalid``."""
+        from control.api_v1.deps import RunFailureReporter
+        from control.credsync import blob_fingerprint
+
+        scheduler = _multi_codex(v1_env)
+        seeded = {
+            "provider": "codex",
+            "files": {".codex/auth.json": json.dumps({"access_token": "REDACTED-1"})},
+        }
+        v1_env.registry.put_credential_blob("acct-codex-a", seeded)
+        rotated = {
+            "provider": "codex",
+            "files": {".codex/auth.json": json.dumps({"access_token": "REDACTED-2"})},
+        }
+        v1_env.registry.put_credential_blob("acct-codex-a", rotated)
+
+        RunFailureReporter().report(
+            scheduler=scheduler,
+            agent_id="agent-rotated",
+            n=1,
+            account_id="acct-codex-a",
+            status="ERROR",
+            error={
+                "code": "auth_invalid",
+                "source": "provider",
+                "message": "auth_invalid",
+                "retryable": False,
+            },
+            credential_fp=blob_fingerprint(seeded),
+        )
+        assert v1_env.registry.get("acct-codex-a").status == "active"
+
+    def test_reporter_marks_invalid_when_credential_unchanged(self, v1_env) -> None:
+        """Same verdict, same credential fingerprint → the report lands."""
+        from control.api_v1.deps import RunFailureReporter
+        from control.credsync import blob_fingerprint
+
+        scheduler = _multi_codex(v1_env)
+        blob = {
+            "provider": "codex",
+            "files": {".codex/auth.json": json.dumps({"access_token": "REDACTED-1"})},
+        }
+        v1_env.registry.put_credential_blob("acct-codex-a", blob)
+
+        RunFailureReporter().report(
+            scheduler=scheduler,
+            agent_id="agent-same",
+            n=1,
+            account_id="acct-codex-a",
+            status="ERROR",
+            error={
+                "code": "auth_invalid",
+                "source": "provider",
+                "message": "auth_invalid",
+                "retryable": False,
+            },
+            credential_fp=blob_fingerprint(blob),
+        )
+        assert v1_env.registry.get("acct-codex-a").status == "invalid"
+
+    def test_reporter_marks_invalid_without_credential_pin(self, v1_env) -> None:
+        """No fingerprint pin (pre-SOR-147 session) → verdict lands as before."""
+        from control.api_v1.deps import RunFailureReporter
+
+        scheduler = _multi_codex(v1_env)
+        RunFailureReporter().report(
+            scheduler=scheduler,
+            agent_id="agent-nopin",
+            n=1,
+            account_id="acct-codex-a",
+            status="ERROR",
+            error={
+                "code": "auth_invalid",
+                "source": "provider",
+                "message": "auth_invalid",
+                "retryable": False,
+            },
+        )
+        assert v1_env.registry.get("acct-codex-a").status == "invalid"
+
     def test_reporter_passes_canonical_codes_to_scheduler(self, v1_env) -> None:
         """``quota_exhausted`` / ``provider_unavailable`` / ``model_capacity``
         reach the D1 scheduler verbatim — no ``provider_error`` remapping."""

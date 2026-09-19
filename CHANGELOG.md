@@ -43,6 +43,17 @@ real-account gates were run for this tag.
   names each cached environment; snapshots are last-known-good, restores
   still prove `base_sha` fail-closed, and build sandboxes carry no
   credentials (pre-snapshot scrub of credential-shaped paths).
+- Automatic OAuth credential write-back (SOR-147): after each turn (and
+  once more at session close) the control plane execs
+  `runner export-credentials` in the session sandbox and, when the
+  provider CLI rotated its tokens, commits the refreshed blob to the
+  account credential lane and recreates the managed `sbx-acct-<id>`
+  Secret in place — no redeploy. Commits are fingerprint
+  compare-and-swap under a per-account lock, so a stale sandbox can never
+  clobber a newer stored credential; an `auth_invalid` turn whose
+  credential rotated self-heals (an `invalid` account reactivates, and
+  the stale run verdict no longer re-marks it). Official CLI auth files
+  stay authoritative; `SBX_CRED_WRITEBACK=0` disables write-back.
 - GitHub bridge bootstrap persistence (SOR-133):
   `sbx init --github --github-secret <name>` persists `[github]
   ephemeral` + `secret_name`; deploy/upgrade/doctor/status resolve the

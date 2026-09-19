@@ -24,6 +24,7 @@ from control.api_v1.workflows import WorkflowService
 from control.artifact_ops import HandoffStoreView
 from control.artifacts import InMemoryArtifactStore
 from control.auth_bearer import bearer_scheme, bearer_token, has_scope, lookup_key
+from control.credsync import credential_rotated
 from control.handoff import HandoffService
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.resources import ResourceRegistry
@@ -130,6 +131,7 @@ class RunFailureReporter:
         account_id: str | None,
         status: str | None,
         error: Any,
+        credential_fp: str | None = None,
     ) -> None:
         if status not in RUN_TERMINAL or not isinstance(error, dict):
             return
@@ -141,6 +143,15 @@ class RunFailureReporter:
             if key in self._reported:
                 return
             self._reported.add(key)
+        if kind == "auth_invalid" and credential_fp:
+            # SOR-147 self-heal: when the stored credential blob's fingerprint
+            # already differs from what this run was seeded with, a write-back
+            # (or manual refresh) rotated the credential — the verdict was
+            # computed against stale material, so it must not re-mark the
+            # healed account ``invalid``.
+            registry = getattr(scheduler, "registry", None) or getattr(scheduler, "_registry", None)
+            if credential_rotated(registry, account_id, credential_fp):
+                return
         report = getattr(scheduler, "report_failure", None)
         if not callable(report):
             return

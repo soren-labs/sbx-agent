@@ -79,6 +79,7 @@ from control.artifacts import (
     manifest_to_dict,
 )
 from control.config import TERMINAL_STATUSES, selected_providers
+from control.credsync import TAG_CRED_RUN_FP
 from control.devin_pool import ScheduleRefused
 from control.latency import observe
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
@@ -336,6 +337,7 @@ def _run_public(
             account_id=run.get("account_id"),
             status=run.get("status"),
             error=run.get("error"),
+            credential_fp=(getattr(rec, "sandbox_tags", None) or {}).get(TAG_CRED_RUN_FP),
         )
     return run
 

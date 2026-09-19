@@ -383,6 +383,18 @@ def create_app(
 
     configure_v1_bootstrap(app)
 
+    # SOR-147 (WP-H1): automatic OAuth credential write-back. The registry is
+    # resolved lazily — bootstrap seeds ``app.state.account_registry`` above,
+    # tests may install one later — so the sync is inert until a registry
+    # exists. Modal deployments also refresh the managed ``<prefix><id>``
+    # Secret in place (no redeploy); local writes stay in the account store.
+    from control.credsync import CredentialSync, ModalCredentialSecretWriter
+
+    plane.credential_sync = CredentialSync(
+        lambda: getattr(app.state, "account_registry", None),
+        secret_writer=(ModalCredentialSecretWriter() if backend_kind == "modal" else None),
+    )
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
         if isinstance(exc.detail, dict) and "code" in exc.detail:

@@ -260,6 +260,8 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_GITHUB_EPHEMERAL",
     "SBX_GITHUB_SECRET_NAME",
     "SBX_LINEAR_MCP_EPHEMERAL",
+    # SOR-147: credential write-back kill-switch (tunable, not a secret).
+    "SBX_CRED_WRITEBACK",
     # SOR-129 session-resource registry: Secret-name allowlist and MCP
     # server templates (config refs only — never secret values).
     "SBX_RESOURCE_SECRETS",

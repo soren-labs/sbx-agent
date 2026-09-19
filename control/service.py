@@ -19,6 +19,7 @@ from control.config import (
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
 )
+from control.credsync import TAG_CRED_BASE_FP
 from control.run_errors import run_error_for_run
 from control.run_store import (
     RunLedger,
@@ -129,6 +130,9 @@ class ControlPlane:
         # the cache is disabled and provisioning is unchanged.
         self.snapshot_provider: Any = None
         self.environments: Any = None
+        # SOR-147: optional CredentialSync wired by the app layer; None means
+        # no credential write-back (no registry installed, or disabled).
+        self.credential_sync: Any = None
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
         # Per-session provider/account/model context for run records. Lost on
@@ -389,6 +393,14 @@ class ControlPlane:
             self.store.put(stored)
             rec = stored
 
+        sync = self.credential_sync
+        seed_fp = None
+        if sync is not None and account_id != "auto":
+            try:
+                seed_fp = sync.seed_fingerprint(account_id)
+            except Exception:
+                seed_fp = None
+
         try:
             init_args = ["init", "--auth", "auth_json", "--model", rec.model]
             init_env: dict[str, str] = {}
@@ -441,6 +453,11 @@ class ControlPlane:
             now = self.clock()
             stored.updated_at = now
             stored.last_activity_at = now
+            # SOR-147: anchor the credential CAS — record the fingerprint of
+            # the blob this sandbox was seeded with so later write-backs can
+            # prove the stored credential hasn't moved.
+            if seed_fp:
+                stored.sandbox_tags[TAG_CRED_BASE_FP] = seed_fp
             self.store.put(stored)
 
     def _mark_create_failed(self, rec: SessionRecord) -> None:
@@ -521,6 +538,12 @@ class ControlPlane:
             rec.current_turn_n = n
             rec.updated_at = now
             rec.messages.append({"role": "user", "text": text, "turn_id": turn_id, "ts": iso(now)})
+            if self.credential_sync is not None:
+                # SOR-147: bind the run to the credential fingerprint it is
+                # dispatched with — the /v1 failure reporter compares it to
+                # the stored blob so an auth_invalid verdict computed against
+                # a since-rotated credential is recognized as stale.
+                self.credential_sync.mark_run_credential(rec.sandbox_tags)
             self.store.put(rec)
             if self.run_ledger is not None:
                 meta = self._run_meta.get(session_id, {})
@@ -576,6 +599,8 @@ class ControlPlane:
             rec.current_turn_id = turn_id
             rec.current_turn_n = n
             rec.updated_at = self.clock()
+            if self.credential_sync is not None:
+                self.credential_sync.mark_run_credential(rec.sandbox_tags)
             self.store.put(rec)
             if self.run_ledger is not None:
                 # The run-1 record already exists (CREATING, written by
@@ -839,6 +864,40 @@ class ControlPlane:
                 )
             self._live.pop(session_id, None)
 
+        # SOR-147: harvest refreshed credential files after every turn — a
+        # provider CLI that rotated its OAuth token mid-turn (incl. an
+        # auth_invalid failure) writes the new blob back to the account
+        # store, CAS-guarded by this session's base fingerprint.
+        self._writeback_credentials(rec, handle)
+
+    def _writeback_credentials(self, rec: SessionRecord | None, handle: Any) -> None:
+        """Best-effort credential write-back; swallows every failure.
+
+        The store commit and managed-Secret refresh happen inside
+        ``CredentialSync``; here we only fold a committed fingerprint into
+        ``cred_base_fp`` so the same session's next write-back compares
+        against the credential it just committed.
+        """
+        sync = self.credential_sync
+        if sync is None or rec is None or handle is None:
+            return
+        try:
+            outcome = sync.writeback(
+                backend=self.backend,
+                handle=handle,
+                runner_cmd=self.runner_cmd,
+                tags=rec.sandbox_tags,
+            )
+        except Exception:
+            return
+        if outcome is None or outcome.code != "committed" or not outcome.fingerprint:
+            return
+        with self._lock:
+            stored = self.store.get(rec.id)
+            if stored is not None and stored.status not in TERMINAL_STATUSES:
+                stored.sandbox_tags[TAG_CRED_BASE_FP] = outcome.fingerprint
+                self.store.put(stored)
+
     def reconcile_turn(self, session_id: str) -> bool:
         """Settle a ``running`` record whose in-process watcher is gone (SOR-139).
 
@@ -997,6 +1056,9 @@ class ControlPlane:
                 self.snapshot_hook(rec, handle)
             except Exception:
                 pass
+        # SOR-147: last write-back before teardown — a CLI-rotated credential
+        # must not die with the sandbox.
+        self._writeback_credentials(rec, handle)
         if handle is not None:
             try:
                 self.backend.terminate(handle)
