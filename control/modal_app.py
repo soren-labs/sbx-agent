@@ -18,7 +18,7 @@ from control.config import (
     app_secret_names,
     remote_env_overlay,
 )
-from control.reaper import reap
+from control.reaper import ReapAction, reap
 from control.service import release_lease_for_action
 
 _APP_NAME = os.environ.get("SBX_MODAL_APP_NAME", MODAL_APP_NAME)
@@ -74,6 +74,18 @@ def reap_cron() -> None:
     web = create_app()
     plane = web.state.plane
     v1_state = getattr(web.state, "v1_state", None)
+
+    def _on_action(action: ReapAction) -> None:
+        release_lease_for_action(v1_state, action)
+        if action.kind in ("lost", "timed_out") and action.session_id:
+            # SOR-139: the session just went terminal — persist a terminal
+            # verdict for any still-open run so no record dangles RUNNING.
+            plane.settle_orphaned_runs(action.session_id, session_status=action.kind)
+
+    # SOR-139: this plane owns no turn watchers, so every ``running`` record
+    # is watcher-less — settle those with written turn evidence into
+    # FINISHED + idle before the reaper judges staleness.
+    plane.reconcile_turns()
     reap(
         plane.store,
         plane.backend,
@@ -84,5 +96,5 @@ def reap_cron() -> None:
         # app.state until the registry is wired (P2-D bootstrap).
         account_registry=getattr(web.state, "account_registry", None),
         # SOR-80: timed_out / lost sessions must drop any held /v1 lease.
-        on_action=lambda action: release_lease_for_action(v1_state, action),
+        on_action=_on_action,
     )
