@@ -6,7 +6,7 @@ official provider CLI you already pay for (Codex, Devin, Antigravity, Grok,
 OpenCode) — multi-turn, streaming, with durable runs, artifacts and workflow
 recovery.
 
-> **Status: `v0.1.0-alpha` (public alpha).** Self-hosted bring-your-own-everything
+> **Status: `v0.1.1` (public alpha).** Self-hosted bring-your-own-everything
 > release. The `/v1` API may still change; see [Known limitations](#known-limitations).
 
 ## What it is — and what it is not
@@ -81,6 +81,7 @@ the file it writes.
 
 ```bash
 git clone https://github.com/soren-labs/sbx-browser.git && cd sbx-browser
+git checkout v0.1.1              # optional: pin to the release tag
 uv sync                          # control-plane + client deps (provides `modal`)
 uv run modal token new           # authenticate YOUR Modal workspace
 ```
@@ -148,7 +149,7 @@ uv run python examples/sbx_client.py "Write hello.txt containing hi"
 
 ## Provider Support Matrix
 
-| Provider | Status in 0.1 | CLI / version | Auth material | Multi-turn | Cancel | Multi-account | Real-E2E evidence |
+| Provider | Status in v0.1.1 | CLI / version | Auth material | Multi-turn | Cancel | Multi-account | Real-E2E evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **codex** | **Stable** | `@openai/codex` 0.153.0 (pinned in image) | `~/.codex/auth.json` (ChatGPT login) | ✅ `exec resume` | ✅ | ✅ | Real-Modal suite `tests/e2e_modal/` + committed `timings.json`; P0 spike; RC gate lane CREDENTIAL_DEFERRED (stale ChatGPT token — interactive `codex login` needed, external) |
 | **devin** | Experimental | Devin CLI 3000.10.21 (sha256-pinned) | `~/.local/share/devin/credentials.toml` | ✅ via ACP | ✅ | ✅ | Modal clean-room credential + 8-way concurrency PASS, 2026-09-14 (`spike/p2/`); Release 0.1 `/v1` real-Modal gate PASS on the RC plane (`docs/reviews/release-0.1-gate-core.md`) |
@@ -165,7 +166,9 @@ but the full release-gate matrix has not completed for that provider.
 but no real-account evidence exists yet — replay/fixture coverage only, so
 the provider is usable but unverified against a real account. The
 matrix is re-verified at each release; rows never claim support that was not
-exercised against a real account. Details:
+exercised against a real account. `v0.1.1` changed no provider pin, adapter
+or credential path, so it carries over the `v0.1.0-alpha` RC-plane gate
+evidence unchanged. Details:
 [docs/providers.md](docs/providers.md).
 
 ## Deploying
@@ -235,13 +238,18 @@ and code moves between agents through durable artifacts + handoffs — never
 through prompt text.
 
 For **private github.com** work — agent `git clone`/`push` and PR creation
-via `control.workspace.create_pull_request` — the control-plane process env
+via `POST /v1/agents/{id}/git/publish` — the control-plane process env
 must carry **both**:
 
 ```bash
 export GH_TOKEN=...              # or GITHUB_TOKEN
 export SBX_GITHUB_EPHEMERAL=1    # explicit opt-in gate
 ```
+
+The gate and the Secret *name* persist in `~/.config/sbx/config.toml` — set
+them once with `uv run sbx init --github --github-secret sbx-github`
+(`[github] ephemeral` / `secret_name`; env vars still override). Only the
+Secret name is ever written — the token value stays in the Modal Secret.
 
 When armed, the token travels as an env var only — a `GIT_CONFIG_*`
 credential helper scoped to `https://github.com` echoes `$GH_TOKEN` at git
@@ -266,6 +274,29 @@ in Modal. A classic `repo`-scoped PAT works but is broader than needed.
 
 Full repo workflow — workspace lifecycle, artifact/handoff chains, review
 pinning, error codes: [docs/repo-workflow.md](docs/repo-workflow.md).
+
+## API surfaces: public `/v1` vs internal `/api`
+
+The control plane serves **two** HTTP surfaces — they are not
+interchangeable:
+
+| Surface | Audience | Auth | Contract | Stability |
+| --- | --- | --- | --- | --- |
+| `/v1/*` | **public** — your clients, CI, orchestrators | `Bearer sbx_<key>` (sha256-stored, scoped) | [docs/contracts/api-v1.yaml](docs/contracts/api-v1.yaml) | versioned with the release; may change before 1.0 but only deliberately |
+| `/api/*` | **internal legacy** — the bundled `web/` dashboard only | HTTP Basic (single shared deployment credential from `sbx-basic-auth`) | [docs/contracts/api.yaml](docs/contracts/api.yaml) | no compatibility promise; do not build on it |
+
+Rules of thumb:
+
+- **Always integrate against `/v1`.** It is the Cursor Cloud Agents-shaped
+  API with per-key Bearer auth, `agents`/`admin` scopes, structured errors,
+  and the durable run ledger.
+- **`/api/*` is legacy and internal.** It predates `/v1` and exists only to
+  serve the bundled dashboard. Its Basic credential is one shared
+  deployment secret — there are no per-caller identities — so do not expose
+  it to untrusted networks or build new integrations on it. New work goes
+  on `/v1`.
+- Both are served by the same `sbx-control` app; the optional edge
+  (`deploy/sbx-edge`) is expected to publish only `/v1`.
 
 ## API / SDK examples
 

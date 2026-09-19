@@ -7,11 +7,15 @@ API. Each provider is driven through an `AgentAdapter`
 declaration, native-event → canonical-event translation, native session-id
 extraction, and health classification.
 
-## Support matrix (v0.1.0-alpha)
+## Support matrix (v0.1.1)
+
+No provider pins, adapters or credential paths changed in `v0.1.1`; the
+matrix below carries over the `v0.1.0-alpha` RC-plane evidence — no new
+real-account gates were run for this tag.
 
 | Provider | Status | CLI / version | Auth material (imported file, rel. `$HOME`) | Multi-turn | Cancel | Multi-account | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| codex | **Stable** | `@openai/codex` **0.153.0** — pinned in `sbx-runtime` (`runtime/packages.txt`) | `.codex/auth.json` (ChatGPT `codex login`) | ✅ `codex exec resume` | ✅ | ✅ `SBX_CODEX_ACCOUNTS` | `tests/e2e_modal/` real-Modal suite (two-turn, concurrency, no-leak); committed `timings.json`; P0 spike; RC gate lane **CREDENTIAL_DEFERRED** — stale ChatGPT token, needs interactive `codex login` (external, not a product failure; `docs/reviews/release-0.1-gate-core.md`) |
+| codex | **Stable** | `@openai/codex` **0.153.0** — pinned in `sbx-runtime` (`runtime/packages.txt`) | `.codex/auth.json` (ChatGPT `codex login`) | ✅ `codex exec resume` | ✅ | ✅ `SBX_CODEX_ACCOUNTS` | `tests/e2e_modal/` real-Modal suite (two-turn, concurrency, no-leak); committed `timings.json`; P0 spike; RC gate lane **CREDENTIAL_DEFERRED** at `v0.1.0-alpha` and still deferred — stale ChatGPT token, needs interactive `codex login` (external, not a product failure; `docs/reviews/release-0.1-gate-core.md`) |
 | devin | Experimental | Devin CLI **3000.10.21** — sha256-pinned bundle in `sbx-runtime-devin` | `.local/share/devin/credentials.toml` | ✅ ACP session | ✅ | ✅ `SBX_DEVIN_ACCOUNTS` / burst slots | SOR-73 spike: Modal clean-room credential injection + `auth status` + `-p` smoke, 2/4/8-way concurrency PASS — 2026-09-14 (`spike/p2/`); Release 0.1 `/v1` real-Modal gate **PASS** on the RC plane — two turns on one native thread, cancel, honest usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`); exact-head reviewer leg of the cross-provider workflow gate **PASS** (`docs/reviews/SOR-107-gate-workflow.md`) |
 | antigravity | Experimental | your own `agy` binary (`SBX_AGY_BIN` / `~/.local/bin/agy`, baked into `sbx-runtime-antigravity`; pin `agy_version` **1.2.3**, stream shape re-verified on real 1.2.3 — SOR-106) | `.gemini/antigravity-cli/antigravity-oauth-token` | ✅ `--conversation <id>` | ✅ | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/agy_gate.py` (init → 2 turns → stale-resume → export → leak scan); SOR-68 fleet gate **PASS** 50/50 on the RC plane — 4×1-slot fleet, `account_id=auto` distribution, cooldown + real `auth_invalid` failover, restart slot safety (`docs/reviews/release-0.1-gate-agy.md`) |
 | grok | Experimental | your own `grok` binary (`SBX_GROK_BIN` / `~/.local/bin/grok`, verified against real 1.0.24 stream shape) | `.grok/auth.json` | ✅ `--resume <id>` | ✅ | ✅ `SBX_GROK_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/grok_gate.py`; SOR-68 runner lanes (`grok-1`/`grok-2`) + fleet gate **PASS** on the RC plane — auto distribution, exhaustion, cooldown failover, stranded-`running` reaper (`docs/reviews/release-0.1-gate-grok.md`) |
@@ -140,9 +144,9 @@ hints print):
 pass through. `--dangerously-bypass-approvals-and-sandbox` is used because
 the sandbox (not Codex's Landlock/seccomp layer) is the security boundary —
 see [architecture.md](architecture.md). `CODEX_AUTH_JSON` remains a supported
-v1-style credential path for codex only. The v0.1.0-alpha RC gate lane is
-**CREDENTIAL_DEFERRED** — the workspace ChatGPT token is stale and
-noninteractive refresh fails; restoring the lane needs an interactive
+v1-style credential path for codex only. The RC gate lane is still
+**CREDENTIAL_DEFERRED** at `v0.1.1` — the workspace ChatGPT token is stale
+and noninteractive refresh fails; restoring the lane needs an interactive
 `codex login` (external, not a product defect).
 
 **devin.** Driven over the official ACP stdio protocol (`devin acp`,
@@ -171,7 +175,7 @@ channel (`openai/gpt-5.6-luna`); the OpenCode Zen channel resolves but the
 seeded account carries no Zen balance, and `SBX_OPENCODE_MODELS` remains
 the per-deploy override for the advertised defaults.
 
-**claude.** Not supported in `v0.1.0-alpha` — the experimental adapter seam
+**claude.** Not supported in `v0.1.1` — the experimental adapter seam
 is merged but deliberately not registered, so `provider=claude` is not
 schedulable (`invalid_provider`). Credential import is possible behind
 `--experimental` for early testing only.

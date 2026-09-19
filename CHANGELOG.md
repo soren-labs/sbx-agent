@@ -4,6 +4,88 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this file is the
 source for release notes.
 
+## [0.1.1] - 2026-09-19
+
+Public-alpha patch release (release tag `v0.1.1`). Control-plane and
+bootstrap feature work on top of `v0.1.0-alpha`; provider pins, adapters
+and the frozen contracts (`docs/contracts/*`, `control/backend.py`,
+`control/ports.py`, `runtime/runner/adapter.py`) are unchanged, so the
+`v0.1.0-alpha` RC-plane provider evidence carries over — no new
+real-account gates were run for this tag.
+
+### Added
+
+- First-class git/PR workflow on `/v1` (SOR-128): a `git` policy on
+  create-agent declares the work `branch` plus `push` /
+  `auto_create_pr` (`target`, `draft`, `title`);
+  `POST /v1/agents/{id}/git/publish` pushes the recorded head and can
+  open a PR through the opt-in GitHub bridge; `pull_request` is accepted
+  as a handoff pin and `POST /v1/agents/{id}/workspace/review` records a
+  reviewer verdict on the pinned head.
+- Optional `output_contract` on create-agent / create-run (SOR-130): a
+  JSON Schema (enforced subset) the run's final message must satisfy.
+  `strict` (default) turns invalid output into run `ERROR` with
+  `contract_violation` — never a silent success; `warn` keeps `FINISHED`
+  with the same diagnostic attached. Verdicts persist on the terminal
+  run as `output_contract` + `structured_output`.
+- Per-agent session resources (SOR-129): `resources.secrets` attaches
+  allowlisted Modal Secrets (`SBX_RESOURCE_SECRETS`) to that agent's
+  sandbox only; `resources.mcp` resolves MCP server registry entries
+  (`SBX_MCP_REGISTRY`) into the sandbox with `${env:VAR}` indirection —
+  names, never values. MCP refs on providers without an MCP channel fail
+  `unsupported`; unknown/disallowed refs fail `invalid_resource`.
+- Validation evidence artifacts (SOR-131): durable, content-addressed
+  evidence items bound to the workspace head that produced them —
+  sha256-verified, secret-scanned like workspace artifacts, size-capped,
+  and stored separately so handoffs never see them as patch payloads.
+- Prepared-environment snapshot cache (SOR-127): a content-derived
+  `environment_key` (repo, base_ref, base_sha, image, workdir, setup)
+  names each cached environment; snapshots are last-known-good, restores
+  still prove `base_sha` fail-closed, and build sandboxes carry no
+  credentials (pre-snapshot scrub of credential-shaped paths).
+- GitHub bridge bootstrap persistence (SOR-133):
+  `sbx init --github --github-secret <name>` persists `[github]
+  ephemeral` + `secret_name`; deploy/upgrade/doctor/status resolve the
+  same view and the named Secret is preflighted like other
+  prerequisites. Only the Secret *name* persists — token values never
+  touch config, deploy env, or output.
+
+### Changed
+
+- One resolved lifecycle chain (SOR-132 / SOR-134 / SOR-135):
+  `SBX_IDLE_TIMEOUT_S` is now *post-session idle retention* only — how
+  long an idle agent stays warm for a follow-up (default 300 s). The
+  sandbox's own native idle bound is a separate knob,
+  `SBX_SANDBOX_IDLE_TIMEOUT_S` (default 1800 s, floored at
+  `SBX_TURN_MAX_SECONDS` + `SBX_RUN_GRACE_S` so a running turn is never
+  reclaimed by it). `SBX_TURN_MAX_SECONDS` is configurable, and
+  `SBX_CREATE_GRACE_S` / `SBX_RUN_GRACE_S` bound create/run staleness —
+  the runner bound, native sandbox timers and the reaper all resolve
+  from the same values.
+
+### Fixed
+
+- Control-plane deploy now mounts `runtime/` into `CONTROL_IMAGE`, so a
+  fresh `sbx deploy` is self-contained instead of failing at remote
+  import time (SOR-138).
+- Stranded `running` sessions reconcile from on-sandbox turn evidence
+  after a control-plane restart/cutover instead of holding
+  `turn_in_progress` forever; the reaper runs the same settle so a
+  provider success lands `FINISHED`, and still-open runs on closed
+  sessions persist `EXPIRED`/`ERROR` rather than dangling `RUNNING`
+  (SOR-139).
+- `GET /v1/artifacts` on the Modal Dict store now enumerates manifest
+  *keys* instead of streaming every value — listing cost scales with
+  artifact count, not total artifact bytes (SOR-140).
+
+### Known limitations
+
+All `v0.1.0-alpha` limitations still apply: `/v1` may change before 1.0;
+self-hosted single-workspace only; no browser/noVNC layer;
+`cost_estimate_usd` is a Modal list-price estimate; provider coverage is
+unchanged (codex Stable — RC lane still CREDENTIAL_DEFERRED, devin /
+antigravity / grok / opencode Experimental, claude not supported).
+
 ## [0.1.0-alpha] - 2026-09-17
 
 First public alpha (release candidate for the `v0.1.0-alpha` tag, pending

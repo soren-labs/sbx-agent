@@ -91,8 +91,11 @@ Consequences:
   others — including `ACP_BACKEND`/`DEVIN_*`/`WINDSURF_*` for devin and
   `GROK_*`/`XAI_*` for grok).
 - `/v1` auth is `Bearer sbx_<key>`; the control plane stores `sha256(key)`
-  only. Internal `/api/*` uses HTTP Basic and exists for the bundled
-  dashboard — it is not a public surface.
+  only. `/api/*` is the internal legacy dashboard API — HTTP Basic with one
+  shared deployment credential (`sbx-basic-auth`), frozen at
+  `docs/contracts/api.yaml`, no compatibility promise. It is not a public
+  surface; all external integration goes on `/v1` (see README §API
+  surfaces).
 - Artifact collection fails closed on secret material (`409 artifact_secret`).
 
 ## Contracts

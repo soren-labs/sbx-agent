@@ -300,7 +300,7 @@ def create_app(
         handoffs=handoffs,
     )
 
-    app = FastAPI(title="sbx-control", version="0.1.0")
+    app = FastAPI(title="sbx-control", version="0.1.1")
     app.include_router(api_v1_router)  # empty shell until P2-D (SOR-64)
     app.state.plane = plane
     app.state.run_store = run_store
