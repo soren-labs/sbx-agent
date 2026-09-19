@@ -565,6 +565,14 @@ def _require_agent(plane: Any, agent_id: str) -> Any:
     rec = plane.get(agent_id)
     if rec is None:
         raise not_found("agent not found")
+    if rec.status == "running":
+        # A ``running`` record with no in-process watcher is stranded by a
+        # control-plane cutover — the provider may already have written the
+        # turn outcome. Settle it from evidence before answering so reads
+        # report the truth and publish/handoff see an idle agent (SOR-139).
+        reconcile = getattr(plane, "reconcile_turn", None)
+        if callable(reconcile) and reconcile(agent_id):
+            rec = plane.get(agent_id) or rec
     return rec
 
 

@@ -19,6 +19,7 @@ from control.config import (
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
 )
+from control.run_errors import run_error_for_run
 from control.run_store import (
     RunLedger,
     apply_output_contract,
@@ -491,6 +492,10 @@ class ControlPlane:
         *,
         output_contract: dict[str, Any] | None = None,
     ) -> str:
+        # A ``running`` record with no in-process watcher is a stranded turn
+        # (control-plane cutover); reconcile it from evidence first so a
+        # finished provider run frees the agent instead of 409ing forever.
+        self.reconcile_turn(session_id)
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
@@ -834,7 +839,97 @@ class ControlPlane:
                 )
             self._live.pop(session_id, None)
 
+    def reconcile_turn(self, session_id: str) -> bool:
+        """Settle a ``running`` record whose in-process watcher is gone (SOR-139).
+
+        A control-plane restart or deploy cutover drains the container and its
+        ``_watch_turn`` threads; the session record then stays ``running``
+        forever — refusing follow-ups and publish — even when the provider
+        already wrote ``turns/<n>.json``. The settle is evidence-gated: only a
+        readable turn payload proves completion, so a turn still executing on
+        the live sandbox (its watcher lives on the drained container, or it
+        is genuinely wedged — the reaper's ``run_grace_s`` bound owns that
+        case) is left alone. The fold is ``_finish_turn`` itself, so the
+        reconciler persists identical session/ledger truth to the watcher's
+        own persist and stays monotonic — a late watcher cannot rewrite a
+        reconciled terminal.
+
+        Returns ``True`` when the turn was settled from evidence.
+        """
+        with self._lock:
+            if session_id in self._live:
+                return False
+            rec = self.store.get(session_id)
+            if (
+                rec is None
+                or rec.status != "running"
+                or rec.current_turn_n is None
+                or rec.current_turn_id is None
+            ):
+                return False
+            n = int(rec.current_turn_n)
+            turn_id = rec.current_turn_id
+            handle = rec.handle()
+        if handle is None:
+            return False
+        try:
+            if not self.backend.poll(handle).alive:
+                # Dead sandbox: the reaper's lost/timed_out transition owns it.
+                return False
+            payload = read_json(self.backend, handle, f"turns/{n}.json")
+        except Exception:
+            return False
+        if payload is None:
+            return False
+        self._finish_turn(session_id, turn_id, n)
+        return True
+
+    def reconcile_turns(self) -> list[str]:
+        """Settle every watcher-less ``running`` session from turn evidence.
+
+        A cron/reaper plane owns no watchers (``_live`` is per-process), so
+        every ``running`` record is a candidate; only positive
+        ``turns/<n>.json`` evidence finalizes. Run before the reaper so a
+        provider success lands FINISHED + idle instead of ``lost`` when the
+        container died mid-watch.
+        """
+        settled: list[str] = []
+        for rec in self.store.list_all():
+            if rec.status == "running" and self.reconcile_turn(rec.id):
+                settled.append(rec.id)
+        return settled
+
+    def settle_orphaned_runs(self, session_id: str, *, session_status: str) -> list[int]:
+        """Persist a terminal verdict for a terminal session's open runs.
+
+        The reaper closes watcher-less sessions (``lost`` / ``timed_out``)
+        whose runs never produced readable evidence; without this their
+        ledger records stay open forever — read back as UNKNOWN, a perpetual
+        non-answer. The session's terminal state is the durable truth: each
+        still-open run is persisted to the matching terminal outcome — never
+        FINISHED without evidence.
+        """
+        if self.run_ledger is None:
+            return []
+        if session_status in ("timed_out", "lost"):
+            status = "EXPIRED"
+            verdict = run_error_for_run("EXPIRED", agent_status=session_status)
+        else:
+            status = "ERROR"
+            verdict = run_error_for_run("ERROR")
+        error = verdict.public() if verdict is not None else None
+        settled: list[int] = []
+        for record in self.run_ledger.list(session_id):
+            if record.terminal:
+                continue
+            self.run_ledger.finish(session_id, record.n, status=status, error=error)
+            settled.append(record.n)
+        return settled
+
     def stop(self, session_id: str) -> str:
+        # Settle evidence first: a turn the provider already finished must not
+        # be rewritten to CANCELLED by a stop landing after its watcher died.
+        self.reconcile_turn(session_id)
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
@@ -870,6 +965,9 @@ class ControlPlane:
             return rec.status if rec else "closed"
 
     def close(self, session_id: str) -> SessionRecord:
+        # Reconcile before cancelling open runs: a provider success must land
+        # FINISHED, not CANCELLED, when the watcher died ahead of the close.
+        self.reconcile_turn(session_id)
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
