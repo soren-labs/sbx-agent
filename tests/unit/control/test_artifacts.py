@@ -15,6 +15,7 @@ from control.artifacts import (
     ArtifactSecretError,
     FileArtifactStore,
     InMemoryArtifactStore,
+    ModalDictArtifactStore,
     TestResult,
     WorkspacePolicy,
     build_artifact,
@@ -322,6 +323,96 @@ class TestStores:
         ws = _workspace(tmp_path)
         with pytest.raises(ArtifactError):
             _build(InMemoryArtifactStore(), ws, artifact_id=bad_id)
+
+
+class _FakeModalDict:
+    """``modal.Dict``-shaped fake: string keys, arbitrary pickled values.
+
+    ``get``/``put``/``pop``/``keys``/``items`` mirror the live client; call
+    counters let tests prove which RPC surface a store method used.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+        self.gets: list[str] = []
+        self.items_calls = 0
+        self.keys_calls = 0
+
+    def get(self, key, default=None):
+        self.gets.append(key)
+        return self.data.get(key, default)
+
+    def put(self, key, value):
+        self.data[key] = value
+
+    def pop(self, key):
+        return self.data.pop(key)
+
+    def keys(self):
+        self.keys_calls += 1
+        return iter(list(self.data))
+
+    def items(self):
+        self.items_calls += 1
+        return iter(list(self.data.items()))
+
+
+def _modal_store() -> tuple[ModalDictArtifactStore, _FakeModalDict]:
+    store = ModalDictArtifactStore("test-artifacts")
+    fake = _FakeModalDict()
+    store._dict = fake  # skip the lazy modal import; tests never touch Modal
+    return store, fake
+
+
+class TestModalDictStore:
+    def test_put_get_read_roundtrip(self, tmp_path) -> None:
+        """Direct create/GET/member paths are unchanged on the Dict store."""
+        store, _ = _modal_store()
+        ws = _workspace(tmp_path)
+        manifest = _build(store, ws, payloads={"patch.diff": "p"})
+        assert store.manifest("art-test1").artifact_id == manifest.artifact_id
+        pkg = store.open("art-test1")
+        assert pkg.file_bytes("src/app.py") == b"print('hi')\n"
+        assert store.read("art-test1", "patch.diff") == b"p"
+        assert store.read("art-test1", "manifest.json") == manifest_dumps(manifest)
+
+    def test_list_never_pulls_member_bytes(self, tmp_path) -> None:
+        """list/query enumerates keys then fetches manifests only — the Dict
+        ``items()`` scan that streamed every member blob is gone."""
+        store, fake = _modal_store()
+        ws = _workspace(tmp_path)
+        _build(store, ws, payloads={"patch.diff": "p"})
+        _build(store, ws, artifact_id="art-other", agent_id="agent-b")
+        fake.gets.clear()
+        assert [m.artifact_id for m in store.list()] == ["art-other", "art-test1"]
+        assert [m.artifact_id for m in store.list(agent_id="agent-b")] == ["art-other"]
+        assert fake.items_calls == 0
+        assert fake.keys_calls == 2  # one keys enumeration per list() call
+        assert set(fake.gets) == {"art-test1/manifest", "art-other/manifest"}
+
+    def test_list_skips_corrupt_and_member_named_manifest(self, tmp_path) -> None:
+        """A payload literally named ``manifest`` produces a
+        ``<id>/member/manifest`` key — it must not shadow the real manifest
+        id or feed member bytes into manifest decode."""
+        store, fake = _modal_store()
+        ws = _workspace(tmp_path)
+        _build(store, ws, payloads={"manifest": b"decoy", "patch.diff": "p"})
+        _build(store, ws, artifact_id="art-junk")
+        fake.data["art-junk/manifest"] = b"junk"
+        fake.gets.clear()
+        assert [m.artifact_id for m in store.list()] == ["art-test1"]
+        assert "art-test1/member/manifest" not in fake.gets
+        assert "art-test1/member/patch.diff" not in fake.gets
+
+    def test_delete_removes_all_keys(self, tmp_path) -> None:
+        store, fake = _modal_store()
+        ws = _workspace(tmp_path)
+        _build(store, ws, payloads={"patch.diff": "p"})
+        store.delete("art-test1")
+        assert not any(k.startswith("art-test1/") for k in fake.data)
+        with pytest.raises(ArtifactNotFoundError):
+            store.manifest("art-test1")
+        store.delete("art-test1")  # idempotent
 
 
 class TestManifestDecode:
