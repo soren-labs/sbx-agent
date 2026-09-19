@@ -438,10 +438,13 @@ class ModalBackend:
     def _create_with_image(self, modal: Any, spec: SandboxSpec, image: Any) -> SandboxHandle:
         """``Sandbox.create`` with an explicit image (SOR-127 snapshot restores)."""
         tags = dict(spec.tags)
-        # SOR-132/SOR-134: native sandbox timers resolve from the same
-        # lifecycle chain as the reaper — an operator override
-        # (``SBX_IDLE_TIMEOUT_S`` / ``SBX_SANDBOX_TIMEOUT_S``) must not
-        # leave the sandbox's own bound disagreeing with the control plane.
+        # SOR-132/SOR-134 + SOR-135: native sandbox timers resolve from the
+        # same lifecycle chain as the reaper — an operator override
+        # (``SBX_SANDBOX_IDLE_TIMEOUT_S`` / ``SBX_SANDBOX_TIMEOUT_S``) must
+        # not leave the sandbox's own bound disagreeing with the control
+        # plane. The native idle bound is the running sandbox's own floor
+        # (>= turn bound + run grace), not the post-session retention the
+        # reaper enforces (``SBX_IDLE_TIMEOUT_S``).
         lifecycle = lifecycle_config()
         sb = modal.Sandbox.create(
             "sleep",
@@ -453,7 +456,7 @@ class ModalBackend:
             cpu=CPU,
             memory=MEMORY_MIB,
             timeout=lifecycle.sandbox_timeout_s,
-            idle_timeout=lifecycle.idle_timeout_s,
+            idle_timeout=lifecycle.sandbox_idle_timeout_s,
             workdir=WORK_DIR,
             tags=tags,
         )

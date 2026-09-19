@@ -52,8 +52,14 @@ for a follow-up still occupies a slot until it is closed
 agents against the cap when configured (`deploy.max_concurrent` or the env
 var); `429 concurrency_limit` remediation is closing idle agents, scoped
 cleanup (`DELETE /v1/workflows/{id}`), or raising the cap and redeploying.
-`SBX_IDLE_TIMEOUT_S` (default 1800 — idle reclaim, feeding both the
-reaper sweep and the sandbox's native `idle_timeout`),
+`SBX_IDLE_TIMEOUT_S` (default 300 — post-session idle retention: how
+long an `idle` agent's dev-cloud sandbox stays warm for a follow-up
+before the reaper reclaims it `timed_out`),
+`SBX_SANDBOX_IDLE_TIMEOUT_S` (default 1800 — the Modal-native
+`Sandbox.create(idle_timeout=)` bound on a *live* sandbox; a deliberately
+separate knob that resolves to at least
+`SBX_TURN_MAX_SECONDS + SBX_RUN_GRACE_S` so it can never reclaim a sandbox
+mid-turn),
 `SBX_TURN_MAX_SECONDS` (default 900 — runner `--max-seconds`; the reaper's
 stranded-`running` bound is this plus `SBX_RUN_GRACE_S`, default 300),
 `SBX_SANDBOX_TIMEOUT_S` (default 14400 — the Modal hard cap), and

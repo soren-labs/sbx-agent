@@ -57,8 +57,10 @@ and hands work between agents via artifacts.
                                         └───────────────────────────────────┘
 ```
 
-- **One agent = one sandbox.** Idle reclamation uses Modal's native
-  `idle_timeout`; a hard `timeout` (4 h default) is the backstop.
+- **One agent = one sandbox.** The control-plane reaper reclaims an idle
+  agent after the post-session retention (5 min default); the sandbox's
+  own native `idle_timeout` bounds a live sandbox independently, and a
+  hard `timeout` (4 h default) is the backstop.
 - **The sandbox is the only security boundary.** Provider CLIs run with
   approvals bypassed *inside* the sandbox; no Modal token or platform
   credential exists inside it.
@@ -330,10 +332,13 @@ only, never secret material.
   nothing is claimed without real-account evidence).
 - **Single workspace.** One deployment = one Modal workspace; API keys are
   deployment-scoped (`sbx_<key>`, stored as `sha256` only).
-- **Lifecycle caps.** 30 min idle reclaim (`SBX_IDLE_TIMEOUT_S` /
-  `deploy.idle_timeout_s`), 4 h hard sandbox cap (`SBX_SANDBOX_TIMEOUT_S`),
-  15 min per-turn soft cap (`SBX_TURN_MAX_SECONDS`). One resolved chain —
-  runner bound, native sandbox timers, and reaper bounds all agree.
+- **Lifecycle caps.** 5 min post-session idle reclaim (`SBX_IDLE_TIMEOUT_S`
+  / `deploy.idle_timeout_s`), native live-sandbox idle bound
+  (`SBX_SANDBOX_IDLE_TIMEOUT_S` / `deploy.sandbox_idle_timeout_s`, default
+  30 min and never below the turn bound + run grace), 4 h hard sandbox cap
+  (`SBX_SANDBOX_TIMEOUT_S`), 15 min per-turn soft cap
+  (`SBX_TURN_MAX_SECONDS`). One resolved chain — runner bound, native
+  sandbox timers, and reaper bounds all agree.
 - **Sandbox-local files are ephemeral.** `events.jsonl`, `inbox/`, `turns/`
   live in the sandbox; durable outcomes are the run ledger and artifacts —
   export artifacts before closing an agent if you need the patch.

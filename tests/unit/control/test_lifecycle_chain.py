@@ -19,6 +19,7 @@ from control.config import (
     IDLE_TIMEOUT_S,
     REMOTE_ENV_KEYS,
     RUN_GRACE_S,
+    SANDBOX_IDLE_TIMEOUT_S,
     SANDBOX_TIMEOUT_S,
     TURN_MAX_SECONDS,
     lifecycle_config,
@@ -90,7 +91,10 @@ class _FakeModal:
 
 def test_lifecycle_config_defaults_match_contract() -> None:
     lc = lifecycle_config({})
-    assert lc.idle_timeout_s == IDLE_TIMEOUT_S
+    # SOR-135: post-session idle retention defaults to the agreed 5 min —
+    # deliberately independent of the sandbox's own native idle bound.
+    assert lc.idle_timeout_s == IDLE_TIMEOUT_S == 300
+    assert lc.sandbox_idle_timeout_s == SANDBOX_IDLE_TIMEOUT_S
     assert lc.turn_max_seconds == TURN_MAX_SECONDS
     assert lc.sandbox_timeout_s == SANDBOX_TIMEOUT_S
     assert lc.create_grace_s == CREATE_GRACE_S
@@ -102,6 +106,7 @@ def test_lifecycle_config_env_overrides() -> None:
     lc = lifecycle_config(
         {
             "SBX_IDLE_TIMEOUT_S": "3600",
+            "SBX_SANDBOX_IDLE_TIMEOUT_S": "5400",
             "SBX_TURN_MAX_SECONDS": "1200",
             "SBX_SANDBOX_TIMEOUT_S": "28800",
             "SBX_CREATE_GRACE_S": "600",
@@ -109,6 +114,7 @@ def test_lifecycle_config_env_overrides() -> None:
         }
     )
     assert lc.idle_timeout_s == 3600
+    assert lc.sandbox_idle_timeout_s == 5400
     assert lc.turn_max_seconds == 1200
     assert lc.sandbox_timeout_s == 28800
     assert lc.create_grace_s == 600
@@ -116,16 +122,35 @@ def test_lifecycle_config_env_overrides() -> None:
     assert lc.run_stale_s == 1320
 
 
+def test_lifecycle_config_post_idle_does_not_shrink_native_bound() -> None:
+    """SOR-135: the 5-min post-session retention must not drag the native
+    ``Sandbox.create(idle_timeout=)`` down with it — and SOR-134's floor
+    keeps the native bound above the stranded-``running`` bound."""
+    lc = lifecycle_config({"SBX_IDLE_TIMEOUT_S": "300"})
+    assert lc.idle_timeout_s == 300
+    assert lc.sandbox_idle_timeout_s == SANDBOX_IDLE_TIMEOUT_S
+    # A long-turn deploy (SBX_TURN_MAX_SECONDS=2400) floors the native idle
+    # bound above turn + run grace even when the operator never sets it.
+    lc = lifecycle_config({"SBX_TURN_MAX_SECONDS": "2400"})
+    assert lc.sandbox_idle_timeout_s == 2400 + RUN_GRACE_S
+    # An explicit-but-too-low override clamps up the same way.
+    lc = lifecycle_config({"SBX_SANDBOX_IDLE_TIMEOUT_S": "600", "SBX_TURN_MAX_SECONDS": "2400"})
+    assert lc.sandbox_idle_timeout_s == 2700
+
+
 def test_lifecycle_config_reads_process_env(monkeypatch) -> None:
     monkeypatch.setenv("SBX_IDLE_TIMEOUT_S", "60")
     assert lifecycle_config().idle_timeout_s == 60
     monkeypatch.delenv("SBX_IDLE_TIMEOUT_S")
     assert lifecycle_config().idle_timeout_s == IDLE_TIMEOUT_S
+    monkeypatch.setenv("SBX_SANDBOX_IDLE_TIMEOUT_S", "7200")
+    assert lifecycle_config().sandbox_idle_timeout_s == 7200
 
 
 def test_remote_env_overlay_forwards_lifecycle_keys() -> None:
     env = {
         "SBX_IDLE_TIMEOUT_S": "3600",
+        "SBX_SANDBOX_IDLE_TIMEOUT_S": "5400",
         "SBX_TURN_MAX_SECONDS": "1200",
         "SBX_SANDBOX_TIMEOUT_S": "28800",
         "SBX_CREATE_GRACE_S": "600",
@@ -201,10 +226,12 @@ def test_reap_run_grace_follows_resolved_turn_max(monkeypatch) -> None:
 
 
 def test_modal_sandbox_create_uses_resolved_timeouts(monkeypatch) -> None:
-    """``Sandbox.create``'s native timers must match the resolved chain —
-    an overridden ``SBX_IDLE_TIMEOUT_S`` previously left the sandbox on the
-    1800s constant while the reaper swept at the configured value."""
-    monkeypatch.setenv("SBX_IDLE_TIMEOUT_S", "3600")
+    """``Sandbox.create``'s native timers resolve through the chain —
+    ``SBX_SANDBOX_IDLE_TIMEOUT_S`` drives the native bound while the
+    post-session retention (``SBX_IDLE_TIMEOUT_S``) stays a control-plane
+    knob that never reaches ``Sandbox.create`` (SOR-135)."""
+    monkeypatch.setenv("SBX_SANDBOX_IDLE_TIMEOUT_S", "3600")
+    monkeypatch.setenv("SBX_IDLE_TIMEOUT_S", "60")
     monkeypatch.setenv("SBX_SANDBOX_TIMEOUT_S", "28800")
     handle = ModalBackend()._create_with_image(_FakeModal, SandboxSpec(), image="img")
     assert handle.id == "sb-fake"
@@ -212,9 +239,20 @@ def test_modal_sandbox_create_uses_resolved_timeouts(monkeypatch) -> None:
     assert _FakeSandbox.created_kwargs["idle_timeout"] == 3600
 
 
+def test_modal_sandbox_create_native_idle_floored_above_turn(monkeypatch) -> None:
+    """SOR-134: a long-turn deploy must not let the native idle bound fall
+    below ``turn_max + run_grace`` — that is what reclaimed long turns."""
+    monkeypatch.delenv("SBX_SANDBOX_IDLE_TIMEOUT_S", raising=False)
+    monkeypatch.setenv("SBX_TURN_MAX_SECONDS", "2400")
+    ModalBackend()._create_with_image(_FakeModal, SandboxSpec(), image="img")
+    assert _FakeSandbox.created_kwargs["idle_timeout"] == 2400 + RUN_GRACE_S
+
+
 def test_modal_sandbox_create_defaults_match_contract(monkeypatch) -> None:
     monkeypatch.delenv("SBX_IDLE_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("SBX_SANDBOX_IDLE_TIMEOUT_S", raising=False)
     monkeypatch.delenv("SBX_SANDBOX_TIMEOUT_S", raising=False)
     ModalBackend()._create_with_image(_FakeModal, SandboxSpec(), image="img")
     assert _FakeSandbox.created_kwargs["timeout"] == SANDBOX_TIMEOUT_S
-    assert _FakeSandbox.created_kwargs["idle_timeout"] == IDLE_TIMEOUT_S
+    assert _FakeSandbox.created_kwargs["idle_timeout"] == SANDBOX_IDLE_TIMEOUT_S
+    assert SANDBOX_IDLE_TIMEOUT_S > TURN_MAX_SECONDS
