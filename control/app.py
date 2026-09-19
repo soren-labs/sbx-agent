@@ -25,18 +25,17 @@ from control.api_v1 import router as api_v1_router
 from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
     DEFAULT_MODEL,
-    IDLE_TIMEOUT_S,
     MAX_CONCURRENT,
     RUNS_DICT_NAME,
     SESSIONS_DICT_NAME,
     SSE_KEEPALIVE_S,
-    TURN_MAX_SECONDS,
     WORKFLOWS_DICT_NAME,
     basic_credentials,
     default_runner_cmd,
     env_float,
     env_int,
     env_str,
+    lifecycle_config,
 )
 from control.run_store import RunLedger, RunStore
 from control.sandbox_io import sandbox_env
@@ -276,6 +275,9 @@ def create_app(
     from control.handoff import HandoffService
     from control.workspace import WorkspaceService
 
+    # SOR-132/SOR-134: one resolved lifecycle chain — the values here are
+    # the same ones the reaper and ``Sandbox.create`` resolve.
+    lifecycle = lifecycle_config()
     workspaces = WorkspaceService(backend, workspace_store, clock=clock)
     handoffs = HandoffService(workspaces, HandoffStoreView(artifact_store))
     plane = ControlPlane(
@@ -287,12 +289,10 @@ def create_app(
         if max_concurrent is not None
         else env_int("SBX_MAX_CONCURRENT", MAX_CONCURRENT),
         default_model=default_model or os.environ.get("SBX_DEFAULT_MODEL", DEFAULT_MODEL),
-        idle_timeout_s=idle_timeout_s
-        if idle_timeout_s is not None
-        else env_int("SBX_IDLE_TIMEOUT_S", IDLE_TIMEOUT_S),
+        idle_timeout_s=idle_timeout_s if idle_timeout_s is not None else lifecycle.idle_timeout_s,
         turn_max_seconds=turn_max_seconds
         if turn_max_seconds is not None
-        else env_int("SBX_TURN_MAX_SECONDS", TURN_MAX_SECONDS),
+        else lifecycle.turn_max_seconds,
         run_ledger=RunLedger(run_store, clock=clock),
         workspaces=workspaces,
         handoffs=handoffs,

@@ -24,14 +24,13 @@ from control.config import (
     ENV_SNAPSHOT_TIMEOUT_S,
     ENV_SNAPSHOT_TTL_S,
     GROK_IMAGE_NAME,
-    IDLE_TIMEOUT_S,
     MEMORY_MIB,
     MODAL_APP_NAME,
     OPENCODE_IMAGE_NAME,
     RUNTIME_IMAGE_NAME,
-    SANDBOX_TIMEOUT_S,
     WORK_DIR,
     env_str,
+    lifecycle_config,
 )
 from control.environment import ENV_BUILD_TAG
 from control.workspace import CHECKOUT_FAILED, REPO_UNAVAILABLE, WorkspaceError
@@ -439,6 +438,11 @@ class ModalBackend:
     def _create_with_image(self, modal: Any, spec: SandboxSpec, image: Any) -> SandboxHandle:
         """``Sandbox.create`` with an explicit image (SOR-127 snapshot restores)."""
         tags = dict(spec.tags)
+        # SOR-132/SOR-134: native sandbox timers resolve from the same
+        # lifecycle chain as the reaper — an operator override
+        # (``SBX_IDLE_TIMEOUT_S`` / ``SBX_SANDBOX_TIMEOUT_S``) must not
+        # leave the sandbox's own bound disagreeing with the control plane.
+        lifecycle = lifecycle_config()
         sb = modal.Sandbox.create(
             "sleep",
             "infinity",
@@ -448,8 +452,8 @@ class ModalBackend:
             env=_create_env(spec),
             cpu=CPU,
             memory=MEMORY_MIB,
-            timeout=SANDBOX_TIMEOUT_S,
-            idle_timeout=IDLE_TIMEOUT_S,
+            timeout=lifecycle.sandbox_timeout_s,
+            idle_timeout=lifecycle.idle_timeout_s,
             workdir=WORK_DIR,
             tags=tags,
         )

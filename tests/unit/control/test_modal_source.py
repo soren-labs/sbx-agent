@@ -31,8 +31,11 @@ def test_modal_backend_source_matches_p0() -> None:
     assert "write_eof" in src
     assert "cpu=CPU" in src or "cpu=(1, 2)" in src
     assert "memory=MEMORY_MIB" in src or "memory=(1024, 4096)" in src
-    assert "timeout=SANDBOX_TIMEOUT_S" in src or "timeout=14400" in src
-    assert "idle_timeout=IDLE_TIMEOUT_S" in src or "idle_timeout=1800" in src
+    # SOR-132/SOR-134: the native timers resolve from the shared lifecycle
+    # chain so operator overrides reach the sandbox, not just the reaper.
+    assert "timeout=lifecycle.sandbox_timeout_s" in src
+    assert "idle_timeout=lifecycle.idle_timeout_s" in src
+    assert "lifecycle_config" in src
     assert "workdir=WORK_DIR" in src or 'workdir="/work"' in src
     assert "CODEX_HOME" in src
     assert "SBX_WORK" in src

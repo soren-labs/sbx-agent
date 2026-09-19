@@ -8,13 +8,7 @@ from datetime import datetime
 
 from control.accounts import cooldown_expired
 from control.backend import SandboxBackend, SandboxHandle
-from control.config import (
-    CREATE_GRACE_S,
-    IDLE_TIMEOUT_S,
-    RUN_GRACE_S,
-    TERMINAL_STATUSES,
-    TURN_MAX_SECONDS,
-)
+from control.config import TERMINAL_STATUSES, lifecycle_config
 from control.ports import AccountRegistry
 from control.store import SessionRecord, SessionStore
 
@@ -32,9 +26,9 @@ def reap(
     backend: SandboxBackend,
     now: datetime,
     *,
-    idle_timeout_s: int = IDLE_TIMEOUT_S,
-    create_grace_s: int = CREATE_GRACE_S,
-    run_grace_s: int = TURN_MAX_SECONDS + RUN_GRACE_S,
+    idle_timeout_s: int | None = None,
+    create_grace_s: int | None = None,
+    run_grace_s: int | None = None,
     account_registry: AccountRegistry | None = None,
     on_action: Callable[[ReapAction], None] | None = None,
 ) -> list[ReapAction]:
@@ -65,7 +59,18 @@ def reap(
 
     ``on_action`` (optional) is invoked once per emitted action — the
     production cron wires it to ``/v1`` lease release (SOR-80).
+
+    Unset bounds resolve from ``lifecycle_config`` (SOR-132/SOR-134), so
+    every caller — cron, local sweep, gate — shares the deploy's resolved
+    values instead of the contract defaults.
     """
+    lifecycle = lifecycle_config()
+    if idle_timeout_s is None:
+        idle_timeout_s = lifecycle.idle_timeout_s
+    if create_grace_s is None:
+        create_grace_s = lifecycle.create_grace_s
+    if run_grace_s is None:
+        run_grace_s = lifecycle.run_stale_s
     actions: list[ReapAction] = []
 
     def emit(

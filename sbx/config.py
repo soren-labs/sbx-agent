@@ -80,7 +80,31 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "image_opencode": (("images", "opencode"), ("SBX_IMAGE_OPENCODE",)),
     "providers": (("deploy", "providers"), ("SBX_PROVIDERS",)),
     "max_concurrent": (("deploy", "max_concurrent"), ("SBX_MAX_CONCURRENT",)),
+    # SOR-132/SOR-134: the lifecycle chain — the values a deployment
+    # resolves here are replayed into the remote functions' env
+    # (``deploy_env`` → ``remote_env_overlay``), so the reaper, the
+    # runner's ``--max-seconds``, and ``Sandbox.create``'s native timers
+    # all agree instead of drifting back to contract defaults.
+    "idle_timeout_s": (("deploy", "idle_timeout_s"), ("SBX_IDLE_TIMEOUT_S",)),
+    "turn_max_seconds": (("deploy", "turn_max_seconds"), ("SBX_TURN_MAX_SECONDS",)),
+    "sandbox_timeout_s": (("deploy", "sandbox_timeout_s"), ("SBX_SANDBOX_TIMEOUT_S",)),
+    "create_grace_s": (("deploy", "create_grace_s"), ("SBX_CREATE_GRACE_S",)),
+    "run_grace_s": (("deploy", "run_grace_s"), ("SBX_RUN_GRACE_S",)),
 }
+
+# Optional positive-int knobs; ``None`` means "not configured" — never
+# written to config.toml and never replayed into the deploy env, so the
+# remote contract defaults win over an absent local value.
+_POSITIVE_INT_FIELDS = frozenset(
+    {
+        "max_concurrent",
+        "idle_timeout_s",
+        "turn_max_seconds",
+        "sandbox_timeout_s",
+        "create_grace_s",
+        "run_grace_s",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -116,6 +140,15 @@ class BootstrapConfig:
     # means "not configured" — the remote defaults apply — so it is never
     # written to config.toml or pushed into the deploy env.
     max_concurrent: int | None = None
+    # SOR-132/SOR-134 lifecycle chain, forwarded as SBX_IDLE_TIMEOUT_S /
+    # SBX_TURN_MAX_SECONDS / SBX_SANDBOX_TIMEOUT_S / SBX_CREATE_GRACE_S /
+    # SBX_RUN_GRACE_S. Same ``None``-means-absent semantics as
+    # ``max_concurrent``.
+    idle_timeout_s: int | None = None
+    turn_max_seconds: int | None = None
+    sandbox_timeout_s: int | None = None
+    create_grace_s: int | None = None
+    run_grace_s: int | None = None
 
     def image_name(self, provider: str) -> str:
         """Published Modal image name for ``provider``."""
@@ -172,6 +205,11 @@ class BootstrapConfig:
             "image_grok",
             "image_opencode",
             "max_concurrent",
+            "idle_timeout_s",
+            "turn_max_seconds",
+            "sandbox_timeout_s",
+            "create_grace_s",
+            "run_grace_s",
         )
         # ``None`` (e.g. an unset max_concurrent) is never replayed — the
         # remote defaults must win over an absent local value.
@@ -298,15 +336,15 @@ def _coerce(name: str, value: Any) -> Any:
         if text in ("0", "false", "no", "off", ""):
             return False
         raise ValueError("github_ephemeral must be a boolean")
-    if name == "max_concurrent":
+    if name in _POSITIVE_INT_FIELDS:
         if value in (None, ""):
             return None
         try:
             n = int(value)
         except (TypeError, ValueError):
-            raise ValueError("max_concurrent must be a positive integer") from None
+            raise ValueError(f"{name} must be a positive integer") from None
         if n < 1:
-            raise ValueError("max_concurrent must be a positive integer")
+            raise ValueError(f"{name} must be a positive integer")
         return n
     return str(value)
 

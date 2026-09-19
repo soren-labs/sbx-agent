@@ -116,6 +116,75 @@ def test_max_concurrent_rejects_nonpositive(tmp_path) -> None:
         load(tmp_path / "missing.toml", env={"SBX_MAX_CONCURRENT": "bogus"})
 
 
+def test_lifecycle_fields_env_and_file(tmp_path) -> None:
+    """SOR-132/SOR-134: the lifecycle chain resolves file → env → absent."""
+    cfg = load(
+        tmp_path / "missing.toml",
+        env={"SBX_IDLE_TIMEOUT_S": "3600", "SBX_TURN_MAX_SECONDS": "1200"},
+    )
+    assert cfg.config.idle_timeout_s == 3600
+    assert cfg.config.turn_max_seconds == 1200
+    assert cfg.sources["idle_timeout_s"] == "env"
+    save(
+        BootstrapConfig(idle_timeout_s=3600, sandbox_timeout_s=28800, run_grace_s=120),
+        tmp_path / "c.toml",
+    )
+    cfg = load(tmp_path / "c.toml", env={})
+    assert cfg.config.idle_timeout_s == 3600
+    assert cfg.config.sandbox_timeout_s == 28800
+    assert cfg.config.run_grace_s == 120
+    assert cfg.config.create_grace_s is None
+    assert cfg.sources["idle_timeout_s"] == "file"
+
+
+def test_lifecycle_fields_unset_stay_absent(tmp_path) -> None:
+    """Unset lifecycle knobs must not leak into the file or deploy env —
+    the remote contract defaults win over an absent local value."""
+    config = BootstrapConfig()
+    save(config, tmp_path / "c.toml")
+    text = (tmp_path / "c.toml").read_text()
+    for key in (
+        "idle_timeout_s",
+        "turn_max_seconds",
+        "sandbox_timeout_s",
+        "create_grace_s",
+        "run_grace_s",
+    ):
+        assert key not in text
+    env = config.deploy_env()
+    for name in (
+        "SBX_IDLE_TIMEOUT_S",
+        "SBX_TURN_MAX_SECONDS",
+        "SBX_SANDBOX_TIMEOUT_S",
+        "SBX_CREATE_GRACE_S",
+        "SBX_RUN_GRACE_S",
+    ):
+        assert name not in env
+
+
+def test_lifecycle_fields_reach_deploy_env() -> None:
+    env = BootstrapConfig(
+        idle_timeout_s=3600,
+        turn_max_seconds=1200,
+        sandbox_timeout_s=28800,
+        create_grace_s=600,
+        run_grace_s=120,
+    ).deploy_env()
+    assert env["SBX_IDLE_TIMEOUT_S"] == "3600"
+    assert env["SBX_TURN_MAX_SECONDS"] == "1200"
+    assert env["SBX_SANDBOX_TIMEOUT_S"] == "28800"
+    assert env["SBX_CREATE_GRACE_S"] == "600"
+    assert env["SBX_RUN_GRACE_S"] == "120"
+
+
+def test_lifecycle_fields_reject_nonpositive(tmp_path) -> None:
+    for env_name in ("SBX_IDLE_TIMEOUT_S", "SBX_TURN_MAX_SECONDS", "SBX_RUN_GRACE_S"):
+        with pytest.raises(ValueError):
+            load(tmp_path / "missing.toml", env={env_name: "0"})
+        with pytest.raises(ValueError):
+            load(tmp_path / "missing.toml", env={env_name: "bogus"})
+
+
 def test_github_bridge_persists_via_file(tmp_path) -> None:
     """SOR-133: gate + Secret *name* round-trip through config.toml."""
     config = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")

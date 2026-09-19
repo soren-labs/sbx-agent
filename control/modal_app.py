@@ -14,8 +14,8 @@ import modal
 from control.app import create_app
 from control.config import (
     MODAL_APP_NAME,
-    RUN_GRACE_S,
     app_secret_names,
+    lifecycle_config,
     remote_env_overlay,
 )
 from control.reaper import ReapAction, reap
@@ -86,12 +86,17 @@ def reap_cron() -> None:
     # is watcher-less — settle those with written turn evidence into
     # FINISHED + idle before the reaper judges staleness.
     plane.reconcile_turns()
+    # SOR-132/SOR-134: the reaper's bounds resolve from the same lifecycle
+    # chain as the plane and ``Sandbox.create`` — including the graces,
+    # which are env-tunable (``SBX_CREATE_GRACE_S`` / ``SBX_RUN_GRACE_S``).
+    lifecycle = lifecycle_config()
     reap(
         plane.store,
         plane.backend,
         datetime.now(UTC),
-        idle_timeout_s=plane.idle_timeout_s,
-        run_grace_s=plane.turn_max_seconds + RUN_GRACE_S,
+        idle_timeout_s=lifecycle.idle_timeout_s,
+        create_grace_s=lifecycle.create_grace_s,
+        run_grace_s=lifecycle.run_stale_s,
         # SOR-63: expired cooldowns return accounts to rotation; absent on
         # app.state until the registry is wired (P2-D bootstrap).
         account_registry=getattr(web.state, "account_registry", None),
