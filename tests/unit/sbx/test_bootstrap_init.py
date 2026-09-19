@@ -169,6 +169,18 @@ class TestCheckGithub:
         assert "gh CLI is authenticated" in check.detail
         assert "gh auth token" in (check.hint or "")
 
+    def test_armed_with_named_secret_is_ok_without_host_token(self) -> None:
+        """SOR-133: a config-armed bridge + named Secret is satisfied without
+        a host-side token — the remote control plane reads it from Modal."""
+        check = prereqs.check_github({}, which=self._NO_GH, gate=True, secret_name="sbx-github")
+        assert check.ok and "sbx-github" in check.detail
+
+    def test_named_secret_without_gate_warns(self) -> None:
+        check = prereqs.check_github({}, which=self._NO_GH, gate=False, secret_name="sbx-github")
+        assert not check.ok and check.warn
+        assert "sbx-github" in check.detail
+        assert "SBX_GITHUB_EPHEMERAL" in (check.hint or "")
+
 
 def test_init_reports_github_bridge_advisory(tmp_path) -> None:
     env = make_env(tmp_path)
@@ -176,3 +188,29 @@ def test_init_reports_github_bridge_advisory(tmp_path) -> None:
     report = init_mod.init(cfg, FakePlane(), env=env)
     gh = next(c for c in report.checks if c.name == "github")
     assert gh.ok  # nothing detected: advisory-neutral, not a failure
+
+
+def test_init_persists_github_bridge_flags(tmp_path) -> None:
+    """SOR-133: ``--github``/``--github-secret`` persist the gate + Secret
+    name, and the advisory reflects the just-written resolved config."""
+    env = make_env(tmp_path)
+    cfg = make_cfg(tmp_path, env=env, write=False)
+    report = init_mod.init(cfg, FakePlane(), env=env, github=True, github_secret="sbx-github")
+    reloaded = load(tmp_path / "config.toml", env={}).config
+    assert reloaded.github_ephemeral is True
+    assert reloaded.github_secret_name == "sbx-github"
+    gh = next(c for c in report.checks if c.name == "github")
+    assert gh.ok and "sbx-github" in gh.detail
+
+
+def test_init_no_github_flag_disarms_persisted_gate(tmp_path) -> None:
+    env = make_env(tmp_path)
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github"),
+    )
+    init_mod.init(cfg, FakePlane(), env=env, github=False)
+    reloaded = load(tmp_path / "config.toml", env={}).config
+    assert reloaded.github_ephemeral is False
+    assert reloaded.github_secret_name == "sbx-github"  # name kept; gate off

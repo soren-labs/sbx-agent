@@ -28,6 +28,31 @@ def test_status_json(tmp_path, capsys) -> None:
     assert payload["base_url"] == "https://x.modal.run"
 
 
+def test_init_github_flags_and_status_reports_bridge(tmp_path, capsys) -> None:
+    """SOR-133: `sbx init --github --github-secret` persists the bridge;
+    `sbx status` reports the resolved state."""
+    rc = main(
+        [*_args(tmp_path), "init", "--github", "--github-secret", "sbx-github"],
+        plane=FakePlane(),
+    )
+    assert rc == 0
+    capsys.readouterr()
+    rc = main([*_args(tmp_path), "status", "--json"], plane=FakePlane())
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["github_bridge"] == {"enabled": True, "secret_name": "sbx-github"}
+    rc = main([*_args(tmp_path), "status"], plane=FakePlane())
+    out = capsys.readouterr().out
+    assert rc == 0 and "github:    armed (Modal Secret sbx-github)" in out
+
+
+def test_status_github_bridge_off_by_default(tmp_path, capsys) -> None:
+    rc = main([*_args(tmp_path), "status", "--json"], plane=FakePlane())
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["github_bridge"] == {"enabled": False, "secret_name": None}
+
+
 def test_status_aggregates_providers_and_shows_live_cap(tmp_path, capsys, monkeypatch) -> None:
     """Multi-model providers collapse; live agents render against the cap."""
     monkeypatch.delenv("SBX_MAX_CONCURRENT", raising=False)

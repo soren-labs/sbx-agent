@@ -358,3 +358,32 @@ def test_doctor_reports_github_bridge_without_secret(tmp_path) -> None:
     assert "SBX_GITHUB_EPHEMERAL" in (gh.hint or "")
     blob = "\n".join(f"{c.name} {c.detail} {c.hint}" for c in checks)
     assert "REDACTED_GITHUB" not in blob
+
+
+def test_doctor_checks_named_github_secret(tmp_path) -> None:
+    """SOR-133: an armed bridge's configured Secret name is presence-checked
+    like the other prerequisites — a missing one fails doctor exactly as it
+    fails ``sbx deploy``."""
+    cfg, plane, env, token = _healthy(tmp_path)
+    cfg = make_cfg(
+        tmp_path,
+        env=env,
+        config=BootstrapConfig(
+            api_base_url=plane.apps["sbx-control"],
+            github_ephemeral=True,
+            github_secret_name="sbx-github",
+        ),
+    )
+    transport, _ = make_v1(token=token)
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    gh_secret = next(c for c in checks if c.name == "secret:sbx-github")
+    assert gh_secret in failed(checks)
+
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    checks = run_doctor(cfg, plane, env=env, transport=transport)
+    gh_secret = next(c for c in checks if c.name == "secret:sbx-github")
+    assert gh_secret.ok
+    gh = next(c for c in checks if c.name == "github")
+    assert gh.ok and "sbx-github" in gh.detail
+    blob = "\n".join(f"{c.name} {c.detail} {c.hint}" for c in checks)
+    assert "REDACTED_GITHUB" not in blob

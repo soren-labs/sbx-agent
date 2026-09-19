@@ -85,6 +85,8 @@ def cmd_init(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         app_name=args.app_name,
         base_url=args.base_url,
         providers=_providers_arg(args.providers),
+        github=args.github,
+        github_secret=args.github_secret,
         verify=args.verify,
         allow_open_permissions=args.allow_open_permissions,
         auth_check=args.auth_check,
@@ -208,6 +210,7 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         except Exception:
             providers = "unreachable"
     cap = cfg.config.max_concurrent
+    github_secret = cfg.config.github_secret_name or None
     payload = {
         "config_path": str(cfg.path),
         "config_exists": cfg.file_exists,
@@ -219,6 +222,10 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         "providers": providers,
         "live_agents": live_agents,
         "concurrency_cap": cap,
+        "github_bridge": {
+            "enabled": cfg.config.github_ephemeral,
+            "secret_name": github_secret,
+        },
     }
     if args.json:
         _emit_json(payload)
@@ -230,6 +237,15 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     print(f"key:       {payload['key_fingerprint'] or 'none (run `sbx deploy`)'}")
     rendered = ", ".join(providers) if isinstance(providers, list) else providers
     print(f"providers: {rendered or '-'}")
+    if cfg.config.github_ephemeral:
+        gh_line = (
+            f"armed (Modal Secret {github_secret})"
+            if github_secret
+            else "armed (env GH_TOKEN/GITHUB_TOKEN)"
+        )
+    else:
+        gh_line = "off"
+    print(f"github:    {gh_line}")
     if live_agents is None:
         agents_line = "-"
     elif cap is not None:
@@ -484,6 +500,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="accept credential files readable by group/other",
     )
+    p.add_argument(
+        "--github",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="persist the GitHub auth bridge gate in config (github.ephemeral)",
+    )
+    p.add_argument(
+        "--github-secret",
+        dest="github_secret",
+        default=argparse.SUPPRESS,
+        metavar="NAME",
+        help="persist the Modal Secret name holding GH_TOKEN for the GitHub "
+        "bridge (github.secret_name; the token itself is never stored)",
+    )
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser(
@@ -571,6 +601,8 @@ def main(
         ("verify", False),
         ("allow_open_permissions", False),
         ("providers", None),
+        ("github", None),
+        ("github_secret", None),
     ):
         if not hasattr(args, name):
             setattr(args, name, default)

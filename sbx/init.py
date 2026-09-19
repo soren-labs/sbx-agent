@@ -21,6 +21,7 @@ from pathlib import Path
 from sbx.config import (
     BootstrapConfig,
     ResolvedConfig,
+    load,
     load_file_values,
     save,
     state_dir,
@@ -53,6 +54,8 @@ def _merge_flags(
     app_name: str | None,
     base_url: str | None,
     providers: tuple[str, ...] | None,
+    github: bool | None = None,
+    github_secret: str | None = None,
 ) -> BootstrapConfig:
     overrides = {}
     if profile is not None:
@@ -63,6 +66,10 @@ def _merge_flags(
         overrides["api_base_url"] = base_url
     if providers is not None:
         overrides["providers"] = providers
+    if github is not None:
+        overrides["github_ephemeral"] = github
+    if github_secret is not None:
+        overrides["github_secret_name"] = github_secret
     return replace(base, **overrides) if overrides else base
 
 
@@ -75,6 +82,8 @@ def init(
     app_name: str | None = None,
     base_url: str | None = None,
     providers: tuple[str, ...] | None = None,
+    github: bool | None = None,
+    github_secret: str | None = None,
     verify: bool = False,
     allow_open_permissions: bool = False,
     auth_check: Callable[[str, Path], str] | None = None,
@@ -91,8 +100,13 @@ def init(
         app_name=app_name,
         base_url=base_url,
         providers=providers,
+        github=github,
+        github_secret=github_secret,
     )
     save(merged, cfg.path, env=env)
+    # Re-resolve so the GitHub advisory reflects the just-written file plus
+    # env overrides — the same view deploy/doctor/status will use (SOR-133).
+    resolved = load(cfg.path, env=env).config
 
     state_dir(env).mkdir(parents=True, exist_ok=True)
 
@@ -121,8 +135,14 @@ def init(
                 auth,
                 check_provider_config(merged.providers),
                 *(s.to_check() for s in scans),
-                # SOR-117: advisory GitHub-bridge detection (gh probe under --verify).
-                check_github(env, verify=verify),
+                # SOR-117/SOR-133: advisory GitHub-bridge detection against
+                # the resolved config (gh probe under --verify).
+                check_github(
+                    env,
+                    verify=verify,
+                    gate=resolved.github_ephemeral,
+                    secret_name=resolved.github_secret_name,
+                ),
             ]
         ),
         config_path=cfg.path,

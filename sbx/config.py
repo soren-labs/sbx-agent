@@ -71,6 +71,8 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "codex_secret": (("secrets", "codex"), ("SBX_CODEX_SECRET_NAME",)),
     "basic_secret": (("secrets", "basic"), ("SBX_BASIC_SECRET_NAME",)),
     "bootstrap_secret": (("secrets", "bootstrap"), ("SBX_V1_BOOTSTRAP_SECRET_NAME",)),
+    "github_ephemeral": (("github", "ephemeral"), ("SBX_GITHUB_EPHEMERAL",)),
+    "github_secret_name": (("github", "secret_name"), ("SBX_GITHUB_SECRET_NAME",)),
     "image_codex": (("images", "codex"), ("SBX_IMAGE_CODEX",)),
     "image_devin": (("images", "devin"), ("SBX_IMAGE_DEVIN",)),
     "image_antigravity": (("images", "antigravity"), ("SBX_IMAGE_ANTIGRAVITY",)),
@@ -103,6 +105,11 @@ class BootstrapConfig:
     image_antigravity: str = ANTIGRAVITY_IMAGE_NAME
     image_grok: str = GROK_IMAGE_NAME
     image_opencode: str = OPENCODE_IMAGE_NAME
+    # Optional GitHub auth bridge (SOR-117/SOR-133): the gate flag and the
+    # *name* of the operator-managed Modal Secret holding GH_TOKEN — the
+    # token value itself is never persisted.
+    github_ephemeral: bool = False
+    github_secret_name: str = ""
     providers: tuple[str, ...] = ("codex",)
     # Live-agent/sandbox cap forwarded to the deployed app as
     # ``SBX_MAX_CONCURRENT`` (per-key cap + scheduler global cap). ``None``
@@ -177,6 +184,14 @@ class BootstrapConfig:
         # the shared Codex Secret and seeding accounts for providers the
         # deployment does not serve (SOR-115/SOR-116).
         out["SBX_PROVIDERS"] = ",".join(self.providers)
+        # SOR-133: replay the resolved GitHub bridge so a file-configured
+        # deploy arms the remote control plane identically to env-armed
+        # ones. The Secret *name* only — token material stays inside the
+        # named Modal Secret.
+        if self.github_ephemeral:
+            out["SBX_GITHUB_EPHEMERAL"] = "1"
+        if self.github_secret_name:
+            out["SBX_GITHUB_SECRET_NAME"] = self.github_secret_name
         return out
 
 
@@ -240,7 +255,9 @@ def _serialize(config: BootstrapConfig) -> str:
         value = getattr(config, name)
         if value is None:
             continue  # unset optional knobs stay absent, not "None"
-        if isinstance(value, tuple):
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, tuple):
             rendered = "[" + ", ".join(_toml_escape(v) for v in value) + "]"
         elif isinstance(value, int) and not isinstance(value, bool):
             rendered = str(value)
@@ -272,6 +289,15 @@ def _coerce(name: str, value: Any) -> Any:
         if isinstance(value, (list, tuple)):
             return tuple(str(p).strip() for p in value if str(p).strip())
         raise ValueError("providers must be a list or comma-separated string")
+    if name == "github_ephemeral":
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+        raise ValueError("github_ephemeral must be a boolean")
     if name == "max_concurrent":
         if value in (None, ""):
             return None

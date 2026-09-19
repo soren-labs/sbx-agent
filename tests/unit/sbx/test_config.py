@@ -116,6 +116,71 @@ def test_max_concurrent_rejects_nonpositive(tmp_path) -> None:
         load(tmp_path / "missing.toml", env={"SBX_MAX_CONCURRENT": "bogus"})
 
 
+def test_github_bridge_persists_via_file(tmp_path) -> None:
+    """SOR-133: gate + Secret *name* round-trip through config.toml."""
+    config = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")
+    path = tmp_path / "c.toml"
+    save(config, path)
+    text = path.read_text()
+    assert "[github]" in text
+    assert "ephemeral = true" in text
+    assert 'secret_name = "sbx-github"' in text
+    cfg = load(path, env={})
+    assert cfg.config == config
+    assert cfg.sources["github_ephemeral"] == "file"
+    assert cfg.sources["github_secret_name"] == "file"
+
+
+def test_github_bridge_env_overrides_file(tmp_path) -> None:
+    save(
+        BootstrapConfig(github_ephemeral=True, github_secret_name="file-secret"),
+        tmp_path / "c.toml",
+    )
+    cfg = load(
+        tmp_path / "c.toml",
+        env={"SBX_GITHUB_EPHEMERAL": "0", "SBX_GITHUB_SECRET_NAME": "env-secret"},
+    )
+    assert cfg.config.github_ephemeral is False
+    assert cfg.config.github_secret_name == "env-secret"
+    assert cfg.sources["github_ephemeral"] == "env"
+    assert cfg.sources["github_secret_name"] == "env"
+
+
+def test_github_bridge_env_arms_without_file(tmp_path) -> None:
+    cfg = load(
+        tmp_path / "missing.toml",
+        env={"SBX_GITHUB_EPHEMERAL": "1", "SBX_GITHUB_SECRET_NAME": "sbx-github"},
+    )
+    assert cfg.config.github_ephemeral is True
+    assert cfg.config.github_secret_name == "sbx-github"
+
+
+def test_github_bridge_rejects_nonboolean(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        load(tmp_path / "missing.toml", env={"SBX_GITHUB_EPHEMERAL": "maybe"})
+
+
+def test_github_bridge_reaches_deploy_env() -> None:
+    """Resolved gate + name replay into the remote env — never a token."""
+    env = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github").deploy_env()
+    assert env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
+    assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
+
+
+def test_github_bridge_defaults_stay_out_of_deploy_env() -> None:
+    env = BootstrapConfig().deploy_env()
+    assert "SBX_GITHUB_EPHEMERAL" not in env
+    assert "SBX_GITHUB_SECRET_NAME" not in env
+
+
+def test_github_secret_name_not_a_managed_secret() -> None:
+    """The bridge Secret is operator-managed — ``secret_names()`` must not
+    claim it (uninstall would otherwise delete it on --purge-credentials)."""
+    cfg = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")
+    assert "sbx-github" not in cfg.secret_names()
+
+
 def test_secret_names_are_provider_aware() -> None:
     """SOR-116: the shared Codex Secret is required iff codex is enabled."""
     codex = BootstrapConfig(providers=("codex",))
