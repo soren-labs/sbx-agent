@@ -130,11 +130,17 @@ class RunFailureReporter:
         account_id: str | None,
         status: str | None,
         error: Any,
+        plane: Any = None,
     ) -> None:
         if status not in RUN_TERMINAL or not isinstance(error, dict):
             return
         kind = error.get("code")
         if kind not in _ACCOUNT_HEALTH_CODES or not account_id or account_id == "auto":
+            return
+        if kind == "auth_invalid" and self._auth_superseded(plane, agent_id, account_id):
+            # SOR-147: the verdict targets a superseded credential generation
+            # — a refreshed blob already exists, so the account must not be
+            # (re-)parked and any earlier auth_invalid parking is healed.
             return
         key = (agent_id, n)
         with self._lock:
@@ -156,6 +162,28 @@ class RunFailureReporter:
                 pass
         except Exception:
             pass  # feedback is best-effort; never mask the API response
+
+    @staticmethod
+    def _auth_superseded(plane: Any, agent_id: str, account_id: str) -> bool:
+        """Whether the stored credential moved past what this run mounted.
+
+        Only a session with a pinned provision digest answers True —
+        uncaptured sessions (restarts, pre-writeback records) keep reporting
+        normally so a genuine auth failure still parks the account.
+        """
+        sync = getattr(plane, "credential_sync", None)
+        if sync is None:
+            return False
+        try:
+            captured, base = plane.credential_base(agent_id)
+        except Exception:
+            return False
+        if not captured:
+            return False
+        try:
+            return bool(sync.skip_auth_invalid_report(account_id, base))
+        except Exception:
+            return False
 
 
 def get_run_reporter(request: Request) -> RunFailureReporter:

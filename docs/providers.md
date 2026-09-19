@@ -63,6 +63,15 @@ local official CLI login                your Modal workspace
   providers, and the control plane seeds/mounts per enabled provider.
 - `POST /v1/accounts/{id}/verify` probes a credential in a throwaway sandbox
   without spending a session.
+- **Automatic write-back (SOR-147):** the provider CLI's own auth files stay
+  authoritative — a token refresh on disk is exported after each turn and on
+  session close, validated, and compare-and-swapped into `credential/<id>`
+  against the digest the session mounted, so a stale export can never roll
+  the store back to an older generation. A committed refresh republishes the
+  managed `sbx-acct-<id>` Secret at runtime (no redeploy) and one-shot heals
+  an `invalid`/`auth_invalid` parking; a custom `secret_name` is externally
+  managed and never overwritten. Only digests ride session metadata — the
+  blob never appears in logs or run records.
 - **Never** paste credential material into issues, PRs, logs, fixtures, or
   Linear — fixtures use `REDACTED` placeholders; the e2e gates record
   sha256-16 fingerprints only.

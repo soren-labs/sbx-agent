@@ -19,6 +19,7 @@ from control.config import (
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
 )
+from control.credential_sync import parse_exported_blob
 from control.run_errors import run_error_for_run
 from control.run_store import (
     RunLedger,
@@ -129,6 +130,10 @@ class ControlPlane:
         # the cache is disabled and provisioning is unchanged.
         self.snapshot_provider: Any = None
         self.environments: Any = None
+        # SOR-147/WP-H1 credential write-back lane — optional, wired by the
+        # app layer. ``None`` disables export/commit; see
+        # ``control.credential_sync.CredentialSync``.
+        self.credential_sync: Any = None
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
         # Per-session provider/account/model context for run records. Lost on
@@ -361,6 +366,12 @@ class ControlPlane:
             secrets=secrets,
             resource_secrets=list(resource_secrets or ()),
         )
+        # SOR-147: pin the credential generation this sandbox mounts — the
+        # write-back CAS refuses to roll the store back to an older
+        # generation when another writer refreshed the credential first.
+        credential_base_sha: str | None = None
+        if self.credential_sync is not None and account_id != "auto":
+            credential_base_sha = self.credential_sync.base_digest(account_id)
         try:
             if env_snapshot is not None:
                 if self.snapshot_provider is None:
@@ -442,6 +453,9 @@ class ControlPlane:
             stored.updated_at = now
             stored.last_activity_at = now
             self.store.put(stored)
+            meta = self._run_meta.get(session_id)
+            if meta is not None and self.credential_sync is not None:
+                meta["credential_sha256"] = credential_base_sha
 
     def _mark_create_failed(self, rec: SessionRecord) -> None:
         """Terminal ``lost`` transition for a failed create; keeps sandbox_id."""
@@ -838,6 +852,71 @@ class ControlPlane:
                     contract_result=contract_result,
                 )
             self._live.pop(session_id, None)
+        # SOR-147: a finished turn may leave refreshed provider credentials
+        # on disk — export+commit runs unlocked, best-effort, after the
+        # terminal outcome is already durable.
+        self._writeback_credentials(session_id)
+
+    def credential_base(self, session_id: str) -> tuple[bool, str | None]:
+        """(captured, sha256) — the credential generation this session mounted.
+
+        ``captured`` is ``False`` when no digest was pinned (no sync lane, an
+        ``auto``/anonymous account, or a session predating this process) —
+        callers must then treat the base as unknown, not as "no credential".
+        """
+        with self._lock:
+            meta = self._run_meta.get(session_id)
+        if not meta or "credential_sha256" not in meta:
+            return (False, None)
+        return (True, meta["credential_sha256"])
+
+    def _writeback_credentials(
+        self,
+        session_id: str,
+        *,
+        meta: dict[str, str | None] | None = None,
+        rec: SessionRecord | None = None,
+        handle: SandboxHandle | None = None,
+    ) -> None:
+        """Export refreshed provider credentials back to the registry (SOR-147).
+
+        Runs ``runner export-credentials`` in the session's sandbox and
+        CAS-commits a changed blob via ``credential_sync``. Best-effort —
+        never raises, never logs credential material; a dead sandbox or a
+        runner without the subcommand is simply a no-export.
+        """
+        sync = self.credential_sync
+        if sync is None:
+            return
+        if rec is None or handle is None:
+            with self._lock:
+                rec = rec or self.store.get(session_id)
+                handle = handle or (rec.handle() if rec is not None else None)
+            if meta is None:
+                meta = self._run_meta.get(session_id)
+        account_id = (meta or {}).get("account_id")
+        if not account_id and rec is not None:
+            account_id = (rec.sandbox_tags or {}).get("account_id")
+        if handle is None or not account_id or account_id == "auto":
+            return
+        # An unpinned base (restart, pre-WP session) commits as base=None —
+        # the CAS only lands while the store is still empty, so stale writes
+        # can never clobber a newer generation.
+        base = (meta or {}).get("credential_sha256")
+        try:
+            proc = self.backend.exec(
+                handle, self.runner("export-credentials"), env=sandbox_env(handle)
+            )
+            blob = parse_exported_blob(list(proc.stdout))
+            proc.wait()
+        except Exception:
+            return
+        if blob is None:
+            return
+        try:
+            sync.commit(account_id, blob, base_sha256=base)
+        except Exception:
+            pass
 
     def reconcile_turn(self, session_id: str) -> bool:
         """Settle a ``running`` record whose in-process watcher is gone (SOR-139).
@@ -975,7 +1054,7 @@ class ControlPlane:
             self._first_turn_pending.discard(session_id)
             live = self._live.pop(session_id, None)
             handle = rec.handle()
-            self._run_meta.pop(session_id, None)
+            meta = self._run_meta.pop(session_id, None)
             if self.run_ledger is not None:
                 # Runs still open can never complete once the sandbox is
                 # terminated; finalize them as CANCELLED so they stay
@@ -997,6 +1076,9 @@ class ControlPlane:
                 self.snapshot_hook(rec, handle)
             except Exception:
                 pass
+        # SOR-147: last credential write-back before teardown — the CLI's
+        # final token refresh must still reach the registry.
+        self._writeback_credentials(session_id, meta=meta, rec=rec, handle=handle)
         if handle is not None:
             try:
                 self.backend.terminate(handle)

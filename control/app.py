@@ -383,6 +383,18 @@ def create_app(
 
     configure_v1_bootstrap(app)
 
+    # SOR-147/WP-H1: runtime credential write-back — refreshed provider CLI
+    # auth files export back into the account registry and (on Modal) the
+    # managed ``<prefix><id>`` Secret, so later sessions get the refresh
+    # without a redeploy. The registry is resolved lazily so the /v1
+    # in-memory fallback installed on first request is covered too.
+    from control.credential_sync import CredentialSync, modal_secret_writer
+
+    plane.credential_sync = CredentialSync(
+        lambda: getattr(app.state, "account_registry", None),
+        secret_writer=(modal_secret_writer if backend_kind == "modal" else None),
+    )
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
         if isinstance(exc.detail, dict) and "code" in exc.detail:

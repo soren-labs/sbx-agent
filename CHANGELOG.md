@@ -49,6 +49,19 @@ real-account gates were run for this tag.
   same view and the named Secret is preflighted like other
   prerequisites. Only the Secret *name* persists — token values never
   touch config, deploy env, or output.
+- Automatic credential write-back (SOR-147 / WP-H1): provider CLIs keep
+  their own auth files authoritative — a refresh on disk is exported via
+  `runner export-credentials` after each turn and on close, validated,
+  and compare-and-swapped into `credential/<id>` under a per-account
+  lock against the digest the session mounted (a stale export can never
+  roll the store back to an older generation). A committed refresh
+  republishes the managed `sbx-acct-<id>` Secret at runtime — later
+  execs and sessions pick it up with no redeploy — while custom-named
+  Secrets stay externally managed. One-shot self-heal: a committed
+  refresh unparks an `invalid`/`auth_invalid` account, and an
+  `auth_invalid` verdict from a superseded generation is dropped instead
+  of re-parking it. Only digests, never credential material, are kept on
+  session metadata.
 
 ### Changed
 

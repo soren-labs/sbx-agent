@@ -22,6 +22,13 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from control.accounts import (
+    COMMIT_COMMITTED,
+    COMMIT_STALE,
+    COMMIT_UNCHANGED,
+    credential_blob_digest,
+    is_valid_account_id,
+)
 from control.api_v1.lifecycle import IdempotencyStore, InMemoryRunStates, RunStateStore
 from control.ports import Account, ApiKey, ScheduleDecision
 from control.workflow_store import InMemoryWorkflowStore, WorkflowStore
@@ -120,6 +127,31 @@ class InMemoryAccountRegistry:
     def put_credential_blob(self, account_id: str, blob: dict[str, Any]) -> None:
         with self._lock:
             self._blobs[account_id] = dict(blob)
+
+    def commit_credential_blob(
+        self,
+        account_id: str,
+        blob: dict[str, Any],
+        *,
+        base_sha256: str | None,
+    ) -> str:
+        """CAS write-back mirroring ``PersistentAccountRegistry`` (SOR-147)."""
+        if not is_valid_account_id(account_id):
+            raise ValueError(f"invalid account id {account_id!r}")
+        if not isinstance(blob, dict) or not isinstance(blob.get("files"), dict):
+            raise ValueError("credential blob must be {'provider': P, 'files': {relpath: content}}")
+        with self._lock:
+            current = self._blobs.get(account_id)
+            if current == blob:
+                return COMMIT_UNCHANGED
+            if credential_blob_digest(current) != base_sha256:
+                return COMMIT_STALE
+            account = self._accounts.get(account_id)
+            provider = blob.get("provider")
+            if account is not None and provider is not None and provider != account.provider:
+                raise ValueError("credential blob provider does not match account")
+            self._blobs[account_id] = dict(blob)
+            return COMMIT_COMMITTED
 
 
 class InMemoryScheduler:

@@ -28,6 +28,7 @@ never inspects or logs their contents.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -48,6 +49,27 @@ ACCOUNT_STATUSES = ("active", "cooling", "invalid", "disabled")
 
 _BLOB_PROVIDER = "provider"
 _BLOB_FILES = "files"
+
+# Credential write-back outcomes (SOR-147/WP-H1): returned by
+# ``commit_credential_blob`` on registries that implement CAS and by
+# ``control.credential_sync.CredentialSync`` for the full refresh flow.
+COMMIT_COMMITTED = "committed"
+COMMIT_UNCHANGED = "unchanged"
+COMMIT_STALE = "stale"
+
+
+def credential_blob_digest(blob: dict[str, Any] | None) -> str | None:
+    """SHA-256 of the canonical blob JSON; ``None`` for a missing blob.
+
+    Digests — never the secret material — pin a sandbox session to the
+    credential generation it mounted, so a write-back can refuse to roll
+    the store back to an older generation (stale-writer protection).
+    """
+    if not isinstance(blob, dict):
+        return None
+    canonical = json.dumps(blob, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 # Shared account_id rule (SOR-105): every store maps an id onto a filesystem
 # path (``accounts/<id>.json`` / ``credentials/<id>.json``), a ``modal.Dict``
@@ -430,7 +452,9 @@ class PersistentAccountRegistry:
         self._store = store
         self._running_src = running
         self._counts: dict[str, int] = {}
-        self._lock = threading.Lock()
+        # RLock (not Lock): ``commit_credential_blob`` holds it while calling
+        # the locked get/put paths so read-compare-write stays atomic.
+        self._lock = threading.RLock()
 
     @property
     def store(self) -> AccountStore:
@@ -541,6 +565,35 @@ class PersistentAccountRegistry:
                     f"account {account.provider!r}"
                 )
         self._store.put_blob(account_id, blob)
+
+    def commit_credential_blob(
+        self,
+        account_id: str,
+        blob: dict[str, Any],
+        *,
+        base_sha256: str | None,
+    ) -> str:
+        """Compare-and-swap credential write-back (SOR-147).
+
+        Writes ``blob`` only while the stored blob still matches the digest
+        the caller's session mounted: ``base_sha256`` is
+        ``credential_blob_digest`` of the stored blob at provision time
+        (``None`` when the account had none). Returns ``committed`` /
+        ``unchanged`` / ``stale`` — ``stale`` means another writer refreshed
+        the credential first and this session's older generation must not
+        overwrite it.
+        """
+        validate_account_id(account_id)
+        if not isinstance(blob, dict) or not isinstance(blob.get(_BLOB_FILES), dict):
+            raise ValueError("credential blob must be {'provider': P, 'files': {relpath: content}}")
+        with self._lock:
+            current = self._store.get_blob(account_id)
+            if current == blob:
+                return COMMIT_UNCHANGED
+            if credential_blob_digest(current) != base_sha256:
+                return COMMIT_STALE
+            self.put_credential_blob(account_id, blob)
+            return COMMIT_COMMITTED
 
 
 def select_store(

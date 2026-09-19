@@ -336,6 +336,7 @@ def _run_public(
             account_id=run.get("account_id"),
             status=run.get("status"),
             error=run.get("error"),
+            plane=plane,
         )
     return run
 
