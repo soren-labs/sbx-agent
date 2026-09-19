@@ -86,8 +86,8 @@ uv run sbx deploy
 ```
 
 SOR-133: the gate + Secret name can be persisted instead of exported per
-shell — `sbx init --github-bridge --github-secret-name sbx-github` writes
-`[github] enabled = true / secret_name = "sbx-github"` into `config.toml`,
+shell — `sbx init --github --github-secret sbx-github` writes
+`[github] ephemeral = true / secret_name = "sbx-github"` into `config.toml`,
 and `sbx deploy` / `sbx upgrade` replay the resolved values into the deploy
 subprocess. Env vars still override the file (`SBX_GITHUB_EPHEMERAL=0`
 disarms for a run). Only the Secret *name* is persisted — never token

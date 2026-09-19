@@ -274,6 +274,28 @@ def test_deploy_github_bridge_secret_preflight(tmp_path) -> None:
     assert any(s.name == "secret:github" for s in report.steps)
 
 
+def test_deploy_github_bridge_preflight_from_config_file(tmp_path) -> None:
+    """SOR-133: gate + Secret name resolve from config.toml (not only env),
+    and the resolved pair is replayed into the deploy env for the remote
+    app — still without ever touching the token value."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path)  # no SBX_GITHUB_* env — file is the source
+    config = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")
+    with pytest.raises(BootstrapError) as exc:
+        _deploy(tmp_path, plane, env=env, config=config)
+    assert exc.value.code == "secret_missing"
+    assert "sbx-github" in str(exc.value)
+    assert plane.secret_create_calls == 0  # fail-before-write
+
+    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=config)
+    assert any(s.name == "secret:github" for s in report.steps)
+    assert plane.deploy_env["SBX_GITHUB_EPHEMERAL"] == "1"
+    assert plane.deploy_env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
+    assert all("REDACTED_GITHUB" not in v for v in plane.deploy_env.values())
+
+
 def test_deploy_github_gate_alone_needs_no_secret(tmp_path) -> None:
     """The local-gate path (token in the control-plane env, no named Secret)
     deploys unchanged — the GitHub preflight is opt-in, not ambient."""
@@ -282,40 +304,6 @@ def test_deploy_github_gate_alone_needs_no_secret(tmp_path) -> None:
     env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "1"})
     report, _, _ = _deploy(tmp_path, plane, env=env)
     assert all(s.name != "secret:github" for s in report.steps)
-
-
-def test_deploy_github_bridge_persisted_in_config(tmp_path) -> None:
-    """SOR-133: a file-persisted bridge (github.enabled + github.secret_name)
-    drives the same fail-before-write preflight as the env vars — no env
-    needed in the deploy shell."""
-    plane = FakePlane()
-    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    config = BootstrapConfig(github_bridge=True, github_secret_name="sbx-github")
-    with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, config=config)
-    assert exc.value.code == "secret_missing"
-    assert "sbx-github" in str(exc.value)
-    assert plane.secret_create_calls == 0
-
-    plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
-    report, _, _ = _deploy(tmp_path, plane, config=config)
-    assert any(s.name == "secret:github" for s in report.steps)
-    # The resolved gate + Secret name are replayed into the deploy subprocess
-    # env so the remote app mounts the Secret and arms the bridge.
-    assert plane.deploy_env["SBX_GITHUB_EPHEMERAL"] == "1"
-    assert plane.deploy_env["SBX_GITHUB_SECRET_NAME"] == "sbx-github"
-
-
-def test_deploy_github_env_disarms_persisted_bridge(tmp_path) -> None:
-    """SBX_GITHUB_EPHEMERAL=0 in the deploy shell overrides a file-persisted
-    github.enabled=true — the preflight never runs."""
-    plane = FakePlane()
-    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "0"})
-    config = BootstrapConfig(github_bridge=True, github_secret_name="sbx-github")
-    report, _, _ = _deploy(tmp_path, plane, env=env, config=config)
-    assert all(s.name != "secret:github" for s in report.steps)
-    assert "SBX_GITHUB_EPHEMERAL" not in plane.deploy_env
 
 
 def test_deploy_unknown_provider_fails_before_any_write(tmp_path) -> None:
@@ -380,3 +368,16 @@ def test_deploy_does_not_overwrite_custom_account_secret(tmp_path) -> None:
     }
     _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "grok")))
     assert plane.secrets["customer-managed"] == {"SBX_ACCOUNT_CREDENTIAL": "external"}
+
+
+def test_deploy_github_env_disarms_persisted_bridge(tmp_path) -> None:
+    """SBX_GITHUB_EPHEMERAL=0 in the deploy shell overrides a file-persisted
+    github.ephemeral=true — the named-Secret preflight never runs and the
+    deploy env does not re-arm the remote gate."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "0"})
+    config = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=config)
+    assert all(s.name != "secret:github" for s in report.steps)
+    assert "SBX_GITHUB_EPHEMERAL" not in plane.deploy_env

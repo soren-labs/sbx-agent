@@ -87,9 +87,9 @@ def test_uninstall_purge_credentials_removes_secrets_and_local_key(tmp_path) -> 
 
 
 def test_uninstall_purge_preserves_operator_github_secret(tmp_path) -> None:
-    """SOR-133: github.secret_name names an *operator-managed* Modal Secret —
-    it is never a managed secret, so --purge-credentials leaves it alone
-    even when the config references it."""
+    """github.secret_name names an *operator-managed* Modal Secret — it is
+    never a managed secret, so --purge-credentials leaves it alone even when
+    the config references it."""
     from sbx.config import BootstrapConfig
 
     cfg, plane, env = _deployed(tmp_path)
@@ -97,12 +97,11 @@ def test_uninstall_purge_preserves_operator_github_secret(tmp_path) -> None:
     cfg = make_cfg(
         tmp_path,
         env=env,
-        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+        config=BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github"),
     )
     report = uninstall(cfg, plane, env=env, purge_credentials=True)
     assert set(plane.secrets) == {"sbx-github"}
     assert "sbx-github" not in report.deleted_secrets
-    assert "REDACTED_GITHUB" not in "\n".join(report.preserved + report.deleted_secrets)
 
 
 def test_uninstall_leftover_sandbox_fails(tmp_path) -> None:

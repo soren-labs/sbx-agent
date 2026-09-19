@@ -71,6 +71,8 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "codex_secret": (("secrets", "codex"), ("SBX_CODEX_SECRET_NAME",)),
     "basic_secret": (("secrets", "basic"), ("SBX_BASIC_SECRET_NAME",)),
     "bootstrap_secret": (("secrets", "bootstrap"), ("SBX_V1_BOOTSTRAP_SECRET_NAME",)),
+    "github_ephemeral": (("github", "ephemeral"), ("SBX_GITHUB_EPHEMERAL",)),
+    "github_secret_name": (("github", "secret_name"), ("SBX_GITHUB_SECRET_NAME",)),
     "image_codex": (("images", "codex"), ("SBX_IMAGE_CODEX",)),
     "image_devin": (("images", "devin"), ("SBX_IMAGE_DEVIN",)),
     "image_antigravity": (("images", "antigravity"), ("SBX_IMAGE_ANTIGRAVITY",)),
@@ -78,10 +80,6 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "image_opencode": (("images", "opencode"), ("SBX_IMAGE_OPENCODE",)),
     "providers": (("deploy", "providers"), ("SBX_PROVIDERS",)),
     "max_concurrent": (("deploy", "max_concurrent"), ("SBX_MAX_CONCURRENT",)),
-    # SOR-133: GitHub bridge persistence — enablement + the operator-managed
-    # Modal Secret *name* are config knobs; the token itself never is.
-    "github_bridge": (("github", "enabled"), ("SBX_GITHUB_EPHEMERAL",)),
-    "github_secret_name": (("github", "secret_name"), ("SBX_GITHUB_SECRET_NAME",)),
 }
 
 
@@ -107,21 +105,17 @@ class BootstrapConfig:
     image_antigravity: str = ANTIGRAVITY_IMAGE_NAME
     image_grok: str = GROK_IMAGE_NAME
     image_opencode: str = OPENCODE_IMAGE_NAME
+    # Optional GitHub auth bridge (SOR-117/SOR-133): the gate flag and the
+    # *name* of the operator-managed Modal Secret holding GH_TOKEN — the
+    # token value itself is never persisted.
+    github_ephemeral: bool = False
+    github_secret_name: str = ""
     providers: tuple[str, ...] = ("codex",)
     # Live-agent/sandbox cap forwarded to the deployed app as
     # ``SBX_MAX_CONCURRENT`` (per-key cap + scheduler global cap). ``None``
     # means "not configured" — the remote defaults apply — so it is never
     # written to config.toml or pushed into the deploy env.
     max_concurrent: int | None = None
-    # SOR-133: GitHub bridge (SOR-117) enablement, persisted instead of
-    # requiring SBX_GITHUB_EPHEMERAL in every shell. Env "1" (or TOML
-    # `enabled = true`) resolves to True; the remote gate still only accepts
-    # "1", which is what ``deploy_env`` emits.
-    github_bridge: bool = False
-    # Name of the operator-managed Modal Secret holding GH_TOKEN/GITHUB_TOKEN
-    # for a *remote* control plane. ``None`` = not configured — stays absent
-    # from config.toml and the deploy env. The token value is never persisted.
-    github_secret_name: str | None = None
 
     def image_name(self, provider: str) -> str:
         """Published Modal image name for ``provider``."""
@@ -178,25 +172,26 @@ class BootstrapConfig:
             "image_grok",
             "image_opencode",
             "max_concurrent",
-            "github_bridge",
-            "github_secret_name",
         )
-        # ``None`` (e.g. an unset max_concurrent/github_secret_name) is never
-        # replayed — the remote defaults must win over an absent local value.
-        # ``github_bridge=False`` is likewise absent: the remote gate reads
-        # "1" only, and an ambient env flag always resolves into this field
-        # first, so the emitted value (or its absence) is already correct.
-        out: dict[str, str] = {}
-        for name in fields:
-            value = getattr(self, name)
-            if value is None or value is False:
-                continue
-            env_name = _FIELD_MAP[name][1][0]
-            out[env_name] = "1" if isinstance(value, bool) else str(value)
+        # ``None`` (e.g. an unset max_concurrent) is never replayed — the
+        # remote defaults must win over an absent local value.
+        out = {
+            _FIELD_MAP[name][1][0]: str(getattr(self, name))
+            for name in fields
+            if getattr(self, name) is not None
+        }
         # ``control.modal_app`` reads this at deploy time to skip mounting
         # the shared Codex Secret and seeding accounts for providers the
         # deployment does not serve (SOR-115/SOR-116).
         out["SBX_PROVIDERS"] = ",".join(self.providers)
+        # SOR-133: replay the resolved GitHub bridge so a file-configured
+        # deploy arms the remote control plane identically to env-armed
+        # ones. The Secret *name* only — token material stays inside the
+        # named Modal Secret.
+        if self.github_ephemeral:
+            out["SBX_GITHUB_EPHEMERAL"] = "1"
+        if self.github_secret_name:
+            out["SBX_GITHUB_SECRET_NAME"] = self.github_secret_name
         return out
 
 
@@ -260,11 +255,11 @@ def _serialize(config: BootstrapConfig) -> str:
         value = getattr(config, name)
         if value is None:
             continue  # unset optional knobs stay absent, not "None"
-        if isinstance(value, tuple):
-            rendered = "[" + ", ".join(_toml_escape(v) for v in value) + "]"
-        elif isinstance(value, bool):
+        if isinstance(value, bool):
             rendered = "true" if value else "false"
-        elif isinstance(value, int):
+        elif isinstance(value, tuple):
+            rendered = "[" + ", ".join(_toml_escape(v) for v in value) + "]"
+        elif isinstance(value, int) and not isinstance(value, bool):
             rendered = str(value)
         else:
             rendered = _toml_escape(str(value))
@@ -294,6 +289,15 @@ def _coerce(name: str, value: Any) -> Any:
         if isinstance(value, (list, tuple)):
             return tuple(str(p).strip() for p in value if str(p).strip())
         raise ValueError("providers must be a list or comma-separated string")
+    if name == "github_ephemeral":
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+        raise ValueError("github_ephemeral must be a boolean")
     if name == "max_concurrent":
         if value in (None, ""):
             return None
@@ -304,16 +308,6 @@ def _coerce(name: str, value: Any) -> Any:
         if n < 1:
             raise ValueError("max_concurrent must be a positive integer")
         return n
-    if name == "github_bridge":
-        # Same strict spelling the remote gate uses (control.github.GATE_ENV):
-        # only "1" (or a TOML `true`) arms the bridge — anything else is off.
-        if isinstance(value, bool):
-            return value
-        return str(value).strip() == "1"
-    if name == "github_secret_name":
-        if value in (None, ""):
-            return None
-        return str(value).strip() or None
     return str(value)
 
 

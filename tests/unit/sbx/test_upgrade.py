@@ -60,9 +60,9 @@ def test_upgrade_unreadable_store_aborts_before_deploy(tmp_path) -> None:
 
 
 def test_upgrade_carries_persisted_github_bridge(tmp_path) -> None:
-    """SOR-133: a file-persisted bridge (github.enabled + secret_name) rides
-    the upgrade's deploy — the remote gate + Secret mount are replayed and
-    the named Secret is preflighted exactly like `sbx deploy`."""
+    """A file-persisted bridge (github.ephemeral + secret_name) rides the
+    upgrade's deploy — the remote gate + Secret mount are replayed and the
+    named Secret is preflighted exactly like `sbx deploy`."""
     from sbx.config import BootstrapConfig
 
     plane = FakePlane()
@@ -71,7 +71,7 @@ def test_upgrade_carries_persisted_github_bridge(tmp_path) -> None:
     cfg = make_cfg(
         tmp_path,
         env=env,
-        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+        config=BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github"),
     )
     transport, _ = make_v1()
     report = upgrade(
@@ -92,7 +92,7 @@ def test_upgrade_missing_github_secret_aborts_before_write(tmp_path) -> None:
     cfg = make_cfg(
         tmp_path,
         env=env,
-        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+        config=BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github"),
     )
     transport, _ = make_v1()
     with pytest.raises(BootstrapError) as exc:

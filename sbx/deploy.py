@@ -190,18 +190,18 @@ def _require_codex_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, 
     )
 
 
-def _require_github_secret(config: BootstrapConfig, existing: set[str]) -> StepResult | None:
-    """Fail-before-write check for the optional GitHub bridge Secret.
+def _require_github_secret(cfg: BootstrapConfig, existing: set[str]) -> StepResult | None:
+    """Fail-before-write check for the optional GitHub bridge Secret (SOR-117).
 
-    Applies when the resolved config armed the bridge (``github.enabled`` /
-    ``SBX_GITHUB_EPHEMERAL``) AND named a Secret (``github.secret_name`` /
-    ``SBX_GITHUB_SECRET_NAME``) — the named Secret holds GH_TOKEN/GITHUB_TOKEN
-    so a *remote* control app sees the token in its env and forwards it into
-    sandboxes. A missing named Secret is an explicit deploy failure rather
-    than a silently inert bridge.
+    Only applies when the resolved config armed the bridge
+    (``github.ephemeral`` / ``SBX_GITHUB_EPHEMERAL``) AND named a Secret
+    (``github.secret_name`` / ``SBX_GITHUB_SECRET_NAME``) — the named Secret
+    holds GH_TOKEN/GITHUB_TOKEN so a *remote* control app sees the token in
+    its env and forwards it into sandboxes. A missing named Secret is an
+    explicit deploy failure rather than a silently inert bridge.
     """
-    name = config.github_secret_name
-    if not config.github_bridge or not name:
+    name = cfg.github_secret_name
+    if not cfg.github_ephemeral or not name:
         return None
     if name in existing:
         return StepResult("secret:github", False, f"{name} present")
@@ -209,8 +209,7 @@ def _require_github_secret(config: BootstrapConfig, existing: set[str]) -> StepR
         f"GitHub bridge Secret {name!r} is missing",
         hint=f"create it with `modal secret create {name} GH_TOKEN=...` "
         "(least privilege: a fine-grained PAT scoped to the agent repos), or "
-        'clear github.secret_name (`sbx init --github-secret-name ""` / unset '
-        "SBX_GITHUB_SECRET_NAME), then rerun `sbx deploy`",
+        "clear github.secret_name / SBX_GITHUB_SECRET_NAME, then rerun `sbx deploy`",
         code="secret_missing",
     )
 
@@ -398,8 +397,6 @@ def deploy(
     if "codex" in config.providers:
         steps.append(_require_codex_secret(config, plane, env))
     steps.append(_require_account_secrets(config, plane, existing_secrets))
-    # SOR-133: the gate + Secret name come from the resolved config — a
-    # file-persisted bridge (and an env-armed one) both land here.
     github_step = _require_github_secret(config, existing_secrets)
     if github_step is not None:
         steps.append(github_step)

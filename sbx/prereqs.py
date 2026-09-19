@@ -152,56 +152,62 @@ def check_github(
     verify: bool = False,
     runner: Callable[..., Any] | None = None,
     which: Callable[[str], str | None] | None = None,
-    enabled: bool | None = None,
+    gate: bool | None = None,
     secret_name: str | None = None,
 ) -> Check:
     """Optional GitHub auth bridge (SOR-117/SOR-133): advisory detection only.
 
     Reports which auth source exists (``GH_TOKEN``/``GITHUB_TOKEN`` env var
     name, ``gh auth status`` under ``verify``) and whether the bridge is
-    armed — never token material. Always warn-or-ok: the GitHub-less path is
-    fully supported.
+    armed — never token material. Always warn-or-ok: the GitHub-less path
+    is fully supported.
 
-    ``enabled``/``secret_name`` carry the *resolved* config (file → env →
-    default). When omitted, the ambient env (``SBX_GITHUB_EPHEMERAL`` /
-    ``SBX_GITHUB_SECRET_NAME``) is read directly.
+    ``gate``/``secret_name`` carry the *resolved* bridge config when the
+    caller has one (file + env); ``None`` falls back to the raw
+    ``SBX_GITHUB_EPHEMERAL``/``SBX_GITHUB_SECRET_NAME`` env vars.
     """
     env = os.environ if env is None else env
     kwargs: dict[str, Any] = {"probe_gh": verify, "which": which}
     if runner is not None:
         kwargs["runner"] = runner
     det = gh.detect(env, **kwargs)
-    armed = det.opted_in if enabled is None else enabled
-    secret = secret_name if secret_name is not None else (env.get("SBX_GITHUB_SECRET_NAME") or None)
-    gate = "SBX_GITHUB_EPHEMERAL=1" if det.opted_in else "github.enabled=true"
-    if armed:
+    opted = det.opted_in if gate is None else gate
+    name = secret_name if secret_name is not None else env.get("SBX_GITHUB_SECRET_NAME")
+    name = name.strip() if name else None
+    if opted:
         if det.token_env:
-            via = f"; Modal Secret {secret} mounts on the deployed app" if secret else ""
-            return Check(
-                name="github",
-                ok=True,
-                detail=f"{det.token_env} detected; bridge armed ({gate}) — sandboxes "
-                f"get GH_TOKEN/GITHUB_TOKEN + a github.com credential helper{via}",
+            detail = (
+                f"{det.token_env} detected; the GitHub bridge is armed — sandboxes "
+                "get GH_TOKEN/GITHUB_TOKEN + a github.com credential helper"
             )
-        if secret:
+            if name:
+                detail += f"; remote deploys mount Modal Secret {name!r}"
+            return Check(name="github", ok=True, detail=detail)
+        if name:
             return Check(
                 name="github",
                 ok=True,
-                detail=f"bridge armed ({gate}); Modal Secret {secret} supplies the "
-                "token to the deployed app",
-                hint="a local control plane (SBX_BACKEND=local) still needs GH_TOKEN "
-                "in its own env — the named Secret only mounts remotely",
+                detail=f"GitHub bridge armed — Modal Secret {name!r} supplies the "
+                "token to the deployed control plane (no host token needed)",
             )
         return Check(
             name="github",
             ok=False,
             warn=True,
-            detail=f"bridge armed ({gate}) but no GH_TOKEN/GITHUB_TOKEN in the env "
-            "and no github.secret_name configured",
+            detail="GitHub bridge armed but no GH_TOKEN/GITHUB_TOKEN in the env",
             hint="export GH_TOKEN (or `export GH_TOKEN=$(gh auth token)` when the gh "
             "CLI is logged in); for a remote deploy, name a Modal Secret via "
-            "`sbx init --github-secret-name` / SBX_GITHUB_SECRET_NAME — or disarm "
-            "the bridge (`sbx init --no-github-bridge`)",
+            "github.secret_name / SBX_GITHUB_SECRET_NAME — or disable the bridge "
+            "(`sbx init --no-github` / unset SBX_GITHUB_EPHEMERAL)",
+        )
+    if name:
+        return Check(
+            name="github",
+            ok=False,
+            warn=True,
+            detail=f"GitHub bridge Secret {name!r} is configured but the bridge is off",
+            hint="arm it with `sbx init --github` (github.ephemeral in config) or "
+            "export SBX_GITHUB_EPHEMERAL=1 — a named Secret alone injects nothing",
         )
     if det.token_env:
         return Check(
@@ -209,8 +215,7 @@ def check_github(
             ok=False,
             warn=True,
             detail=f"{det.token_env} detected — sandbox GitHub injection is off",
-            hint="arm the bridge with `sbx init --github-bridge` or export "
-            "SBX_GITHUB_EPHEMERAL=1 to inject it into sandboxes "
+            hint="export SBX_GITHUB_EPHEMERAL=1 to inject it into sandboxes "
             "(private-repo clone/push/PR on github.com)",
         )
     if det.gh_authenticated:
@@ -219,8 +224,7 @@ def check_github(
             ok=False,
             warn=True,
             detail="gh CLI is authenticated — no GH_TOKEN/GITHUB_TOKEN exported",
-            hint="export GH_TOKEN=$(gh auth token) and arm the bridge "
-            "(`sbx init --github-bridge` or SBX_GITHUB_EPHEMERAL=1) to "
+            hint="export GH_TOKEN=$(gh auth token) and SBX_GITHUB_EPHEMERAL=1 to "
             "enable sandbox GitHub auth",
         )
     tail = ""

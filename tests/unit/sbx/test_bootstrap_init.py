@@ -169,6 +169,18 @@ class TestCheckGithub:
         assert "gh CLI is authenticated" in check.detail
         assert "gh auth token" in (check.hint or "")
 
+    def test_armed_with_named_secret_is_ok_without_host_token(self) -> None:
+        """SOR-133: a config-armed bridge + named Secret is satisfied without
+        a host-side token — the remote control plane reads it from Modal."""
+        check = prereqs.check_github({}, which=self._NO_GH, gate=True, secret_name="sbx-github")
+        assert check.ok and "sbx-github" in check.detail
+
+    def test_named_secret_without_gate_warns(self) -> None:
+        check = prereqs.check_github({}, which=self._NO_GH, gate=False, secret_name="sbx-github")
+        assert not check.ok and check.warn
+        assert "sbx-github" in check.detail
+        assert "SBX_GITHUB_EPHEMERAL" in (check.hint or "")
+
 
 def test_init_reports_github_bridge_advisory(tmp_path) -> None:
     env = make_env(tmp_path)
@@ -179,44 +191,39 @@ def test_init_reports_github_bridge_advisory(tmp_path) -> None:
 
 
 def test_init_persists_github_bridge_flags(tmp_path) -> None:
-    """SOR-133: --github-bridge/--github-secret-name write [github] into the
-    config file; the advisory check reports the persisted state."""
+    """SOR-133: ``--github``/``--github-secret`` persist the gate + Secret
+    name, and the advisory reflects the just-written resolved config."""
     env = make_env(tmp_path)
     cfg = make_cfg(tmp_path, env=env, write=False)
-    report = init_mod.init(
-        cfg, FakePlane(), env=env, github_bridge=True, github_secret_name="sbx-github"
-    )
+    report = init_mod.init(cfg, FakePlane(), env=env, github=True, github_secret="sbx-github")
     reloaded = load(tmp_path / "config.toml", env={}).config
-    assert reloaded.github_bridge is True
+    assert reloaded.github_ephemeral is True
     assert reloaded.github_secret_name == "sbx-github"
     gh = next(c for c in report.checks if c.name == "github")
     assert gh.ok and "sbx-github" in gh.detail
 
 
-def test_init_github_flags_clear_persisted_values(tmp_path) -> None:
+def test_init_no_github_flag_disarms_persisted_gate(tmp_path) -> None:
     env = make_env(tmp_path)
     cfg = make_cfg(
         tmp_path,
         env=env,
-        config=BootstrapConfig(github_bridge=True, github_secret_name="sbx-github"),
+        config=BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github"),
     )
-    init_mod.init(cfg, FakePlane(), env=env, github_bridge=False, github_secret_name="")
+    init_mod.init(cfg, FakePlane(), env=env, github=False)
     reloaded = load(tmp_path / "config.toml", env={}).config
-    assert reloaded.github_bridge is False
-    assert reloaded.github_secret_name is None
-    text = (tmp_path / "config.toml").read_text()
-    assert "enabled = false" in text and "secret_name" not in text
+    assert reloaded.github_ephemeral is False
+    assert reloaded.github_secret_name == "sbx-github"  # name kept; gate off
 
 
 def test_init_github_env_override_wins_over_file(tmp_path) -> None:
     """An armed env gate beats a persisted disabled value — the advisory
-    check reports the env-resolved state, not just the file."""
+    reports the env-resolved state and nothing is frozen into the file."""
     env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "1", "GH_TOKEN": "REDACTED_GITHUB"})
-    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig(github_bridge=False))
+    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig(github_ephemeral=False))
     report = init_mod.init(cfg, FakePlane(), env=env)
     gh = next(c for c in report.checks if c.name == "github")
     assert gh.ok and "GH_TOKEN" in gh.detail
     assert "REDACTED_GITHUB" not in f"{gh.detail} {gh.hint}"
-    # and the env override is NOT frozen into the file
     reloaded = load(tmp_path / "config.toml", env={}).config
-    assert reloaded.github_bridge is False
+    assert reloaded.github_ephemeral is False

@@ -112,12 +112,12 @@ uv run sbx deploy
 ```
 
 - SOR-133: instead of exporting the gate + name in every shell, persist them
-  once — `sbx init --github-bridge --github-secret-name sbx-github` writes
-  `[github] enabled = true / secret_name = "sbx-github"` into `config.toml`,
-  and `sbx deploy` / `sbx upgrade` replay it. Env vars still override the
-  file, so `SBX_GITHUB_EPHEMERAL=0 sbx deploy` disarms for one run; `sbx
-  init --no-github-bridge` clears the persisted gate. Only the Secret name
-  is stored — never token material. `sbx uninstall --purge-credentials`
+  once — `sbx init --github --github-secret sbx-github` writes
+  `[github] ephemeral = true / secret_name = "sbx-github"` into
+  `config.toml`, and `sbx deploy` / `sbx upgrade` replay it. Env vars still
+  override the file, so `SBX_GITHUB_EPHEMERAL=0 sbx deploy` disarms for one
+  run; `sbx init --no-github` clears the persisted gate. Only the Secret
+  name is stored — never token material. `sbx uninstall --purge-credentials`
   never deletes the named Secret (it is operator-managed, possibly shared).
 - `sbx init` / `sbx doctor` print an advisory `github` check: which auth
   source exists (the `GH_TOKEN`/`GITHUB_TOKEN` var name, or `gh auth status`
