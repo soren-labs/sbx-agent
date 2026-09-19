@@ -31,13 +31,22 @@ app = modal.App(_APP_NAME)
 # must never block a deploy (SOR-115).
 _secrets = [modal.Secret.from_name(name) for name in app_secret_names()]
 
-CONTROL_IMAGE = modal.Image.debian_slim(python_version="3.12").pip_install(
-    "fastapi",
-    "httpx",
-    "pydantic",
-    "uvicorn",
-    "anyio",
-    "starlette",
+# SOR-138: the entrypoint mount only ships the function's own package
+# (``control``). ``control.app`` transitively imports ``runtime.runner.*``
+# (contract/run_store/api_v1) and ``control/backends/modal.py`` lazily
+# imports ``runtime.image``, so ``runtime`` must be part of the image's
+# source mount for a fresh deploy to start without a detached fixup.
+CONTROL_IMAGE = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install(
+        "fastapi",
+        "httpx",
+        "pydantic",
+        "uvicorn",
+        "anyio",
+        "starlette",
+    )
+    .add_local_python_source("runtime")
 )
 
 # Deploy-time names/tunables the remote functions must see (dict/secret/image

@@ -68,6 +68,18 @@ def test_modal_app_source_has_decorators() -> None:
         assert pkg in src
 
 
+def test_modal_app_deploy_source_closure_includes_runtime() -> None:
+    """SOR-138: the deploy image must carry the ``runtime`` package.
+
+    Modal's entrypoint mount ships only the function's own top-level package
+    (``control``); ``control.app`` imports ``runtime.runner.*`` transitively
+    and ``control/backends/modal.py`` lazily imports ``runtime.image``, so a
+    deploy that omits ``runtime`` cannot start.
+    """
+    src = MODAL_APP.read_text(encoding="utf-8")
+    assert 'add_local_python_source("runtime")' in src
+
+
 def test_control_app_import_does_not_load_modal(monkeypatch) -> None:
     for name in list(sys.modules):
         if name == "modal" or name.startswith("modal."):
