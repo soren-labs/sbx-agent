@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -92,6 +93,53 @@ def env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+# SOR-132/SOR-134: the lifecycle chain. Turn bound, the sandbox's native
+# timers, the reaper's grace windows, and the resolved deploy config must
+# all agree — one resolver so no consumer can quietly fall back to a
+# different value than the operator configured.
+@dataclass(frozen=True)
+class LifecycleConfig:
+    """Resolved lifecycle tunables (env-overridable contract defaults).
+
+    ``turn_max_seconds`` bounds one provider turn (runner ``--max-seconds``);
+    ``run_stale_s`` (``turn_max_seconds + run_grace_s``) is the reaper's
+    stranded-``running`` bound; ``idle_timeout_s`` drives both the reaper
+    sweep and ``Sandbox.create(idle_timeout=...)``; ``sandbox_timeout_s``
+    is the Modal hard cap; ``create_grace_s`` is the reaper's in-flight
+    create window.
+    """
+
+    idle_timeout_s: int
+    turn_max_seconds: int
+    sandbox_timeout_s: int
+    create_grace_s: int
+    run_grace_s: int
+
+    @property
+    def run_stale_s(self) -> int:
+        """A ``running`` record is stranded past ``turn_max + run_grace``."""
+        return self.turn_max_seconds + self.run_grace_s
+
+
+def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
+    raw = env.get(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
+
+
+def lifecycle_config(env: Mapping[str, str] | None = None) -> LifecycleConfig:
+    """Resolve the lifecycle chain once; consumers share the result."""
+    env = os.environ if env is None else env
+    return LifecycleConfig(
+        idle_timeout_s=_env_int(env, "SBX_IDLE_TIMEOUT_S", IDLE_TIMEOUT_S),
+        turn_max_seconds=_env_int(env, "SBX_TURN_MAX_SECONDS", TURN_MAX_SECONDS),
+        sandbox_timeout_s=_env_int(env, "SBX_SANDBOX_TIMEOUT_S", SANDBOX_TIMEOUT_S),
+        create_grace_s=_env_int(env, "SBX_CREATE_GRACE_S", CREATE_GRACE_S),
+        run_grace_s=_env_int(env, "SBX_RUN_GRACE_S", RUN_GRACE_S),
+    )
+
+
 def account_secret_prefix() -> str:
     """Prefix for per-account credential Secret names (``<prefix><id>``)."""
     return env_str("SBX_ACCOUNT_SECRET_PREFIX", ACCOUNT_SECRET_PREFIX)
@@ -177,6 +225,9 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_MAX_CONCURRENT",
     "SBX_IDLE_TIMEOUT_S",
     "SBX_TURN_MAX_SECONDS",
+    "SBX_SANDBOX_TIMEOUT_S",
+    "SBX_CREATE_GRACE_S",
+    "SBX_RUN_GRACE_S",
     "SBX_DEFAULT_MODEL",
     "SBX_SSE_KEEPALIVE_SECONDS",
     "SBX_DEVIN_BURST_SLOTS",
