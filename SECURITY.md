@@ -20,7 +20,7 @@ We aim to acknowledge reports within a few days. There is no bug bounty.
 
 | Version | Supported |
 | --- | --- |
-| `0.1.x` (latest alpha tag) | ✅ fixes land on the release branch |
+| `0.1.x` (latest tag: `v0.1.1`, public alpha) | ✅ fixes land on the release branch |
 | anything older | ❌ upgrade |
 
 This is a public alpha; only the newest release tag receives fixes.
@@ -38,8 +38,9 @@ This is a public alpha; only the newest release tag receives fixes.
   sandboxes at `0600`, and stripped from the CLI child environment. API keys
   (`sbx_<key>`) are stored server-side as `sha256` only; plaintext is shown
   once at creation.
-- **`/v1` is the public surface** (Bearer). `/api/*` is HTTP Basic and exists
-  for the bundled dashboard — do not expose it as a public API.
+- **`/v1` is the public surface** (Bearer). `/api/*` is the internal legacy
+  dashboard API (HTTP Basic, one shared deployment credential) — do not
+  expose it or build on it; see README §API surfaces.
 - **Artifact collection fails closed**: suspected secret material in a
   workspace snapshot aborts with `409 artifact_secret`; nothing is persisted.
 

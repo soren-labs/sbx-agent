@@ -8,4 +8,4 @@ is written once under the state dir with mode 0600; the control plane only
 ever stores its sha256.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

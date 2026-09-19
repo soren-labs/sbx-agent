@@ -1,6 +1,6 @@
 [project]
 name = "sbx-browser"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cursor Cloud Agent-style Codex cloud sessions (browser + control plane + sandbox runner)"
 readme = "README.md"
 requires-python = ">=3.12"
