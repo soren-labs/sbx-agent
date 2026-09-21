@@ -1,0 +1,59 @@
+# SOR-170 prototype — top-level navigation tree (tool-agnostic; shown in
+# MkDocs `nav:` shape for concreteness). DESIGN ONLY — see docs-ia.md §1.
+# Paths are the proposed docs-site slugs, not current repo paths; the
+# mapping to existing files is the disposition table in docs-ia.md §5.
+
+nav:
+  - Overview: index.md
+  - Get Started:
+      - get-started/prerequisites.md
+      - get-started/credentials.md
+      - get-started/deploy.md
+      - get-started/verify.md            # doctor + smoke
+      - get-started/first-agent.md
+      - get-started/repo-workflow.md
+  - Guides:
+      - guides/providers-accounts.md
+      - guides/agents-runs.md
+      - guides/workspaces-git.md
+      - guides/review-handoff.md
+      - guides/artifacts-evidence.md
+      - guides/workflows-recovery.md
+      - guides/admin-api-keys.md
+      - guides/usage-cost.md
+      - guides/upgrade-cleanup-troubleshooting.md
+  - Concepts:
+      - concepts/architecture.md
+      - concepts/security-model.md
+      - concepts/lifecycle-timeouts.md
+      - concepts/durability.md
+      - concepts/events.md
+  - API Reference:                       # generated from docs/contracts/api-v1.yaml
+      - api/v1/index.md                  # auth, scopes, envelope, SSE, versioning
+      - api/v1/agents.md                 # tag: agents
+      - api/v1/runs.md                   # tag: runs
+      - api/v1/workspaces.md             # tag: workspaces
+      - api/v1/artifacts.md              # tag: artifacts
+      - api/v1/accounts.md               # tag: accounts (+ api-keys ops)
+      - api/v1/meta.md                   # tag: meta + /v1/workflows
+      - api/v1/errors.md                 # x-canonical error catalog
+      - api/internal.md                  # /api/* pointer page — internal only
+  - Reference:
+      - reference/sbx-cli.md             # from docs/bootstrap.md
+      - reference/configuration.md       # config.toml + env vars
+      - reference/modal-resources.md
+      - reference/support-matrix.md
+      - reference/errors.md
+  - Contracts:                           # frozen engineering contracts (contributors)
+      - contracts/index.md
+      - contracts/filesystem.md
+      - contracts/events.md
+      - contracts/runner-cli.md
+      - contracts/api.md                 # api.yaml render/link
+      - contracts/api-v1.md              # api-v1.yaml render/link
+      - contracts/artifacts.md
+  - Releases:
+      - releases/changelog.md
+      - releases/evidence.md             # index of docs/reviews/*
+  - Security: security.md
+  - Contributing: contributing.md
