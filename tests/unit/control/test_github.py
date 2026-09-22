@@ -35,6 +35,7 @@ from control.workspace import (
     WorkspaceSpec,
     create_pull_request,
     git_push,
+    merge_pull_request,
 )
 
 GH_VALUE = "REDACTED_GITHUB"
@@ -570,6 +571,83 @@ class TestCreatePullRequest:
         backend = RecordingBackend(results=[(["not json", "201"], 0)])
         with pytest.raises(WorkspaceError) as exc:
             create_pull_request(backend, HANDLE, self.REPO, head="b", base="main", title="t")
+        assert exc.value.code == REPO_UNAVAILABLE
+
+
+class TestMergePullRequest:
+    REPO = "https://github.com/octo/hello"
+    SHA = "a" * 40
+
+    def test_env_scoped_to_repo(self, monkeypatch) -> None:
+        """The merge exec env carries ``github_repo`` so a GitHub App mint is
+        scoped to the installation authorizing this repo — not whichever
+        installation happens to sort first."""
+        monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+        monkeypatch.setenv("GH_TOKEN", GH_VALUE)
+        seen: list[str | None] = []
+
+        def fake_env(handle, extra=None, *, github_repo=None):
+            seen.append(github_repo)
+            return {}
+
+        monkeypatch.setattr("control.workspace.sandbox_env", fake_env)
+        backend = RecordingBackend(results=[([json.dumps({"merged": True}), "200"], 0)])
+        out = merge_pull_request(backend, HANDLE, self.REPO, number=7, sha=self.SHA)
+        assert out == {"merged": True}
+        assert seen == [self.REPO]
+
+    def test_requires_opt_in(self) -> None:
+        backend = RecordingBackend()
+        with pytest.raises(WorkspaceError) as exc:
+            merge_pull_request(backend, HANDLE, self.REPO, number=7, sha=self.SHA)
+        assert exc.value.code == REPO_UNAVAILABLE
+        assert backend.calls == []
+
+    def test_request_pins_reviewed_sha(self, monkeypatch) -> None:
+        monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+        monkeypatch.setenv("GH_TOKEN", GH_VALUE)
+        backend = RecordingBackend(results=[([json.dumps({"merged": True}), "200"], 0)])
+        merge_pull_request(backend, HANDLE, self.REPO, number=7, sha=self.SHA)
+        argv, env = backend.calls[0]
+        script = argv[2]
+        assert "repos/octo/hello/pulls/7/merge" in script
+        parts = shlex.split(script)
+        payload = json.loads(parts[parts.index("--data") + 1])
+        assert payload == {"sha": self.SHA, "merge_method": "merge"}
+        assert env["GH_TOKEN"] == GH_VALUE
+
+    @pytest.mark.parametrize("number", [0, -1, True, "7"])
+    def test_invalid_number_rejected(self, monkeypatch, number) -> None:
+        monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+        monkeypatch.setenv("GH_TOKEN", GH_VALUE)
+        backend = RecordingBackend()
+        with pytest.raises(WorkspaceError) as exc:
+            merge_pull_request(backend, HANDLE, self.REPO, number=number, sha=self.SHA)
+        assert exc.value.code == WORKSPACE_INVALID
+        assert backend.calls == []
+
+    def test_non_github_repo_rejected(self, monkeypatch) -> None:
+        monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+        monkeypatch.setenv("GH_TOKEN", GH_VALUE)
+        backend = RecordingBackend()
+        with pytest.raises(WorkspaceError) as exc:
+            merge_pull_request(
+                backend,
+                HANDLE,
+                "https://user:SECRET@gitlab.com/o/r",
+                number=7,
+                sha=self.SHA,
+            )
+        assert exc.value.code == WORKSPACE_INVALID
+        assert "SECRET" not in str(exc.value)
+        assert backend.calls == []
+
+    def test_http_failure_is_repo_unavailable(self, monkeypatch) -> None:
+        monkeypatch.setenv("SBX_GITHUB_EPHEMERAL", "1")
+        monkeypatch.setenv("GH_TOKEN", GH_VALUE)
+        backend = RecordingBackend(results=[(['{"message": "Not Found"}', "404"], 0)])
+        with pytest.raises(WorkspaceError) as exc:
+            merge_pull_request(backend, HANDLE, self.REPO, number=7, sha=self.SHA)
         assert exc.value.code == REPO_UNAVAILABLE
 
 

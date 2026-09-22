@@ -885,7 +885,7 @@ def merge_pull_request(
         f"--data {shlex.quote(payload)} "
         "-w '\\n%{http_code}'"
     )
-    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle))
+    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle, github_repo=repo))
     lines = list(proc.stdout)
     code = proc.wait()
     http_code = lines[-1].strip() if lines else ""
