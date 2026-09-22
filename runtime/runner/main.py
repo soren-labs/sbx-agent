@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Agent provider (default: codex)",
     )
     p_init.add_argument("--account-id", default=None, help="Account id for this session")
+    p_init.add_argument(
+        "--reasoning-effort",
+        default=None,
+        help="Canonical reasoning effort bound to every turn (SOR-179)",
+    )
 
     p_turn = sub.add_parser("turn", help="Run one provider turn from a message file")
     p_turn.add_argument("--n", type=int, required=True, help="Turn number")
@@ -65,6 +70,7 @@ def run(argv: list[str] | None = None) -> int:
             model=args.model,
             provider=args.provider,
             account_id=args.account_id,
+            reasoning_effort=args.reasoning_effort,
         )
     if args.cmd == "turn":
         return cmd_turn(

@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt
 
 ProviderId = Literal["codex", "antigravity", "grok", "opencode", "devin"]
+ReasoningEffort = Literal["low", "medium", "high"]
 VALID_SCOPES = ("agents", "admin")
 
 USAGE_REQUIRED = ("input_tokens", "cached_input_tokens", "output_tokens")
@@ -26,6 +27,10 @@ class AgentSpec(BaseModel):
     provider: ProviderId
     account_id: str | None = "auto"
     model: str | None = None
+    # SOR-179: canonical reasoning effort, agent-scoped — every run
+    # (incl. resume turns) inherits it. Providers without a native effort
+    # surface refuse the combination as ``unsupported`` at create time.
+    reasoning_effort: ReasoningEffort | None = None
 
 
 _COMMIT_SHA = r"^[0-9a-f]{40}$"
@@ -266,6 +271,9 @@ def agent_public(
         "provider": (meta.provider if meta else None) or pub.get("provider") or "codex",
         "account_id": (meta.account_id if meta else None) or pub.get("account_id") or "auto",
         "model": pub["model"],
+        # SOR-179: the declared canonical effort (null when undeclared).
+        "reasoning_effort": (getattr(meta, "reasoning_effort", None) if meta else None)
+        or pub.get("reasoning_effort"),
         "status": pub["status"],
         "created_at": pub["created_at"],
         "updated_at": pub["updated_at"],

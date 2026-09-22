@@ -104,6 +104,19 @@ def restore_credential_blob(root: Path) -> list[str]:
 def cmd_init(args: argparse.Namespace) -> int:
     root = work_root()
     root.mkdir(parents=True, exist_ok=True)
+
+    # SOR-179: mirror runtime.runner.bootstrap — a provider/effort
+    # combination with no native mapping fails init explicitly.
+    from runtime.runner.effort import effort_error, normalize_effort
+
+    try:
+        effort = normalize_effort(args.reasoning_effort)
+        refusal = effort_error(args.provider, effort)
+    except ValueError as exc:
+        refusal = str(exc)
+    if refusal is not None:
+        print(f"runner init: {refusal}", file=sys.stderr)
+        return EXIT_INTERNAL
     (root / "inbox").mkdir(exist_ok=True)
     (root / "turns").mkdir(exist_ok=True)
     home = codex_home(root)
@@ -158,6 +171,8 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "provider": args.provider,
                 "account_id": args.account_id or os.environ.get("SBX_ACCOUNT_ID"),
                 "model": args.model,
+                # SOR-179: canonical effort bound to every turn.
+                "reasoning_effort": effort,
                 "native_session_id": None,
                 "codex_session_id": None,  # v1 compatibility alias
                 "turn": 0,
@@ -241,6 +256,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
                 "provider": session.get("provider") or "codex",
                 "model": session.get("model"),
                 "account_id": session.get("account_id"),
+                "reasoning_effort": session.get("reasoning_effort"),
             },
         )
     emit(root, {"type": "sbx.turn_started", "n": args.n})
@@ -475,6 +491,7 @@ def main() -> None:
     p_init.add_argument("--model", required=True)
     p_init.add_argument("--provider", choices=PROVIDERS, default="codex")
     p_init.add_argument("--account-id", default=None)
+    p_init.add_argument("--reasoning-effort", default=None)
 
     p_turn = sub.add_parser("turn")
     p_turn.add_argument("--n", type=int, required=True)

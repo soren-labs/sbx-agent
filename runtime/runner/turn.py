@@ -194,6 +194,7 @@ def cmd_turn(
                 "provider": provider,
                 "model": session.get("model"),
                 "account_id": session.get("account_id"),
+                "reasoning_effort": session.get("reasoning_effort"),
             },
         )
     emit(root, {"type": "sbx.turn_started", "n": n})

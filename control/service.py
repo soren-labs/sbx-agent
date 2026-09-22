@@ -174,6 +174,7 @@ class ControlPlane:
             "created_at": iso(rec.created_at),
             "updated_at": iso(rec.updated_at),
             "model": rec.model,
+            "reasoning_effort": rec.reasoning_effort,
             "turns": rec.turns,
             "usage": usage,
             "cost_estimate_usd": cost_estimate_usd(
@@ -243,6 +244,7 @@ class ControlPlane:
         output_contract: dict[str, Any] | None = None,
         resource_refs: dict[str, Any] | None = None,
         compute: dict[str, Any] | ComputeSpec | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Publish a ``creating`` record without provisioning the sandbox.
 
@@ -296,6 +298,10 @@ class ControlPlane:
                     compute.public() if isinstance(compute, ComputeSpec) else dict(compute)
                 )
                 tags["compute"] = json.dumps(compute_public)
+            if reasoning_effort:
+                # SOR-179: the declared canonical effort rides the durable
+                # tags so the agent view stays truthful across restarts.
+                tags["reasoning_effort"] = reasoning_effort
             now = self.clock()
             messages: list[dict[str, Any]] = []
             if first_prompt is not None:
@@ -319,11 +325,13 @@ class ControlPlane:
                 idempotency_key=idempotency_key,
                 idempotency_fingerprint=idempotency_fingerprint,
                 compute=compute_public if compute is not None else None,
+                reasoning_effort=reasoning_effort,
             )
             self._run_meta[session_id] = {
                 "provider": provider,
                 "account_id": account_id,
                 "model": rec.model,
+                "reasoning_effort": reasoning_effort,
             }
             if first_prompt is not None and self.run_ledger is not None:
                 # The durable ledger is the source of truth: run-1 exists as
@@ -335,6 +343,7 @@ class ControlPlane:
                     provider=provider,
                     account_id=account_id,
                     model=rec.model,
+                    reasoning_effort=rec.reasoning_effort,
                     status="CREATING",
                     output_contract=output_contract,
                 )
@@ -432,6 +441,10 @@ class ControlPlane:
 
         try:
             init_args = ["init", "--auth", "auth_json", "--model", rec.model]
+            if rec.reasoning_effort:
+                # SOR-179: the agent's declared canonical effort is bound
+                # into session.json; every turn (incl. resume) inherits it.
+                init_args += ["--reasoning-effort", rec.reasoning_effort]
             init_env: dict[str, str] = {}
             if provider != "codex" or account_id != "auto":
                 init_args += ["--provider", provider]
@@ -584,6 +597,7 @@ class ControlPlane:
                     or rec.sandbox_tags.get("account_id")
                     or "auto",
                     model=meta.get("model") or rec.model,
+                    reasoning_effort=meta.get("reasoning_effort") or rec.reasoning_effort,
                     output_contract=output_contract,
                 )
         try:
@@ -645,6 +659,7 @@ class ControlPlane:
                     or rec.sandbox_tags.get("account_id")
                     or "auto",
                     model=meta.get("model") or rec.model,
+                    reasoning_effort=meta.get("reasoning_effort") or rec.reasoning_effort,
                 )
                 self.run_ledger.mark_running(session_id, n)
         text = next(
