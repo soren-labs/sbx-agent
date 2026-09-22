@@ -195,13 +195,27 @@ def _select_environment_store() -> Any:
     return FileEnvironmentStore(override or _xdg_state_dir("environments"))
 
 
+def _select_checkpoint_store() -> Any:
+    """SOR-180: durable agent-checkpoint record store."""
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.checkpoint import ModalDictCheckpointStore
+        from control.config import CHECKPOINTS_DICT_NAME
+
+        return ModalDictCheckpointStore(env_str("SBX_CHECKPOINTS_DICT", CHECKPOINTS_DICT_NAME))
+    from control.checkpoint import FileCheckpointStore
+
+    override = os.environ.get("SBX_CHECKPOINT_STORE_DIR")
+    return FileCheckpointStore(override or _xdg_state_dir("checkpoints"))
+
+
 def _select_snapshot_provider(backend: SandboxBackend) -> Any:
-    """SOR-127: filesystem snapshot/restore seam for the environment cache.
+    """SOR-127/SOR-180: filesystem snapshot/restore seam.
 
     Modal uses the native ``Sandbox.snapshot_filesystem`` primitive (image
     ids as refs); local dev/tests get directory copies under the snapshot
     root. The worker sandbox never holds Modal control credentials — both
-    directions are driven control-plane-side.
+    directions are driven control-plane-side. Shared by the environment
+    cache (opt-in) and the per-agent checkpoint service (always on).
     """
     if os.environ.get("SBX_BACKEND", "local") == "modal":
         from control.backends.modal import ModalSnapshotProvider
@@ -342,6 +356,25 @@ def create_app(
 
     plane.snapshot_hook = _snapshot_on_close
 
+    # SOR-180: same-agent checkpoint / suspend / recovery — always armed
+    # (not opt-in): an idle agent past its retention is checkpointed +
+    # released to a recoverable ``suspended`` state by the reaper sweep,
+    # and a follow-up message restores the same Agent id, filesystem and
+    # native provider session. Shares the snapshot seam with the env
+    # cache; credentials are scrubbed pre-snapshot and re-attached
+    # in-sandbox on restore — never durable product state.
+    from control.checkpoint import CheckpointService
+
+    snapshot_provider = _select_snapshot_provider(backend)
+    app.state.checkpoints = CheckpointService(
+        backend,
+        _select_checkpoint_store(),
+        snapshots=snapshot_provider,
+        workspaces=workspaces,
+        clock=clock,
+    )
+    plane.checkpoints = app.state.checkpoints
+
     # SOR-127 environment build/snapshot cache — opt-in (``SBX_ENV_CACHE=1``).
     # When armed, the /v1 worker resolves the workspace's last-known-good
     # build record before provisioning (restore instead of cold clone) and
@@ -351,7 +384,6 @@ def create_app(
     if os.environ.get("SBX_ENV_CACHE") == "1":
         from control.environment import EnvironmentService
 
-        snapshot_provider = _select_snapshot_provider(backend)
         environments = EnvironmentService(
             backend,
             _select_environment_store(),

@@ -53,6 +53,8 @@ WORKSPACES_DICT_NAME = "sbx-workspaces"
 ENVIRONMENTS_DICT_NAME = "sbx-environments"
 # SOR-177: GitHub App installation metadata + pending authorize states.
 GITHUB_APP_DICT_NAME = "sbx-github-app"
+# SOR-180: per-agent recovery checkpoint records (suspend/restore state).
+CHECKPOINTS_DICT_NAME = "sbx-checkpoints"
 # Modal filesystem-snapshot defaults for environment builds.
 ENV_SNAPSHOT_TTL_S = 30 * 24 * 3600  # Modal default retention for filesystem snapshots
 ENV_SNAPSHOT_TIMEOUT_S = 300
@@ -292,6 +294,8 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_ENV_SETUP",
     "SBX_ENV_SNAPSHOT_TTL_S",
     "SBX_ENV_SNAPSHOT_TIMEOUT_S",
+    # SOR-180 same-agent checkpoint/recovery: durable record Dict name.
+    "SBX_CHECKPOINTS_DICT",
     *(
         f"SBX_{provider}_{suffix}"
         for provider in _PROVIDER_SEED_PROVIDERS

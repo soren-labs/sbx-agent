@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from control.accounts import cooldown_expired
 from control.backend import SandboxBackend, SandboxHandle
@@ -30,11 +31,12 @@ def reap(
     create_grace_s: int | None = None,
     run_grace_s: int | None = None,
     account_registry: AccountRegistry | None = None,
+    checkpoints: Any = None,
     on_action: Callable[[ReapAction], None] | None = None,
 ) -> list[ReapAction]:
     """Reconcile Dict records with live sandboxes.
 
-    Rules (SOR-31 + P0 + SOR-80):
+    Rules (SOR-31 + P0 + SOR-80 + SOR-180):
     * ``creating`` record without ``sandbox_id``: younger than
       ``create_grace_s`` → in-flight create, left alone; older → ``lost``
     * ``creating`` record with a live sandbox that has not settled within
@@ -45,11 +47,20 @@ def reap(
       bound plus ``run_grace_s`` → ``lost`` (the turn watcher is
       in-process; a control-plane cutover mid-turn strands the record
       ``running`` on a live sandbox forever, holding the account slot)
+    * ``suspended`` record (SOR-180): skipped entirely — it owns no live
+      sandbox and a follow-up message restores it from its checkpoint
     * idle longer than ``idle_timeout_s`` (the post-session retention,
-      SOR-135) and sandbox still alive → terminate + ``timed_out``
+      SOR-135) and sandbox still alive → with ``checkpoints`` wired,
+      filesystem-checkpoint the agent then terminate + ``suspended``
+      (recoverable; lease deliberately kept); without checkpoints (or when
+      the checkpoint fails) → terminate + ``timed_out`` as before
     * record exists, sandbox gone, status was idle → ``timed_out`` (native
       ``Sandbox.create(idle_timeout=)`` fired — a separate resolved knob,
-      ``sandbox_idle_timeout_s``, that bounds a live sandbox instead)
+      ``sandbox_idle_timeout_s``, that bounds a live sandbox instead).
+      With ``checkpoints`` wired this is an explicit ``platform_loss``
+      diagnosis instead: an agent with a usable checkpoint heals to
+      ``suspended`` (the release transition half-finished); without one it
+      goes ``lost`` — uncheckpointed platform loss, not a policy expiry
     * record exists, sandbox gone, status was creating/running → ``lost``
     * live sandbox whose record is terminal → retry terminate (``terminal_cleanup``)
     * sandbox exists with no Dict record → terminate (``orphan_terminate``)
@@ -60,8 +71,14 @@ def reap(
       accounting stays lazy — the scheduler recovers on pick; this sweep
       makes recovery visible without waiting for traffic.
 
+    ``checkpoints`` (optional, SOR-180) is the ``CheckpointService`` — the
+    reaper calls ``suspend(rec, handle)`` / ``has_checkpoint(id)`` /
+    ``fail(id, error)`` on it, duck-typed.
+
     ``on_action`` (optional) is invoked once per emitted action — the
-    production cron wires it to ``/v1`` lease release (SOR-80).
+    production cron wires it to ``/v1`` lease release (SOR-80). The
+    ``suspended`` action is deliberately non-terminal: the caller must not
+    release the agent's account lease for it.
 
     Unset bounds resolve from ``lifecycle_config`` (SOR-132/SOR-134), so
     every caller — cron, local sweep, gate — shares the deploy's resolved
@@ -102,6 +119,10 @@ def reap(
     for rec in store.list_all():
         if rec.status in TERMINAL_STATUSES:
             continue
+        if rec.status == "suspended":
+            # SOR-180: checkpointed and released — owns no live sandbox;
+            # a follow-up message restores it via the checkpoint service.
+            continue
         if rec.status == "creating" and not rec.sandbox_id:
             # Record published before the sandbox bound (SOR-80 create order).
             age_s = (now - rec.created_at).total_seconds()
@@ -120,6 +141,35 @@ def reap(
         idle_expired = (now - last).total_seconds() >= idle_timeout_s
 
         if not alive:
+            if rec.status == "idle" and checkpoints is not None:
+                if checkpoints.has_checkpoint(rec.id):
+                    # A checkpoint landed but the suspend transition did
+                    # not (half-finished sweep) — heal to the recoverable
+                    # suspended state instead of losing the agent.
+                    rec.status = "suspended"
+                    rec.updated_at = now
+                    store.put(rec)
+                    emit("suspended", rec.id, rec.sandbox_id)
+                    continue
+                # SOR-180: explicit diagnosis — the platform reclaimed an
+                # idle agent before any checkpoint could be taken; the
+                # agent's filesystem and native session are unrecoverable.
+                rec.status = "lost"
+                rec.ended_at = now
+                rec.updated_at = now
+                rec.current_turn_id = None
+                rec.current_turn_n = None
+                store.put(rec)
+                try:
+                    checkpoints.fail(
+                        rec.id,
+                        "platform loss before checkpoint: "
+                        f"sandbox {rec.sandbox_id} gone, no usable snapshot",
+                    )
+                except Exception:
+                    pass
+                emit("platform_loss", rec.id, rec.sandbox_id)
+                continue
             rec.status = "timed_out" if rec.status == "idle" else "lost"
             rec.ended_at = now
             rec.updated_at = now
@@ -163,6 +213,26 @@ def reap(
             continue
 
         if rec.status == "idle" and idle_expired and handle is not None:
+            suspended = False
+            if checkpoints is not None:
+                try:
+                    suspended = bool(checkpoints.suspend(rec, handle))
+                except Exception:
+                    suspended = False
+            if suspended:
+                # SOR-180: filesystem checkpointed (credentials scrubbed
+                # first) → release the sandbox → recoverable ``suspended``
+                # rather than terminal ``timed_out``. A failed terminate
+                # leaves a sandbox the orphan pass reclaims next sweep.
+                try:
+                    backend.terminate(handle)
+                except Exception:
+                    emit("cleanup_failed", rec.id, rec.sandbox_id)
+                rec.status = "suspended"
+                rec.updated_at = now
+                store.put(rec)
+                emit("suspended", rec.id, rec.sandbox_id)
+                continue
             backend.terminate(handle)
             rec.status = "timed_out"
             rec.ended_at = now
@@ -176,7 +246,11 @@ def reap(
     bound_live = {
         rec.sandbox_id
         for rec in records.values()
-        if rec.sandbox_id and rec.status not in TERMINAL_STATUSES
+        if rec.sandbox_id
+        and rec.status not in TERMINAL_STATUSES
+        # A suspended record keeps its released sandbox_id as provenance —
+        # it owns no live sandbox, so a surviving handle is an orphan.
+        and rec.status != "suspended"
     }
     for handle in backend.list():
         if handle.id in bound_live:
