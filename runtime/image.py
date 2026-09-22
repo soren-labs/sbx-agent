@@ -850,7 +850,7 @@ def build_named_image(
     except KeyError:
         raise SystemExit(f"unknown image provider {provider!r}") from None
     publish_name = name or default_name
-    image = builder(spec)
+    image = builder(spec=spec)
     with modal.enable_output():
         built = image.build(app)
         publish = getattr(built, "publish", None)

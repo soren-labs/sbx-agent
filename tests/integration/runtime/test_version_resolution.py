@@ -14,14 +14,19 @@ network or real provider binaries, per AGENTS.md §3.
 
 from __future__ import annotations
 
+import inspect
 import json
+import sys
+import types
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from runtime import image as image_mod
 from runtime.image import (
+    IMAGE_BUILDERS,
     image_manifest,
     load_packages,
     render_dockerfile_local,
@@ -343,6 +348,76 @@ def test_read_lock_ignores_foreign_or_missing_files(tmp_path: Path) -> None:
     assert read_lock(foreign) is None
 
 
+def test_missing_explicit_lock_is_an_error(tmp_path: Path) -> None:
+    """``--versions-lock /typo.json`` must not silently degrade into a
+    fresh ``latest`` resolve — an unreadable replay source raises."""
+    spec = replace(load_packages(), codex_version="latest")
+    with pytest.raises(VersionResolutionError) as exc:
+        resolve_versions(
+            spec,
+            ENV,
+            providers={"codex"},
+            fetch=_fail_fetch,
+            host_probe=_fail_probe,
+            lock=tmp_path / "nonexistent-lock.json",
+        )
+    assert "nonexistent-lock.json" in exc.value.detail
+
+
+def test_malformed_or_foreign_explicit_lock_is_an_error(tmp_path: Path) -> None:
+    for name, content in (
+        ("bad.json", "{not json"),
+        ("foreign.json", json.dumps({"schema": "other", "providers": {}})),
+    ):
+        path = tmp_path / name
+        path.write_text(content)
+        with pytest.raises(VersionResolutionError):
+            resolve_versions(
+                load_packages(),
+                ENV,
+                providers={"codex"},
+                fetch=_fail_fetch,
+                host_probe=_fail_probe,
+                lock=path,
+            )
+
+
+def test_unreadable_env_lock_is_an_error(tmp_path: Path) -> None:
+    env = {"SBX_VERSIONS_LOCK": str(tmp_path / "absent.json")}
+    with pytest.raises(VersionResolutionError):
+        resolve_versions(
+            load_packages(),
+            env,
+            providers={"codex"},
+            fetch=_fail_fetch,
+            host_probe=_fail_probe,
+        )
+
+
+def test_invalid_cli_lock_does_not_fall_back_to_env_lock(tmp_path: Path) -> None:
+    """An unreadable ``--versions-lock`` errors even when SBX_VERSIONS_LOCK
+    names a valid lock: silently replaying a *different* frozen set than
+    the one requested breaks the rollback contract just the same."""
+    spec = replace(load_packages(), codex_version="latest")
+    resolved = resolve_versions(
+        spec,
+        ENV,
+        providers={"codex"},
+        fetch=_npm_fetch({"openai/codex": "0.160.0"}, []),
+        host_probe=_fail_probe,
+    )
+    env = {"SBX_VERSIONS_LOCK": str(write_lock(resolved, tmp_path / "env-lock.json"))}
+    with pytest.raises(VersionResolutionError):
+        resolve_versions(
+            spec,
+            env,
+            providers={"codex"},
+            fetch=_fail_fetch,
+            host_probe=_fail_probe,
+            lock=tmp_path / "typo.json",
+        )
+
+
 def test_offline_resolution_reports_unresolved_latest() -> None:
     """``--manifest``-style evidence: no lock and no network means a
     ``latest`` request reports ``unresolved`` — never a silent fetch."""
@@ -375,6 +450,63 @@ def test_rendered_dockerfile_uses_resolved_spec() -> None:
     spec = replace(load_packages(), codex_version="0.160.0")
     text = render_dockerfile_local(spec)
     assert "@openai/codex@0.160.0" in text
+
+
+def test_all_registry_builders_accept_spec_keyword() -> None:
+    """``build_named_image`` passes the frozen spec by keyword; every
+    registry builder must accept it (agy/grok/opencode take it as their
+    SECOND parameter — a positional call misaligns the signature)."""
+    for provider, (builder, _name) in IMAGE_BUILDERS.items():
+        assert "spec" in inspect.signature(builder).parameters, provider
+
+
+def test_build_named_image_threads_frozen_spec_by_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The frozen spec reaches the image builder as ``spec=`` — a
+    positional ``builder(spec)`` lands it in ``agy_bin``/``grok_bin``/
+    ``base`` for 3 of 5 providers, so the deployment's frozen set never
+    reaches those images. ``modal`` is stubbed: no cloud touch."""
+    calls: list[tuple] = []
+
+    class _BuiltImage:
+        def publish(self, name: str) -> None:
+            calls.append(("publish", name))
+
+    class _Image:
+        def build(self, app: Any) -> _BuiltImage:
+            calls.append(("build",))
+            return _BuiltImage()
+
+    def fake_builder(*args: Any, **kwargs: Any) -> _Image:
+        calls.append(("builder", args, kwargs))
+        return _Image()
+
+    class _App:
+        @staticmethod
+        def lookup(name: str, create_if_missing: bool = False) -> object:
+            calls.append(("lookup", name, create_if_missing))
+            return object()
+
+    class _Output:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *exc: Any) -> bool:
+            return False
+
+    fake_modal = types.SimpleNamespace(App=_App, enable_output=lambda: _Output())
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+    monkeypatch.delenv("SBX_IMAGE_APP", raising=False)
+    monkeypatch.setitem(IMAGE_BUILDERS, "antigravity", (fake_builder, "sbx-test"))
+    spec = load_packages()
+    image_mod.build_named_image(provider="antigravity", spec=spec)
+    assert calls == [
+        ("lookup", image_mod.APP_NAME, True),
+        ("builder", (), {"spec": spec}),
+        ("build",),
+        ("publish", "sbx-test"),
+    ]
 
 
 def test_manifest_reports_resolution_evidence() -> None:

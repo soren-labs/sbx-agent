@@ -441,8 +441,11 @@ def resolve_versions(
     in every image). ``lock``/``SBX_VERSIONS_LOCK`` replays a frozen set
     verbatim — the rollback/reproducibility lane: a locked provider's frozen
     version wins over both ``latest`` and pins, and no upstream call is made
-    for it. ``offline`` resolves ``latest`` only from a lock (env-provided or
-    the default lock file) — used by pure evidence paths like ``--manifest``.
+    for it. An explicitly supplied lock path that is missing or invalid
+    raises ``VersionResolutionError`` — a replay request never degrades
+    silently into a fresh ``latest`` resolve. ``offline`` resolves
+    ``latest`` only from a lock (env-provided or the default lock file) —
+    used by pure evidence paths like ``--manifest``.
 
     ``fetch``/``host_probe``/``now`` exist so tests never touch the network
     or real provider binaries.
@@ -469,6 +472,15 @@ def resolve_versions(
         if lock_data is not None:
             replayed_from = str(candidate)
             break
+        if explicit_replay:
+            raise VersionResolutionError(
+                "",
+                f"versions lock {candidate} is missing or invalid",
+                hint=f"the file must exist and carry the {LOCK_SCHEMA} "
+                "schema (a lock written by a previous build/deploy); fix "
+                "the path or drop --versions-lock / SBX_VERSIONS_LOCK to "
+                "resolve fresh versions",
+            )
     locked: Mapping[str, Any] = {}
     if isinstance(lock_data, Mapping) and isinstance(lock_data.get("providers"), Mapping):
         locked = lock_data["providers"]
