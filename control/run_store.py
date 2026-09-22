@@ -290,6 +290,9 @@ class RunRecord:
     provider: str | None = None
     account_id: str | None = None
     model: str | None = None
+    # SOR-179: the agent's declared canonical reasoning effort, echoed so
+    # every run carries the effective level it executed under.
+    reasoning_effort: str | None = None
     artifact_refs: list[str] = field(default_factory=list)
     # SOR-130: normalized output contract requested for the run
     # ({schema, enforcement, schema_digest}); None when absent.
@@ -334,7 +337,15 @@ def record_from_dict(data: Any) -> RunRecord:
         created_at=str(data.get("created_at") or ""),
         updated_at=str(data.get("updated_at") or ""),
     )
-    for key in ("started_at", "finished_at", "result_text", "provider", "account_id", "model"):
+    for key in (
+        "started_at",
+        "finished_at",
+        "result_text",
+        "provider",
+        "account_id",
+        "model",
+        "reasoning_effort",
+    ):
         value = data.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"run record field {key} must be a string")
@@ -607,6 +618,7 @@ class RunLedger:
         provider: str | None = None,
         account_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         status: str = "RUNNING",
         artifact_refs: list[str] | None = None,
         output_contract: dict[str, Any] | None = None,
@@ -628,6 +640,7 @@ class RunLedger:
                 provider=provider,
                 account_id=account_id,
                 model=model,
+                reasoning_effort=reasoning_effort,
                 artifact_refs=list(artifact_refs)
                 if artifact_refs is not None
                 else default_artifact_refs(n),
@@ -662,6 +675,7 @@ class RunLedger:
         provider: str | None = None,
         account_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         created_at: str | None = None,
         started_at: str | None = None,
         structured_output: Any = None,
@@ -706,6 +720,7 @@ class RunLedger:
                 ("provider", provider),
                 ("account_id", account_id),
                 ("model", model),
+                ("reasoning_effort", reasoning_effort),
             ):
                 if value is not None:
                     setattr(record, key, value)

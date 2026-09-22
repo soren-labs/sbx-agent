@@ -44,6 +44,9 @@ class SessionRecord:
     # declared sizing survives restarts and recovery, feeds the status
     # echo, and makes the cost estimate compute-aware.
     compute: dict[str, Any] | None = None
+    # SOR-179: canonical reasoning effort declared at create; every run of
+    # the agent inherits it (provider CLI sees it via ``runner init``).
+    reasoning_effort: str | None = None
 
     def handle(self) -> SandboxHandle | None:
         if not self.sandbox_id or not self.sandbox_root:

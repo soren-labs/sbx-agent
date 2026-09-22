@@ -24,7 +24,9 @@ Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 
 
 ## 命令
 
-### `runner init --provider P --model M [--auth auth_json|provider]`
+### `runner init --provider P --model M [--auth auth_json|provider] [--reasoning-effort E]`
+
+SOR-179：`--reasoning-effort` 为可选的规范 effort 级别（`low|medium|high`），记入 `session.json.reasoning_effort` 并作用于该 session 的每一轮（首轮与 resume 轮）。provider 无法兑现的组合（如 `opencode` / `devin`）由 init 显式失败（退出码 2），绝不静默忽略；规范级别之外的取值同样失败。原生映射：codex 写入 `config.toml` 的 `model_reasoning_effort`（首轮与 resume 均生效）；antigravity / grok 由 adapter 在 argv 传 `--effort <E>`。
 
 1. 创建 `$HOME`（=`$SBX_WORK/home`）与 `$CODEX_HOME`（=`$HOME/.codex`），写入 `config.toml`（最小内容）：
 
@@ -42,7 +44,7 @@ Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 
    - `auth_json`：v1 路径——`CODEX_AUTH_JSON` 或 `$SBX_WORK/auth.json` → `$CODEX_HOME/auth.json`；无输入时写占位文件；所有 token 字段必须是 `REDACTED`；文件权限 **600**
    - `provider`：写入 provider 登录占位（token 字段同样 `REDACTED`），权限同样 600，不发起网络登录
 3. 写入 `$SBX_WORK/AGENTS.md`（sandbox 内说明，不是仓库根 `AGENTS.md`）
-4. 初始化空的 `events.jsonl`、`events.raw.jsonl`、`session.json`（`native_session_id` 空、`codex_session_id` 别名同值、`provider`、`account_id`、`turn` 0）、`inbox/`、`turns/`
+4. 初始化空的 `events.jsonl`、`events.raw.jsonl`、`session.json`（`native_session_id` 空、`codex_session_id` 别名同值、`provider`、`account_id`、`reasoning_effort`、`turn` 0）、`inbox/`、`turns/`
 
 ### `runner turn --n N --message-file F [--max-seconds S]`
 
@@ -68,7 +70,7 @@ Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 
 
   `session_id` 来自 `session.json.native_session_id`（即首轮 `thread.started.thread_id`；`codex_session_id` 别名）。后续轮 `thread.started.thread_id` 与首轮相同。
 - CLI stdout **逐行原样追加**到 `$SBX_WORK/events.raw.jsonl`；每行经 adapter `translate` 归一化后（Codex 为恒等透传，且经脱敏）追加到 `$SBX_WORK/events.jsonl`，同时写 runner 自己的 stdout。以 `\n` 为界切行；无法解析的行计为坏行并继续，最终退出码 4。
-- 第 1 轮在 `sbx.turn_started` 之前插入一次 `sbx.session_meta{provider, model, account_id}`（不含凭证）。每轮在 CLI 输出前后插入 `sbx.turn_started` / `sbx.turn_finished{status,exit_code,duration_s,usage}`；异常插入 `sbx.error`。
+- 第 1 轮在 `sbx.turn_started` 之前插入一次 `sbx.session_meta{provider, model, account_id, reasoning_effort}`（不含凭证；`reasoning_effort` 为 session.json 中 init 记下的值，未声明时为 null）。每轮在 CLI 输出前后插入 `sbx.turn_started` / `sbx.turn_finished{status,exit_code,duration_s,usage}`；异常插入 `sbx.error`。
 - 解析首个原生 session 标记（Codex：`thread.started.thread_id`）、`turn.completed.usage`、最终 `agent_message`，写入 `turns/<N>.json`，更新 `session.json`（`native_session_id`、别名 `codex_session_id`、`turn`）。
 - 软超时：到达 `S` 秒后对 CLI 进程 **SIGTERM**，再等 **30 s** 收尾；仍未退出则 SIGKILL。超时退出码 3。
 - adapter `health_from` 判定 `auth_invalid` 时退出码 5（见下）。

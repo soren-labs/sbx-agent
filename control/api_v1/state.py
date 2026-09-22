@@ -240,6 +240,8 @@ class AgentMeta:
     # SOR-129: declared session-resource refs (``{"secrets": [...],
     # "mcp": [...]}``, names only) echoed on the agent view.
     resources: dict[str, Any] | None = None
+    # SOR-179: canonical reasoning effort declared at create.
+    reasoning_effort: str | None = None
 
 
 @dataclass

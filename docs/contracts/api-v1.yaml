@@ -1134,6 +1134,17 @@ components:
           default: "auto"
         model:
           type: string
+        reasoning_effort:
+          type: string
+          enum: [low, medium, high]
+          description: |
+            SOR-179 canonical reasoning effort, agent-scoped: every run of
+            the agent (first and follow-up turns, incl. provider resume)
+            executes under this level. It maps to each provider's native
+            effort surface; a provider/effort combination the provider
+            cannot honor is refused as `400 unsupported` at create time —
+            never silently ignored. `GET /v1/models` reports the levels
+            each provider honors.
     CreateAgentRequest:
       type: object
       required: [prompt, agent]
@@ -1569,6 +1580,13 @@ components:
           type: string
         model:
           type: string
+        reasoning_effort:
+          type: string
+          enum: [low, medium, high]
+          nullable: true
+          description: |
+            SOR-179: the canonical reasoning effort declared at create
+            (inherited by every run), `null` when undeclared.
         status:
           $ref: "#/components/schemas/AgentStatus"
         created_at:
@@ -1657,6 +1675,13 @@ components:
         model:
           type: string
           nullable: true
+        reasoning_effort:
+          type: string
+          enum: [low, medium, high]
+          nullable: true
+          description: |
+            SOR-179: the effective canonical effort the run executed
+            under (the agent's declared level), `null` when undeclared.
         artifact_refs:
           type: array
           items:
@@ -1881,6 +1906,16 @@ components:
         accounts_available:
           type: integer
           minimum: 0
+        reasoning_efforts:
+          type: array
+          items:
+            type: string
+            enum: [low, medium, high]
+          description: |
+            SOR-179: canonical reasoning-effort levels the provider
+            honors for this model. Empty means the provider has no
+            native effort surface — a declared `reasoning_effort` on
+            agent create is refused as `unsupported`, never ignored.
     Me:
       type: object
       required: [key_id, scopes]

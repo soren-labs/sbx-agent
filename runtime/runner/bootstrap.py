@@ -31,6 +31,7 @@ from runtime.runner.credentials import (
     restore_credential_blob,
     write_secret_file,
 )
+from runtime.runner.effort import effort_error, normalize_effort
 from runtime.runner.workspace import (
     atomic_write,
     codex_home,
@@ -49,11 +50,15 @@ def _toml_str(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def render_config_toml(*, model: str, auth: str) -> str:
+def render_config_toml(*, model: str, auth: str, reasoning_effort: str | None = None) -> str:
     exclude = ", ".join(_toml_str(item) for item in SHELL_ENV_EXCLUDE)
     lines = [
         f"model = {_toml_str(model)}",
     ]
+    if reasoning_effort:
+        # SOR-179: durable codex-native effort — config.toml applies to
+        # ``codex exec`` first turns and ``codex exec resume`` alike.
+        lines.append(f"model_reasoning_effort = {_toml_str(reasoning_effort)}")
     if auth == "provider":
         lines.append('model_provider = "sbx"')
     lines += [
@@ -107,13 +112,30 @@ def _credential_relpaths(provider: str) -> list[str]:
 
 
 def cmd_init(
-    *, auth: str, model: str, provider: str = "codex", account_id: str | None = None
+    *,
+    auth: str,
+    model: str,
+    provider: str = "codex",
+    account_id: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> int:
     from runtime.runner.adapter import get_adapter
 
     root = work_root()
     ensure_layout(root)
     home = codex_home(root)
+
+    try:
+        # SOR-179: the in-sandbox backstop — an effort the provider cannot
+        # honor fails init explicitly rather than being silently dropped.
+        effort = normalize_effort(reasoning_effort)
+        refusal = effort_error(provider, effort)
+        if refusal is not None:
+            print(f"runner init: {refusal}", file=sys.stderr)
+            return EXIT_INTERNAL
+    except ValueError as exc:
+        print(f"runner init: {exc}", file=sys.stderr)
+        return EXIT_INTERNAL
 
     try:
         credential_files = _credential_relpaths(provider)
@@ -126,7 +148,10 @@ def cmd_init(
         return EXIT_INTERNAL
 
     if provider == "codex":
-        atomic_write(home / "config.toml", render_config_toml(model=model, auth=auth))
+        atomic_write(
+            home / "config.toml",
+            render_config_toml(model=model, auth=auth, reasoning_effort=effort),
+        )
         # Keep the P1 compatibility source, then let the account blob win.
         _write_auth_json(home, auth, root)
     try:
@@ -151,6 +176,7 @@ def cmd_init(
     session["auth"] = auth
     session["provider"] = provider
     session["account_id"] = account_id or os.environ.get(ACCOUNT_ID_ENV)
+    session["reasoning_effort"] = effort
     session["credential_files"] = credential_files
     session["mcp_servers"] = mcp_names
     save_session(root, session)

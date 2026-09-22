@@ -164,6 +164,12 @@ def _session_model() -> str:
     return raw if isinstance(raw, str) else ""
 
 
+def _session_effort() -> str:
+    """Canonical effort recorded by ``runner init`` in session.json (SOR-179)."""
+    raw = load_session(work_root()).get("reasoning_effort")
+    return raw if isinstance(raw, str) else ""
+
+
 def _map_usage(raw: Any) -> dict[str, int]:
     usage = {field: 0 for field in _USAGE_FIELDS}
     if not isinstance(raw, dict):
@@ -237,6 +243,9 @@ class GrokAdapter:
         argv = [*grok_bin_tokens(), "-p", prompt, "--output-format", "streaming-json"]
         if model:
             argv += ["--model", model]
+        effort = _session_effort()
+        if effort:
+            argv += ["--effort", effort]
         argv += ["--permission-mode", "bypassPermissions"]
         return argv
 
@@ -254,6 +263,10 @@ class GrokAdapter:
         model = _session_model()
         if model:
             argv += ["--model", model]
+        effort = _session_effort()
+        if effort:
+            # Resume turns inherit the declared effort natively (SOR-179).
+            argv += ["--effort", effort]
         argv += ["--permission-mode", "bypassPermissions"]
         return argv
 

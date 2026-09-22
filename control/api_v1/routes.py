@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import Depends, Header, Request
 from fastapi.responses import Response
 from runtime.runner.contract import STATUS_SKIPPED, ContractError, normalize_contract
+from runtime.runner.effort import effort_error, normalize_effort, supported_efforts
 
 from control.api_v1 import router
 from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
@@ -181,6 +182,7 @@ def _meta_for(v1: V1State, rec: Any) -> AgentMeta:
         provider=tags.get("provider") or "codex",
         account_id=tags.get("account_id") or "auto",
         resources=resources,
+        reasoning_effort=tags.get("reasoning_effort") or getattr(rec, "reasoning_effort", None),
     )
 
 
@@ -251,6 +253,10 @@ def _record_public(
         "provider": record.provider or (meta.provider if meta else None),
         "account_id": record.account_id or (meta.account_id if meta else None),
         "model": record.model or pub.get("model"),
+        # SOR-179: the effective effort this run executed under.
+        "reasoning_effort": record.reasoning_effort
+        or (meta.reasoning_effort if meta else None)
+        or pub.get("reasoning_effort"),
         "artifact_refs": list(record.artifact_refs),
         # SOR-130: extracted JSON + the contract verdict metadata (null when
         # the run carried no output contract).
@@ -400,6 +406,7 @@ def _render_run(
                 provider=meta.provider if meta else None,
                 account_id=meta.account_id if meta else None,
                 model=pub.get("model"),
+                reasoning_effort=pub.get("reasoning_effort"),
                 structured_output=structured_output,
                 contract_result=contract_result,
             )
@@ -828,6 +835,21 @@ def _validate_compute(body: CreateAgentRequest) -> ComputeSpec:
         raise V1ApiError(400, exc.code, exc.message) from exc
 
 
+def _validate_reasoning_effort(body: CreateAgentRequest) -> str | None:
+    """Validate a declared canonical ``reasoning_effort`` (SOR-179).
+
+    The level set is canonical; what varies per provider is the *native
+    surface* it maps to. A provider without one — or one missing the level
+    — fails as ``400 unsupported`` before any claim or sandbox work, never
+    silently ignored (the SOR-129 MCP precedent).
+    """
+    effort = normalize_effort(body.agent.reasoning_effort)
+    refusal = effort_error(body.agent.provider, effort)
+    if refusal is not None:
+        raise V1ApiError(400, "unsupported", refusal)
+    return effort
+
+
 def _validate_resources(body: CreateAgentRequest, registry: Any) -> dict[str, Any] | None:
     """Validate + resolve SOR-129 ``resources`` refs against the registry.
 
@@ -870,6 +892,7 @@ def create_agent(
     workspace, handoff, git = _validate_workspace_decl(body, artifacts)
     contract = _normalize_contract(body.output_contract)
     compute = _validate_compute(body)
+    effort = _validate_reasoning_effort(body)
     resources = _validate_resources(body, resources_registry)
     if contract is not None and _ledger(plane) is None:
         # Contracted runs need the durable ledger for both dispatch and the
@@ -959,6 +982,7 @@ def create_agent(
             output_contract=contract,
             resources=resources,
             compute=compute,
+            reasoning_effort=effort,
         )
     except Exception:
         if owned is not None:
@@ -996,6 +1020,7 @@ def _create_agent_once(
     output_contract: dict[str, Any] | None = None,
     resources: dict[str, Any] | None = None,
     compute: ComputeSpec | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -1046,6 +1071,7 @@ def _create_agent_once(
             output_contract=output_contract,
             resource_refs=resource_refs(resources),
             compute=compute,
+            reasoning_effort=reasoning_effort,
         )
     except ConcurrencyLimit as exc:
         _release_lease(lease)
@@ -1070,6 +1096,7 @@ def _create_agent_once(
                 name=body.name,
                 idle_timeout_s=body.idle_timeout_s,
                 resources=resource_refs(resources),
+                reasoning_effort=reasoning_effort,
             ),
         )
         if account is not None:
@@ -1864,7 +1891,15 @@ def list_models(
             key_ = (account.provider, model)
             counts[key_] = counts.get(key_, 0) + (1 if free else 0)
     models = [
-        {"provider": provider, "model": model, "accounts_available": count}
+        {
+            "provider": provider,
+            "model": model,
+            "accounts_available": count,
+            # SOR-179: the canonical effort levels this provider honors
+            # (empty when it has no native effort surface — a declared
+            # effort is refused at create time, never silently ignored).
+            "reasoning_efforts": list(supported_efforts(provider)),
+        }
         for (provider, model), count in sorted(counts.items())
     ]
     return {"models": models}
