@@ -20,6 +20,7 @@ from control.workspace import (
     BASE_SHA_MISMATCH,
     HEAD_SHA_MISMATCH,
     REPO_UNAVAILABLE,
+    REVIEW_REQUIRED,
     WORKSPACE_INVALID,
     WORKSPACE_NOT_FOUND,
     InMemoryWorkspaceStore,
@@ -155,6 +156,18 @@ class TestPolicyValidation:
             validate_git_policy({"auto_create_pr": True})
         assert exc.value.code == WORKSPACE_INVALID
 
+    def test_auto_publish_requires_push(self) -> None:
+        with pytest.raises(WorkspaceError) as exc:
+            validate_git_policy({"auto_publish": True})
+        assert exc.value.code == WORKSPACE_INVALID
+        validate_git_policy({"push": True, "auto_publish": True})
+
+    def test_merge_requires_auto_create_pr(self) -> None:
+        with pytest.raises(WorkspaceError) as exc:
+            validate_git_policy({"push": True, "merge": True})
+        assert exc.value.code == WORKSPACE_INVALID
+        validate_git_policy({"push": True, "auto_create_pr": True, "merge": True})
+
     @pytest.mark.parametrize("key", ["branch", "target"])
     def test_unsafe_ref_names(self, key: str) -> None:
         for bad in ("-x", "a..b", "a b", "a;b", "/x"):
@@ -179,6 +192,8 @@ class TestPolicyValidation:
         assert out["target"] == "main"
         assert out["push"] is True
         assert out["auto_create_pr"] is False
+        assert out["auto_publish"] is False
+        assert out["merge"] is False
 
     def test_normalize_explicit(self) -> None:
         out = normalize_git_policy(
@@ -212,6 +227,8 @@ class TestRecordCodec:
                 "branch": "sbx/a1",
                 "push": True,
                 "auto_create_pr": True,
+                "auto_publish": True,
+                "merge": True,
                 "target": "main",
                 "draft": False,
                 "title": "t",
@@ -229,6 +246,13 @@ class TestRecordCodec:
                 "draft": False,
                 "review_comment_url": "https://example.test/c/1",
             },
+            merge={
+                "merged": True,
+                "merge_commit_sha": SHA_0,
+                "head_sha": SHA_B,
+                "merged_at": "t2",
+            },
+            publish_error="repo_unavailable: push failed",
             created_at="t0",
             updated_at="t1",
         )
@@ -240,6 +264,8 @@ class TestRecordCodec:
         assert decoded.git["branch"] == "sbx/a1"
         assert decoded.pull_request["ref"] == "refs/pull/7/head"
         assert decoded.pushed_head_sha == SHA_B
+        assert decoded.merge["merge_commit_sha"] == SHA_0
+        assert decoded.publish_error == "repo_unavailable: push failed"
 
     def test_none_fields_roundtrip(self) -> None:
         record = WorkspaceRecord(agent_id="a1", repo="/r", base_ref="main", base_sha=SHA_A)
@@ -248,6 +274,8 @@ class TestRecordCodec:
         assert decoded.branch is None
         assert decoded.pushed_head_sha is None
         assert decoded.pull_request is None
+        assert decoded.merge is None
+        assert decoded.publish_error is None
 
     @pytest.mark.parametrize(
         "patch",
@@ -264,6 +292,14 @@ class TestRecordCodec:
             {"pull_request": {"head_sha": "zz"}},
             {"pull_request": {"draft": "no"}},
             {"pull_request": {"bogus": 1}},
+            {"merge": "notadict"},
+            {"merge": {"bogus": 1}},
+            {"merge": {"merge_commit_sha": "zz"}},
+            {"merge": {"merged": "yes"}},
+            {"merge": {"merged_at": 3}},
+            {"publish_error": 3},
+            {"git": {"auto_publish": "yes"}},
+            {"git": {"merge": "no"}},
         ],
     )
     def test_rejects_junk(self, patch: dict) -> None:
@@ -653,3 +689,249 @@ class TestPullRequestHandoff:
         assert record.head_sha == head
         workdir = handle.root / "repo"
         assert host_git(workdir, "rev-parse", "--abbrev-ref", "HEAD") == "sbx/work"
+
+
+class TestPublishError:
+    """SOR-178: publish failures land durably on the record; success clears."""
+
+    def test_failure_recorded_then_cleared(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        origin, _, workdir = TestPublish()._prepared(
+            tmp_path,
+            handle,
+            workspaces,
+            {"branch": "sbx/work", "push": True, "auto_create_pr": True},
+        )
+        commit_file(workdir, "b.txt", "two\n")
+        # No GitHub bridge → the PR step fails; the record keeps the error.
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.publish(handle, "a1")
+        assert exc.value.code == REPO_UNAVAILABLE
+        stored = workspaces.get("a1")
+        assert stored.publish_error is not None
+        assert stored.publish_error.startswith("repo_unavailable:")
+
+        monkeypatch.setattr(
+            "control.workspace.create_pull_request",
+            lambda *a, **kw: {"number": 7, "html_url": "https://gh.test/pr/7", "state": "open"},
+        )
+        record = workspaces.publish(handle, "a1")
+        assert record.publish_error is None
+        assert workspaces.get("a1").publish_error is None
+
+    def test_merged_pr_recreated_on_next_publish(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def fake_pr(backend: Any, h: Any, repo: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"number": 6 + len(calls), "html_url": "https://gh.test/pr", "state": "open"}
+
+        monkeypatch.setattr("control.workspace.create_pull_request", fake_pr)
+        origin, _, workdir = TestPublish()._prepared(
+            tmp_path,
+            handle,
+            workspaces,
+            {"branch": "sbx/work", "push": True, "auto_create_pr": True},
+        )
+        commit_file(workdir, "b.txt", "two\n")
+        record = workspaces.publish(handle, "a1")
+        # A terminal PR cannot track the branch — a fresh publish opens a
+        # new one instead of re-pinning the merged record.
+        record.pull_request["state"] = "merged"
+        workspaces.save(record)
+        commit_file(workdir, "c.txt", "three\n")
+        record = workspaces.publish(handle, "a1")
+        assert len(calls) == 2
+        assert record.pull_request["number"] == 8
+
+
+class TestMerge:
+    """SOR-178 review-gated merge: pin + recorded-head + remote-head must
+    all agree, then the durable merge metadata is persisted."""
+
+    def _with_pr(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+        git: dict[str, Any] | None = None,
+    ) -> tuple[Path, Path, str]:
+        """Prepared workspace + published PR #7 whose remote ref is pinned
+        at the pushed head. Returns (origin, workdir, head)."""
+        monkeypatch.setattr(
+            "control.workspace.create_pull_request",
+            lambda *a, **kw: {"number": 7, "html_url": "https://gh.test/pr/7", "state": "open"},
+        )
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(
+            handle,
+            "a1",
+            spec(origin, base),
+            git=git or {"branch": "sbx/work", "push": True, "auto_create_pr": True, "merge": True},
+        )
+        workdir = handle.root / "repo"
+        head = commit_file(workdir, "b.txt", "two\n")
+        workspaces.publish(handle, "a1")
+        # The remote PR ref tracks the branch head (GitHub-maintained).
+        host_git(origin, "update-ref", "refs/pull/7/head", head)
+        return origin, workdir, head
+
+    def test_merge_success_persists_metadata(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        origin, workdir, head = self._with_pr(tmp_path, handle, workspaces, monkeypatch)
+        workspaces.mark_reviewed("a1", head)
+        seen: list[dict[str, Any]] = []
+
+        def fake_merge(backend: Any, h: Any, repo: str, **kwargs: Any) -> dict[str, Any]:
+            seen.append(kwargs)
+            return {"merged": True, "sha": SHA_0, "message": "merged"}
+
+        monkeypatch.setattr("control.workspace.merge_pull_request", fake_merge)
+        record = workspaces.merge(handle, "a1")
+        assert seen[0]["number"] == 7
+        assert seen[0]["sha"] == head  # GitHub gets the reviewed-sha pin too
+        assert record.merge is not None
+        assert record.merge["merged"] is True
+        assert record.merge["merge_commit_sha"] == SHA_0
+        assert record.merge["head_sha"] == head
+        assert record.merge["merged_at"]
+        assert record.pull_request["state"] == "merged"
+        # Durable: the merge record survives a store round-trip.
+        decoded = record_from_dict(record_to_dict(workspaces.get("a1")))
+        assert decoded.merge == record.merge
+
+        # Idempotent: a second call does not hit GitHub again.
+        record = workspaces.merge(handle, "a1")
+        assert record.merge["merged"] is True
+        assert len(seen) == 1
+
+    def test_merge_requires_policy(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        origin, workdir, head = self._with_pr(
+            tmp_path,
+            handle,
+            workspaces,
+            monkeypatch,
+            git={"branch": "sbx/work", "push": True, "auto_create_pr": True},
+        )
+        workspaces.mark_reviewed("a1", head)
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.merge(handle, "a1")
+        assert exc.value.code == WORKSPACE_INVALID
+
+    def test_merge_requires_recorded_pr(
+        self, tmp_path: Path, handle: SandboxHandle, workspaces: WorkspaceService
+    ) -> None:
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(
+            handle,
+            "a1",
+            spec(origin, base),
+            git={"push": True, "auto_create_pr": True, "merge": True},
+        )
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.merge(handle, "a1")
+        assert exc.value.code == WORKSPACE_INVALID
+
+    def test_merge_requires_review_pin(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._with_pr(tmp_path, handle, workspaces, monkeypatch)
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.merge(handle, "a1")
+        assert exc.value.code == REVIEW_REQUIRED
+
+    def test_recorded_head_drift_requires_rereview(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        origin, workdir, head = self._with_pr(tmp_path, handle, workspaces, monkeypatch)
+        workspaces.mark_reviewed("a1", head)
+        # New work pushed after the pin moved the recorded PR head.
+        head2 = commit_file(workdir, "c.txt", "three\n")
+        workspaces.publish(handle, "a1")
+        host_git(origin, "update-ref", "refs/pull/7/head", head2)
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.merge(handle, "a1")
+        assert exc.value.code == HEAD_SHA_MISMATCH
+        # A fresh review of the new head unblocks the merge.
+        workspaces.mark_reviewed("a1", head2)
+        monkeypatch.setattr(
+            "control.workspace.merge_pull_request",
+            lambda *a, **kw: {"merged": True, "sha": SHA_0},
+        )
+        record = workspaces.merge(handle, "a1")
+        assert record.merge["head_sha"] == head2
+
+    def test_remote_head_drift_fails_closed(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The remote PR ref moved since the pin (someone pushed to the PR)
+        — the merge must refuse even though our records still agree."""
+        origin, workdir, head = self._with_pr(tmp_path, handle, workspaces, monkeypatch)
+        workspaces.mark_reviewed("a1", head)
+        head2 = commit_file(origin, "d.txt", "four\n")
+        host_git(origin, "update-ref", "refs/pull/7/head", head2)
+        called: list[Any] = []
+        monkeypatch.setattr(
+            "control.workspace.merge_pull_request",
+            lambda *a, **kw: called.append(1) or {"merged": True},
+        )
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.merge(handle, "a1")
+        assert exc.value.code == HEAD_SHA_MISMATCH
+        assert not called  # GitHub merge never attempted
+        assert workspaces.get("a1").merge is None
+
+    def test_merge_github_failure_persists_nothing(
+        self,
+        tmp_path: Path,
+        handle: SandboxHandle,
+        workspaces: WorkspaceService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        origin, workdir, head = self._with_pr(tmp_path, handle, workspaces, monkeypatch)
+        workspaces.mark_reviewed("a1", head)
+        monkeypatch.setattr(
+            "control.workspace.merge_pull_request",
+            lambda *a, **kw: {"merged": False, "message": "not mergeable"},
+        )
+        with pytest.raises(WorkspaceError) as exc:
+            workspaces.merge(handle, "a1")
+        assert exc.value.code == REPO_UNAVAILABLE
+        record = workspaces.get("a1")
+        assert record.merge is None
+        assert record.pull_request["state"] == "open"

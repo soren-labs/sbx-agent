@@ -906,11 +906,38 @@ class ControlPlane:
                 )
             self._live.pop(session_id, None)
 
+        # SOR-178: a git policy with ``auto_publish`` declares that a
+        # successfully finished run publishes itself — the same publish path
+        # as POST /git/publish (push + create-or-update PR). Best-effort
+        # like the credential write-back below: publish() persists any
+        # failure as ``publish_error`` on the workspace record, so the
+        # FINISHED verdict is never rewritten and never silent either.
+        if status == "FINISHED":
+            self._auto_publish_git(session_id, handle)
+
         # SOR-147: harvest refreshed credential files after every turn — a
         # provider CLI that rotated its OAuth token mid-turn (incl. an
         # auth_invalid failure) writes the new blob back to the account
         # store, CAS-guarded by this session's base fingerprint.
         self._writeback_credentials(rec, handle)
+
+    def _auto_publish_git(self, session_id: str, handle: Any) -> None:
+        """Best-effort automatic publish on run success; swallows failure.
+
+        The durable policy is the trigger — only ``git.auto_publish``
+        declared at agent create fires. ``publish()`` already persists
+        ``publish_error`` on the workspace record for real failures, so
+        this hook only guards against unforeseen ones.
+        """
+        if self.workspaces is None or handle is None:
+            return
+        record = self.workspaces.get(session_id)
+        if record is None or not (record.git or {}).get("auto_publish"):
+            return
+        try:
+            self.workspaces.publish(handle, session_id)
+        except Exception:
+            pass
 
     def _writeback_credentials(self, rec: SessionRecord | None, handle: Any) -> None:
         """Best-effort credential write-back; swallows every failure.

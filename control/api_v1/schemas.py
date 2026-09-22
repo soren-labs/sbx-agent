@@ -47,8 +47,12 @@ class GitPolicy(BaseModel):
     ``sbx/<agent_id>``); ``push`` allows the publish endpoint to push it to
     the repo's remote; ``auto_create_pr`` (requires ``push``) opens a pull
     request to ``target`` (default ``workspace.base_ref``) on publish.
-    Ref-name safety and the push/PR dependency are enforced in the domain
-    layer so violations surface as ``workspace_invalid``.
+    ``auto_publish`` (requires ``push``, SOR-178) publishes automatically
+    when a run finishes successfully; ``merge`` (requires
+    ``auto_create_pr``) allows the merge endpoint — which still refuses
+    without an independent exact-sha review pin. Ref-name safety and the
+    push/PR dependencies are enforced in the domain layer so violations
+    surface as ``workspace_invalid``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -56,6 +60,8 @@ class GitPolicy(BaseModel):
     branch: str | None = None
     push: bool = False
     auto_create_pr: bool = False
+    auto_publish: bool = False
+    merge: bool = False
     target: str | None = None
     draft: bool = False
     title: str | None = None
