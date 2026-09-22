@@ -31,6 +31,7 @@ from sbx.config import (
     deploy_state_path,
     key_path,
     save,
+    state_dir,
     validate_providers,
 )
 from sbx.credentials import scan_credentials
@@ -55,6 +56,7 @@ class DeployReport:
     version: str
     key_created: bool
     key_rotated: bool = False
+    cli_versions: dict[str, str] | None = None
 
 
 def app_version() -> str:
@@ -277,6 +279,67 @@ def _require_account_secrets(cfg: BootstrapConfig, plane: Plane, existing: set[s
     return StepResult("credentials:preflight", False, detail)
 
 
+def _resolve_cli_versions(
+    config: BootstrapConfig,
+    env: Mapping[str, str],
+    *,
+    versions_lock: str | None,
+    fetch: Any = None,
+    host_probe: Any = None,
+) -> tuple[StepResult, Any, Path]:
+    """Resolve + freeze provider CLI versions for this deployment (SOR-175).
+
+    Runs once per deploy, before any image build: ``latest`` requests in
+    ``runtime/packages.txt`` (or ``SBX_*_VERSION`` overrides) resolve
+    upstream on the build host, pins pass through, and a ``--versions-lock``
+    / ``SBX_VERSIONS_LOCK`` file replays a previous deployment's frozen set
+    verbatim — the rollback lane. The outcome freezes to
+    ``<state>/cli-versions.json`` as the deployment's version evidence and
+    is passed to every image build so they all carry identical versions.
+    """
+    from runtime.versions import (
+        VersionResolutionError,
+        lock_out_path_for,
+        resolve_versions,
+        write_lock,
+    )
+
+    try:
+        resolved = resolve_versions(
+            env=env,
+            # ``codex`` always resolves: its CLI rides in the base recipe of
+            # every provider image, enabled or not.
+            providers=set(config.providers) | {"codex"},
+            fetch=fetch,
+            host_probe=host_probe,
+            lock=Path(versions_lock) if versions_lock else None,
+        )
+    except VersionResolutionError as exc:
+        raise BootstrapError(
+            f"cannot resolve provider CLI versions: {exc}",
+            hint=exc.hint
+            or "check runtime/packages.txt and SBX_*_VERSION "
+            "overrides, or replay a frozen set via --versions-lock / "
+            "SBX_VERSIONS_LOCK",
+            code="version_resolution_failed",
+        ) from exc
+    lock_path = write_lock(
+        resolved,
+        lock_out_path_for(env)
+        if env.get("SBX_VERSIONS_LOCK_OUT")
+        else state_dir(env) / "cli-versions.json",
+    )
+    detail = (
+        ", ".join(f"{p} {v}" for p, v in sorted(resolved.cli_versions().items()))
+        or "nothing to resolve"
+    )
+    return (
+        StepResult("versions", True, f"{detail} (frozen to {lock_path.name})"),
+        resolved,
+        lock_path,
+    )
+
+
 def _materialize_account_secrets(cfg: BootstrapConfig, plane: Plane) -> StepResult:
     """Materialize deployment-scoped account blobs as Modal Secrets.
 
@@ -375,6 +438,9 @@ def deploy(
     sleep: Callable[[float], None] = time.sleep,
     probe_attempts: int = 5,
     version: str | None = None,
+    versions_lock: str | None = None,
+    fetch: Any = None,
+    host_probe: Any = None,
 ) -> DeployReport:
     """Run the idempotent deploy pipeline; return a per-step report."""
     env = os.environ if env is None else env
@@ -401,6 +467,13 @@ def deploy(
     if github_step is not None:
         steps.append(github_step)
 
+    # SOR-175: resolve + freeze provider CLI versions once, before any write
+    # — a ``latest``/host-probe failure aborts with zero resources touched.
+    versions_step, resolved_versions, versions_lock_path = _resolve_cli_versions(
+        config, env, versions_lock=versions_lock, fetch=fetch, host_probe=host_probe
+    )
+    steps.append(versions_step)
+
     step, key_created, key_rotated = _ensure_bootstrap_secret(config, plane, env)
     steps.append(step)
     steps.append(_ensure_basic_secret(config, plane, env))
@@ -417,7 +490,7 @@ def deploy(
     steps.append(_materialize_account_secrets(config, plane))
 
     for provider in config.providers:
-        plane.ensure_image(provider, config.image_name(provider))
+        plane.ensure_image(provider, config.image_name(provider), spec=resolved_versions.spec)
         steps.append(StepResult(f"image:{provider}", True, config.image_name(provider)))
 
     base_url = plane.deploy_app(config.modal_app_name, env=config.deploy_env())
@@ -438,6 +511,10 @@ def deploy(
             "app": config.modal_app_name,
             "app_url": base_url,
             "key_fingerprint": fingerprint(token),
+            # SOR-175 version evidence: the frozen CLI set this deployment
+            # built, plus where its lock file lives for replay/rollback.
+            "cli_versions": resolved_versions.lock_payload(),
+            "versions_lock": str(versions_lock_path),
         },
     )
     return DeployReport(
@@ -446,6 +523,7 @@ def deploy(
         version=version,
         key_created=key_created,
         key_rotated=key_rotated,
+        cli_versions=resolved_versions.cli_versions(),
     )
 
 
@@ -485,6 +563,9 @@ def upgrade(
     sleep: Callable[[float], None] = time.sleep,
     probe_attempts: int = 5,
     version: str | None = None,
+    versions_lock: str | None = None,
+    fetch: Any = None,
+    host_probe: Any = None,
 ) -> UpgradeReport:
     """Redeploy while proving durable stores stay readable end to end.
 
@@ -504,6 +585,9 @@ def upgrade(
         sleep=sleep,
         probe_attempts=probe_attempts,
         version=version,
+        versions_lock=versions_lock,
+        fetch=fetch,
+        host_probe=host_probe,
     )
 
     after = snapshot_durable(cfg.config, plane)

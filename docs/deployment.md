@@ -75,6 +75,41 @@ models?}`). Devin's seeded account takes `SBX_DEVIN_BURST_SLOTS` (default 8).
 serves — the shared `sbx-codex-auth` Secret is only required and mounted when
 `codex` is selected, so e.g. a devin-only deploy does not need it.
 
+### Provider CLI versions (SOR-175)
+
+`runtime/packages.txt` pins every provider CLI version. Any `*_version` key
+— or its env override `SBX_CODEX_VERSION` / `SBX_DEVIN_VERSION` /
+`SBX_OPENCODE_VERSION` / `SBX_AGY_VERSION` / `SBX_GROK_VERSION` — may instead
+be the literal `latest`, which is resolved **once on the build host** at
+image build / deploy time (`runtime/versions.py`), never per-sandbox:
+
+| Provider | `latest` resolves via |
+| --- | --- |
+| codex | npm `{SBX_NPM_REGISTRY}/@openai/codex/latest` dist-tag |
+| opencode | npm `{SBX_NPM_REGISTRY}/opencode-ai/latest` dist-tag |
+| devin | `{devin_base_url}/current/manifest.json` — the promoted release pointer; carries the per-platform `sha256` checksums `install-devin.sh` verifies |
+| antigravity / grok | the build-host binary's own `--version` (`SBX_AGY_BIN` / `SBX_GROK_BIN` or `~/.local/bin/{agy,grok}`) — "latest" means whatever the host has |
+
+Every deploy freezes the resolved set to
+`$SBX_STATE_DIR/cli-versions.json` — the deployment's version evidence
+(requested pin/`latest`, concrete version, provenance, checksums) — and
+records it in `deploy.json` (`cli_versions`, `versions_lock`). Each image
+build of that deployment receives the same frozen spec. To pin a Devin
+version not in packages.txt, export `SBX_DEVIN_VERSION` (checksums resolve
+from its versioned manifest, or set both `SBX_DEVIN_SHA256_X86_64` /
+`SBX_DEVIN_SHA256_AARCH64`).
+
+**Rollback / reproducibility:** pass a previous deployment's lock back —
+`sbx deploy --versions-lock <path>` / `sbx upgrade --versions-lock <path>`
+or `SBX_VERSIONS_LOCK=<path>` — and the frozen versions replay verbatim,
+winning over both `latest` requests and changed `packages.txt` pins, with
+no upstream calls. Image-only paths freeze to
+`runtime/versions.lock.json` (`SBX_VERSIONS_LOCK_OUT` relocates): see
+`python -m runtime.image --resolve-versions` (resolve + freeze + JSON
+evidence, no Modal) and `python -m runtime.image --manifest` (offline
+evidence; an unresolved `latest` reports `source: "unresolved"` rather
+than fetching).
+
 ### Optional GitHub bridge (SOR-117)
 
 Sandboxes can clone/push **private** GitHub repos and open pull requests when

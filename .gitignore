@@ -33,3 +33,8 @@ auth.json
 .idea/
 .vscode/
 .DS_Store
+
+# SOR-175: build-host generated version lock — frozen per deployment,
+# lives under $SBX_STATE_DIR or is replayed via SBX_VERSIONS_LOCK; never
+# a committed artifact.
+runtime/versions.lock.json

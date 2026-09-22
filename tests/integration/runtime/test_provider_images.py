@@ -251,7 +251,8 @@ def test_opencode_image_layers_npm_and_xdg_env() -> None:
 
     base = _RecordingImage()
     original = runtime_image.sbx_runtime_image
-    runtime_image.sbx_runtime_image = lambda: base
+    # the builder passes the resolved spec (SOR-175) — accept and ignore it
+    runtime_image.sbx_runtime_image = lambda *_a, **_kw: base
     try:
         out = runtime_image.sbx_opencode_image()
     finally:
@@ -271,7 +272,7 @@ def test_image_py_defines_provider_builders() -> None:
     assert "def sbx_antigravity_image" in IMAGE_PY
     assert "def sbx_grok_image" in IMAGE_PY
     assert "def sbx_opencode_image" in IMAGE_PY
-    assert "sbx_runtime_image()" in IMAGE_PY  # layers on the codex base
+    assert "sbx_runtime_image(" in IMAGE_PY  # layers on the codex base
     assert AGY_BIN_REMOTE in IMAGE_PY
     assert GROK_BIN_REMOTE in IMAGE_PY
     assert AGY_BIN_ENV in IMAGE_PY and GROK_BIN_ENV in IMAGE_PY

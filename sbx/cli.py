@@ -286,6 +286,7 @@ def cmd_deploy(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         transport=args.transport,
         sleep=args.sleep,
         probe_attempts=args.probe_attempts,
+        versions_lock=args.versions_lock,
     )
     if args.json:
         _emit_json(
@@ -293,6 +294,7 @@ def cmd_deploy(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                 "ok": True,
                 "base_url": report.base_url,
                 "version": report.version,
+                "cli_versions": report.cli_versions or {},
                 "steps": [
                     {"name": s.name, "changed": s.changed, "detail": s.detail} for s in report.steps
                 ],
@@ -389,6 +391,7 @@ def cmd_upgrade(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         sleep=args.sleep,
         probe_attempts=args.probe_attempts,
         version=args.version,
+        versions_lock=args.versions_lock,
     )
     if args.json:
         _emit_json(
@@ -543,6 +546,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "deploy", parents=[sub_common], help="idempotent deploy of the control plane"
     )
+    p.add_argument(
+        "--versions-lock",
+        metavar="PATH",
+        help="replay a frozen CLI versions lock file (rollback to an earlier "
+        "deployment's provider CLI versions; SOR-175)",
+    )
     p.set_defaults(func=cmd_deploy, probe_attempts=5)
 
     p = sub.add_parser("doctor", parents=[sub_common], help="verify the deployment end to end")
@@ -567,6 +576,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("upgrade", parents=[sub_common], help="redeploy preserving durable stores")
     p.add_argument("--version", help="version string to record (default: package version)")
+    p.add_argument(
+        "--versions-lock",
+        metavar="PATH",
+        help="replay a frozen CLI versions lock file (rollback to an earlier "
+        "deployment's provider CLI versions; SOR-175)",
+    )
     p.set_defaults(func=cmd_upgrade, probe_attempts=5)
 
     p = sub.add_parser(

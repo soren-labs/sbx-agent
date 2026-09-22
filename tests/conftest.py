@@ -33,6 +33,9 @@ _CLOUD_PREFIXES = (
     # SOR-127 env-cache gate/setup — ambient values must never arm the
     # snapshot cache in tests.
     "SBX_ENV_",
+    # SOR-175 version-resolution knobs (locks, registries, overrides) are
+    # per-test inputs — ambient values must never pick versions in tests.
+    "SBX_VERSIONS_",
     # Fake-runner knobs are set per-test; ambient values must never leak in.
     "FAKE_",
 )
@@ -76,6 +79,20 @@ _CLOUD_KEYS = frozenset(
         "SBX_ARTIFACT_STORE_DIR",
         "SBX_WORKSPACE_STORE_DIR",
         "SBX_WORKFLOW_STORE_DIR",
+        # SOR-175 provider-version overrides / resolution inputs — tests set
+        # them explicitly; ambient values must never pick a CLI version.
+        "SBX_CODEX_VERSION",
+        "SBX_DEVIN_VERSION",
+        "SBX_OPENCODE_VERSION",
+        "SBX_AGY_VERSION",
+        "SBX_GROK_VERSION",
+        "SBX_NPM_REGISTRY",
+        "SBX_DEVIN_BASE_URL",
+        "SBX_DEVIN_SHA256_X86_64",
+        "SBX_DEVIN_SHA256_AARCH64",
+        # Build-host binary overrides (agy/grok) are per-test inputs too.
+        "SBX_AGY_BIN",
+        "SBX_GROK_BIN",
     }
 )
 # Deliberately NOT scrubbed: SBX_V1_API_KEY / SBX_V1_BASE_URL /

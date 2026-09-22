@@ -115,7 +115,7 @@ def test_image_py_exposes_devin_image_builder() -> None:
     assert "def sbx_devin_image" in source
     assert 'DEVIN_IMAGE_NAME = "sbx-runtime-devin"' in source
     assert DEVIN_IMAGE_NAME == "sbx-runtime-devin"
-    assert "sbx_runtime_image()" in source  # layers on the codex base
+    assert "sbx_runtime_image(" in source  # layers on the codex base
     assert "devin_install_command" in source
     assert "devin_runtime_env" in source
     assert "install-devin.sh" in source
