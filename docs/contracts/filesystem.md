@@ -4,6 +4,8 @@
 
 Sandbox 内 `HOME` 固定为 `$SBX_WORK/home`（凭证 blob 还原的目标根）。`CODEX_HOME` 默认为 `$HOME/.codex`（runner `init` 写入 `config.toml` 与脱敏后的 `auth.json`）；`CODEX_HOME` 环境变量可显式覆盖——v1 控制面继续传 `$SBX_WORK/.codex` 时仍然有效。
 
+`$SBX_WORKDIR`（可选，SOR-174）：控制面在 turn 派单时把已 prepare 的 `WorkspaceRecord.workdir`（相对 `$SBX_WORK` 的安全相对路径，默认 `repo`）写入 runner 进程环境。**provider CLI 的进程 cwd 与该值拼接后的目录**（即 `$SBX_WORK/$SBX_WORKDIR`）一致；首轮 codex `-C`、opencode `--dir`、devin ACP `session/new` / `session/load` 的 `cwd` 参数均指向该目录。未声明 / 未 prepare 时保持旧行为（CLI cwd = `$SBX_WORK`）。Runner 自身状态根不变：`inbox/`、`turns/`、`session.json`、`events*.jsonl`、`home/` 仍在 `$SBX_WORK` 下。
+
 ## 布局
 
 ```
@@ -14,6 +16,8 @@ $SBX_WORK/
   events.raw.jsonl      # CLI 原生 stdout 行原样追加（排障用；codex 下与 events.jsonl 同形）
   session.json          # native_session_id、provider、account_id、turn 计数
   AGENTS.md             # runner init 生成的 sandbox 内说明
+  repo/                 # 声明的 WorkspaceRecord workdir（$SBX_WORKDIR，默认 repo）
+                        # provider CLI 的进程 cwd；runner 状态文件不在此目录
   home/                 # $HOME：凭证 blob 还原到此目录下（权限 600）
     .codex/             # CODEX_HOME（codex provider）
       config.toml
@@ -62,6 +66,8 @@ home: $SBX_WORK/home
 codex_home: $HOME/.codex
 codex_home_v1: $SBX_WORK/.codex
 work_env: SBX_WORK
+workdir_env: SBX_WORKDIR
+default_workdir: repo
 production_work: /work
 credential_env: SBX_ACCOUNT_CREDENTIAL
 account_id_env: SBX_ACCOUNT_ID

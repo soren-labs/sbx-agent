@@ -677,7 +677,7 @@ class ControlPlane:
             proc = self.backend.exec(
                 handle,
                 self.runner(*turn_args),
-                env=sandbox_env(handle),
+                env=sandbox_env(handle, self._workdir_env(session_id)),
             )
         except Exception:
             self._rollback_turn(session_id, turn_id, handle, drop_message=drop_message)
@@ -692,6 +692,19 @@ class ControlPlane:
         )
         thread.start()
         return turn_id
+
+    def _workdir_env(self, session_id: str) -> dict[str, str] | None:
+        """``SBX_WORKDIR`` for ``runner turn`` when a workspace was prepared
+        (SOR-174): provider CLIs run inside the declared workdir while
+        ``$SBX_WORK`` stays the runner state root. Unprepared/missing
+        records dispatch without it, keeping the pre-workspace layout.
+        """
+        if self.workspaces is None:
+            return None
+        record = self.workspaces.get(session_id)
+        if record is None or not record.prepared:
+            return None
+        return {"SBX_WORKDIR": record.workdir}
 
     def _rollback_turn(
         self, session_id: str, turn_id: str, handle: Any, *, drop_message: bool = True

@@ -68,7 +68,7 @@ from typing import Any, Literal
 
 from runtime.runner.constants import NOOP_EVENT_TYPE
 from runtime.runner.events import parse_event_line
-from runtime.runner.workspace import load_session, work_root
+from runtime.runner.workspace import agent_workdir, load_session, work_root
 
 Health = Literal["ok", "auth_invalid", "rate_limited", "unknown"]
 
@@ -234,7 +234,7 @@ class OpencodeAdapter:
         argv = [*opencode_bin_tokens(), "run", prompt, "--format", "json"]
         if model:
             argv += ["-m", model]
-        argv += ["--dir", str(work_root()), "--auto"]
+        argv += ["--dir", str(agent_workdir()), "--auto"]
         return argv
 
     def resume_argv(self, prompt: str, native_session_id: str) -> list[str]:
@@ -251,7 +251,7 @@ class OpencodeAdapter:
         model = _session_model()
         if model:
             argv += ["-m", model]
-        argv += ["--dir", str(work_root()), "--auto"]
+        argv += ["--dir", str(agent_workdir()), "--auto"]
         return argv
 
     def translate(self, raw_line: str) -> list[dict[str, Any]]:

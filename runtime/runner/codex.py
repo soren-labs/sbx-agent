@@ -37,10 +37,12 @@ def build_codex_argv(
 ) -> list[str]:
     """Build ``codex exec`` / ``codex exec resume`` argv.
 
-    Prompt is a positional argument (never ``-``). First turn matches
-    ``runner-cli.md`` plus P0: ``-C $SBX_WORK``. Resume matches P0 / Codex
+    Prompt is a positional argument (never ``-``). ``work`` is the CLI's
+    working directory — the declared workspace workdir when one exists,
+    ``$SBX_WORK`` otherwise (SOR-174). First turn matches
+    ``runner-cli.md`` plus P0: ``-C <work>``. Resume matches P0 / Codex
     CLI 0.153.0: ``codex exec resume`` does **not** accept ``-C`` (cwd is
-    already ``work`` in ``start_codex``).
+    already the workdir in ``start_codex``).
     """
     cmd = [*codex_bin_tokens()]
     if thread_id:
@@ -180,13 +182,20 @@ def start_codex(
     work: Path,
     home: Path,
     stderr_path: Path,
+    cwd: Path | None = None,
 ) -> subprocess.Popen[str]:
+    """Spawn the provider CLI.
+
+    ``work`` stays the runner state root (``$SBX_WORK``/``HOME`` layout in
+    ``child_env``); ``cwd`` is the CLI's process cwd — the declared
+    workspace workdir when the control plane set ``SBX_WORKDIR``.
+    """
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_f = stderr_path.open("w", encoding="utf-8")
     try:
         proc = subprocess.Popen(
             argv,
-            cwd=str(work),
+            cwd=str(cwd if cwd is not None else work),
             env=child_env(work, home),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

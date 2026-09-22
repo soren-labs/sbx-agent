@@ -29,9 +29,11 @@ import signal
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from runtime.runner.adapters.devin import devin_bin_tokens
+from runtime.runner.workspace import agent_workdir
 
 # Credential/key material that must never reach `devin acp`: the restored
 # ~/.local/share/devin/credentials.toml file is the only auth source, and
@@ -326,7 +328,10 @@ def _shutdown_child(proc: subprocess.Popen[str], grace_s: float = 3.0) -> None:
 
 def run_bridge(*, prompt: str, model: str, resume_id: str | None) -> int:
     env = _child_env()
-    work = os.environ.get("SBX_WORK") or os.getcwd()
+    # SOR-174: the ACP session anchors at the declared workspace workdir
+    # ($SBX_WORK/$SBX_WORKDIR); ``$SBX_WORK`` itself stays the state root.
+    env_work = os.environ.get("SBX_WORK")
+    work = str(agent_workdir(Path(env_work))) if env_work else os.getcwd()
     argv = [*devin_bin_tokens(), "acp"]
     if model:
         argv += ["--model", model]

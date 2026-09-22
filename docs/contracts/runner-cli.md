@@ -2,7 +2,7 @@
 
 Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 `runner`（测试假件：`tests/fakes/stub_runner.py`）。工作目录语义见 `filesystem.md`；事件见 `events.md`。v1 行为与 Linear `SOR-30` 一致；v2（`SOR-59` 起）扩展为多 provider，向后兼容。
 
-环境：`SBX_WORK`（生产 `/work`）、`HOME=$SBX_WORK/home`、`CODEX_HOME=$HOME/.codex`、`CODEX_BIN`（默认 `codex`，测试指向 `tests/fakes/fake_codex.py`）。
+环境：`SBX_WORK`（生产 `/work`）、`HOME=$SBX_WORK/home`、`CODEX_HOME=$HOME/.codex`、`CODEX_BIN`（默认 `codex`，测试指向 `tests/fakes/fake_codex.py`）、`SBX_WORKDIR`（可选，SOR-174：声明的 workspace workdir，相对 `$SBX_WORK`；未设置时 provider CLI cwd = `$SBX_WORK`）。
 
 ## Provider
 
@@ -49,10 +49,11 @@ Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 
 - 默认 `--max-seconds` **900**。
 - 将 `F` 复制为 `$SBX_WORK/inbox/<N>.md`。`$PROMPT` 取该文件全文。
 - 第 `N` 轮调用该 provider adapter 的 `first_turn_argv`（`N=1` 且无 `native_session_id`）或 `resume_argv`（后续轮，id 来自 `session.json.native_session_id`）。**stdin 关闭**，prompt 只作位置参数，不用 `-`。
-- Codex provider 第 1 轮调用：
+- **provider CLI 工作目录**（SOR-174）：进程 cwd = `$SBX_WORK/$SBX_WORKDIR`（声明了已 prepare 的 workspace 时），否则 `$SBX_WORK`；首轮与 resume 轮一致。带目录参数的 CLI 同步指向该目录——codex 首轮 `-C`、opencode `--dir`、devin ACP `session/new` / `session/load` 的 `cwd`；无目录参数的 CLI（antigravity、grok、devin `acp` 进程、codex `exec resume`）只依赖进程 cwd。`$SBX_WORK` 仍是 runner 状态根（`session.json`、`events*.jsonl`、`inbox/`、`turns/`、`home/`）。
+- Codex provider 第 1 轮调用（`<workdir>` = 上述 CLI 工作目录）：
 
   ```
-  $CODEX_BIN exec --json --skip-git-repo-check -C $SBX_WORK \
+  $CODEX_BIN exec --json --skip-git-repo-check -C <workdir> \
     --dangerously-bypass-approvals-and-sandbox -m <model> \
     "$PROMPT"
   ```
@@ -60,7 +61,7 @@ Sandbox 内驱动 agent CLI 会话的进程入口。可执行文件名约定为 
   第 2 轮及以后：
 
   ```
-  $CODEX_BIN exec resume --json --skip-git-repo-check -C $SBX_WORK \
+  $CODEX_BIN exec resume --json --skip-git-repo-check -C <workdir> \
     --dangerously-bypass-approvals-and-sandbox <session_id> \
     "$PROMPT"
   ```
@@ -142,6 +143,8 @@ paths:
   - events.jsonl
   - events.raw.jsonl
   - session.json
+workdir_env: SBX_WORKDIR
+default_workdir: repo
 codex_events:
   - thread.started
   - turn.started

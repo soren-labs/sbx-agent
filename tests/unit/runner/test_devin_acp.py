@@ -224,3 +224,44 @@ def test_resume_argv_has_no_model(tmp_path: Path, repo_root: Path) -> None:
     spy = json.loads(spy_out.read_text())
     assert "--model" not in spy["argv"]
     assert spy["argv"] == ["acp"]
+
+
+def test_workdir_follows_sbx_workdir(tmp_path: Path, repo_root: Path) -> None:
+    """SOR-174: `devin acp` process cwd AND the ACP session ``cwd`` anchor
+    at ``$SBX_WORK/$SBX_WORKDIR`` when the workspace workdir is declared."""
+    workdir = tmp_path / "work" / "repo"
+    workdir.mkdir(parents=True)
+    spy_out = tmp_path / "spy.json"
+    session_cwd_out = tmp_path / "session_cwd.txt"
+    env = _env(
+        tmp_path,
+        repo_root,
+        "success",
+        SBX_WORKDIR="repo",
+        FAKE_ACP_SPY_OUT=str(spy_out),
+        FAKE_ACP_SESSION_CWD_OUT=str(session_cwd_out),
+    )
+    proc = _run_bridge(env, ["--model", "swe-2-medium", "--", "go"])
+    assert proc.returncode == 0, proc.stderr
+    spy = json.loads(spy_out.read_text())
+    assert spy["cwd"] == str(workdir)
+    assert session_cwd_out.read_text() == str(workdir)
+
+
+def test_workdir_defaults_to_state_root(tmp_path: Path, repo_root: Path) -> None:
+    """No SBX_WORKDIR: the pre-SOR-174 layout — `devin acp` cwd + ACP
+    session ``cwd`` stay at ``$SBX_WORK``."""
+    spy_out = tmp_path / "spy.json"
+    session_cwd_out = tmp_path / "session_cwd.txt"
+    env = _env(
+        tmp_path,
+        repo_root,
+        "success",
+        FAKE_ACP_SPY_OUT=str(spy_out),
+        FAKE_ACP_SESSION_CWD_OUT=str(session_cwd_out),
+    )
+    proc = _run_bridge(env, ["--model", "swe-2-medium", "--", "go"])
+    assert proc.returncode == 0, proc.stderr
+    spy = json.loads(spy_out.read_text())
+    assert spy["cwd"] == str(tmp_path / "work")
+    assert session_cwd_out.read_text() == str(tmp_path / "work")
