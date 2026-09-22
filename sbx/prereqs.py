@@ -174,6 +174,12 @@ def check_github(
     opted = det.opted_in if gate is None else gate
     name = secret_name if secret_name is not None else env.get("SBX_GITHUB_SECRET_NAME")
     name = name.strip() if name else None
+    app_tail = ""
+    if det.app_configured:
+        # SOR-177: the App is a token *source* inside the same opt-in
+        # bridge — advisory reports posture only (names/counts, never
+        # the private key or minted tokens).
+        app_tail = f"; GitHub App configured with {det.app_installations} installation(s) on record"
     if opted:
         if det.token_env:
             detail = (
@@ -182,13 +188,20 @@ def check_github(
             )
             if name:
                 detail += f"; remote deploys mount Modal Secret {name!r}"
-            return Check(name="github", ok=True, detail=detail)
+            return Check(name="github", ok=True, detail=detail + app_tail)
         if name:
             return Check(
                 name="github",
                 ok=True,
                 detail=f"GitHub bridge armed — Modal Secret {name!r} supplies the "
-                "token to the deployed control plane (no host token needed)",
+                "token to the deployed control plane (no host token needed)" + app_tail,
+            )
+        if det.app_configured:
+            return Check(
+                name="github",
+                ok=True,
+                detail="GitHub bridge armed — the GitHub App supplies installation "
+                "tokens to sandboxes (no GH_TOKEN needed)" + app_tail,
             )
         return Check(
             name="github",
@@ -217,6 +230,14 @@ def check_github(
             detail=f"{det.token_env} detected — sandbox GitHub injection is off",
             hint="export SBX_GITHUB_EPHEMERAL=1 to inject it into sandboxes "
             "(private-repo clone/push/PR on github.com)",
+        )
+    if det.app_configured:
+        return Check(
+            name="github",
+            ok=False,
+            warn=True,
+            detail="GitHub App is configured but the GitHub bridge is off" + app_tail,
+            hint="export SBX_GITHUB_EPHEMERAL=1 to inject App tokens into sandboxes",
         )
     if det.gh_authenticated:
         return Check(

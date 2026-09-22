@@ -216,6 +216,32 @@ def _require_github_secret(cfg: BootstrapConfig, existing: set[str]) -> StepResu
     )
 
 
+def _require_github_app_secret(cfg: BootstrapConfig, existing: set[str]) -> StepResult | None:
+    """Fail-before-write check for the GitHub App Secret (SOR-177).
+
+    Only applies when the resolved config identifies an App
+    (``github_app.app_id`` / ``SBX_GITHUB_APP_ID``) AND named a Secret
+    (``github_app.secret_name`` / ``SBX_GITHUB_APP_SECRET_NAME``) — the
+    named Secret holds ``SBX_GITHUB_APP_PRIVATE_KEY`` so the remote
+    control app can mint installation tokens. A missing named Secret is
+    an explicit deploy failure rather than a silently dead authorize
+    flow.
+    """
+    name = cfg.github_app_secret_name
+    if not cfg.github_app_id or not name:
+        return None
+    if name in existing:
+        return StepResult("secret:github-app", False, f"{name} present")
+    raise BootstrapError(
+        f"GitHub App Secret {name!r} is missing",
+        hint=f"create it with `modal secret create {name} "
+        'SBX_GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem)"` (the App\'s '
+        "generated private key), or clear github_app.secret_name / "
+        "SBX_GITHUB_APP_SECRET_NAME, then rerun `sbx deploy`",
+        code="secret_missing",
+    )
+
+
 def _require_account_secrets(cfg: BootstrapConfig, plane: Plane, existing: set[str]) -> StepResult:
     """Fail-before-write check for enabled providers' account Secrets.
 
@@ -466,6 +492,9 @@ def deploy(
     github_step = _require_github_secret(config, existing_secrets)
     if github_step is not None:
         steps.append(github_step)
+    github_app_step = _require_github_app_secret(config, existing_secrets)
+    if github_app_step is not None:
+        steps.append(github_app_step)
 
     # SOR-175: resolve + freeze provider CLI versions once, before any write
     # — a ``latest``/host-probe failure aborts with zero resources touched.

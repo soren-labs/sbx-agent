@@ -138,6 +138,11 @@ x-canonical:
     - GET /v1/artifacts
     - GET /v1/artifacts/{artifactId}
     - GET /v1/artifacts/{artifactId}/download
+    - GET /v1/github/app
+    - POST /v1/github/app/authorize
+    - POST /v1/github/app/authorize/callback
+    - POST /v1/github/app/sync
+    - DELETE /v1/github/app/installations/{installationId}
 servers:
   - url: https://sbx.sorenforge.com
     description: Production (Cloudflare Worker → sbx-control)
@@ -150,6 +155,7 @@ tags:
   - name: artifacts
   - name: accounts
   - name: api-keys
+  - name: github
   - name: meta
 paths:
   /v1/agents:
@@ -892,6 +898,149 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/github/app:
+    get:
+      tags: [github]
+      summary: |
+        GitHub App authorization posture (SOR-177): whether the App is
+        configured (`configured`, `app_slug`), how many installations are
+        recorded, and whether the GH_TOKEN/GITHUB_TOKEN compatibility
+        bridge can still supply tokens (`bridge_token`). Never returns
+        private-key or token material.
+      operationId: getGitHubAppStatus
+      responses:
+        "200":
+          description: Authorization posture
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubAppStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/github/app/authorize:
+    post:
+      tags: [github]
+      summary: |
+        Begin one-click authorization (SOR-177): returns the GitHub App
+        install URL to open in a browser plus a single-use `state`
+        credential (600s TTL) that the callback requires.
+      operationId: beginGitHubAppAuthorize
+      responses:
+        "201":
+          description: Authorize URL + state issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubAppAuthorize"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/GitHubAppUnconfigured"
+  /v1/github/app/authorize/callback:
+    post:
+      tags: [github]
+      summary: |
+        Complete authorization (SOR-177): records the installation the
+        operator selected in the browser. `state` is the callback's
+        credential — single-use, from the authorize step.
+      operationId: completeGitHubAppAuthorize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GitHubAppAuthorizeCallback"
+      responses:
+        "200":
+          description: Installation recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [installation]
+                properties:
+                  installation:
+                    $ref: "#/components/schemas/GitHubAppInstallation"
+        "400":
+          $ref: "#/components/responses/GitHubAppInvalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubAppState"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/GitHubAppUpstream"
+        "503":
+          $ref: "#/components/responses/GitHubAppUnconfigured"
+  /v1/github/app/sync:
+    post:
+      tags: [github]
+      summary: |
+        Refresh installation metadata from GitHub (admin scope): re-reads
+        repo selection for every recorded installation and drops installs
+        deleted on GitHub.
+      operationId: syncGitHubApp
+      responses:
+        "200":
+          description: Synced installation list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [installations]
+                properties:
+                  installations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GitHubAppInstallation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GitHubAppUpstream"
+        "503":
+          $ref: "#/components/responses/GitHubAppUnconfigured"
+  /v1/github/app/installations/{installationId}:
+    delete:
+      tags: [github]
+      summary: |
+        Revoke one installation (admin scope): best-effort delete on
+        GitHub, then always forgets the local record and any cached
+        installation tokens. Re-running authorize reconnects.
+      operationId: revokeGitHubAppInstallation
+      parameters:
+        - name: installationId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Revocation outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: integer
+                  remote_deleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/GitHubAppUnconfigured"
 components:
   securitySchemes:
     bearerAuth:
@@ -1850,6 +1999,83 @@ components:
             key:
               type: string
               description: "`sbx_<key>` plaintext, returned exactly once"
+    GitHubAppInstallation:
+      type: object
+      description: |
+        Selected-repo authorization metadata for one GitHub App
+        installation (SOR-177). Metadata only — never token material.
+        `repositories` is populated only when `repository_selection` is
+        `selected`; `all` covers every repo on the account.
+      required: [installation_id, account_login, repository_selection, suspended]
+      properties:
+        installation_id:
+          type: integer
+        account_login:
+          type: string
+        account_type:
+          type: string
+          enum: [User, Organization]
+        repository_selection:
+          type: string
+          enum: [all, selected]
+        repositories:
+          type: array
+          items:
+            type: string
+        suspended:
+          type: boolean
+        recorded_at:
+          type: string
+          format: date-time
+        synced_at:
+          type: string
+          format: date-time
+    GitHubAppStatus:
+      type: object
+      required: [configured, installable, installations, bridge_token]
+      properties:
+        configured:
+          type: boolean
+          description: App id + private key present (JWT can be signed)
+        installable:
+          type: boolean
+          description: App slug also present (authorize URL can be built)
+        app_id:
+          type: string
+          nullable: true
+        app_slug:
+          type: string
+          nullable: true
+        installations:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitHubAppInstallation"
+        bridge_token:
+          type: boolean
+          description: |
+            Whether the GH_TOKEN/GITHUB_TOKEN compatibility fallback can
+            still supply tokens to the injection seam.
+    GitHubAppAuthorize:
+      type: object
+      required: [authorize_url, state, expires_at]
+      properties:
+        authorize_url:
+          type: string
+          description: GitHub App install URL to open in a browser
+        state:
+          type: string
+          description: Single-use callback credential (600s TTL)
+        expires_at:
+          type: string
+          format: date-time
+    GitHubAppAuthorizeCallback:
+      type: object
+      required: [installation_id, state]
+      properties:
+        installation_id:
+          type: integer
+        state:
+          type: string
     ErrorBody:
       type: object
       required: [error]
@@ -1884,6 +2110,10 @@ components:
                 - artifact_invalid
                 - artifact_secret
                 - invalid_output_contract
+                - github_app_unconfigured
+                - github_app_invalid
+                - github_app_state
+                - github_app_upstream
             message:
               type: string
             retry_after:
@@ -1938,6 +2168,39 @@ components:
         429 when capacity is exhausted: `provider_exhausted` (auto pick found
         no free account) or `concurrency_limit` (global cap). `retry_after`
         in the error body when known.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    GitHubAppUnconfigured:
+      description: |
+        503 github_app_unconfigured — no GitHub App identity/private key is
+        configured (SOR-177). The GH_TOKEN compatibility bridge may still
+        supply tokens.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    GitHubAppInvalid:
+      description: |
+        400 github_app_invalid — malformed authorize callback (bad
+        installation_id / missing state).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    GitHubAppState:
+      description: |
+        403 github_app_state — the authorize `state` is absent, unknown,
+        expired, or already consumed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    GitHubAppUpstream:
+      description: |
+        502 github_app_upstream — a GitHub API call failed (installations
+        list, repo selection, installation-token mint, delete).
       content:
         application/json:
           schema:

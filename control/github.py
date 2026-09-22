@@ -6,13 +6,17 @@ provider-agnostic seam for it (it replaces the Devin-only ``SBX_GITHUB_EPHEMERAL
 bridge in ``control.backends.modal``):
 
 - ``secret_env``/``exec_env`` build the sandbox env **only** when the operator
-  exported ``SBX_GITHUB_EPHEMERAL=1`` *and* a ``GH_TOKEN``/``GITHUB_TOKEN`` is
-  present in the control-plane env — explicit opt-in, never ambient.
+  exported ``SBX_GITHUB_EPHEMERAL=1`` *and* a credential source exists: a
+  ``GH_TOKEN``/``GITHUB_TOKEN`` env var (compat fallback) or a configured
+  GitHub App with a recorded installation (SOR-177,
+  ``control.github_app`` — short-lived installation tokens minted
+  server-side).
 - The token travels by env only: the ``GIT_CONFIG_*`` credential helper echoes
   ``$GH_TOKEN`` at git runtime, so the value never lands in argv, git config,
   or any file inside the sandbox.
-- ``detect`` reports host GitHub auth (env vars / ``gh auth status``) by
-  *source name and status* — a detection result never carries token material.
+- ``detect`` reports host GitHub auth (env vars / ``gh auth status`` / App
+  posture) by *source name and status* — a detection result never carries
+  token material.
 - ``redact_url_credentials`` keeps userinfo out of error text.
 
 Without the opt-in the seam emits nothing and the GitHub-less path is
@@ -67,6 +71,8 @@ _PROBE_ENV_KEYS = (
 def resolve_token(env: Mapping[str, str] | None = None) -> str | None:
     """First non-empty ``GH_TOKEN``/``GITHUB_TOKEN`` value, or ``None``.
 
+    Env-only resolution (SOR-177: the GitHub App source lives in
+    :func:`_app_token` and is consulted by the injection path, never here).
     Returns the *value* — callers use it to build env, never to log or render.
     """
     env = os.environ if env is None else env
@@ -77,13 +83,27 @@ def resolve_token(env: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
-def token_source(env: Mapping[str, str] | None = None) -> str | None:
-    """Which env var carries the token (``GH_TOKEN`` wins) — name only."""
+def _app_token(env: Mapping[str, str], repo: str | None) -> str | None:
+    """SOR-177: GitHub App minted token via ``control.github_app`` — lazy
+    import so the plain-env path never touches the app's HTTP surface."""
+    from control import github_app
+
+    return github_app.sandbox_token(env, repo=repo)
+
+
+def token_source(env: Mapping[str, str] | None = None, *, repo: str | None = None) -> str | None:
+    """Which source carries the token — ``GH_TOKEN``/``GITHUB_TOKEN`` win;
+    ``"github_app"`` when a configured App supplies it (name only, never
+    token material)."""
     env = os.environ if env is None else env
     for name in TOKEN_ENVS:
         value = env.get(name)
         if value and value.strip():
             return name
+    from control import github_app
+
+    if github_app.can_supply(env, repo=repo):
+        return "github_app"
     return None
 
 
@@ -93,33 +113,50 @@ def opted_in(env: Mapping[str, str] | None = None) -> bool:
     return env.get(GATE_ENV) == "1"
 
 
-def injection_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """Gate AND token both present — the only state that injects."""
-    return opted_in(env) and resolve_token(env) is not None
+def injection_enabled(env: Mapping[str, str] | None = None, *, repo: str | None = None) -> bool:
+    """Gate AND a credential source both present — the only state that
+    injects. ``repo`` (URL or ``owner/repo``) narrows the GitHub App check to
+    installations that authorize it — a repo outside every selected-repo
+    record is not injectable."""
+    if not opted_in(env):
+        return False
+    if resolve_token(env) is not None:
+        return True
+    from control import github_app
+
+    return github_app.can_supply(env, repo=repo)
 
 
-def secret_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def secret_env(env: Mapping[str, str] | None = None, *, repo: str | None = None) -> dict[str, str]:
     """Token env for a Modal ``Secret.from_dict`` / sandbox exec.
 
     Both ``GH_TOKEN`` and ``GITHUB_TOKEN`` are populated from the resolved
     token so git, ``gh`` and API clients find whichever name they read. Empty
     unless :func:`injection_enabled` — an opt-in flag alone injects nothing.
+    The env PAT/GITHUB_TOKEN compat path wins; otherwise a configured GitHub
+    App mints a short-lived installation token (repo-scoped when ``repo`` is
+    given).
     """
-    if not injection_enabled(env):
+    if not injection_enabled(env, repo=repo):
         return {}
     token = resolve_token(env)
-    assert token is not None
+    if token is None:
+        token = _app_token(env, repo)
+    if token is None:
+        return {}
     return {name: token for name in TOKEN_ENVS}
 
 
-def git_config_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def git_config_env(
+    env: Mapping[str, str] | None = None, *, repo: str | None = None
+) -> dict[str, str]:
     """``GIT_CONFIG_*`` entries wiring the github.com credential helper.
 
     Values contain the literal ``$GH_TOKEN`` reference — git expands it inside
     the sandbox process env when a github.com credential is requested. Empty
     unless injection is enabled.
     """
-    if not injection_enabled(env):
+    if not injection_enabled(env, repo=repo):
         return {}
     out: dict[str, str] = {"GIT_TERMINAL_PROMPT": "0"}
     for index, (key, value) in enumerate(_GIT_CREDENTIAL_KEYS):
@@ -129,9 +166,13 @@ def git_config_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return out
 
 
-def exec_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Full GitHub overlay for a sandbox exec env (token + git wiring)."""
-    return {**secret_env(env), **git_config_env(env)}
+def exec_env(env: Mapping[str, str] | None = None, *, repo: str | None = None) -> dict[str, str]:
+    """Full GitHub overlay for a sandbox exec env (token + git wiring).
+
+    ``repo`` (a clone URL or ``owner/repo``) scopes GitHub App mints to the
+    authorizing installation's repo when the caller knows the target.
+    """
+    return {**secret_env(env, repo=repo), **git_config_env(env, repo=repo)}
 
 
 # Env keys the overlay owns — ``sandbox_env`` strips them from caller ``extra``
@@ -209,10 +250,14 @@ class GitHubDetection:
     opted_in: bool  # SBX_GITHUB_EPHEMERAL=1
     gh_on_path: bool  # `gh` binary found
     gh_authenticated: bool | None  # None = not probed (verify-gated)
+    # SOR-177: GitHub App posture — configured (id+key present) and how many
+    # installations are recorded. Names/counts only, no secrets.
+    app_configured: bool = False
+    app_installations: int = 0
 
     @property
     def detected(self) -> bool:
-        return self.token_env is not None or self.gh_authenticated is True
+        return self.token_env is not None or self.gh_authenticated is True or self.app_configured
 
 
 def _find_gh(env: Mapping[str, str], which: Callable[[str], str | None] | None) -> str | None:
@@ -275,6 +320,9 @@ def detect(
     """
     env = os.environ if env is None else env
     gh_path = _find_gh(env, which)
+    from control import github_app
+
+    app_posture = github_app.posture(env)
     return GitHubDetection(
         token_env=token_source(env),
         opted_in=opted_in(env),
@@ -282,6 +330,8 @@ def detect(
         gh_authenticated=(
             gh_auth_status(env, runner=runner, which=which) if probe_gh and gh_path else None
         ),
+        app_configured=bool(app_posture.get("configured")),
+        app_installations=int(app_posture.get("installations") or 0),
     )
 
 

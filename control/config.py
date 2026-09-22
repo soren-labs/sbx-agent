@@ -51,6 +51,8 @@ ARTIFACTS_DICT_NAME = "sbx-artifacts"
 WORKSPACES_DICT_NAME = "sbx-workspaces"
 # SOR-127: environment build/snapshot cache records (last-known-good builds).
 ENVIRONMENTS_DICT_NAME = "sbx-environments"
+# SOR-177: GitHub App installation metadata + pending authorize states.
+GITHUB_APP_DICT_NAME = "sbx-github-app"
 # Modal filesystem-snapshot defaults for environment builds.
 ENV_SNAPSHOT_TTL_S = 30 * 24 * 3600  # Modal default retention for filesystem snapshots
 ENV_SNAPSHOT_TIMEOUT_S = 300
@@ -198,6 +200,14 @@ def app_secret_names(env: Mapping[str, str] | None = None) -> list[str]:
     github_secret = env.get("SBX_GITHUB_SECRET_NAME")
     if env.get("SBX_GITHUB_EPHEMERAL") == "1" and github_secret:
         names.append(github_secret)
+    # SOR-177: the GitHub App's private key travels the same way — mounted
+    # as a named Secret only when the operator named one. The remote app
+    # reads ``SBX_GITHUB_APP_PRIVATE_KEY`` out of that Secret; nothing else
+    # forwards the key material (it is deliberately absent from
+    # ``REMOTE_ENV_KEYS``).
+    github_app_secret = env.get("SBX_GITHUB_APP_SECRET_NAME")
+    if github_app_secret:
+        names.append(github_app_secret)
     return names
 
 
@@ -259,6 +269,14 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_DEVIN_TRANSPORT",
     "SBX_GITHUB_EPHEMERAL",
     "SBX_GITHUB_SECRET_NAME",
+    # SOR-177 GitHub App authorization: app identity, store naming and API
+    # base are deploy tunables — the private key itself is Secret material
+    # and is intentionally not in this allowlist.
+    "SBX_GITHUB_APP_ID",
+    "SBX_GITHUB_APP_SLUG",
+    "SBX_GITHUB_APP_SECRET_NAME",
+    "SBX_GITHUB_APP_DICT",
+    "SBX_GITHUB_APP_API_URL",
     "SBX_LINEAR_MCP_EPHEMERAL",
     # SOR-147: credential write-back kill-switch (tunable, not a secret).
     "SBX_CRED_WRITEBACK",

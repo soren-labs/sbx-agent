@@ -505,15 +505,21 @@ def run_git(
     *,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
+    github_repo: str | None = None,
 ) -> GitResult:
     """Run ``git -C <dir> <args>`` inside the sandbox.
 
     ``cwd`` is relative to the sandbox root (default: the root itself).
     ``stderr`` is not part of the backend contract — callers branch on the
-    exit code and stdout lines only.
+    exit code and stdout lines only. ``github_repo`` (clone URL or
+    ``owner/repo``) lets the GitHub App bridge mint a repo-scoped token.
     """
     directory = str(handle.root / cwd) if cwd else str(handle.root)
-    proc = backend.exec(handle, ["git", "-C", directory, *args], env=sandbox_env(handle, env))
+    proc = backend.exec(
+        handle,
+        ["git", "-C", directory, *args],
+        env=sandbox_env(handle, env, github_repo=github_repo),
+    )
     return _collect(proc)
 
 
@@ -574,6 +580,7 @@ def git_fetch_ref(
     ref: str,
     *,
     remote: str = "origin",
+    github_repo: str | None = None,
 ) -> str:
     """Fetch ``ref`` from ``remote`` into ``FETCH_HEAD``; return its commit sha.
 
@@ -586,7 +593,13 @@ def git_fetch_ref(
         raise WorkspaceError(WORKSPACE_INVALID, f"unsafe fetch ref: {ref!r}")
     if remote.startswith("-"):
         raise WorkspaceError(WORKSPACE_INVALID, "fetch remote must not look like an option")
-    res = run_git(backend, handle, ["fetch", "--no-tags", remote, ref], cwd=workdir)
+    res = run_git(
+        backend,
+        handle,
+        ["fetch", "--no-tags", remote, ref],
+        cwd=workdir,
+        github_repo=github_repo,
+    )
     if res.code != 0:
         raise WorkspaceError(
             REPO_UNAVAILABLE,
@@ -605,13 +618,14 @@ def git_ls_remote(
     ref: str,
     *,
     remote: str = "origin",
+    github_repo: str | None = None,
 ) -> str | None:
     """Resolve ``ref`` on ``remote`` (``git ls-remote``); None when absent."""
     if not is_safe_ref(ref):
         raise WorkspaceError(WORKSPACE_INVALID, f"unsafe remote ref: {ref!r}")
     if remote.startswith("-"):
         raise WorkspaceError(WORKSPACE_INVALID, "ls-remote must not look like an option")
-    res = run_git(backend, handle, ["ls-remote", remote, ref], cwd=workdir)
+    res = run_git(backend, handle, ["ls-remote", remote, ref], cwd=workdir, github_repo=github_repo)
     if res.code != 0:
         raise WorkspaceError(
             REPO_UNAVAILABLE, f"git ls-remote {remote} {ref} failed (exit {res.code})"
@@ -631,6 +645,7 @@ def git_push(
     refspec: str,
     *,
     remote: str = "origin",
+    github_repo: str | None = None,
 ) -> None:
     """Push ``refspec`` (e.g. ``HEAD:refs/heads/sbx/review``) to ``remote``.
 
@@ -641,7 +656,7 @@ def git_push(
     """
     if remote.startswith("-") or refspec.startswith("-"):
         raise WorkspaceError(WORKSPACE_INVALID, "push remote/refspec must not look like an option")
-    res = run_git(backend, handle, ["push", remote, refspec], cwd=workdir)
+    res = run_git(backend, handle, ["push", remote, refspec], cwd=workdir, github_repo=github_repo)
     if res.code != 0:
         raise WorkspaceError(
             REPO_UNAVAILABLE, f"git push {remote} {refspec} failed (exit {res.code})"
@@ -688,7 +703,7 @@ def create_pull_request(
         f"--data {shlex.quote(payload)} "
         "-w '\\n%{http_code}'"
     )
-    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle))
+    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle, github_repo=repo))
     lines = list(proc.stdout)
     code = proc.wait()
     http_code = lines[-1].strip() if lines else ""
@@ -750,7 +765,7 @@ def create_issue_comment(
         f"--data {shlex.quote(payload)} "
         "-w '\\n%{http_code}'"
     )
-    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle))
+    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle, github_repo=repo))
     lines = list(proc.stdout)
     code = proc.wait()
     http_code = lines[-1].strip() if lines else ""
@@ -1046,8 +1061,20 @@ class WorkspaceService:
             raise WorkspaceError(
                 CHECKOUT_FAILED, f"no HEAD in workdir {record.workdir} for agent {agent_id}"
             )
-        git_push(self._backend, handle, record.workdir, f"HEAD:refs/heads/{branch}")
-        remote_sha = git_ls_remote(self._backend, handle, record.workdir, f"refs/heads/{branch}")
+        git_push(
+            self._backend,
+            handle,
+            record.workdir,
+            f"HEAD:refs/heads/{branch}",
+            github_repo=record.repo,
+        )
+        remote_sha = git_ls_remote(
+            self._backend,
+            handle,
+            record.workdir,
+            f"refs/heads/{branch}",
+            github_repo=record.repo,
+        )
         if remote_sha != head:
             raise WorkspaceError(
                 REPO_UNAVAILABLE,
@@ -1128,7 +1155,12 @@ class WorkspaceService:
         # ``repo`` may carry userinfo (https://user:TOKEN@…); the credential
         # portion never belongs in an error that lands on a run record.
         safe_repo = github.redact_url_credentials(repo)
-        res = run_git(self._backend, handle, ["clone", "--", repo, workdir])
+        res = run_git(
+            self._backend,
+            handle,
+            ["clone", "--", repo, workdir],
+            github_repo=repo,
+        )
         if res.code != 0:
             raise WorkspaceError(
                 REPO_UNAVAILABLE, f"git clone {safe_repo!r} failed (exit {res.code})"

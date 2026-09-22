@@ -272,6 +272,16 @@ requests: read/write` only if agents open PRs), and the shortest lifetime
 practical — the bridge is ephemeral per sandbox exec, nothing is persisted
 in Modal. A classic `repo`-scoped PAT works but is broader than needed.
 
+A **GitHub App** is the preferred source (SOR-177): configure
+`SBX_GITHUB_APP_ID` / `SBX_GITHUB_APP_SLUG` / `SBX_GITHUB_APP_PRIVATE_KEY`
+(via a named Modal Secret on deploys) and repo owners authorize in the
+browser — `POST /v1/github/app/authorize` → open the install URL →
+`POST /v1/github/app/authorize/callback`. The control plane records the
+selected-repo metadata durably and mints short-lived installation tokens
+server-side, injected through the same seam (same `SBX_GITHUB_EPHEMERAL=1`
+gate); the env PAT above remains the compatibility fallback and wins when
+both exist. See [docs/repo-workflow.md](docs/repo-workflow.md).
+
 Full repo workflow — workspace lifecycle, artifact/handoff chains, review
 pinning, error codes: [docs/repo-workflow.md](docs/repo-workflow.md).
 

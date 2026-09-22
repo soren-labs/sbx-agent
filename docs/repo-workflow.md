@@ -121,6 +121,49 @@ the repositories agents work on — `Contents: read/write`, plus
 practical lifetime. Nothing is persisted in Modal beyond the Secret you
 named; a classic `repo`-scoped PAT works but is broader than needed.
 
+### GitHub App one-click authorization (SOR-177)
+
+The preferred source is a **GitHub App**: the operator configures the App
+once, and each repo owner authorizes it in the browser — no PAT handling at
+all. The control plane mints **short-lived installation tokens** server-side
+from the App's private key; the same `GIT_CONFIG_*` seam above injects them
+identically to an env PAT (the env bridge stays as the compatibility
+fallback and takes precedence when `GH_TOKEN`/`GITHUB_TOKEN` is set).
+
+Configure the App on the control plane:
+
+```bash
+export SBX_GITHUB_APP_ID=123456
+export SBX_GITHUB_APP_SLUG=my-sbx-app
+export SBX_GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n..."  # remote: inside the named Modal Secret
+export SBX_GITHUB_EPHEMERAL=1    # same opt-in gate — App tokens inject only when armed
+```
+
+Flow (all under `/v1/github/app`, Bearer auth):
+
+1. `POST /v1/github/app/authorize` → `{authorize_url, state, expires_at}` —
+   open `authorize_url` in a browser and pick the account/repos to grant.
+   `state` is a single-use credential (600 s TTL).
+2. `POST /v1/github/app/authorize/callback` with
+   `{installation_id, state}` — records the installation's **selected-repo
+   authorization metadata** (installation id, account, `repository_selection`,
+   repo list) in the durable `sbx-github-app` store.
+3. `GET /v1/github/app` reports posture (configured?, installations,
+   `bridge_token` fallback presence) — names/ids/repos only, never key or
+   token material. `POST /v1/github/app/sync` re-reads GitHub truth and
+   drops installs deleted upstream (admin).
+4. `DELETE /v1/github/app/installations/{id}` revokes (admin): best-effort
+   uninstall on GitHub, then always forgets the record + cached tokens.
+   **Reconnect** is authorize → callback again.
+
+Token safety: the private key and minted tokens travel **env/Secret only** —
+never argv, disk, logs, or API responses. Minted tokens are cached only in
+process memory and refreshed 120 s before expiry; when the workspace repo is
+known the mint is scoped to that repo (`repositories=[name]`), otherwise to
+the installation's own selection. An installation whose selection doesn't
+cover the repo authorizes nothing — the seam falls through to the env PAT
+or fails closed (`repo_unavailable`).
+
 ## Git policy — first-class branch/push/PR (SOR-128)
 
 `POST /v1/agents` accepts an optional `git` policy next to `workspace`:
