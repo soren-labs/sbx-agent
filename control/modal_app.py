@@ -76,11 +76,19 @@ def reap_cron() -> None:
     v1_state = getattr(web.state, "v1_state", None)
 
     def _on_action(action: ReapAction) -> None:
-        release_lease_for_action(v1_state, action)
-        if action.kind in ("lost", "timed_out") and action.session_id:
+        # SOR-180: a suspended agent keeps its account lease — it is
+        # recoverable and returns under the same Agent/account on the
+        # next follow-up. ``platform_loss`` IS terminal (uncheckpointed
+        # loss) — release + settle like ``lost``.
+        if action.kind != "suspended":
+            release_lease_for_action(v1_state, action)
+        if action.kind in ("lost", "timed_out", "platform_loss") and action.session_id:
             # SOR-139: the session just went terminal — persist a terminal
             # verdict for any still-open run so no record dangles RUNNING.
-            plane.settle_orphaned_runs(action.session_id, session_status=action.kind)
+            plane.settle_orphaned_runs(
+                action.session_id,
+                session_status="lost" if action.kind == "platform_loss" else action.kind,
+            )
 
     # SOR-139: this plane owns no turn watchers, so every ``running`` record
     # is watcher-less — settle those with written turn evidence into
@@ -100,6 +108,10 @@ def reap_cron() -> None:
         # SOR-63: expired cooldowns return accounts to rotation; absent on
         # app.state until the registry is wired (P2-D bootstrap).
         account_registry=getattr(web.state, "account_registry", None),
+        # SOR-180: idle-expired agents checkpoint + release to suspended
+        # (recoverable); idle agents lost before checkpointing surface as
+        # explicit platform_loss.
+        checkpoints=getattr(plane, "checkpoints", None),
         # SOR-80: timed_out / lost sessions must drop any held /v1 lease.
         on_action=_on_action,
     )

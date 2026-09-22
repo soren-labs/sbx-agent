@@ -142,6 +142,10 @@ class ControlPlane:
         # SOR-147: optional CredentialSync wired by the app layer; None means
         # no credential write-back (no registry installed, or disabled).
         self.credential_sync: Any = None
+        # SOR-180: optional CheckpointService wired by the app layer; None
+        # means suspend/recovery is unavailable — suspended agents cannot
+        # recover and an idle expiry falls back to ``timed_out``.
+        self.checkpoints: Any = None
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
         # Per-session provider/account/model context for run records. Lost on
@@ -170,7 +174,10 @@ class ControlPlane:
         return {
             "id": rec.id,
             "title": rec.title,
-            "status": rec.status,
+            # SOR-180: ``suspended`` is an internal, recoverable state —
+            # the frozen AgentStatus enum cannot grow, so the wire view is
+            # the closest public equivalent: a live agent awaiting a run.
+            "status": "idle" if rec.status == "suspended" else rec.status,
             "created_at": iso(rec.created_at),
             "updated_at": iso(rec.updated_at),
             "model": rec.model,
@@ -427,6 +434,13 @@ class ControlPlane:
                 raise SessionConflict("session_not_runnable")
             stored.sandbox_id = handle.id
             stored.sandbox_root = str(handle.root)
+            # SOR-180: persist the Secret *refs* this sandbox was created
+            # with — a checkpoint restore re-declares them so the fresh
+            # sandbox mounts the same credential/resource channels.
+            stored.spec_secrets = {
+                "secrets": list(secrets),
+                "resource_secrets": list(resource_secrets or ()),
+            }
             stored.updated_at = self.clock()
             self.store.put(stored)
             rec = stored
@@ -527,6 +541,72 @@ class ControlPlane:
         with self._lock:
             self._first_turn_pending.discard(session_id)
 
+    def recover_session(self, session_id: str) -> None:
+        """SOR-180: restore a ``suspended`` agent from its checkpoint.
+
+        A suspended agent owns no live sandbox; this creates a fresh one
+        from the durable checkpoint — same filesystem, same native
+        provider session (``session.json`` survives the snapshot), Secret
+        refs re-declared on the spec and credentials re-attached
+        in-sandbox — and returns the record to ``idle``. Terminal
+        ``lost`` is reserved for a missing or proven-invalid checkpoint
+        (the explicit diagnosis for checkpoint loss); a retryable
+        restore failure leaves the record ``suspended`` so the next
+        follow-up re-attempts. ``SessionConflict`` mirrors the normal
+        not-runnable refusal either way.
+        """
+        checkpoints = self.checkpoints
+        with self._lock:
+            rec = self.store.get(session_id)
+            if rec is None or rec.status != "suspended":
+                return
+        if checkpoints is None:
+            self._mark_unrecoverable(session_id)
+            raise SessionConflict("session_not_runnable")
+        try:
+            handle = checkpoints.restore(rec)
+        except Exception as exc:
+            if getattr(exc, "retryable", False):
+                # Transient restore failure: the checkpoint stays usable
+                # and the record ``suspended`` — the next follow-up
+                # re-attempts the restore.
+                raise SessionConflict("session_not_runnable") from None
+            self._mark_unrecoverable(session_id)
+            raise SessionConflict("session_not_runnable") from None
+        with self._lock:
+            stored = self.store.get(session_id)
+            if stored is None or stored.status != "suspended":
+                # Closed/terminated while the sandbox was being restored —
+                # do not bind it.
+                try:
+                    self.backend.terminate(handle)
+                except Exception:
+                    pass
+                raise SessionConflict("session_not_runnable")
+            stored.sandbox_id = handle.id
+            stored.sandbox_root = str(handle.root)
+            if handle.tags:
+                stored.sandbox_tags = dict(handle.tags)
+            stored.status = "idle"
+            now = self.clock()
+            stored.updated_at = now
+            stored.last_activity_at = now
+            self.store.put(stored)
+
+    def _mark_unrecoverable(self, session_id: str) -> None:
+        """Terminal ``lost`` for a suspended agent that cannot be restored."""
+        with self._lock:
+            stored = self.store.get(session_id)
+            if stored is None or stored.status != "suspended":
+                return
+            stored.status = "lost"
+            now = self.clock()
+            stored.ended_at = now
+            stored.updated_at = now
+            stored.current_turn_id = None
+            stored.current_turn_n = None
+            self.store.put(stored)
+
     def _next_turn_n(self, rec: SessionRecord) -> int:
         """Next never-reused turn number for ``rec``.
 
@@ -555,6 +635,10 @@ class ControlPlane:
         # (control-plane cutover); reconcile it from evidence first so a
         # finished provider run frees the agent instead of 409ing forever.
         self.reconcile_turn(session_id)
+        # SOR-180: a suspended agent owns no live sandbox; restore it from
+        # its checkpoint before the runnable checks so a follow-up lands on
+        # the same Agent id / filesystem / native provider session.
+        self.recover_session(session_id)
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
@@ -620,6 +704,9 @@ class ControlPlane:
         the queue marker is gone (already dispatched/dropped) or the session
         is not runnable.
         """
+        # SOR-180: a suspended agent owns no live sandbox — recover the
+        # checkpoint first so the queued turn lands on the same agent.
+        self.recover_session(session_id)
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
@@ -1078,6 +1165,10 @@ class ControlPlane:
         with self._lock:
             self._live.pop(session_id, None)
             rec = self.store.get(session_id)
+            if rec is not None and rec.status == "suspended":
+                # Already released for checkpoint recovery — the public
+                # equivalent of an idle, runnable agent.
+                return "idle"
             return rec.status if rec else "closed"
 
     def close(self, session_id: str) -> SessionRecord:
@@ -1111,6 +1202,14 @@ class ControlPlane:
         if handle is not None and self.snapshot_hook is not None:
             try:
                 self.snapshot_hook(rec, handle)
+            except Exception:
+                pass
+        # SOR-180: the agent is gone for good — drop its checkpoint record
+        # so it can never be restored past close.
+        checkpoints = self.checkpoints
+        if checkpoints is not None:
+            try:
+                checkpoints.discard(session_id)
             except Exception:
                 pass
         # SOR-147: last write-back before teardown — a CLI-rotated credential
