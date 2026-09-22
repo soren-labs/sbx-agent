@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from control.backend import Process, SandboxBackend, SandboxHandle, SandboxSpec
+from control.compute import ComputeSpec, compute_for_record, usd_per_second
 from control.config import (
     DEFAULT_MODEL,
     IDLE_TIMEOUT_S,
@@ -41,8 +42,16 @@ def iso(ts: datetime) -> str:
     return ts.isoformat()
 
 
-def cost_estimate_usd(sandbox_seconds: float) -> float:
-    return round(max(0.0, sandbox_seconds) * SANDBOX_USD_PER_S, 6)
+def cost_estimate_usd(sandbox_seconds: float, compute: ComputeSpec | None = None) -> float:
+    """USD estimate for ``sandbox_seconds`` billed at the request floor.
+
+    SOR-181: a session with a resolved compute spec bills at its declared
+    ``cpu[0]``/``memory_mib[0]`` floor; ``None`` keeps the P0 deployment
+    default (``SANDBOX_USD_PER_S``).
+    """
+    if compute is None:
+        return round(max(0.0, sandbox_seconds) * SANDBOX_USD_PER_S, 6)
+    return round(max(0.0, sandbox_seconds) * usd_per_second(compute), 6)
 
 
 @dataclass
@@ -167,7 +176,10 @@ class ControlPlane:
             "model": rec.model,
             "turns": rec.turns,
             "usage": usage,
-            "cost_estimate_usd": cost_estimate_usd(sandbox_seconds),
+            "cost_estimate_usd": cost_estimate_usd(
+                sandbox_seconds,
+                compute_for_record(rec.compute, rec.sandbox_tags),
+            ),
             "sandbox_seconds": sandbox_seconds,
             "messages": list(rec.messages),
         }
@@ -230,6 +242,7 @@ class ControlPlane:
         idempotency_fingerprint: str | None = None,
         output_contract: dict[str, Any] | None = None,
         resource_refs: dict[str, Any] | None = None,
+        compute: dict[str, Any] | ComputeSpec | None = None,
     ) -> str:
         """Publish a ``creating`` record without provisioning the sandbox.
 
@@ -274,6 +287,15 @@ class ControlPlane:
                 # values) ride the durable sandbox tags so the agent view
                 # stays truthful across control-plane restarts.
                 tags["resources"] = json.dumps(resource_refs)
+            if compute is not None:
+                # SOR-181: the resolved compute spec is durable — the
+                # record field feeds the status echo and cost estimate,
+                # the tag keeps the sizing recoverable from the sandbox
+                # itself after a control-plane restart.
+                compute_public = (
+                    compute.public() if isinstance(compute, ComputeSpec) else dict(compute)
+                )
+                tags["compute"] = json.dumps(compute_public)
             now = self.clock()
             messages: list[dict[str, Any]] = []
             if first_prompt is not None:
@@ -296,6 +318,7 @@ class ControlPlane:
                 last_activity_at=now,
                 idempotency_key=idempotency_key,
                 idempotency_fingerprint=idempotency_fingerprint,
+                compute=compute_public if compute is not None else None,
             )
             self._run_meta[session_id] = {
                 "provider": provider,
@@ -360,10 +383,16 @@ class ControlPlane:
                 raise SessionConflict("session_not_runnable")
             tags = dict(rec.sandbox_tags)
         secrets = [secret_name] if secret_name else []
+        # SOR-181: the compute spec is read back from the durable record —
+        # the same resolution a post-restart reprovision would take — so
+        # create and recovery always agree on the sizing.
+        compute = compute_for_record(rec.compute, rec.sandbox_tags)
         spec = SandboxSpec(
             tags=tags,
             secrets=secrets,
             resource_secrets=list(resource_secrets or ()),
+            cpu=compute.cpu if compute is not None else None,
+            memory_mib=compute.memory_mib if compute is not None else None,
         )
         try:
             if env_snapshot is not None:

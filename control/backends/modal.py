@@ -453,8 +453,12 @@ class ModalBackend:
             image=image,
             secrets=_sandbox_secrets(modal, spec),
             env=_create_env(spec),
-            cpu=CPU,
-            memory=MEMORY_MIB,
+            # SOR-181: a declared per-agent compute spec overrides the
+            # deployment defaults on create and snapshot restore alike —
+            # the resolved sizing rides the spec, so a restored sandbox
+            # never silently reverts to the default size.
+            cpu=spec.cpu if spec.cpu is not None else CPU,
+            memory=spec.memory_mib if spec.memory_mib is not None else MEMORY_MIB,
             timeout=lifecycle.sandbox_timeout_s,
             idle_timeout=lifecycle.sandbox_idle_timeout_s,
             workdir=WORK_DIR,

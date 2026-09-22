@@ -37,12 +37,17 @@ class SandboxSpec:
     ``resource_secrets`` (SOR-129) names per-agent session-resource Secrets:
     attached alongside — never instead of — the provider account/auth
     Secrets, and re-attached on every ``exec`` in this sandbox only.
+    ``cpu``/``memory_mib`` (SOR-181) are ``(request, limit)`` pairs for the
+    sandbox's compute sizing; ``None`` keeps the backend's deployment
+    default. They apply on create and on snapshot restore alike.
     """
 
     tags: dict[str, str] = field(default_factory=dict)
     secrets: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     resource_secrets: list[str] = field(default_factory=list)
+    cpu: tuple[float, float] | None = None
+    memory_mib: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
