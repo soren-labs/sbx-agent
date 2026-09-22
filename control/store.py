@@ -39,6 +39,11 @@ class SessionRecord:
     # SOR-82: durable Idempotency-Key pin so create dedup survives restarts.
     idempotency_key: str | None = None
     idempotency_fingerprint: str | None = None
+    # SOR-181: resolved per-agent compute spec
+    # (``{"cpu": [min, max], "memory_mib": [min, max]}``) — durable so the
+    # declared sizing survives restarts and recovery, feeds the status
+    # echo, and makes the cost estimate compute-aware.
+    compute: dict[str, Any] | None = None
 
     def handle(self) -> SandboxHandle | None:
         if not self.sandbox_id or not self.sandbox_root:

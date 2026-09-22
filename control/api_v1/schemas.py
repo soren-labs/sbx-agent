@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt
 
 ProviderId = Literal["codex", "antigravity", "grok", "opencode", "devin"]
 VALID_SCOPES = ("agents", "admin")
@@ -126,6 +126,25 @@ class OutputContract(BaseModel):
     enforcement: Literal["strict", "warn"] = "strict"
 
 
+class SessionCompute(BaseModel):
+    """SOR-181 per-agent sandbox compute sizing (``api-v1.yaml``).
+
+    Independent of ``resources`` (credential/config refs) — ``cpu`` is a
+    Modal core count or ``[min, max]`` request/limit pair,
+    ``memory_mib`` the same in MiB. Scalars pin ``min == max``; omitted
+    fields resolve to the canonical defaults (``cpu=[1, 2]``,
+    ``memory_mib=[1024, 8192]``). Malformed, inverted, or out-of-bounds
+    values fail as ``invalid_compute``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Strict types keep JSON booleans (and non-integral floats) from
+    # silently coercing into a sizing — those are malformed declarations.
+    cpu: StrictFloat | list[StrictFloat] | None = None
+    memory_mib: StrictInt | list[StrictInt] | None = None
+
+
 class SessionResources(BaseModel):
     """SOR-129 per-agent resource refs on agent create (``api-v1.yaml``).
 
@@ -153,6 +172,7 @@ class CreateAgentRequest(BaseModel):
     metadata: WorkflowMetadata | None = None
     output_contract: OutputContract | None = None
     resources: SessionResources | None = None
+    compute: SessionCompute | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -221,6 +241,7 @@ def agent_public(
     *,
     usage: dict[str, Any] | None,
     metadata: dict[str, Any] | None = None,
+    compute: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """``api.yaml`` Session dict + ``AgentMeta`` -> ``api-v1.yaml`` Agent.
 
@@ -244,6 +265,9 @@ def agent_public(
         # SOR-129: echo the declared resource *refs* (names only — never
         # values, never the resolved MCP config templates).
         "resources": getattr(meta, "resources", None) if meta is not None else None,
+        # SOR-181: the resolved compute spec from the durable session
+        # record — ``null`` only for records predating SOR-181.
+        "compute": compute,
     }
 
 

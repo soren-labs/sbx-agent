@@ -29,8 +29,10 @@ def test_modal_backend_source_matches_p0() -> None:
     assert "create_if_missing=True" in src
     assert "bufsize=1" in src
     assert "write_eof" in src
-    assert "cpu=CPU" in src or "cpu=(1, 2)" in src
-    assert "memory=MEMORY_MIB" in src or "memory=(1024, 4096)" in src
+    # SOR-181: create/restore take the spec's declared compute, falling
+    # back to the deployment constants when the spec carries none.
+    assert "spec.cpu" in src or "cpu=CPU" in src or "cpu=(1, 2)" in src
+    assert "spec.memory_mib" in src or "memory=MEMORY_MIB" in src or "memory=(1024, 4096)" in src
     # SOR-132/SOR-134 + SOR-135: the native timers resolve from the shared
     # lifecycle chain so operator overrides reach the sandbox, not just the
     # reaper — and the native idle bound is the dedicated

@@ -78,6 +78,7 @@ from control.artifacts import (
     ArtifactSecretError,
     manifest_to_dict,
 )
+from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
 from control.config import TERMINAL_STATUSES, selected_providers
 from control.credsync import TAG_CRED_RUN_FP
 from control.devin_pool import ScheduleRefused
@@ -599,7 +600,16 @@ def _agent_payload(plane: Any, v1: V1State, workflows: WorkflowService, rec: Any
         if task is not None
         else None
     )
-    return agent_public(plane.public(rec), _meta_for(v1, rec), usage=rec.usage, metadata=metadata)
+    # SOR-181: the echo resolves through the same durable-state lookup
+    # as provisioning/cost so tag-only records report their sizing too.
+    _compute = compute_for_record(getattr(rec, "compute", None), getattr(rec, "sandbox_tags", None))
+    return agent_public(
+        plane.public(rec),
+        _meta_for(v1, rec),
+        usage=rec.usage,
+        metadata=metadata,
+        compute=_compute.public() if _compute is not None else None,
+    )
 
 
 def _require_run(
@@ -801,6 +811,20 @@ def _normalize_contract(contract: OutputContract | None) -> dict[str, Any] | Non
         ) from exc
 
 
+def _validate_compute(body: CreateAgentRequest) -> ComputeSpec:
+    """Validate + resolve the SOR-181 ``compute`` declaration.
+
+    Always returns a concrete spec — an omitted declaration resolves to
+    the canonical defaults so the durable record carries the sandbox's
+    real sizing. Malformed/inverted/out-of-bounds values fail as
+    ``400 invalid_compute`` before any claim or sandbox work begins.
+    """
+    try:
+        return resolve_compute(body.compute)
+    except ComputeError as exc:
+        raise V1ApiError(400, exc.code, exc.message) from exc
+
+
 def _validate_resources(body: CreateAgentRequest, registry: Any) -> dict[str, Any] | None:
     """Validate + resolve SOR-129 ``resources`` refs against the registry.
 
@@ -842,6 +866,7 @@ def create_agent(
     """
     workspace, handoff, git = _validate_workspace_decl(body, artifacts)
     contract = _normalize_contract(body.output_contract)
+    compute = _validate_compute(body)
     resources = _validate_resources(body, resources_registry)
     if contract is not None and _ledger(plane) is None:
         # Contracted runs need the durable ledger for both dispatch and the
@@ -930,6 +955,7 @@ def create_agent(
             git=git,
             output_contract=contract,
             resources=resources,
+            compute=compute,
         )
     except Exception:
         if owned is not None:
@@ -966,6 +992,7 @@ def _create_agent_once(
     git: dict[str, Any] | None = None,
     output_contract: dict[str, Any] | None = None,
     resources: dict[str, Any] | None = None,
+    compute: ComputeSpec | None = None,
 ) -> dict[str, Any]:
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
@@ -1015,6 +1042,7 @@ def _create_agent_once(
             idempotency_fingerprint=idempotency_fingerprint,
             output_contract=output_contract,
             resource_refs=resource_refs(resources),
+            compute=compute,
         )
     except ConcurrencyLimit as exc:
         _release_lease(lease)

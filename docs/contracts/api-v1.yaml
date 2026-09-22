@@ -1010,6 +1010,46 @@ components:
           $ref: "#/components/schemas/OutputContract"
         resources:
           $ref: "#/components/schemas/SessionResources"
+        compute:
+          $ref: "#/components/schemas/SessionCompute"
+    SessionCompute:
+      type: object
+      description: |
+        SOR-181 per-agent sandbox compute sizing — independent of
+        `resources` (which names credential/config refs and must not
+        carry sizing). `cpu` is a Modal core count or a `[min, max]`
+        request/limit pair; `memory_mib` the same in MiB. Scalars pin
+        `min == max`; omitted fields resolve to the canonical defaults
+        (`cpu=[1, 2]`, `memory_mib=[1024, 8192]`), and an omitted
+        `compute` resolves to the full defaults. Malformed, inverted
+        (`min > max`), or out-of-bounds values fail as
+        `invalid_compute`. The resolved spec is durable session state —
+        it survives restarts and recovery, applies on sandbox create and
+        snapshot restore, and the cost estimate bills at the declared
+        request floor (`cpu[0]` / `memory_mib[0]`).
+      properties:
+        cpu:
+          description: Core count or `[request, limit]` pair.
+          anyOf:
+            - type: number
+              minimum: 0.125
+              maximum: 64
+            - type: array
+              items:
+                type: number
+              minItems: 1
+              maxItems: 2
+        memory_mib:
+          description: MiB or `[request, limit]` pair.
+          anyOf:
+            - type: integer
+              minimum: 128
+              maximum: 262144
+            - type: array
+              items:
+                type: integer
+              minItems: 1
+              maxItems: 2
     SessionResources:
       type: object
       description: |
@@ -1406,6 +1446,14 @@ components:
           description: |
             SOR-129: the declared session-resource refs (names only —
             never values), ``null`` when the agent declared none.
+        compute:
+          $ref: "#/components/schemas/SessionCompute"
+          nullable: true
+          description: |
+            SOR-181: the resolved compute spec the agent's sandbox was
+            created with — ``{cpu: [min, max], memory_mib: [min, max]}``
+            with the canonical defaults filled in, ``null`` only for
+            records predating SOR-181.
     AgentList:
       type: object
       required: [agents]
