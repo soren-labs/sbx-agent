@@ -220,6 +220,16 @@ class CreateApiKeyRequest(BaseModel):
     scopes: list[str] | None = None
 
 
+class GitHubAppAuthorizeCallbackRequest(BaseModel):
+    """SOR-177: the browser-side install completion — ``state`` is the
+    single-use capability issued by the authorize step (the redirect itself
+    cannot carry a Bearer key)."""
+
+    model_config = ConfigDict(extra="forbid")
+    installation_id: int = Field(ge=1)
+    state: str = Field(min_length=1)
+
+
 def usage_public(usage: dict[str, Any] | None) -> dict[str, int] | None:
     """Usage with the three required fields defaulted to 0.
 

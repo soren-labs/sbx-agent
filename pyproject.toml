@@ -9,6 +9,9 @@ dependencies = [
     "httpx>=0.27.0",
     "modal>=0.73.0",
     "pydantic>=2.10.0",
+    # SOR-177: GitHub App authorization mints RS256 JWTs (App → installation
+    # token) — [crypto] pulls in cryptography for RSA signing.
+    "pyjwt[crypto]>=2.10.0",
     "uvicorn>=0.32.0",
 ]
 

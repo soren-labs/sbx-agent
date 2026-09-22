@@ -135,6 +135,30 @@ export SBX_GITHUB_EPHEMERAL=1 SBX_GITHUB_SECRET_NAME=sbx-github
 uv run sbx deploy
 ```
 
+#### GitHub App authorization (SOR-177)
+
+Preferred over a PAT: configure a GitHub App on the control plane and each
+repo owner authorizes it in the browser (`POST /v1/github/app/authorize` →
+open the returned install URL → `POST .../authorize/callback`). The control
+plane records the selected-repo metadata durably (`sbx-github-app` Dict)
+and mints short-lived installation tokens server-side — injected through
+the same `GIT_CONFIG_*` seam when `SBX_GITHUB_EPHEMERAL=1` is armed. The
+PAT/env bridge above stays as the compatibility fallback (env token wins
+when both exist).
+
+```bash
+modal secret create sbx-github-app \
+  SBX_GITHUB_APP_PRIVATE_KEY="$(cat my-app.private-key.pem)"
+export SBX_GITHUB_APP_ID=123456 SBX_GITHUB_APP_SLUG=my-sbx-app
+export SBX_GITHUB_APP_SECRET_NAME=sbx-github-app SBX_GITHUB_EPHEMERAL=1
+uv run sbx deploy   # fails fast if the named Secret is missing
+```
+
+`SBX_GITHUB_APP_*` names are deploy tunables forwarded to the remote app;
+the private key itself travels only inside the named Secret — `sbx deploy`
+never writes it to env or disk. `[github_app]` in `config.toml`
+(`app_id` / `slug` / `secret_name` / `dict`) is the file equivalent.
+
 The full repo workflow — workspace declarations, GitHub-less fallbacks,
 artifact handoffs, review pinning — is in
 [docs/repo-workflow.md](repo-workflow.md).

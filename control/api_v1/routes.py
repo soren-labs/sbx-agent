@@ -33,6 +33,7 @@ from control.api_v1.deps import (
     agents_key,
     api_key,
     get_artifact_store,
+    get_github_app,
     get_handoffs,
     get_key_store,
     get_plane,
@@ -59,6 +60,7 @@ from control.api_v1.schemas import (
     CreateApiKeyRequest,
     CreateArtifactRequest,
     CreateRunRequest,
+    GitHubAppAuthorizeCallbackRequest,
     HandoffRef,
     OutputContract,
     ProviderId,
@@ -82,6 +84,7 @@ from control.compute import ComputeError, ComputeSpec, compute_for_record, resol
 from control.config import TERMINAL_STATUSES, selected_providers
 from control.credsync import TAG_CRED_RUN_FP
 from control.devin_pool import ScheduleRefused
+from control.github_app import GitHubAppError
 from control.latency import observe
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.resources import ResourceError, resolve_resources, resource_refs
@@ -2066,3 +2069,82 @@ def delete_api_key(
     if not store.revoke(key_id):
         raise not_found("api key not found")
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# GitHub App authorization (SOR-177)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/github/app")
+def github_app_status(
+    key: ApiKey = Depends(agents_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """Authorization posture: app configured?, installations, bridge fallback."""
+    try:
+        return app.status()
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+@router.post("/github/app/authorize", status_code=201)
+def github_app_begin_authorize(
+    key: ApiKey = Depends(agents_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """One-click connect, step 1: return the GitHub install URL to open."""
+    try:
+        return app.begin_authorization()
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+@router.post("/github/app/authorize/callback")
+def github_app_authorize_callback(
+    body: GitHubAppAuthorizeCallbackRequest,
+    key: ApiKey = Depends(agents_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """Step 2: record an installation selected in the browser.
+
+    ``{"installation_id": <int>, "state": "<from authorize>"}`` — the
+    single-use ``state`` from step 1 is the callback's credential: the
+    browser redirect itself carries no Authorization header, so it cannot
+    prove the caller holds an API key; possession of the state can.
+    """
+    try:
+        record = app.complete_authorization(body.installation_id, body.state)
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+    return {"installation": record.public()}
+
+
+@router.post("/github/app/sync")
+def github_app_sync(
+    key: ApiKey = Depends(admin_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """Refresh installation metadata from GitHub (drops deleted installs)."""
+    try:
+        return {"installations": [r.public() for r in app.sync()]}
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+@router.delete("/github/app/installations/{installation_id}")
+def github_app_revoke(
+    installation_id: int,
+    key: ApiKey = Depends(admin_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """Revoke one installation: best-effort delete on GitHub, always forgets
+    the local record and any cached tokens. Re-run authorize to reconnect."""
+    try:
+        return app.revoke(installation_id)
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+def _github_app_error(exc: GitHubAppError) -> V1ApiError:
+    return V1ApiError(exc.status_code, exc.code, exc.message)

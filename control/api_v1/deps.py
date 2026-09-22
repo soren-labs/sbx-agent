@@ -226,6 +226,20 @@ def get_workflow_store(request: Request) -> WorkflowStore:
     return store
 
 
+def get_github_app(request: Request) -> Any:
+    """GitHub App authorization service (SOR-177): ``app.state.github_app``
+    when a test/deploy injects one, else the env-configured default —
+    shared with the sandbox injection seam so token/record caches are one.
+    """
+    service = getattr(request.app.state, "github_app", None)
+    if service is None:
+        from control import github_app
+
+        service = github_app.default_service()
+        request.app.state.github_app = service
+    return service
+
+
 def get_resources(request: Request) -> ResourceRegistry:
     """Session-resource registry (SOR-129): ``app.state.resource_registry``
     when a test/deploy injects one, else the env-configured allowlist.

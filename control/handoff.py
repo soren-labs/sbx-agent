@@ -295,7 +295,7 @@ class HandoffService:
         record = self._ensure_base(handle, agent_id, spec, workdir, git)
         backend = self._workspaces.backend
         self._assert_at_recorded_head(handle, record)
-        resolved = git_fetch_ref(backend, handle, record.workdir, ref)
+        resolved = git_fetch_ref(backend, handle, record.workdir, ref, github_repo=record.repo)
         if resolved != head_sha:
             raise WorkspaceError(
                 HEAD_SHA_MISMATCH,

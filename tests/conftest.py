@@ -60,6 +60,15 @@ _CLOUD_KEYS = frozenset(
         "SBX_V1_BOOTSTRAP_KEY",
         "SBX_GITHUB_EPHEMERAL",
         "SBX_GITHUB_SECRET_NAME",
+        # SOR-177: ambient GitHub App identity/key material must never leak
+        # into tests — the private key is credential material.
+        "SBX_GITHUB_APP_ID",
+        "SBX_GITHUB_APP_SLUG",
+        "SBX_GITHUB_APP_PRIVATE_KEY",
+        "SBX_GITHUB_APP_SECRET_NAME",
+        "SBX_GITHUB_APP_DICT",
+        "SBX_GITHUB_APP_STORE_DIR",
+        "SBX_GITHUB_APP_API_URL",
         "SBX_LINEAR_MCP_EPHEMERAL",
         "SBX_API_USER",
         "SBX_API_PASSWORD",

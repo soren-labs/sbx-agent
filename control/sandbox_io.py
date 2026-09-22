@@ -97,7 +97,12 @@ def _credential_for(provider: str, account_id: str | None) -> str | None:
     return os.environ.get(_ACCOUNT_CREDENTIAL_ENV)
 
 
-def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+def sandbox_env(
+    handle: SandboxHandle,
+    extra: Mapping[str, str] | None = None,
+    *,
+    github_repo: str | None = None,
+) -> dict[str, str]:
     provider = handle_provider(handle)
     account_id = (handle.tags or {}).get("account_id")
     env = {
@@ -134,8 +139,9 @@ def sandbox_env(handle: SandboxHandle, extra: Mapping[str, str] | None = None) -
     # SOR-117: the opt-in GitHub bridge is provider-agnostic. Modal
     # ``exec(env=)`` replaces the process env (hiding Secret-mounted vars), so
     # the token + credential-helper wiring is forwarded here for every exec —
-    # runner (the agent sees it) and control-plane git ops alike.
-    env.update(github.exec_env())
+    # runner (the agent sees it) and control-plane git ops alike. SOR-177:
+    # ``github_repo`` scopes GitHub App mints to the authorizing repo.
+    env.update(github.exec_env(repo=github_repo))
     if extra:
         safe_extra = dict(extra)
         # Never let callers re-introduce credentials that violate the

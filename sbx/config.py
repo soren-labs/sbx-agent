@@ -29,6 +29,7 @@ from control.config import (
     BASIC_SECRET_NAME,
     CODEX_SECRET_NAME,
     DEVIN_IMAGE_NAME,
+    GITHUB_APP_DICT_NAME,
     GROK_IMAGE_NAME,
     MODAL_APP_NAME,
     OPENCODE_IMAGE_NAME,
@@ -73,6 +74,16 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "bootstrap_secret": (("secrets", "bootstrap"), ("SBX_V1_BOOTSTRAP_SECRET_NAME",)),
     "github_ephemeral": (("github", "ephemeral"), ("SBX_GITHUB_EPHEMERAL",)),
     "github_secret_name": (("github", "secret_name"), ("SBX_GITHUB_SECRET_NAME",)),
+    # SOR-177 GitHub App one-click auth: app identity + the *name* of the
+    # operator-managed Secret holding the App private key — never the key
+    # itself — plus the durable Dict for installation metadata.
+    "github_app_id": (("github_app", "app_id"), ("SBX_GITHUB_APP_ID",)),
+    "github_app_slug": (("github_app", "slug"), ("SBX_GITHUB_APP_SLUG",)),
+    "github_app_secret_name": (
+        ("github_app", "secret_name"),
+        ("SBX_GITHUB_APP_SECRET_NAME",),
+    ),
+    "github_app_dict": (("github_app", "dict"), ("SBX_GITHUB_APP_DICT",)),
     "image_codex": (("images", "codex"), ("SBX_IMAGE_CODEX",)),
     "image_devin": (("images", "devin"), ("SBX_IMAGE_DEVIN",)),
     "image_antigravity": (("images", "antigravity"), ("SBX_IMAGE_ANTIGRAVITY",)),
@@ -142,6 +153,14 @@ class BootstrapConfig:
     # token value itself is never persisted.
     github_ephemeral: bool = False
     github_secret_name: str = ""
+    # GitHub App one-click authorization (SOR-177): app id/slug identify
+    # the GitHub App; ``github_app_secret_name`` names the Modal Secret
+    # holding its private key (the key material is never persisted);
+    # ``github_app_dict`` names the durable installation-metadata store.
+    github_app_id: str = ""
+    github_app_slug: str = ""
+    github_app_secret_name: str = ""
+    github_app_dict: str = GITHUB_APP_DICT_NAME
     providers: tuple[str, ...] = ("codex",)
     # Live-agent/sandbox cap forwarded to the deployed app as
     # ``SBX_MAX_CONCURRENT`` (per-key cap + scheduler global cap). ``None``
@@ -177,14 +196,20 @@ class BootstrapConfig:
 
     def dict_names(self) -> tuple[str, ...]:
         """Durable stores an upgrade must preserve."""
-        return (
+        names = [
             self.sessions_dict,
             self.runs_dict,
             self.accounts_dict,
             self.workflows_dict,
             self.artifacts_dict,
             self.workspaces_dict,
-        )
+        ]
+        # The installation-metadata Dict only exists once the App is
+        # configured — unconfigured deploys never create it, so upgrades
+        # must not expect it either.
+        if self.github_app_id:
+            names.append(self.github_app_dict)
+        return tuple(names)
 
     def deploy_env(self) -> dict[str, str]:
         """``SBX_*`` env the ``modal deploy`` subprocess needs.
@@ -240,6 +265,17 @@ class BootstrapConfig:
             out["SBX_GITHUB_EPHEMERAL"] = "1"
         if self.github_secret_name:
             out["SBX_GITHUB_SECRET_NAME"] = self.github_secret_name
+        # SOR-177: replay the GitHub App identity so a file-configured
+        # deploy enables one-click auth remotely. The Secret *name* only —
+        # the App private key stays inside the named Modal Secret and is
+        # never in deploy env.
+        if self.github_app_id:
+            out["SBX_GITHUB_APP_ID"] = self.github_app_id
+            out["SBX_GITHUB_APP_DICT"] = self.github_app_dict
+        if self.github_app_slug:
+            out["SBX_GITHUB_APP_SLUG"] = self.github_app_slug
+        if self.github_app_secret_name:
+            out["SBX_GITHUB_APP_SECRET_NAME"] = self.github_app_secret_name
         return out
 
 
