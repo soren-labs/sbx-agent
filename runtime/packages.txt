@@ -2,6 +2,16 @@
 # runtime/image.py (Modal) and Dockerfile.local (local docker) both read this file.
 # Format: key=value at the top; [apt] is one Debian package name per line.
 # Do not list Chrome / Chromium (P2 browser variant). Do not put secrets here.
+#
+# SOR-175: any *_version key (or its SBX_*_VERSION env override) may be the
+# literal `latest`. It is resolved ONCE on the build host at image build /
+# deploy time (runtime/versions.py), frozen into that deployment's
+# cli-versions.json lock, and replayable via `sbx deploy --versions-lock` /
+# SBX_VERSIONS_LOCK. Resolution sources: npm `{registry}/<pkg>/latest`
+# dist-tag (codex, opencode), `{devin_base_url}/current/manifest.json` +
+# its per-platform sha256 (devin), or the host binary's own `--version`
+# (agy, grok). A rendered Dockerfile / built image NEVER carries a floating
+# @latest — sandbox starts only ever see the frozen version.
 
 python_version=3.12
 node_major=22

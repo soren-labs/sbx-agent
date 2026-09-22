@@ -368,3 +368,84 @@ def test_deploy_does_not_overwrite_custom_account_secret(tmp_path) -> None:
     }
     _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "grok")))
     assert plane.secrets["customer-managed"] == {"SBX_ACCOUNT_CREDENTIAL": "external"}
+
+
+# --------------------------------------------------------------- SOR-175
+
+
+def test_deploy_freezes_cli_versions_and_passes_resolved_spec(tmp_path) -> None:
+    """SOR-175: deploy resolves CLI versions once, freezes them to the
+    state-dir lock, passes the concrete spec into every image build, and
+    records the evidence in the deploy state."""
+    from runtime.image import load_packages
+    from sbx.config import state_dir
+
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    report, env, _ = _deploy(tmp_path, plane)
+
+    step = next(s for s in report.steps if s.name == "versions")
+    assert step.detail
+
+    spec = load_packages()
+    assert report.cli_versions == {"codex": spec.codex_version}
+    # every image build receives the same frozen spec — never a per-image
+    # or per-sandbox re-resolution
+    assert plane.image_specs["codex"] is not None
+    assert plane.image_specs["codex"].codex_version == spec.codex_version
+    assert "@latest" not in plane.image_specs["codex"].codex_npm_spec
+
+    lock_path = state_dir(env) / "cli-versions.json"
+    assert lock_path.exists()
+    lock = json.loads(lock_path.read_text())
+    assert lock["schema"] == "sbx-runtime/cli-versions@1"
+    assert lock["providers"]["codex"]["version"] == spec.codex_version
+    assert lock["providers"]["codex"]["source"] == "pin"
+
+    state = read_deploy_state(env)
+    assert state["versions_lock"] == str(lock_path)
+    assert state["cli_versions"]["providers"]["codex"]["version"] == spec.codex_version
+
+
+def test_deploy_resolution_scoped_to_enabled_providers(tmp_path) -> None:
+    """A codex-only deploy must never probe for agy/grok host binaries."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    report, env, _ = _deploy(tmp_path, plane)
+    state = read_deploy_state(env)
+    assert set(state["cli_versions"]["providers"]) == {"codex"}
+    assert report.cli_versions is not None and set(report.cli_versions) == {"codex"}
+
+
+def test_deploy_versions_lock_replays_frozen_set(tmp_path) -> None:
+    """Rollback: ``--versions-lock`` (or SBX_VERSIONS_LOCK) pins the earlier
+    deployment's resolved versions into the new deployment's images."""
+    from runtime.image import load_packages
+    from runtime.versions import write_lock
+
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+
+    # A previous deployment's frozen lock — codex pinned one minor back.
+    import dataclasses
+
+    from runtime.versions import resolve_versions
+
+    resolved = resolve_versions(load_packages(), {}, providers={"codex"})
+    entries = dict(resolved.entries)
+    e = entries["codex"]
+    entries["codex"] = dataclasses.replace(e, version="0.0.1-old")
+    old = dataclasses.replace(
+        resolved,
+        spec=dataclasses.replace(resolved.spec, codex_version="0.0.1-old"),
+        entries=entries,
+    )
+    lock_path = write_lock(old, tmp_path / "old-lock.json")
+
+    report, env, _ = _deploy(tmp_path, plane, versions_lock=str(lock_path))
+    assert report.cli_versions == {"codex": "0.0.1-old"}
+    assert plane.image_specs["codex"].codex_version == "0.0.1-old"
+
+    state = read_deploy_state(env)
+    assert state["cli_versions"]["providers"]["codex"]["source"] == "lock"
+    assert state["cli_versions"]["providers"]["codex"]["version"] == "0.0.1-old"

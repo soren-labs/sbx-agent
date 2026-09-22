@@ -241,6 +241,36 @@ def cli_version_check(cli: str, expect: str) -> str:
     return f"{cli} --version 2>&1 | grep -E {shlex.quote(_version_grep_pattern(expect))}"
 
 
+def _resolved_spec(spec: PackageSpec | None, providers: set[str], env: Any = None) -> PackageSpec:
+    """Spec with ``latest`` requests resolved on the build host (SOR-175).
+
+    Resolution runs once at image build / deploy / codegen time — the
+    concrete version is frozen into the rendered Dockerfile / image so no
+    sandbox ever installs a floating ``@latest``. See ``runtime.versions``.
+    """
+    if spec is not None:
+        return spec
+    from runtime.versions import resolve_versions
+
+    return resolve_versions(env=env, providers=frozenset(providers)).spec
+
+
+def _assert_concrete(provider: str, spec: PackageSpec) -> None:
+    """The provider being built must carry a concrete version — never ``latest``."""
+    field = {
+        "codex": spec.codex_version,
+        "devin": spec.devin_version,
+        "opencode": spec.opencode_version,
+        "antigravity": spec.agy_version,
+        "grok": spec.grok_version,
+    }.get(provider)
+    if not field or field == "latest":
+        raise SystemExit(
+            f"{provider} CLI version is unresolved ({field!r}); resolve it via "
+            "runtime.versions before building the image"
+        )
+
+
 def render_dockerfile_local(
     spec: PackageSpec | None = None, *, devin: bool = False, opencode: bool = False
 ) -> str:
@@ -250,10 +280,15 @@ def render_dockerfile_local(
     recipe plus the pinned standalone Devin CLI and HOME/XDG pointed at
     ``/work/home``. ``opencode=True`` renders ``Dockerfile.opencode.local``
     (Release 0.1): base recipe plus the pinned ``opencode-ai`` npm package.
+
+    Without an explicit ``spec``, ``latest`` requests are resolved on the
+    build host at generation time so the rendered Dockerfile always carries
+    concrete versions (SOR-175).
     """
     if devin and opencode:
         raise ValueError("devin and opencode variants are mutually exclusive")
-    spec = spec or load_packages()
+    needed = {"codex"} | ({"devin"} if devin else set()) | ({"opencode"} if opencode else set())
+    spec = spec or _resolved_spec(None, needed)
     apt = " ".join(spec.apt)
     env = {
         "DEBIAN_FRONTEND": "noninteractive",
@@ -314,29 +349,56 @@ ENTRYPOINT ["{ENTRYPOINT_REMOTE}"]
 """
 
 
-def write_dockerfile_local(path: Path | None = None) -> Path:
+def write_dockerfile_local(path: Path | None = None, *, spec: PackageSpec | None = None) -> Path:
     dest = path or DOCKERFILE_LOCAL
-    dest.write_text(render_dockerfile_local(), encoding="utf-8")
+    dest.write_text(render_dockerfile_local(spec), encoding="utf-8")
     return dest
 
 
-def write_dockerfile_devin_local(path: Path | None = None) -> Path:
+def write_dockerfile_devin_local(
+    path: Path | None = None, *, spec: PackageSpec | None = None
+) -> Path:
     dest = path or DOCKERFILE_DEVIN_LOCAL
-    dest.write_text(render_dockerfile_local(devin=True), encoding="utf-8")
+    dest.write_text(render_dockerfile_local(spec, devin=True), encoding="utf-8")
     return dest
 
 
-def write_dockerfile_opencode_local(path: Path | None = None) -> Path:
+def write_dockerfile_opencode_local(
+    path: Path | None = None, *, spec: PackageSpec | None = None
+) -> Path:
     dest = path or DOCKERFILE_OPENCODE_LOCAL
-    dest.write_text(render_dockerfile_local(opencode=True), encoding="utf-8")
+    dest.write_text(render_dockerfile_local(spec, opencode=True), encoding="utf-8")
     return dest
 
 
-def sbx_runtime_image():
-    """Build the Modal Image object (no network). Caller may ``.build(app)``."""
+def write_dockerfiles_locked(spec: PackageSpec | None = None) -> list[Path]:
+    """Regenerate all local Dockerfiles and freeze the resolved set (SOR-175).
+
+    One resolution serves every variant and is recorded in the versions lock
+    so the codegen output is reproducible evidence.
+    """
+    from runtime.versions import resolve_versions, write_lock
+
+    if spec is None:
+        resolved = resolve_versions(providers={"codex", "devin", "opencode"})
+        write_lock(resolved)
+        spec = resolved.spec
+    return [
+        write_dockerfile_local(spec=spec),
+        write_dockerfile_devin_local(spec=spec),
+        write_dockerfile_opencode_local(spec=spec),
+    ]
+
+
+def sbx_runtime_image(spec: PackageSpec | None = None):
+    """Build the Modal Image object (no network). Caller may ``.build(app)``.
+
+    ``spec`` defaults to resolving the build's ``latest`` requests once on
+    the build host (SOR-175) — the image always installs a concrete npm pin.
+    """
     import modal
 
-    spec = load_packages()
+    spec = spec or _resolved_spec(None, {"codex"})
     return (
         modal.Image.debian_slim(python_version=spec.python_version)
         .apt_install(*spec.apt)
@@ -369,9 +431,9 @@ def sbx_devin_image(spec: PackageSpec | None = None):
     Desktop, no ACP bridge, no ``DEVIN_*`` key env is baked in. The build fails
     if ``devin --version`` does not report the packages.txt pin.
     """
-    spec = spec or load_packages()
+    spec = spec or _resolved_spec(None, {"codex", "devin"})
     return (
-        sbx_runtime_image()
+        sbx_runtime_image(spec)
         .run_commands(
             devin_install_command(spec),
             cli_version_check("devin", spec.devin_version),
@@ -478,11 +540,11 @@ def sbx_antigravity_image(agy_bin: Path | None = None, spec: PackageSpec | None 
     auth source. No credential material is baked into the image. The build
     rejects a host binary whose ``--version`` misses the ``agy_version`` pin.
     """
-    spec = spec or load_packages()
+    spec = spec or _resolved_spec(None, {"codex", "antigravity"})
     host = agy_bin or _host_cli_bin(AGY_BIN_ENV, DEFAULT_AGY_BIN, "agy")
     _assert_host_cli_version(host, "agy", spec.agy_version)
     return _cli_image(
-        sbx_runtime_image(),
+        sbx_runtime_image(spec),
         host,
         AGY_BIN_REMOTE,
         agent_home_env(),
@@ -499,11 +561,11 @@ def sbx_grok_image(grok_bin: Path | None = None, spec: PackageSpec | None = None
     source. No credential material is baked into the image. The build rejects
     a host binary whose ``--version`` misses the ``grok_version`` pin.
     """
-    spec = spec or load_packages()
+    spec = spec or _resolved_spec(None, {"codex", "grok"})
     host = grok_bin or _host_cli_bin(GROK_BIN_ENV, DEFAULT_GROK_BIN, "grok")
     _assert_host_cli_version(host, "grok", spec.grok_version)
     return _cli_image(
-        sbx_runtime_image(),
+        sbx_runtime_image(spec),
         host,
         GROK_BIN_REMOTE,
         agent_home_env(),
@@ -520,8 +582,8 @@ def sbx_opencode_image(base: Any | None = None, spec: PackageSpec | None = None)
     the restored ``.local/share/opencode/auth.json`` is the only auth
     source. ``base``/``spec`` exist for no-cloud tests.
     """
-    spec = spec or load_packages()
-    image = base if base is not None else sbx_runtime_image()
+    spec = spec or _resolved_spec(None, {"codex", "opencode"})
+    image = base if base is not None else sbx_runtime_image(spec)
     return image.run_commands(
         f"npm i -g {spec.opencode_npm_spec}",
         cli_version_check("opencode", spec.opencode_version),
@@ -673,7 +735,7 @@ def _provider_cli_meta(provider: str, spec: PackageSpec) -> dict[str, Any]:
     }
 
 
-def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
+def image_manifest(spec: PackageSpec | None = None, resolved: Any | None = None) -> dict[str, Any]:
     """Release metadata for every named runtime image (doctor / evidence).
 
     Pure function of ``packages.txt`` + the ``IMAGE_BUILDERS`` registry: no
@@ -682,8 +744,13 @@ def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
     to detect missing named images and ``providers.*.version_check`` to
     verify a sandbox reports the pinned CLI version; the layout block pins
     the HOME/work contract.
+
+    ``resolved`` is an optional ``runtime.versions.ResolvedVersions`` whose
+    entries populate ``providers.*.resolution`` (SOR-175): the requested
+    pin/``latest`` vs the concrete frozen version and its provenance.
     """
     spec = spec or load_packages()
+    entries = dict(getattr(resolved, "entries", None) or {})
     home_env = {
         "codex": {},
         "devin": devin_runtime_env(),
@@ -697,12 +764,29 @@ def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
     providers: dict[str, dict[str, Any]] = {}
     for provider in sorted(IMAGE_BUILDERS):
         meta = _provider_cli_meta(provider, spec)
+        entry = entries.get(provider)
+        if entry is not None:
+            resolution = {
+                "requested": entry.requested,
+                "resolved": entry.version,
+                "source": entry.source,
+                "evidence": dict(entry.evidence),
+            }
+        else:
+            requested = meta["version"]
+            resolution = {
+                "requested": requested,
+                "resolved": None if requested == "latest" else requested,
+                "source": "unresolved" if requested == "latest" else "pin",
+                "evidence": {},
+            }
         providers[provider] = {
             "image": image_for(provider),
             "cli": meta["cli"],
             "cli_path": meta["cli_path"],
             "install": meta["install"],
             "version": meta["version"],
+            "resolution": resolution,
             "version_check": {
                 "argv": [meta["cli_path"], "--version"],
                 "expect": meta["expect"],
@@ -731,7 +815,13 @@ def image_manifest(spec: PackageSpec | None = None) -> dict[str, Any]:
     }
 
 
-def build_named_image(*, provider: str = "codex", name: str | None = None) -> None:
+def build_named_image(
+    *,
+    provider: str = "codex",
+    name: str | None = None,
+    spec: PackageSpec | None = None,
+    env: Any = None,
+) -> None:
     """``modal image build`` equivalent: build + publish a named runtime image.
 
     ``provider`` selects the variant (``sbx-runtime`` for codex; the SOR-74 /
@@ -740,17 +830,27 @@ def build_named_image(*, provider: str = "codex", name: str | None = None) -> No
     the production names; ``SBX_IMAGE_APP`` likewise relocates the build app.
     Requires Modal credentials and, for agy / grok, the provider CLI on the
     build host. Never called from ``make test``.
+
+    ``spec`` is the deployment's resolved ``PackageSpec`` (``sbx deploy``
+    resolves once and passes it here); standalone builds resolve on the
+    build host and freeze the outcome to the versions lock (SOR-175).
     """
     import modal
 
-    spec = load_packages()
+    if spec is None:
+        from runtime.versions import lock_out_path_for, resolve_versions, write_lock
+
+        resolved = resolve_versions(env=env, providers={provider, "codex"})
+        write_lock(resolved, lock_out_path_for(env or os.environ))
+        spec = resolved.spec
+    _assert_concrete(provider, spec)
     app = modal.App.lookup(os.environ.get("SBX_IMAGE_APP") or APP_NAME, create_if_missing=True)
     try:
         builder, default_name = IMAGE_BUILDERS[provider]
     except KeyError:
         raise SystemExit(f"unknown image provider {provider!r}") from None
     publish_name = name or default_name
-    image = builder()
+    image = builder(spec)
     with modal.enable_output():
         built = image.build(app)
         publish = getattr(built, "publish", None)
@@ -783,6 +883,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the provider-image manifest as JSON (doctor/evidence input; no Modal)",
     )
     parser.add_argument(
+        "--resolve-versions",
+        action="store_true",
+        help="Resolve provider CLI versions (pins and 'latest' requests) on the "
+        "build host, freeze them to the versions lock, and print the result "
+        "as JSON (SOR-175; no Modal)",
+    )
+    parser.add_argument(
         "--provider",
         choices=sorted(IMAGE_BUILDERS),
         default="codex",
@@ -795,15 +902,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.write_dockerfile:
-        for write in (
-            write_dockerfile_local,
-            write_dockerfile_devin_local,
-            write_dockerfile_opencode_local,
-        ):
-            print(f"wrote {write()}")
+        for path in write_dockerfiles_locked():
+            print(f"wrote {path}")
+        return 0
+    if args.resolve_versions:
+        from runtime.versions import lock_out_path_for, resolve_versions, write_lock
+
+        resolved = resolve_versions()
+        lock_path = write_lock(resolved, lock_out_path_for(os.environ))
+        payload = resolved.lock_payload()
+        payload["lock_path"] = str(lock_path)
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if args.manifest:
-        print(json.dumps(image_manifest(), indent=2, sort_keys=True))
+        from runtime.versions import resolve_versions
+
+        # Offline resolution: pure evidence — a ``latest`` request reports
+        # the last frozen lock version when one exists, never a network probe.
+        resolved = resolve_versions(offline=True)
+        print(json.dumps(image_manifest(resolved=resolved), indent=2, sort_keys=True))
         return 0
     build_named_image(provider="devin" if args.devin else args.provider)
     return 0

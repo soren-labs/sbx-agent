@@ -35,6 +35,7 @@ class FakePlane:
         self.dict_create_calls = 0
         self.image_calls: list[str] = []
         self.image_names: dict[str, str | None] = {}
+        self.image_specs: dict[str, Any] = {}
         self.deploy_env: dict[str, str] = {}
         self.terminated: list[str] = []
         self.terminate_noop = False
@@ -91,10 +92,11 @@ class FakePlane:
         self._fail("delete_dict")
         return self.dicts.pop(name, None) is not None
 
-    def ensure_image(self, provider: str, name: str | None = None) -> None:
+    def ensure_image(self, provider: str, name: str | None = None, *, spec: Any = None) -> None:
         self._fail("ensure_image")
         self.image_calls.append(provider)
         self.image_names[provider] = name
+        self.image_specs[provider] = spec
 
     def deploy_app(self, app_name: str, *, env: Mapping[str, str] | None = None) -> str:
         self._fail("deploy_app")

@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this file is the
 source for release notes.
 
+## [Unreleased]
+
+### Added
+
+- Build/deploy-time provider CLI version resolution (SOR-175): any
+  `*_version` in `runtime/packages.txt` — or its `SBX_<PROVIDER>_VERSION`
+  env override — may be `latest`. `runtime/versions.py` resolves it once
+  on the build host (npm `latest` dist-tag for codex/opencode, the
+  promoted `{devin_base_url}/current/manifest.json` + per-platform sha256
+  checksums for devin, the host binary's `--version` for agy/grok) and
+  freezes the concrete set into the deployment's `cli-versions.json` lock
+  — recorded in `deploy.json` (`cli_versions`, `versions_lock`), replayed
+  verbatim by `sbx deploy --versions-lock` / `sbx upgrade --versions-lock`
+  / `SBX_VERSIONS_LOCK` for rollback and reproducible rebuilds.
+  `python -m runtime.image --resolve-versions` resolves + freezes +
+  prints the evidence JSON (no Modal); `--manifest` and `image_manifest()`
+  carry a per-provider `resolution` block (requested vs resolved,
+  provenance, evidence). Every image of one deployment receives the same
+  frozen spec — rendered Dockerfiles and built images never carry a
+  floating `@latest`, so sandbox starts never install `latest`.
+
 ## [0.1.1] - 2026-09-19
 
 Public-alpha patch release (release tag `v0.1.1`). Control-plane and

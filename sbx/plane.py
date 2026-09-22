@@ -66,8 +66,14 @@ class Plane(Protocol):
         Raises ``BootstrapError`` when the delete itself fails.
         """
 
-    def ensure_image(self, provider: str, name: str | None = None) -> None:
-        """Build + publish the provider's named runtime image (``name`` overrides)."""
+    def ensure_image(self, provider: str, name: str | None = None, *, spec: Any = None) -> None:
+        """Build + publish the provider's named runtime image (``name`` overrides).
+
+        ``spec`` is the deployment's resolved ``runtime.image.PackageSpec``
+        (SOR-175): ``sbx deploy`` resolves provider CLI versions once and
+        passes the frozen set through so every image of one deployment
+        carries identical versions.
+        """
 
     def deploy_app(self, app_name: str, *, env: Mapping[str, str] | None = None) -> str:
         """Deploy the control app idempotently; return its web base URL.
@@ -273,11 +279,18 @@ class ModalPlane:
             ) from exc
         return True
 
-    def ensure_image(self, provider: str, name: str | None = None) -> None:
+    def ensure_image(self, provider: str, name: str | None = None, *, spec: Any = None) -> None:
         from runtime.image import build_named_image
+        from runtime.versions import VersionResolutionError
 
         try:
-            build_named_image(provider=provider, name=name)
+            build_named_image(provider=provider, name=name, spec=spec)
+        except VersionResolutionError as exc:
+            raise BootstrapError(
+                f"CLI version resolution for provider {provider!r} failed: {exc}",
+                hint=exc.hint or "check runtime/packages.txt and SBX_*_VERSION overrides",
+                code="version_resolution_failed",
+            ) from exc
         except SystemExit as exc:
             raise BootstrapError(
                 f"image build for provider {provider!r} failed: {exc}",

@@ -22,6 +22,20 @@ real-account gates were run for this tag.
 | opencode | Experimental | `opencode-ai` **1.18.29** — npm-pinned in `sbx-runtime-opencode` (`runtime/packages.txt` `opencode_*`) | `.local/share/opencode/auth.json` | ✅ `--session <id>` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Real-account gate **PASS** on the RC plane — two turns on one native session, cancel, usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`) |
 | claude | **Not supported** | — | — | — | — | — | Experimental adapter seam merged but **not registered** in the provider registry (SOR-97, replay-only); not schedulable |
 
+### CLI versions (SOR-175)
+
+The `CLI / version` column is a **pin in `runtime/packages.txt`**. Any pin
+(or its `SBX_<PROVIDER>_VERSION` env override) may be the literal `latest`:
+it resolves **once** on the build host at `sbx deploy` / image build
+(`runtime/versions.py`) — npm `latest` dist-tag for codex/opencode, the
+promoted `{devin_base_url}/current/manifest.json` (with its per-platform
+sha256 checksums) for devin, the host binary's `--version` for agy/grok —
+and freezes into that deployment's `cli-versions.json` lock. Sandboxes only
+ever see the frozen version: no floating `@latest` install ever runs at
+sandbox start. Replay a previous lock via `sbx deploy --versions-lock` /
+`SBX_VERSIONS_LOCK` to roll back exactly. Details:
+[deployment.md](deployment.md#provider-cli-versions-sor-175).
+
 ### Evidence policy
 
 - **Stable** = production adapter + pinned runtime **and** a passing
