@@ -548,10 +548,12 @@ class ControlPlane:
         from the durable checkpoint — same filesystem, same native
         provider session (``session.json`` survives the snapshot), Secret
         refs re-declared on the spec and credentials re-attached
-        in-sandbox — and returns the record to ``idle``. An
-        unrecoverable suspension is terminal ``lost``: the explicit
-        diagnosis for checkpoint loss / missing checkpoint state.
-        ``SessionConflict`` mirrors the normal not-runnable refusal.
+        in-sandbox — and returns the record to ``idle``. Terminal
+        ``lost`` is reserved for a missing or proven-invalid checkpoint
+        (the explicit diagnosis for checkpoint loss); a retryable
+        restore failure leaves the record ``suspended`` so the next
+        follow-up re-attempts. ``SessionConflict`` mirrors the normal
+        not-runnable refusal either way.
         """
         checkpoints = self.checkpoints
         with self._lock:
@@ -563,7 +565,12 @@ class ControlPlane:
             raise SessionConflict("session_not_runnable")
         try:
             handle = checkpoints.restore(rec)
-        except Exception:
+        except Exception as exc:
+            if getattr(exc, "retryable", False):
+                # Transient restore failure: the checkpoint stays usable
+                # and the record ``suspended`` — the next follow-up
+                # re-attempts the restore.
+                raise SessionConflict("session_not_runnable") from None
             self._mark_unrecoverable(session_id)
             raise SessionConflict("session_not_runnable") from None
         with self._lock:

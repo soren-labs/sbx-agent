@@ -38,6 +38,7 @@ from control.compute import compute_for_record
 from control.config import CHECKPOINTS_DICT_NAME
 from control.sandbox_io import drain, is_local_root, read_json, sandbox_env
 from control.store import SessionRecord
+from control.workspace import git_head, is_commit_sha
 
 CHECKPOINT_CHECKPOINTED = "checkpointed"
 CHECKPOINT_RESTORED = "restored"
@@ -184,7 +185,18 @@ _REATTACH_SCRIPT = (
 
 
 class CheckpointUnavailable(Exception):
-    """A checkpoint record exists but cannot produce a restored sandbox."""
+    """A checkpoint record exists but cannot produce a restored sandbox.
+
+    ``retryable`` marks a transient failure of one restore attempt — the
+    record stays ``checkpointed`` and the session ``suspended`` so the
+    next recovery re-attempts (SOR-180: checkpoint/restore must be
+    idempotent and retryable). Terminal ``lost`` is reserved for a
+    missing or proven-invalid checkpoint.
+    """
+
+    def __init__(self, message: str = "", *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass
@@ -207,6 +219,11 @@ class AgentCheckpoint:
     account_id: str = "auto"
     sandbox_id: str | None = None
     native_session_id: str | None = None
+    # Post-restore identity evidence: the workspace workdir (relative to
+    # the sandbox root) and its ``git rev-parse HEAD`` at checkpoint
+    # time. A restore that cannot reproduce them fails closed.
+    workspace_workdir: str | None = None
+    workspace_head_sha: str | None = None
     turns: int = 0
     secrets: list[str] = field(default_factory=list)
     resource_secrets: list[str] = field(default_factory=list)
@@ -244,6 +261,16 @@ def checkpoint_from_dict(data: Any) -> AgentCheckpoint:
         if value is not None and not isinstance(value, str):
             raise ValueError(f"checkpoint record field {key} must be a string")
         setattr(record, key, value or ("codex" if key == "provider" else "auto"))
+    workspace_workdir = data.get("workspace_workdir")
+    if workspace_workdir is not None and not _is_safe_relpath(workspace_workdir):
+        raise ValueError("checkpoint record field workspace_workdir must be a safe relpath")
+    record.workspace_workdir = (
+        str(PurePosixPath(workspace_workdir)) if workspace_workdir is not None else None
+    )
+    workspace_head_sha = data.get("workspace_head_sha")
+    if workspace_head_sha is not None and not is_commit_sha(workspace_head_sha):
+        raise ValueError("checkpoint record field workspace_head_sha must be a commit sha")
+    record.workspace_head_sha = workspace_head_sha
     for key in ("sandbox_id", "native_session_id", "last_error", "checkpointed_at", "restored_at"):
         value = data.get(key)
         if value is not None and not isinstance(value, str):
@@ -467,8 +494,9 @@ class CheckpointService:
         landed), which is the same durable surface operators inspect.
         A usable checkpoint normally outranks a later failure (a failed
         re-suspend must not wipe a restorable artifact); ``force`` bypasses
-        that guard for the restore path, where the artifact itself failed
-        and the agent is diagnosed ``lost`` regardless.
+        that guard for the restore path's fail-closed case, where the
+        restored artifact proved it is not this agent's and the session
+        is diagnosed ``lost`` regardless.
         """
         now = self._now().isoformat()
         try:
@@ -484,6 +512,27 @@ class CheckpointService:
         record.last_error = _clip(error)
         record.updated_at = now
         self._store.put(record)
+
+    def note_error(self, agent_id: str, error: str) -> None:
+        """Record a transient restore error without downgrading the record.
+
+        Unlike :meth:`fail`, the status is preserved — a ``checkpointed``
+        record stays restorable while ``last_error`` still carries the
+        latest attempt's diagnosis for operators.
+        """
+        now = self._now().isoformat()
+        try:
+            record = self._store.get(agent_id)
+        except Exception:
+            return
+        if record is None:
+            return
+        record.last_error = _clip(error)
+        record.updated_at = now
+        try:
+            self._store.put(record)
+        except Exception:
+            pass
 
     def discard(self, agent_id: str) -> None:
         """Drop the checkpoint record — the agent is gone for good."""
@@ -508,6 +557,16 @@ class CheckpointService:
         try:
             state = self._session_state(handle)
             self._scrub(rec, handle, state)
+            # Pin the workspace identity the snapshot must reproduce:
+            # restore verifies ``session.json.native_session_id`` and the
+            # workdir's ``git rev-parse HEAD`` before credentials attach.
+            workspace_workdir = self._workdir(rec.id)
+            workspace_head_sha: str | None = None
+            if workspace_workdir is not None:
+                try:
+                    workspace_head_sha = git_head(self._backend, handle, workspace_workdir)
+                except Exception:
+                    workspace_head_sha = None
             snapshot_ref = self._snapshots.snapshot(handle)
         except Exception as exc:
             self.fail(rec.id, f"checkpoint failed: {_clip(exc)}")
@@ -522,10 +581,15 @@ class CheckpointService:
             agent_id=rec.id,
             status=CHECKPOINT_CHECKPOINTED,
             snapshot_ref=snapshot_ref,
-            provider=(rec.sandbox_tags or {}).get("provider") or "codex",
+            # ``session.json`` is the authoritative provider record — sandbox
+            # tags may not carry one, and the restore check compares the
+            # same field it recorded.
+            provider=state.get("provider") or (rec.sandbox_tags or {}).get("provider") or "codex",
             account_id=(rec.sandbox_tags or {}).get("account_id") or "auto",
             sandbox_id=rec.sandbox_id,
             native_session_id=state.get("native_session_id"),
+            workspace_workdir=workspace_workdir,
+            workspace_head_sha=workspace_head_sha,
             turns=rec.turns,
             secrets=list(spec_secrets.get("secrets") or ()),
             resource_secrets=list(spec_secrets.get("resource_secrets") or ()),
@@ -549,9 +613,17 @@ class CheckpointService:
         The provision-time Secret refs are re-declared on the spec so the
         restored sandbox mounts the same credential/resource channels; the
         in-sandbox reattach then rewrites the credential files (scrubbed
-        pre-snapshot — they never persist as product state). Raises
-        ``CheckpointUnavailable`` when no usable checkpoint exists or the
-        restore/reattach fails — the caller diagnoses the record ``lost``.
+        pre-snapshot — they never persist as product state).
+
+        Restore is idempotent and retryable: a transient failure — the
+        snapshot provider erroring, or the in-sandbox verify/reattach
+        exec failing — raises ``CheckpointUnavailable(retryable=True)``
+        with the record left ``checkpointed``, so the caller keeps the
+        session ``suspended`` and the next recovery re-attempts. The
+        non-retryable raise (terminal ``lost``) is reserved for a
+        missing checkpoint or for post-restore identity evidence that
+        fails closed — a snapshot that cannot prove it is this agent's
+        filesystem.
         """
         record = self.get(rec.id)
         if record is None or record.status != CHECKPOINT_CHECKPOINTED or not record.snapshot_ref:
@@ -574,17 +646,31 @@ class CheckpointService:
         try:
             handle = self._snapshots.restore(record.snapshot_ref, spec)
         except Exception as exc:
-            self.fail(rec.id, f"checkpoint restore failed: {_clip(exc)}", force=True)
-            raise CheckpointUnavailable(f"checkpoint restore failed: {exc}") from exc
+            # Transient: the snapshot may still be perfectly usable — the
+            # record stays ``checkpointed`` and the next recovery retries.
+            self.note_error(rec.id, f"checkpoint restore failed: {_clip(exc)}")
+            raise CheckpointUnavailable(
+                f"checkpoint restore failed: {exc}", retryable=True
+            ) from exc
         try:
+            self._verify_identity(record, handle)
             self._reattach(handle)
+        except CheckpointUnavailable as exc:
+            self._terminate(handle)
+            if exc.retryable:
+                self.note_error(rec.id, f"checkpoint restore failed: {_clip(exc)}")
+            else:
+                # Identity evidence failed closed: this snapshot is not
+                # provably the agent's — the checkpoint is invalid, not
+                # merely unlucky.
+                self.fail(rec.id, f"checkpoint restore failed: {_clip(exc)}", force=True)
+            raise
         except Exception as exc:
-            try:
-                self._backend.terminate(handle)
-            except Exception:
-                pass
-            self.fail(rec.id, f"credential reattach failed: {_clip(exc)}", force=True)
-            raise CheckpointUnavailable(f"credential reattach failed: {exc}") from exc
+            self._terminate(handle)
+            self.note_error(rec.id, f"checkpoint restore failed: {_clip(exc)}")
+            raise CheckpointUnavailable(
+                f"checkpoint restore failed: {exc}", retryable=True
+            ) from exc
         now = self._now().isoformat()
         record.status = CHECKPOINT_RESTORED
         record.updated_at = now
@@ -596,6 +682,47 @@ class CheckpointService:
             # is already live and bound by the caller.
             pass
         return handle
+
+    def _verify_identity(self, record: AgentCheckpoint, handle: SandboxHandle) -> None:
+        """Fail-closed post-restore identity check (SOR-180 #9).
+
+        Before credentials reattach, the snapshot must prove it is THIS
+        agent's filesystem: the restored ``session.json`` must carry the
+        recorded ``native_session_id`` (and provider), and a recorded
+        workspace HEAD must match ``git rev-parse HEAD`` in the restored
+        workdir. A mismatch raises non-retryable
+        ``CheckpointUnavailable``; unreadable evidence that the record
+        proves existed (a missing ``session.json``/repo) mismatches the
+        same way, while an exec that itself errors propagates as a
+        transient failure the caller may retry.
+        """
+        state = read_json(self._backend, handle, "session.json")
+        restored_native = state.get("native_session_id") if isinstance(state, dict) else None
+        if restored_native != record.native_session_id:
+            raise CheckpointUnavailable(
+                "restored session.json native_session_id mismatch: "
+                f"expected {record.native_session_id!r}, got {restored_native!r}"
+            )
+        restored_provider = state.get("provider") if isinstance(state, dict) else None
+        if restored_provider and record.provider and restored_provider != record.provider:
+            raise CheckpointUnavailable(
+                "restored session.json provider mismatch: "
+                f"expected {record.provider!r}, got {restored_provider!r}"
+            )
+        if record.workspace_head_sha is not None:
+            workdir = record.workspace_workdir
+            head = git_head(self._backend, handle, workdir) if workdir else None
+            if head != record.workspace_head_sha:
+                raise CheckpointUnavailable(
+                    "restored workspace HEAD mismatch: "
+                    f"expected {record.workspace_head_sha!r}, got {head!r}"
+                )
+
+    def _terminate(self, handle: SandboxHandle) -> None:
+        try:
+            self._backend.terminate(handle)
+        except Exception:
+            pass
 
     def _session_state(self, handle: SandboxHandle) -> dict[str, Any]:
         state = read_json(self._backend, handle, "session.json")
@@ -673,7 +800,7 @@ class CheckpointService:
             handle, ["python3", "-c", _REATTACH_SCRIPT], env=sandbox_env(handle)
         )
         if drain(proc) != 0:
-            raise CheckpointUnavailable("credential reattach failed")
+            raise CheckpointUnavailable("credential reattach failed", retryable=True)
 
 
 def _is_safe_relpath(rel: str) -> bool:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -25,8 +27,31 @@ from control.environment import LocalSnapshotProvider
 from control.reaper import reap
 from control.service import ControlPlane, SessionConflict
 from control.store import InMemoryStore, SessionRecord, empty_usage
+from control.workspace import (
+    InMemoryWorkspaceStore,
+    WorkspaceRecord,
+    WorkspaceService,
+)
 
 THREAD_ID = "01a09a36-b4fb-7f90-b96e-42adeefa05e0"  # stub_runner DEFAULT_THREAD_ID
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "sbx-test",
+    "GIT_AUTHOR_EMAIL": "sbx-test@localhost",
+    "GIT_COMMITTER_NAME": "sbx-test",
+    "GIT_COMMITTER_EMAIL": "sbx-test@localhost",
+}
+
+
+def host_git(cwd: Path, *args: str) -> str:
+    res = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        env={**os.environ, **_GIT_ENV},
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    return res.stdout.strip()
 
 
 def _now() -> datetime:
@@ -90,6 +115,56 @@ def _wait_status(
 
 def _session_json(root: Path) -> dict:
     return json.loads((root / "session.json").read_text(encoding="utf-8"))
+
+
+def _suspend(
+    plane: ControlPlane,
+    backend: LocalProcessBackend,
+    store: InMemoryStore,
+    checkpoints: CheckpointService,
+    session_id: str,
+) -> None:
+    """Idle-timeout a session into the recoverable ``suspended`` state."""
+    reap(
+        store,
+        backend,
+        _now() + timedelta(hours=1),
+        idle_timeout_s=1800,
+        checkpoints=checkpoints,
+    )
+    rec = store.get(session_id)
+    assert rec is not None and rec.status == "suspended"
+
+
+def _prepare_workspace(
+    checkpoints: CheckpointService,
+    backend: LocalProcessBackend,
+    session_id: str,
+    root: Path,
+) -> str:
+    """Wire a prepared workspace (real git repo at ``root/repo``) for a session."""
+    ws_store = InMemoryWorkspaceStore()
+    workspaces = WorkspaceService(backend, ws_store)
+    workdir = root / "repo"
+    workdir.mkdir()
+    host_git(workdir, "init", "-q", "-b", "main")
+    (workdir / "a.txt").write_text("one\n", encoding="utf-8")
+    host_git(workdir, "add", "-A")
+    host_git(workdir, "commit", "-qm", "A")
+    head = host_git(workdir, "rev-parse", "HEAD")
+    ws_store.put(
+        WorkspaceRecord(
+            agent_id=session_id,
+            repo="o/r",
+            base_ref="main",
+            base_sha=head,
+            workdir="repo",
+            checkout_sha=head,
+            head_sha=head,
+        )
+    )
+    checkpoints._workspaces = workspaces
+    return head
 
 
 # ------------------------------------------------------------ record codec
@@ -385,7 +460,85 @@ def test_restore_without_checkpoint_marks_lost(env) -> None:
     assert rec is not None and rec.status == "lost"
 
 
-def test_restore_with_failing_snapshot_provider_marks_lost(env) -> None:
+def test_transient_restore_failure_keeps_suspended_and_retries(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SOR-180: restore is idempotent/retryable — one provider blip must
+    not brick a recoverable agent holding a valid checkpoint."""
+    plane, backend, store, checkpoints, snapshots = env
+    session_id = plane.create_session(owner="sbx", title="t", model=None)
+    plane.post_message(session_id, "first")
+    _wait_status(store, session_id, "idle")
+    _suspend(plane, backend, store, checkpoints, session_id)
+    cp = checkpoints.get(session_id)
+    assert cp is not None and cp.status == CHECKPOINT_CHECKPOINTED
+
+    real_restore = snapshots.restore
+    calls = {"n": 0}
+
+    def flaky_restore(ref: str, spec: SandboxSpec) -> SandboxHandle:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("snapshot provider transient error")
+        return real_restore(ref, spec)
+
+    monkeypatch.setattr(snapshots, "restore", flaky_restore)
+
+    with pytest.raises(SessionConflict):
+        plane.post_message(session_id, "again")
+    rec = store.get(session_id)
+    assert rec is not None and rec.status == "suspended"
+    cp = checkpoints.get(session_id)
+    # The checkpoint stays usable; the failure is only noted.
+    assert cp is not None and cp.status == CHECKPOINT_CHECKPOINTED
+    assert "transient error" in (cp.last_error or "")
+
+    # The retry re-attempts the restore and dispatches normally.
+    turn_id = plane.post_message(session_id, "again")
+    assert turn_id == "turn-2"
+    rec = _wait_status(store, session_id, "idle")
+    assert _session_json(Path(rec.sandbox_root))["native_session_id"] == THREAD_ID
+    assert checkpoints.get(session_id).status == CHECKPOINT_RESTORED
+
+
+def test_transient_reattach_failure_keeps_suspended_and_retries(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed in-sandbox credential reattach is equally retryable —
+    the discarded sandbox does not downgrade the checkpoint."""
+    plane, backend, store, checkpoints, _snapshots = env
+    session_id = plane.create_session(owner="sbx", title="t", model=None)
+    plane.post_message(session_id, "first")
+    _wait_status(store, session_id, "idle")
+    _suspend(plane, backend, store, checkpoints, session_id)
+
+    real_exec = backend.exec
+    failures = {"n": 0}
+
+    def flaky_exec(handle, cmd, env=None):
+        if cmd[:2] == ["python3", "-c"] and "SBX_ACCOUNT_CREDENTIAL" in cmd[2]:
+            failures["n"] += 1
+            raise RuntimeError("exec transport error")
+        return real_exec(handle, cmd, env=env)
+
+    monkeypatch.setattr(backend, "exec", flaky_exec)
+    with pytest.raises(SessionConflict):
+        plane.post_message(session_id, "again")
+    assert failures["n"] == 1
+    rec = store.get(session_id)
+    assert rec is not None and rec.status == "suspended"
+    cp = checkpoints.get(session_id)
+    assert cp is not None and cp.status == CHECKPOINT_CHECKPOINTED
+
+    monkeypatch.setattr(backend, "exec", real_exec)
+    turn_id = plane.post_message(session_id, "again")
+    assert turn_id == "turn-2"
+    _wait_status(store, session_id, "idle")
+    assert checkpoints.get(session_id).status == CHECKPOINT_RESTORED
+
+
+def test_restore_without_snapshot_ref_marks_lost(env) -> None:
+    """Terminal ``lost`` is reserved for no usable checkpoint."""
     plane, backend, store, checkpoints, _snapshots = env
     store.put(
         _record(
@@ -396,14 +549,106 @@ def test_restore_with_failing_snapshot_provider_marks_lost(env) -> None:
         )
     )
     checkpoints.store.put(
-        AgentCheckpoint(agent_id="s1", status=CHECKPOINT_CHECKPOINTED, snapshot_ref="missing")
+        AgentCheckpoint(agent_id="s1", status=CHECKPOINT_CHECKPOINTED, snapshot_ref=None)
     )
     with pytest.raises(SessionConflict):
         plane.post_message("s1", "hello")
     rec = store.get("s1")
     assert rec is not None and rec.status == "lost"
-    cp = checkpoints.get("s1")
+
+
+def test_foreign_snapshot_fails_closed(env) -> None:
+    """SOR-180 #9: post-restore identity validation — a checkpoint record
+    whose restored ``session.json`` does not match the recorded native
+    session fails closed (session ``lost``, checkpoint ``failed``) instead
+    of waking the agent in a foreign filesystem."""
+    plane, backend, store, checkpoints, _snapshots = env
+    agent_a = plane.create_session(owner="sbx", title="a", model=None)
+    plane.post_message(agent_a, "first")
+    _wait_status(store, agent_a, "idle")
+    agent_b = plane.create_session(owner="sbx", title="b", model=None)
+    plane.post_message(agent_b, "first")
+    _wait_status(store, agent_b, "idle")
+
+    # Distinguish B's native provider session inside its snapshot.
+    b_root = Path(store.get(agent_b).sandbox_root)
+    session = _session_json(b_root)
+    session["native_session_id"] = "thread-b"
+    (b_root / "session.json").write_text(json.dumps(session), encoding="utf-8")
+
+    _suspend(plane, backend, store, checkpoints, agent_a)
+    _suspend(plane, backend, store, checkpoints, agent_b)
+
+    # Corruption: A's checkpoint record points at B's snapshot.
+    a_rec = checkpoints.get(agent_a)
+    b_rec = checkpoints.get(agent_b)
+    assert a_rec is not None and b_rec is not None
+    a_rec.snapshot_ref = b_rec.snapshot_ref
+    checkpoints.store.put(a_rec)
+
+    with pytest.raises(SessionConflict):
+        plane.post_message(agent_a, "follow-up")
+    rec = store.get(agent_a)
+    assert rec is not None and rec.status == "lost"
+    cp = checkpoints.get(agent_a)
     assert cp is not None and cp.status == "failed"
+    assert "native_session_id mismatch" in (cp.last_error or "")
+    # B is untouched and still recoverable.
+    assert store.get(agent_b).status == "suspended"
+
+
+def test_workspace_head_recorded_and_verified(env) -> None:
+    """A prepared workspace pins ``workdir`` + HEAD on the checkpoint and
+    the restore verifies the restored checkout matches."""
+    plane, backend, store, checkpoints, snapshots = env
+    session_id = plane.create_session(owner="sbx", title="t", model=None)
+    plane.post_message(session_id, "first")
+    _wait_status(store, session_id, "idle")
+    rec = store.get(session_id)
+    head = _prepare_workspace(checkpoints, backend, session_id, Path(rec.sandbox_root))
+    _suspend(plane, backend, store, checkpoints, session_id)
+
+    cp = checkpoints.get(session_id)
+    assert cp is not None and cp.status == CHECKPOINT_CHECKPOINTED
+    assert cp.workspace_workdir == "repo"
+    assert cp.workspace_head_sha == head
+    snap_root = snapshots._root / cp.snapshot_ref
+    assert host_git(snap_root / "repo", "rev-parse", "HEAD") == head
+
+    turn_id = plane.post_message(session_id, "again")
+    assert turn_id == "turn-2"
+    rec = _wait_status(store, session_id, "idle")
+    restored = Path(rec.sandbox_root)
+    assert host_git(restored / "repo", "rev-parse", "HEAD") == head
+    assert checkpoints.get(session_id).status == CHECKPOINT_RESTORED
+
+
+def test_workspace_head_mismatch_fails_closed(env) -> None:
+    """A restored workspace whose HEAD drifted from the recorded checkpoint
+    identity fails closed — the agent never wakes on foreign code."""
+    plane, backend, store, checkpoints, snapshots = env
+    session_id = plane.create_session(owner="sbx", title="t", model=None)
+    plane.post_message(session_id, "first")
+    _wait_status(store, session_id, "idle")
+    rec = store.get(session_id)
+    _prepare_workspace(checkpoints, backend, session_id, Path(rec.sandbox_root))
+    _suspend(plane, backend, store, checkpoints, session_id)
+    cp = checkpoints.get(session_id)
+    assert cp is not None and cp.workspace_head_sha
+
+    # The snapshot content drifts after the checkpoint landed.
+    snap_root = snapshots._root / cp.snapshot_ref
+    (snap_root / "repo" / "b.txt").write_text("two\n", encoding="utf-8")
+    host_git(snap_root / "repo", "add", "-A")
+    host_git(snap_root / "repo", "commit", "-qm", "foreign commit")
+
+    with pytest.raises(SessionConflict):
+        plane.post_message(session_id, "again")
+    rec = store.get(session_id)
+    assert rec is not None and rec.status == "lost"
+    cp = checkpoints.get(session_id)
+    assert cp is not None and cp.status == "failed"
+    assert "workspace HEAD mismatch" in (cp.last_error or "")
 
 
 def test_close_discards_checkpoint(env) -> None:
