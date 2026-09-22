@@ -4,15 +4,37 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runtime.runner.constants import DEFAULT_WORK
+
+# SOR-174: the control plane declares the WorkspaceRecord workdir for a turn
+# through this env var (sandbox-root-relative, e.g. ``repo``). Provider CLIs
+# run inside it; ``$SBX_WORK`` itself stays the runner state root.
+WORKDIR_ENV = "SBX_WORKDIR"
 
 
 def work_root() -> Path:
     raw = os.environ.get("SBX_WORK") or DEFAULT_WORK
     return Path(raw)
+
+
+def agent_workdir(root: Path | None = None) -> Path:
+    """Provider-CLI working directory: ``root/<SBX_WORKDIR>`` when the
+    control plane declared a workspace workdir, ``root`` itself otherwise.
+
+    ``SBX_WORKDIR`` is written from a ``WorkspaceRecord.workdir`` relpath
+    already validated by the control plane; anything absolute or escaping
+    the root falls back to the state root rather than running elsewhere.
+    """
+    base = root if root is not None else work_root()
+    raw = os.environ.get(WORKDIR_ENV) or ""
+    if raw:
+        rel = PurePosixPath(raw)
+        if rel.parts and not rel.is_absolute() and ".." not in rel.parts:
+            return base / str(rel)
+    return base
 
 
 def codex_home(root: Path | None = None) -> Path:

@@ -307,6 +307,53 @@ def test_post_message_reconciles_then_dispatches_follow_up() -> None:
     backend.terminate(handle)
 
 
+# --------------------------------------------------------------- SOR-174
+
+
+def test_workdir_env_requires_prepared_record() -> None:
+    """Dispatch injects ``SBX_WORKDIR`` only for a prepared workspace:
+    no service, no record, and a declared-but-unprepared record all keep
+    the pre-workspace layout (provider CLI cwd = ``$SBX_WORK``)."""
+    from control.workspace import (
+        InMemoryWorkspaceStore,
+        WorkspaceRecord,
+        WorkspaceService,
+    )
+
+    plane, backend, _store = _reconcile_plane()
+    assert plane._workdir_env("s") is None  # workspaces service absent
+
+    plane.workspaces = WorkspaceService(backend, InMemoryWorkspaceStore())
+    assert plane._workdir_env("s") is None  # no record for the session
+
+    declared = WorkspaceRecord(agent_id="s", repo="/r", base_ref="main", base_sha="0" * 40)
+    plane.workspaces.save(declared)
+    assert plane._workdir_env("s") is None  # declared but not prepared
+
+    prepared = WorkspaceRecord(
+        agent_id="s",
+        repo="/r",
+        base_ref="main",
+        base_sha="0" * 40,
+        workdir="repo",
+        checkout_sha="1" * 40,
+    )
+    plane.workspaces.save(prepared)
+    assert plane._workdir_env("s") == {"SBX_WORKDIR": "repo"}
+
+    plane.workspaces.save(
+        WorkspaceRecord(
+            agent_id="s2",
+            repo="/r",
+            base_ref="main",
+            base_sha="0" * 40,
+            workdir="custom/nested",
+            checkout_sha="1" * 40,
+        )
+    )
+    assert plane._workdir_env("s2") == {"SBX_WORKDIR": "custom/nested"}
+
+
 def test_settle_orphaned_runs_persists_terminal_for_open_runs() -> None:
     plane, backend, store = _reconcile_plane()
     handle = _stranded_session(backend, store, payload=None)

@@ -162,6 +162,7 @@ def main() -> None:
             json.dumps(
                 {
                     "argv": sys.argv[1:],
+                    "cwd": os.getcwd(),
                     "ACP_BACKEND": "ACP_BACKEND" in os.environ,
                     "DEVIN_API_KEY": "DEVIN_API_KEY" in os.environ,
                     "DEVIN_V3_API_KEY": "DEVIN_V3_API_KEY" in os.environ,
@@ -172,6 +173,14 @@ def main() -> None:
                 }
             )
         )
+
+    def _note_session_cwd(msg: dict) -> None:
+        """SOR-174: record the ACP session ``cwd`` the bridge anchored."""
+        out = os.environ.get("FAKE_ACP_SESSION_CWD_OUT")
+        if out:
+            params = msg.get("params") or {}
+            Path(out).write_text(str(params.get("cwd")))
+
     for line in sys.stdin:
         stripped = line.strip()
         if not stripped:
@@ -185,11 +194,13 @@ def main() -> None:
         if method == "initialize":
             _reply(rid, {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}})
         elif method == "session/new":
+            _note_session_cwd(msg)
             if SCENARIO == "auth_invalid":
                 _error(rid, -32000, "401 Unauthorized: invalid or expired API key")
             else:
                 _reply(rid, {"sessionId": SESSION_ID, "modes": MODES})
         elif method == "session/load":
+            _note_session_cwd(msg)
             # History replay: prior-turn updates arrive before the response,
             # and the response carries no sessionId.
             _update(

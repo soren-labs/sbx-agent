@@ -76,15 +76,15 @@ class CodexAdapter:
         atomic_write(home / "config.toml", render_config_toml(model=model, auth=self.auth))
 
     def first_turn_argv(self, prompt: str, model: str) -> list[str]:
-        from runtime.runner.workspace import work_root
+        from runtime.runner.workspace import agent_workdir
 
-        return build_codex_argv(work=work_root(), prompt=prompt, thread_id=None, model=model)
+        return build_codex_argv(work=agent_workdir(), prompt=prompt, thread_id=None, model=model)
 
     def resume_argv(self, prompt: str, native_session_id: str) -> list[str]:
-        from runtime.runner.workspace import work_root
+        from runtime.runner.workspace import agent_workdir
 
         return build_codex_argv(
-            work=work_root(),
+            work=agent_workdir(),
             prompt=prompt,
             thread_id=native_session_id,
             model=None,

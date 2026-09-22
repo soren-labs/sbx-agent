@@ -51,6 +51,7 @@ from runtime.runner.events import (
     redact_text,
 )
 from runtime.runner.workspace import (
+    agent_workdir,
     atomic_write,
     codex_home,
     emit,
@@ -203,9 +204,12 @@ def cmd_turn(
     else:
         argv = adapter.first_turn_argv(prompt, model if isinstance(model, str) and model else "")
     stderr_path = root / "turns" / f"{n}.stderr"
+    # SOR-174: provider CLIs run inside the declared workspace workdir
+    # ($SBX_WORK/$SBX_WORKDIR) while runner state stays under ``root``.
+    cli_cwd = agent_workdir(root)
 
     try:
-        proc = start_codex(argv, work=root, home=home, stderr_path=stderr_path)
+        proc = start_codex(argv, work=root, home=home, stderr_path=stderr_path, cwd=cli_cwd)
     except OSError as exc:
         error_hint = f"failed to start provider CLI: {exc}"
         emit(root, {"type": "sbx.error", "message": error_hint})

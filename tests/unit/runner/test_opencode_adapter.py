@@ -120,6 +120,17 @@ def test_resume_argv_without_session_model(tmp_path: Path, monkeypatch: pytest.M
     assert "-m" not in argv
 
 
+def test_dir_flag_follows_declared_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SOR-174: ``--dir`` targets ``$SBX_WORK/$SBX_WORKDIR`` on both turns."""
+    monkeypatch.delenv("OPENCODE_BIN", raising=False)
+    monkeypatch.setenv("SBX_WORK", str(tmp_path))
+    monkeypatch.setenv("SBX_WORKDIR", "repo")
+    argv = OpencodeAdapter().first_turn_argv("do it", MODEL)
+    assert argv[argv.index("--dir") + 1] == str(tmp_path / "repo")
+    argv = OpencodeAdapter().resume_argv("next", "ses_xyz")
+    assert argv[argv.index("--dir") + 1] == str(tmp_path / "repo")
+
+
 def test_prepare_home_safe_permissions(tmp_path: Path) -> None:
     auth = tmp_path / OPENCODE_AUTH_REL
     auth.parent.mkdir(parents=True)

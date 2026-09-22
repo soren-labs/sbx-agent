@@ -34,6 +34,22 @@ def test_first_turn_argv_matches_p0_and_contract(
     assert "resume" not in argv
 
 
+def test_first_turn_argv_c_flag_follows_declared_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SOR-174: ``-C`` targets ``$SBX_WORK/$SBX_WORKDIR``, not the state root."""
+    from runtime.runner.adapter import CodexAdapter
+
+    monkeypatch.setenv("CODEX_BIN", "codex")
+    monkeypatch.setenv("SBX_WORK", str(tmp_path))
+    monkeypatch.setenv("SBX_WORKDIR", "repo")
+    argv = CodexAdapter().first_turn_argv("please do the task", "gpt-5.6-luna")
+    assert argv[argv.index("-C") + 1] == str(tmp_path / "repo")
+    monkeypatch.delenv("SBX_WORKDIR")
+    argv = CodexAdapter().first_turn_argv("please do the task", "gpt-5.6-luna")
+    assert argv[argv.index("-C") + 1] == str(tmp_path)
+
+
 def test_resume_argv_thread_id_then_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODEX_BIN", "codex")
     argv = build_codex_argv(
