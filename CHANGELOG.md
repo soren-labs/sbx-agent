@@ -21,6 +21,10 @@ source for release notes.
   capacity; admin pages for accounts, API keys and the GitHub App; English
   and Simplified Chinese; light/dark themes. The console no longer uses the
   legacy `/api/*` surface.
+- Documentation website in `docs-site/` (Astro Starlight): getting started,
+  guides, operations, providers and reference pages, a console guide with
+  screenshots, partial Simplified Chinese, and a REST reference generated from
+  `docs/contracts/api-v1.yaml`. `make docs-dev` / `make docs-build`.
 - `make console-dev` (`tests/e2e/serve_console.py`): the console against a
   real, cloud-free control plane (local backend, fake CLIs for all five
   providers, demo git repo). `make test-e2e` now runs a Playwright suite over

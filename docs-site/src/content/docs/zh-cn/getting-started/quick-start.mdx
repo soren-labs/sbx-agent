@@ -1,0 +1,219 @@
+---
+title: 快速开始
+description: 克隆、认证、部署、运行首个 agent（10 分钟）。
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+本指南帮你从零开始在自己的 Modal workspace 运行首个真实 agent。
+
+## 前置条件
+
+- Python ≥ 3.12
+- [uv](https://docs.astral.sh/uv/)（通用 Python 包管理器）
+- git
+- [Modal 账号](https://modal.com)（免费层可用）
+- 至少一个 provider CLI 已安装并在本地登录
+
+## 第 1 步：克隆和设置
+
+<Steps>
+
+1. 克隆仓库：
+   ```bash
+   git clone https://github.com/soren-labs/sbx-browser.git
+   cd sbx-browser
+   git checkout v0.1.1  # 可选：固定到发布标签
+   ```
+
+2. 安装依赖：
+   ```bash
+   uv sync
+   ```
+
+3. 使用 Modal 认证：
+   ```bash
+   uv run modal token new
+   ```
+   这会创建交互式会话。或者在环境中导出 `MODAL_TOKEN_ID` 和 `MODAL_TOKEN_SECRET`（两者必须）。
+
+4. 初始化配置：
+   ```bash
+   uv run sbx init --providers codex,devin
+   ```
+   创建 `~/.config/sbx/config.toml` 并扫描已安装的 provider CLI。将 `--providers` 改为你拥有的（逗号分隔：`codex`、`devin`、`antigravity`、`grok`、`opencode`）。
+
+</Steps>
+
+## 第 2 步：发现并验证凭证
+
+<Steps>
+
+1. 验证 provider CLI 已登录：
+   ```bash
+   uv run sbx credentials --verify
+   ```
+   应报告每个 provider 为 `verified` 或 `auth_invalid`。若为 `not_found`，运行 provider 的登录命令：
+
+   | Provider | 登录命令 |
+   | --- | --- |
+   | Codex | `codex login` |
+   | Devin | `devin`（交互式） |
+   | Antigravity | `agy`（OAuth） |
+   | Grok | `grok login` |
+   | OpenCode | `opencode auth login` |
+
+</Steps>
+
+## 第 3 步：将凭证导入 Modal
+
+为每个 provider 将凭证文件从 `$HOME` 导入到 Modal workspace 作为 Secret 或 account：
+
+<Steps>
+
+1. **Codex** — 共享凭证 Secret：
+   ```bash
+   modal secret create sbx-codex-auth \
+     CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
+   ```
+
+2. **其他 provider** — 账号级别导入：
+   ```bash
+   uv run python -m control.onboarding --modal import \
+     --provider devin --from ~/.local/share/devin/credentials.toml \
+     --account-id devin-1
+   ```
+   为每个 provider 和账号重复（若要使用多个）：
+   - Devin：`~/.local/share/devin/credentials.toml`
+   - Antigravity：`~/.gemini/antigravity-cli/antigravity-oauth-token`
+   - Grok：`~/.grok/auth.json`
+   - OpenCode：`~/.local/share/opencode/auth.json`
+
+3. 验证导入（可选但推荐）：
+   ```bash
+   uv run python -m control.onboarding --modal verify \
+     devin-1 --probe auth
+   ```
+
+</Steps>
+
+## 第 4 步：部署
+
+<Steps>
+
+1. 部署 control plane 和镜像：
+   ```bash
+   uv run sbx deploy
+   ```
+   这会：
+   - 构建运行时镜像（每个 provider 一个）
+   - 初始化持久 Dict（session、run、account 等）
+   - 创建 `sbx-control` Modal App
+   - 对 live control plane 运行健全性检查
+
+   输出显示：
+   - `SBX_BASE_URL`：你的 control plane 端点
+   - `sbx_<key>`：新 API key（写入 `~/.local/state/sbx/bootstrap.key`，权限 0600）
+
+2. 验证部署：
+   ```bash
+   uv run sbx doctor
+   ```
+   应报告所有系统绿色。
+
+</Steps>
+
+## 第 5 步：运行首个 agent
+
+<Steps>
+
+1. 导出 API key 和 base URL：
+   ```bash
+   export SBX_BASE_URL=<sbx deploy 的输出>
+   export SBX_API_KEY=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/sbx/bootstrap.key")
+   ```
+
+2. **通过 curl：**
+   ```bash
+   curl -X POST "$SBX_BASE_URL/v1/agents" \
+     -H "Authorization: Bearer $SBX_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "prompt": {"text": "Write hello.txt containing hi"},
+       "agent": {
+         "provider": "codex",
+         "account_id": "auto"
+       }
+     }'
+   ```
+
+3. **通过 Python client：**
+   ```python
+   from examples.sbx_client import SbxClient
+   import os
+
+   client = SbxClient(
+       base_url=os.getenv("SBX_BASE_URL"),
+       api_key=os.getenv("SBX_API_KEY"),
+   )
+
+   # 创建并等待完成
+   agent = client.create_agent(
+       text="Write hello.txt containing hi",
+       provider="codex",
+   )
+
+   # 通过 SSE 观看实时事件
+   for event in client.watch(agent["id"], agent["runs"][0]["id"]):
+       print(f"{event.type}: {event.data}")
+   ```
+
+   或简写：
+   ```bash
+   python examples/sbx_client.py "Write hello.txt containing hi"
+   ```
+
+</Steps>
+
+## 第 6 步：后续轮（可选）
+
+agent 空闲后，在同一 agent 上创建后续 run 以恢复原生 session：
+
+```bash
+curl -X POST "$SBX_BASE_URL/v1/agents/{agent-id}/runs" \
+  -H "Authorization: Bearer $SBX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": {"text": "Now make it executable (chmod +x hello.txt)"}
+  }'
+```
+
+Run 重用同一 sandbox、同一凭证，恢复 provider 原生 session（如 Codex 的 thread ID 保持）。
+
+## Web 控制台（可选）
+
+Web 控制台为管理 agent 和 run 提供可视化仪表板：
+
+**云部署：**
+```bash
+# 若部署了 edge Worker，打开：
+https://sbx.sorenforge.com
+```
+
+**本地开发：**
+```bash
+# 运行控制台开发服务器（无需 Modal 凭证）
+make console-dev
+
+# 然后打开：
+http://localhost:8790
+```
+
+控制台使用 `/v1` API 和 Bearer 认证，需要环境中的 `SBX_BASE_URL` 和 `SBX_API_KEY`。
+
+## 后续步骤
+
+- **[概念](/zh-cn/getting-started/concepts/)：** Agent、Run、Provider、Account、Workflow 等。
+- **[流式传输](/zh-cn/guides/streaming/)：** 通过 SSE 观看实时事件和自动重连。
+- **[账号和凭证](/zh-cn/guides/accounts/)：** 多账号调度和凭证刷新。
+- **[仓库和 PR](/zh-cn/guides/repositories/)：** 声明 git policy 和自动创建 pull request。

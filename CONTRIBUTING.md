@@ -11,6 +11,7 @@ make lint          # ruff check + ruff format --check (spike/ is excluded)
 make test          # pytest tests/unit tests/integration — MUST pass with no
                    # cloud credentials and no Modal connection
 make test-e2e      # Playwright: web console vs a real local control plane (Node 22)
+make docs-build    # build the documentation website in docs-site/
 ```
 
 Local control plane without Modal, with the web console mounted at `/`:
@@ -18,6 +19,7 @@ Local control plane without Modal, with the web console mounted at `/`:
 ```bash
 make console-dev   # real /v1 control plane (SBX_BACKEND=local) + fake provider
                    # CLIs + a demo git repo; prints the URL and a dev API key
+make docs-dev      # documentation site with hot reload (docs-site/)
 ```
 
 In the console, prompts containing `hang`, `slow`, `fail` or `auth` select the

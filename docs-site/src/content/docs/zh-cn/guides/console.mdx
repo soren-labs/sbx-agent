@@ -1,0 +1,212 @@
+---
+title: Web 控制台
+description: 在浏览器中创建 Agent、实时观看运行、评审与发布改动，并管理账号、密钥和 GitHub 授权。
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import agents from '../../../../assets/console/agents.png';
+import connect from '../../../../assets/console/connect.png';
+import newAgent from '../../../../assets/console/new-agent.png';
+import conversation from '../../../../assets/console/conversation.png';
+import runError from '../../../../assets/console/run-error.png';
+import workspace from '../../../../assets/console/workspace.png';
+import artifact from '../../../../assets/console/artifact.png';
+import workflow from '../../../../assets/console/workflow.png';
+import capacity from '../../../../assets/console/capacity.png';
+import zhLight from '../../../../assets/console/zh-light.png';
+
+import accounts from '../../../../assets/console/accounts.png';
+import keyCreated from '../../../../assets/console/key-created.png';
+
+Web 控制台是基于公开 `/v1` API 的单页应用。它做的每一件事都是一次普通的
+`/v1` 调用（带上你的 `sbx_` 密钥），所以控制台里能做的操作都可以写成脚本——
+「新建 Agent」页面甚至会实时展示即将发送的完整请求。
+
+控制台以静态文件形式放在 `web/` 目录（原生 ES 模块，无需构建），支持英文和
+简体中文，并跟随系统的浅色 / 深色主题。
+
+## 打开控制台
+
+<Steps>
+
+1. **让 `web/` 与 `/v1` 同源提供服务。** 控制面不返回 CORS 头，所以浏览器
+   必须通过同一个域名访问控制台和 `/v1`。可选的 [Cloudflare 边缘](/zh-cn/operations/edge/)
+   正是这样做的：把 `web/` 作为静态资源提供，并原样转发 `/v1/*` 及你的
+   `Authorization` 头。任何能提供 `web/` 并转发 `/v1/*` 的反向代理都可以。
+
+2. **用 API 密钥连接。** `sbx deploy` 会把一个 admin 密钥写入
+   `~/.local/state/sbx/bootstrap.key`；管理员可以在「管理 → API 密钥」中
+   创建更多密钥。控制台会先用 `GET /v1/me` 校验密钥再保存。
+
+3. **选择密钥的保存方式。** 默认保存在 `sessionStorage`，关闭标签页即失效；
+   勾选「在此设备上记住」则保存到 `localStorage`。密钥只会发送给你连接的
+   控制面。
+
+</Steps>
+
+<figure class="sbx-shot">
+  <Image src={connect} alt="要求输入 sbx_ API 密钥的连接页面" />
+</figure>
+
+<Aside type="tip" title="无需云账号即可试用">
+`make console-dev` 会用本地后端启动真实的控制面，配上模拟的 provider CLI
+和一个演示用 git 仓库，并打印访问地址和一次性密钥。提示词中包含 `hang`、
+`slow`、`fail` 或 `auth` 时会触发对应的模拟场景，方便查看各种运行状态。
+</Aside>
+
+只有 `agents` 权限的密钥可以使用除「账号」「API 密钥」「GitHub」以外的
+全部功能，这三个页面会显示锁定提示。
+
+## Agent 列表
+
+「Agent」页面列出当前密钥创建的所有 Agent，实时统计运行中、空闲和已结束的
+数量以及预估的沙箱成本。可以按状态或 provider 筛选，按名称、ID 或模型搜索，
+或只看某个工作流；点击行上的工作流标签可跳转到该工作流的恢复视图。
+
+<figure class="sbx-shot">
+  <Image src={agents} alt="Agent 列表：状态、provider、模型、工作流、token 与成本" />
+</figure>
+
+## 新建 Agent
+
+「新建 Agent」是 `POST /v1/agents` 的表单，按需开启各个分区：
+
+| 分区 | 设置内容 |
+| --- | --- |
+| **任务** | 首次运行的提示词和可选名称。 |
+| **Agent** | provider、模型与账号（实时读取 `GET /v1/models` 及空闲账号数），以及该 provider 支持的推理强度。 |
+| **仓库** | `workspace`（仓库、基线 ref、精确的基线 sha），以及起点：基线 commit、产物、commit 或 PR ref。 |
+| **Git 策略** | 工作分支、推送、自动发布、创建 PR、评审门控合并；相互依赖的选项按顺序启用。 |
+| **结构化输出** | 最终消息必须满足的 JSON Schema，可选严格或警告模式。 |
+| **工作流** | `workflow_id`、`task_id`、`role` 与 `parent_task_id`。 |
+| **高级** | CPU 与内存的 `[请求, 上限]`、白名单内的 Secrets、MCP 服务器、空闲超时。 |
+
+右侧「API 请求」面板随输入实时更新，可在 JSON、cURL、Python 之间切换。
+创建请求会携带 `Idempotency-Key`，重复点击也不会创建两个 Agent。
+
+<figure class="sbx-shot">
+  <Image src={newAgent} alt="新建 Agent 表单与实时 API 请求预览" />
+</figure>
+
+## 观看与引导运行
+
+Agent 的「对话」页按顺序展示每次运行：先是提示词，然后是实时推送的 provider
+过程——Agent 消息、带输出和退出码的命令、文件改动以及思考过程。标题行显示运行
+状态、耗时、模型和推理强度，底部显示 token 用量和执行账号。
+
+<figure class="sbx-shot">
+  <Image src={conversation} alt="一次已完成的运行：文件改动、命令、Agent 回复与用量面板" />
+</figure>
+
+- 在底部输入框**追问**：<kbd>Enter</kbd> 发送，<kbd>Shift</kbd>+<kbd>Enter</kbd>
+  换行。Agent 会保留沙箱并续用 provider 原生会话；「选项」可为单次运行附加输出契约。
+- 「取消运行」停止当前运行；「关闭 Agent」回收沙箱，历史记录变为只读。
+- 失败的运行会显示结构化错误：错误码、来源、是否值得重试以及下一步建议。
+
+<figure class="sbx-shot">
+  <Image src={runError} alt="失败的运行显示结构化错误" />
+</figure>
+
+<Aside title="历史记录从哪里来">
+实时过程来自运行的事件流（SSE，断线后用 `Last-Event-ID` 续传）。事件流保存在
+沙箱中，因此 Agent 关闭后，控制台会改为展示持久化运行账本中的最终结果和错误。
+API 不保存提示词；控制台会记住从当前浏览器发出的提示词，其他客户端发起的运行
+会标注为「提示词来自其他客户端」。
+</Aside>
+
+## 评审、发布与合并
+
+使用仓库创建的 Agent 会有「工作区」页。变更流水线展示工作进度——基线、HEAD、
+已评审、已发布、已合并——并附上精确的 sha。
+
+<figure class="sbx-shot">
+  <Image src={workspace} alt="工作区页：变更流水线、仓库记录与 Git 策略" />
+</figure>
+
+- **锁定评审**：记录你评审过的 commit（默认当前 HEAD），可选在 PR 上发表评论——
+  永远不会作为 GitHub Approve。
+- **发布**：推送工作分支；若策略要求，同时创建 PR。
+- **合并**：评审锁定与当前 HEAD 一致前保持禁用；评审后若 HEAD 变化，需要重新评审。
+- **应用交接**：引入另一个 Agent 的产物、commit 或 PR。
+
+这些操作要求 Agent 处于空闲状态且沙箱存活。
+
+## 产物与交接
+
+「快照」会把工作区打包成持久产物——`patch.diff`、HEAD 移动时的 git bundle，
+以及所有收集到的文件及其 sha256——还可以先运行测试命令。产物在沙箱销毁后依然
+存在；在产物页面可以下载任意成员，或点击「交接给新 Agent」，自动带着仓库信息和
+该产物打开「新建 Agent」。
+
+<figure class="sbx-shot">
+  <Image src={artifact} alt="产物详情：来源 sha、载荷下载、测试与文件" />
+</figure>
+
+## 工作流
+
+带 `workflow_id` 创建的 Agent 会出现在「工作流」中。恢复视图完全基于持久化记录：
+进度、每个任务的角色、Agent 与最近一次运行，子任务缩进显示在父任务之下。
+「关闭工作流」只关闭你的密钥下绑定到该工作流的 Agent 并报告结果，可以放心重复执行。
+
+<figure class="sbx-shot">
+  <Image src={workflow} alt="工作流恢复视图" />
+</figure>
+
+## 容量
+
+「容量」页列出每个已启用 provider 提供的模型、每个模型有多少账号还有空闲槽位，以及该
+provider 支持的推理强度。admin 密钥还能看到每个账号的槽位占用。
+
+<figure class="sbx-shot">
+  <Image src={capacity} alt="容量页面，每个 provider 一张卡片" />
+</figure>
+
+## 管理功能
+
+以下页面需要带 `admin` 权限的密钥：
+
+- **账号**：选择 provider CLI 登录时写入的凭证文件即可导入账号（对话框会提示各
+  provider 的文件路径）。文件直接发送到你的控制面，之后不会再显示。「校验」在一次性
+  沙箱中探测凭证，「移除」删除账号及其凭证。
+- **API 密钥**：创建带或不带 `admin` 的密钥。明文只显示一次，控制面只保存 sha256；
+  吊销当前使用的密钥会立即退出登录。
+- **GitHub**：显示是否已配置 GitHub App 以及每个安装覆盖的仓库。「连接 GitHub」会打开
+  App 的安装页面；把 App 的 Setup URL 设为控制台地址，GitHub 会跳转回控制台并自动记录
+  安装。「同步」从 GitHub 刷新，「吊销」移除安装。
+
+<figure class="sbx-shot">
+  <Image src={accounts} alt="账号表：状态、槽位占用和模型" />
+</figure>
+
+<figure class="sbx-shot">
+  <Image src={keyCreated} alt="新创建的 API 密钥，明文仅显示一次，带复制按钮" />
+</figure>
+
+## 语言与主题
+
+侧边栏底部的按钮或「设置」页可以在英文与简体中文、跟随系统 / 浅色 / 深色主题之间
+切换；设置页还会显示连接信息，并可清除本地记住的提示词和工作流。
+
+<figure class="sbx-shot">
+  <Image src={zhLight} alt="简体中文、浅色主题下的控制台" />
+</figure>
+
+## 配置
+
+只要控制台与 `/v1` 同源部署，就不需要任何配置。如有需要，可以在 `app.js` 加载前用脚本
+设置两个可选的全局变量：
+
+| 全局变量 | 作用 |
+| --- | --- |
+| `window.SBX_API_BASE` | 「连接」页上默认填入的控制面地址。 |
+| `window.SBX_DOCS_URL` | 你自己托管的本文档站点的根地址。设置后，控制台里的帮助链接会直接打开对应页面（中文界面打开中文页面）；未设置时链接到 GitHub 上的文档源码。 |
+
+## 常见问题
+
+| 现象 | 排查方向 |
+| --- | --- |
+| 被带回「连接」页并提示密钥被拒绝 | 密钥已被吊销或输入有误，请在「API 密钥」中新建。 |
+| 「无法连接到控制面」 | 控制台与 `/v1` 不同源，或地址有误，参见 [边缘部署](/zh-cn/operations/edge/)。 |
+| 运行显示「正在重新连接事件流…」 | 事件流中断后控制台会自动续传；若放弃，仍会轮询运行记录直到结束。 |
+| 「提示词来自其他客户端」 | 该运行由其他客户端发起，API 不保存提示词文本。 |
