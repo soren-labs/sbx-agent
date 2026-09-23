@@ -24,14 +24,14 @@ created = client.create_agent(
     text="Write a function that validates emails",
     provider="codex",
     model="gpt-5-turbo",
-    account_id="auto",           # default
-    name=None,                   # optional display name
-    idle_timeout_s=None,         # optional
-    metadata=None,               # optional: workflow_id / task_id / role / parent_task_id
-    workspace=None,              # optional: {"repo", "base_ref", "base_sha"}
-    handoff=None,                # optional: {"artifact_id": ...} or {"head_sha": ...}
-    output_contract=None,        # optional: {"schema": <JSON Schema>, "enforcement": "strict"|"warn"}
-    idempotency_key=None,        # optional: Idempotency-Key header
+    account_id="auto",  # default
+    name=None,  # optional display name
+    idle_timeout_s=None,  # optional
+    metadata=None,  # optional: workflow_id / task_id / role / parent_task_id
+    workspace=None,  # optional: {"repo", "base_ref", "base_sha"}
+    handoff=None,  # optional: {"artifact_id": ...} or {"head_sha": ...}
+    output_contract=None,  # optional: {"schema": <JSON Schema>, "enforcement": "strict"|"warn"}
+    idempotency_key=None,  # optional: Idempotency-Key header
 )
 agent, run = created["agent"], created["run"]
 print(agent["id"], agent["status"], run["id"], run["status"])
@@ -113,8 +113,8 @@ Returns `{"usage": {...} | None, "cost_estimate_usd": float, "sandbox_seconds": 
 ```python
 artifact = client.create_artifact(
     agent["id"],
-    run_id=None,                 # optional; default: the agent's latest run
-    test_command="npm test",     # optional
+    run_id=None,  # optional; default: the agent's latest run
+    test_command="npm test",  # optional
 )
 print(artifact["artifact_id"])
 
