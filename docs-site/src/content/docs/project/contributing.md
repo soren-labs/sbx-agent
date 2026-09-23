@@ -116,23 +116,23 @@ class AgentAdapter(Protocol):
     credential_files: tuple[str, ...]  # relative to $HOME, e.g. (".codex/auth.json",)
 
     def prepare_home(self, home: Path, model: str) -> None:
-        \"\"\"Write CLI config / instructions under ``home`` before the first turn.\"\"\"
+        """Write CLI config / instructions under ``home`` before the first turn."""
 
     def first_turn_argv(self, prompt: str, model: str) -> list[str]:
-        \"\"\"argv for turn 1 (no native session id yet).\"\"\"
+        """argv for turn 1 (no native session id yet)."""
 
     def resume_argv(self, prompt: str, native_session_id: str) -> list[str]:
-        \"\"\"argv for follow-up turns resuming ``native_session_id``.\"\"\"
+        """argv for follow-up turns resuming ``native_session_id``."""
 
     def translate(self, raw_line: str) -> list[dict[str, Any]]:
-        \"\"\"Map one native stdout line to 0..n canonical events (events.md).\"\"\"
+        """Map one native stdout line to 0..n canonical events (events.md)."""
 
     def extract_session_id(self, events: Iterable[dict[str, Any]]) -> str | None:
-        \"\"\"Return the native session id from translated events.\"\"\"
+        """Return the native session id from translated events."""
 
     def health_from(self, exit_code: int | None, stderr_tail: str) -> Health:
-        \"\"\"Classify a finished CLI process for account health feedback
-        (``ok`` / ``auth_invalid`` / ``rate_limited`` / ``unknown``).\"\"\"
+        """Classify a finished CLI process for account health feedback
+        (``ok`` / ``auth_invalid`` / ``rate_limited`` / ``unknown``)."""
 ```
 
 Register a factory in the `get_adapter()` registry:
