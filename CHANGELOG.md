@@ -8,6 +8,23 @@ source for release notes.
 
 ### Added
 
+- Redesigned web console (`web/`) on the public `/v1` API with Bearer keys:
+  agents list with live counts and filters; a sectioned **New agent** form
+  (provider/model/effort from `GET /v1/models`, repository + handoff, git
+  policy, output contract, workflow binding, compute/resources) with a live
+  JSON/cURL/Python request preview and an `Idempotency-Key`; a streaming
+  conversation per agent (canonical events, structured run errors, output
+  contract verdicts, follow-ups, cancel, close); a workspace tab with the
+  base → head → reviewed → published → merged pipeline and review pin /
+  publish / merge / handoff actions; artifacts (snapshot, manifest, member
+  downloads, hand off to a new agent); workflow recovery and scoped cleanup;
+  capacity; admin pages for accounts, API keys and the GitHub App; English
+  and Simplified Chinese; light/dark themes. The console no longer uses the
+  legacy `/api/*` surface.
+- `make console-dev` (`tests/e2e/serve_console.py`): the console against a
+  real, cloud-free control plane (local backend, fake CLIs for all five
+  providers, demo git repo). `make test-e2e` now runs a Playwright suite over
+  the whole console against it.
 - Build/deploy-time provider CLI version resolution (SOR-175): any
   `*_version` in `runtime/packages.txt` — or its `SBX_<PROVIDER>_VERSION`
   env override — may be `latest`. `runtime/versions.py` resolves it once

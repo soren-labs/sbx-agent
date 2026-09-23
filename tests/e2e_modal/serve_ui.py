@@ -1,9 +1,14 @@
-"""Local static + API proxy so Playwright can talk to deployed sbx-control."""
+"""Local static + API proxy so Playwright can talk to deployed sbx-control.
+
+Serves ``web/`` same-origin and forwards ``/v1/*`` with the client's own
+``Authorization: Bearer`` untouched (like ``deploy/sbx-edge``); ``/api/*``
+stays proxied with the deployment Basic credential for the fixtures that
+still clean up through it.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import socket
 import sys
@@ -13,7 +18,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,47 +58,19 @@ def build_app() -> FastAPI:
     auth = _auth()
     app = FastAPI(title="sbx-e2e-ui-proxy")
 
-    @app.get("/e2e-config.js")
-    def e2e_config() -> Response:
-        user, password = auth
-        body = (
-            f"window.SBX_API_BASE = '';\n"
-            f"window.SBX_API_USER = {json.dumps(user)};\n"
-            f"window.SBX_API_PASSWORD = {json.dumps(password)};\n"
-        )
-        return Response(body, media_type="application/javascript")
-
-    def _index_html() -> str:
-        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
-        needle = '<script type="module" src="./app.js"></script>'
-        inject = (
-            '<script src="/e2e-config.js"></script>\n'
-            '    <script type="module" src="./app.js"></script>'
-        )
-        if needle not in html:
-            raise RuntimeError("web/index.html missing app.js script tag")
-        return html.replace(needle, inject)
-
-    @app.get("/")
-    def index() -> HTMLResponse:
-        return HTMLResponse(_index_html())
-
-    @app.get("/index.html")
-    def index_html() -> HTMLResponse:
-        return HTMLResponse(_index_html())
-
-    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-    async def proxy_api(path: str, request: Request) -> StreamingResponse:
-        target = f"{control}/api/{path}"
+    async def forward(prefix: str, path: str, request: Request, basic: bool) -> StreamingResponse:
+        target = f"{control}/{prefix}/{path}"
         if request.url.query:
             target = f"{target}?{request.url.query}"
         headers = {
             key: value
             for key, value in request.headers.items()
-            if key.lower() not in HOP_BY_HOP and key.lower() != "authorization"
+            if key.lower() not in HOP_BY_HOP and (not basic or key.lower() != "authorization")
         }
         body = await request.body()
-        client = httpx.AsyncClient(timeout=None, auth=auth, follow_redirects=True)
+        client = httpx.AsyncClient(
+            timeout=None, auth=auth if basic else None, follow_redirects=True
+        )
         req = client.build_request(request.method, target, headers=headers, content=body or None)
         resp = await client.send(req, stream=True)
         out_headers = {
@@ -120,6 +97,14 @@ def build_app() -> FastAPI:
             headers=out_headers,
             media_type=media_type,
         )
+
+    @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def proxy_api(path: str, request: Request) -> StreamingResponse:
+        return await forward("api", path, request, basic=True)
+
+    @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def proxy_v1(path: str, request: Request) -> StreamingResponse:
+        return await forward("v1", path, request, basic=False)
 
     app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
     return app

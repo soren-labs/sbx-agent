@@ -10,15 +10,18 @@ uv sync            # python >=3.12, hatchling build, dev deps in [dependency-gro
 make lint          # ruff check + ruff format --check (spike/ is excluded)
 make test          # pytest tests/unit tests/integration — MUST pass with no
                    # cloud credentials and no Modal connection
-make test-e2e      # Playwright against the local mock API (needs Node 22)
+make test-e2e      # Playwright: web console vs a real local control plane (Node 22)
 ```
 
-Local control plane without Modal:
+Local control plane without Modal, with the web console mounted at `/`:
 
 ```bash
-SBX_BACKEND=local uv run python -m control.app
-# or the e2e harness: uv run python tests/e2e/serve_local.py
+make console-dev   # real /v1 control plane (SBX_BACKEND=local) + fake provider
+                   # CLIs + a demo git repo; prints the URL and a dev API key
 ```
+
+In the console, prompts containing `hang`, `slow`, `fail` or `auth` select the
+matching fake-CLI scenario, so every run state can be reproduced by typing.
 
 `make test` must never open a real Modal connection — `modal` is only
 imported in Modal-specific paths (the backend, Modal-backed stores, image
