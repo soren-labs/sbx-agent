@@ -75,6 +75,22 @@ export function frag(...children) {
   return append(document.createDocumentFragment(), children);
 }
 
+/**
+ * `value` normalized if it is an absolute http(s) URL, else null. Use it for
+ * every href / window.open built from API data: some of it (e.g. a recorded
+ * pull request's URL) is produced inside agent sandboxes, and a `javascript:`
+ * link would run with access to the stored API key.
+ */
+export function httpUrl(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Debounce helper for inputs that trigger work. */
 export function debounce(fn, ms = 200) {
   let timer = null;

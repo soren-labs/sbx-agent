@@ -1,5 +1,5 @@
 import { api } from "../lib/api.js";
-import { h, mount } from "../lib/dom.js";
+import { h, httpUrl, mount } from "../lib/dom.js";
 import { fmtDateTime, fmtRelative } from "../lib/format.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
@@ -95,8 +95,10 @@ export function renderGithub() {
             actionButton(t("Connect GitHub"), async () => {
               try {
                 const res = await api.githubAuthorize();
+                const url = httpUrl(res.authorize_url);
+                if (!url) throw new Error("authorize_url is not an http(s) URL");
                 sessionStorage.setItem(PENDING_KEY, res.state);
-                window.open(res.authorize_url, "_blank", "noopener");
+                window.open(url, "_blank", "noopener");
                 toast(t("Finish the installation on GitHub, then come back here."), { tone: "neutral", timeout: 8000 });
               } catch (err) {
                 toastError(err, t("Could not start authorization"));
