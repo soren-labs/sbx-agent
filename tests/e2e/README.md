@@ -21,4 +21,5 @@ light-theme UI.
 
 Fake-CLI scenarios are chosen from prompt keywords (`hang`, `slow`, `fail`,
 `auth`; otherwise success). Key steps save screenshots to `artifacts/`
-(git-ignored).
+(git-ignored); `make docs-screenshots` copies the curated set into the
+documentation site's console guide.

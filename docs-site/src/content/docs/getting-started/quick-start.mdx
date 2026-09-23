@@ -1,0 +1,220 @@
+---
+title: Quick start
+description: Clone, authenticate, deploy, and run your first agent in 10 minutes.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+This guide gets you from zero to one real agent run on your own Modal workspace.
+
+## Prerequisites
+
+- Python ≥ 3.12
+- [uv](https://docs.astral.sh/uv/) (universal Python package manager)
+- git
+- A [Modal account](https://modal.com) (free tier works)
+- At least one provider CLI installed and logged in locally
+
+## Step 1: Clone and setup
+
+<Steps>
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/soren-labs/sbx-browser.git
+   cd sbx-browser
+   git checkout v0.1.1  # optional: pin to the release tag
+   ```
+
+2. Install dependencies:
+   ```bash
+   uv sync
+   ```
+
+3. Authenticate with Modal:
+   ```bash
+   uv run modal token new
+   ```
+   This creates an interactive session. Alternatively, export `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in your environment (both required).
+
+4. Initialize the config:
+   ```bash
+   uv run sbx init --providers codex,devin
+   ```
+   This creates `~/.config/sbx/config.toml` and scans for installed provider CLIs. Change `--providers` to match what you have installed (comma-separated: `codex`, `devin`, `antigravity`, `grok`, `opencode`).
+
+</Steps>
+
+## Step 2: Discover and verify credentials
+
+<Steps>
+
+1. Verify that the provider CLIs are logged in:
+   ```bash
+   uv run sbx credentials --verify
+   ```
+   Should report each provider as `verified` or `auth_invalid`. If `not_found`, run the provider's login command:
+
+   | Provider | Login command |
+   | --- | --- |
+   | Codex | `codex login` |
+   | Devin | `devin` (interactive) |
+   | Antigravity | `agy` (OAuth) |
+   | Grok | `grok login` |
+   | OpenCode | `opencode auth login` |
+
+</Steps>
+
+## Step 3: Import credentials into Modal
+
+For each provider, import the credential file from `$HOME` into your Modal workspace as a Secret or account:
+
+<Steps>
+
+1. **Codex** — shared credential Secret:
+   ```bash
+   modal secret create sbx-codex-auth \
+     CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
+   ```
+
+2. **Other providers** — account-scoped imports:
+   ```bash
+   uv run python -m control.onboarding --modal import \
+     --provider devin --from ~/.local/share/devin/credentials.toml \
+     --account-id devin-1
+   ```
+   Repeat for each provider and account you want to use:
+   - Devin: `~/.local/share/devin/credentials.toml`
+   - Antigravity: `~/.gemini/antigravity-cli/antigravity-oauth-token`
+   - Grok: `~/.grok/auth.json`
+   - OpenCode: `~/.local/share/opencode/auth.json`
+
+3. Verify the import (optional but recommended):
+   ```bash
+   uv run python -m control.onboarding --modal verify \
+     devin-1 --probe auth
+   ```
+
+</Steps>
+
+## Step 4: Deploy
+
+<Steps>
+
+1. Deploy the control plane and images:
+   ```bash
+   uv run sbx deploy
+   ```
+   This:
+   - Builds the runtime images (one per provider)
+   - Seeds the durable Dicts (sessions, runs, accounts, etc.)
+   - Creates the `sbx-control` Modal App
+   - Runs a sanity check against the live control plane
+
+   Output shows:
+   - `SBX_BASE_URL`: your control plane endpoint
+   - `sbx_<key>`: a new API key (written to `~/.local/state/sbx/bootstrap.key`, mode 0600)
+
+2. Verify the deployment:
+   ```bash
+   uv run sbx doctor
+   ```
+   Should report all systems green.
+
+</Steps>
+
+## Step 5: Run your first agent
+
+<Steps>
+
+1. Export the API key and base URL:
+   ```bash
+   export SBX_BASE_URL=<printed by sbx deploy>
+   export SBX_API_KEY=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/sbx/bootstrap.key")
+   ```
+
+2. **Via curl:**
+   ```bash
+   curl -X POST "$SBX_BASE_URL/v1/agents" \
+     -H "Authorization: Bearer $SBX_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "prompt": {"text": "Write hello.txt containing hi"},
+       "agent": {
+         "provider": "codex",
+         "account_id": "auto"
+       }
+     }'
+   ```
+
+3. **Via Python client:**
+   ```python
+   from examples.sbx_client import SbxClient
+   import os
+
+   client = SbxClient(
+       base_url=os.getenv("SBX_BASE_URL"),
+       api_key=os.getenv("SBX_API_KEY"),
+   )
+
+   # Create the agent (returns {"agent": {...}, "run": {...}})
+   created = client.create_agent(
+       text="Write hello.txt containing hi",
+       provider="codex",
+   )
+   agent, run = created["agent"], created["run"]
+
+   # Watch real-time events over SSE
+   for event in client.watch(agent["id"], run["id"]):
+       print(f"{event.type}: {event.data}")
+   ```
+
+   Or, shorthand:
+   ```bash
+   python examples/sbx_client.py "Write hello.txt containing hi"
+   ```
+
+</Steps>
+
+## Step 6: Follow-up turns (optional)
+
+Once an agent is idle, create a follow-up run on the same agent to resume the native session:
+
+```bash
+curl -X POST "$SBX_BASE_URL/v1/agents/{agent-id}/runs" \
+  -H "Authorization: Bearer $SBX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": {"text": "Now make it executable (chmod +x hello.txt)"}
+  }'
+```
+
+The run reuses the same sandbox, the same credential, and resumes the provider's native session (e.g., Codex's thread ID stays the same).
+
+## Web console (optional)
+
+The web console provides a visual dashboard for managing agents and runs:
+
+**Cloud deployment:**
+```bash
+# If you deployed with the edge Worker, open:
+https://sbx.sorenforge.com
+```
+
+**Local development:**
+```bash
+# Serve the console against a local control plane (no Modal credentials needed)
+make console-dev
+
+# Then open:
+http://localhost:8790
+```
+
+`make console-dev` starts a real local `/v1` control plane with fake provider CLIs, serves the console, and prints a throwaway API key — paste it into the Connect screen.
+
+## Next steps
+
+- **[Concepts](/getting-started/concepts/):** Agent, Run, Provider, Account, Workflow, and more.
+- **[Streaming](/guides/streaming/):** Watch real-time events over SSE with automatic reconnect.
+- **[Accounts and credentials](/guides/accounts/):** Multi-account scheduling and credential refresh.
+- **[Repositories & PRs](/guides/repositories/):** Declare git policy and auto-create pull requests.

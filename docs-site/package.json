@@ -1,0 +1,27 @@
+{
+  "name": "sbx-browser-docs",
+  "type": "module",
+  "version": "0.1.1",
+  "private": true,
+  "description": "sbx-browser documentation website (Astro Starlight)",
+  "scripts": {
+    "prepare-openapi": "node scripts/prepare-openapi.mjs",
+    "dev": "npm run prepare-openapi && astro dev",
+    "build": "npm run prepare-openapi && astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.3",
+    "astro": "^7.3.4",
+    "js-yaml": "^4.3.2",
+    "sharp": "^0.35.4",
+    "starlight-openapi": "^0.26.2"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "form-data": "4.0.6"
+  }
+}

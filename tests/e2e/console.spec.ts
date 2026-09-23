@@ -204,6 +204,8 @@ test.describe("web console against a real local /v1 control plane", () => {
     await page.getByTestId("key-submit").click();
     const plaintext = (await page.getByTestId("key-plaintext").innerText()).trim();
     expect(plaintext.startsWith("sbx_")).toBeTruthy();
+    // This screenshot is published in the docs: show a placeholder, never a key value.
+    await page.getByTestId("key-plaintext").evaluate((el) => (el.textContent = "sbx_REDACTED"));
     await shot(page, "console_13_key_created.png");
     await page.getByRole("button", { name: "Done" }).click();
     await expect(page.getByTestId("keys-table")).toContainText("e2e automation");

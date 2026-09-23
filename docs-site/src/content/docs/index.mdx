@@ -1,0 +1,86 @@
+---
+title: sbx-browser
+description: Self-hosted orchestration for cloud coding agents. Run official provider CLIs in isolated Modal Sandboxes behind one REST API.
+template: splash
+hero:
+  tagline: Run the coding-agent CLIs you already pay for — Codex, Devin, Antigravity, Grok and OpenCode — behind one REST API, on your own Modal workspace.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Quick start
+      link: /getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: REST API
+      link: /reference/api/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/soren-labs/sbx-browser
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## What you can do
+
+<CardGrid>
+  <Card title="Multi-turn agents" icon="rocket">
+    Resume native provider sessions across turns with full history and durable state.
+  </Card>
+  <Card title="Multi-account pools" icon="database">
+    Schedule across multiple provider accounts with LRU, slot limits, and automatic failover.
+  </Card>
+  <Card title="Git & pull requests" icon="code-branch">
+    Declare repos, auto-create PRs, review and merge with gated workflows and artifact handoff.
+  </Card>
+  <Card title="Structured output" icon="approve-check-circle">
+    Enforce JSON Schema contracts on agent outputs with strict or warn semantics.
+  </Card>
+  <Card title="SSE streaming" icon="open-book">
+    Watch canonical events in real time with `Last-Event-ID` reconnect and graceful fallback.
+  </Card>
+  <Card title="Artifacts & workflows" icon="puzzle">
+    Pin checkpoints, cross-agent handoff, recovery metadata, and durable ledger.
+  </Card>
+</CardGrid>
+
+## How it works
+
+**1. Deploy once into your Modal workspace**
+
+Everything runs under your account: control plane, sandboxes, images, durable storage. One `sbx deploy` command creates the App, mounts your credentials as Secrets, and boots the control plane.
+
+**2. Create an agent with one API call**
+
+`POST /v1/agents` with provider (codex, devin, antigravity, grok, opencode), model, and account ID. A sandbox starts on the provider's image, the official CLI logs in, and run 1 begins immediately.
+
+**3. Talk to your agent over SSE or REST**
+
+Stream canonical events with `GET /v1/agents/{id}/runs/{runId}/stream`, or poll the ledger with GET. Follow-up turns are new runs on the same agent that resume the native session. Cancel, close, or pin artifacts anytime.
+
+## What it's not
+
+⚠️ **Read before deploying.** sbx-browser is orchestration for your own agents, not a hosted service.
+
+- **BYO Modal:** Every control plane and sandbox runs in *your* Modal workspace and costs you.
+- **BYO subscriptions:** Agents authenticate with *your* official provider accounts (Codex, Devin, etc.). sbx-browser does not resell, proxy, or convert quota—tasks execute inside the provider's own CLI.
+- **No quotas or accounts:** We do not store model weights, host user accounts, or call provider APIs directly. Your credentials live in your Modal workspace and are injected into your sandboxes only.
+
+## Status
+
+**v0.1.1 — Public alpha.** The `/v1` API may change before 1.0. All providers have been validated on real accounts during the release cycle; see the [provider matrix](/providers/overview/) for evidence.
+
+| Provider | Status | Evidence |
+| --- | --- | --- |
+| Codex | Stable | Real-Modal gate PASS; two-turn concurrency test |
+| Devin | Experimental | Real-Modal gate PASS; two-turn, cancel, usage |
+| Antigravity | Experimental | Real-Modal fleet gate PASS; 50-run concurrency, cooldown failover |
+| Grok | Experimental | Real-Modal fleet gate PASS; auto distribution, stranded-running reaper |
+| OpenCode | Experimental | Real-Modal gate PASS; two-turn, cancel, usage |
+
+## Next steps
+
+- **[Getting started](/getting-started/introduction/):** Clone, configure, and deploy in 10 minutes.
+- **[Guides](/guides/agents-and-runs/):** Master agents, runs, streaming, repos, and workflows.
+- **[Operate](/operations/deploy/):** Deploy strategies, configuration, security, and troubleshooting.

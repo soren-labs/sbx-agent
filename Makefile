@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e console-dev image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e console-dev docs-dev docs-build docs-screenshots image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -20,6 +20,19 @@ test-e2e:
 # fake provider CLIs, throwaway state). Prints the URL and a dev API key.
 console-dev:
 	uv run python tests/e2e/serve_console.py --port $${PORT:-8790}
+
+# Documentation website (Astro Starlight) in docs-site/.
+docs-dev:
+	npm --prefix docs-site ci
+	npm --prefix docs-site run dev
+
+docs-build:
+	npm --prefix docs-site ci
+	npm --prefix docs-site run build
+
+# Refresh the console guide's screenshots from the Playwright console suite.
+docs-screenshots: test-e2e
+	node docs-site/scripts/sync-console-screenshots.mjs
 
 # Named Image sbx-runtime (Modal credentials required). Equivalent: `python -m runtime.image`.
 image:
