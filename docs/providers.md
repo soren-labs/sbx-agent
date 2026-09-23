@@ -1,5 +1,9 @@
 # Provider support
 
+> **Moved to the documentation website.** The maintained, user-facing version of this
+> page is `providers/overview` and `providers/notes` in [`docs-site/`](../docs-site/) (`make docs-dev`).
+> This file stays as an engineering reference and may lag behind.
+
 sbx-browser drives **official provider CLIs** inside sandboxes — it never
 talks to model APIs directly and never converts subscription quota into an
 API. Each provider is driven through an `AgentAdapter`

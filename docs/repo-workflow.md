@@ -1,5 +1,9 @@
 # Repo workflows — workspaces, handoffs, GitHub auth
 
+> **Moved to the documentation website.** The maintained, user-facing version of this
+> page is `guides/repositories`, `guides/handoffs-and-artifacts` and `guides/github` in [`docs-site/`](../docs-site/) (`make docs-dev`).
+> This file stays as an engineering reference and may lag behind.
+
 How an agent gets a repository to work on, how work moves between agents,
 and when (if ever) GitHub credentials are involved. The frozen contracts are
 [contracts/api-v1.yaml](contracts/api-v1.yaml) (`workspace` / `handoff` /

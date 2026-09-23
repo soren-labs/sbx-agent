@@ -1,5 +1,9 @@
 # Architecture
 
+> **Moved to the documentation website.** The maintained, user-facing version of this
+> page is `getting-started/introduction` and `getting-started/concepts` in [`docs-site/`](../docs-site/) (`make docs-dev`).
+> This file stays as an engineering reference and may lag behind.
+
 sbx-browser is three tiers: a thin client surface, a FastAPI control plane on
 Modal, and one Modal Sandbox per agent running the official provider CLI.
 
