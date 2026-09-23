@@ -1,5 +1,5 @@
 ---
-title: Python Client
+title: Python client
 description: API reference for examples/sbx_client.py.
 ---
 

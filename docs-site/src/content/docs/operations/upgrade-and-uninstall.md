@@ -1,5 +1,5 @@
 ---
-title: Upgrade & Uninstall
+title: Upgrade and uninstall
 description: Update sbx-browser and cleanly remove deployments.
 ---
 

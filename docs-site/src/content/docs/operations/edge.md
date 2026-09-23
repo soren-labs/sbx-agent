@@ -1,5 +1,5 @@
 ---
-title: Optional Edge Worker
+title: Edge worker (optional)
 description: Cloudflare Worker for static assets and `/v1` proxying.
 ---
 

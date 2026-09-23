@@ -1,5 +1,5 @@
 ---
-title: Limits & timeouts
+title: Limits and timeouts
 description: Lifecycle timers, concurrency caps, compute bounds and durable storage — with their defaults and the settings that change them.
 ---
 

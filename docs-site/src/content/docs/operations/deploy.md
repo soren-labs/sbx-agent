@@ -1,5 +1,5 @@
 ---
-title: Deploying sbx-browser
+title: Deploy
 description: Bootstrap, deploy, verify, and scale your control plane.
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: Event Reference
+title: Events
 description: Canonical event types, shapes, and stream format.
 ---
 

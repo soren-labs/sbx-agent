@@ -1,5 +1,5 @@
 ---
-title: Structured Output
+title: Structured output
 description: Enforce JSON Schema contracts on agent output.
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: Creating & Managing Agents and Runs
+title: Agents and runs
 description: Create agents, queue runs, stream events, and track usage.
 ---
 

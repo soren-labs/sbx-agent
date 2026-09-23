@@ -2,21 +2,25 @@
 title: sbx-browser
 description: Self-hosted orchestration for cloud coding agents. Run official provider CLIs in isolated Modal Sandboxes behind one REST API.
 template: splash
+hero:
+  tagline: Run the coding-agent CLIs you already pay for — Codex, Devin, Antigravity, Grok and OpenCode — behind one REST API, on your own Modal workspace.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Quick start
+      link: /getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: REST API
+      link: /reference/api/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/soren-labs/sbx-browser
+      icon: external
+      variant: minimal
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
-
-export const hero = {
-  tagline: 'BYO Modal, BYO subscriptions. One REST API for your agents.',
-  image: {
-    file: '../../assets/logo.svg',
-  },
-  actions: [
-    { text: 'Quick Start', link: '/getting-started/quick-start/', variant: 'primary' },
-    { text: 'REST API', link: '/reference/api/', variant: 'secondary' },
-    { text: 'GitHub', link: 'https://github.com/soren-labs/sbx-browser', variant: 'minimal' },
-  ],
-};
 
 ## What you can do
 

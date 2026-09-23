@@ -37,6 +37,9 @@ doc.info.description = [
 	'`Last-Event-ID` resumes after a disconnect.',
 ].join('\n');
 
+// Every reader runs their own control plane; don't point samples at one deployment.
+doc.servers = [{ url: 'https://sbx.example.com', description: 'Your control plane (printed by `sbx deploy`)' }];
+
 const streamParams = doc.paths['/v1/agents/{id}/runs/{runId}/stream'].get.parameters;
 for (const param of streamParams) {
 	if (param.name === 'Last-Event-ID') {

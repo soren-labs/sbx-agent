@@ -1,5 +1,5 @@
 ---
-title: Provider Support
+title: Provider support
 description: Support matrix, status, and per-provider notes.
 ---
 
@@ -120,5 +120,5 @@ uv run python -m control.onboarding --modal add \
 
 `sbx deploy` also seeds one account per selected provider, and
 `SBX_<PROVIDER>_ACCOUNTS` (a JSON list of `{"id", "slots"?, …}`) seeds a
-whole pool at deploy time. See [Accounts & credentials](/guides/accounts/)
+whole pool at deploy time. See [Accounts and credentials](/guides/accounts/)
 for both paths, slots and failover.

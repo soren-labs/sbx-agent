@@ -1,5 +1,5 @@
 ---
-title: Streaming Events
+title: Streaming events
 description: Watch real-time events with Server-Sent Events and reconnection.
 ---
 

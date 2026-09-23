@@ -1,5 +1,5 @@
 ---
-title: Security Model
+title: Security model
 description: Understand the security boundaries and credential handling.
 ---
 

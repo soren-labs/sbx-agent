@@ -1,5 +1,5 @@
 ---
-title: Error Reference
+title: Errors
 description: HTTP error codes and run error codes.
 ---
 

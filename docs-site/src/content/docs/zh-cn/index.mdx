@@ -2,21 +2,25 @@
 title: sbx-browser
 description: 自托管的云编程 Agent 编排。在隔离的 Modal Sandbox 中运行官方 provider CLI，通过单个 REST API 控制。
 template: splash
+hero:
+  tagline: 用一个 REST API 驱动你已订阅的编程 Agent CLI（Codex、Devin、Antigravity、Grok、OpenCode），全部运行在你自己的 Modal 工作区。
+  image:
+    file: ../../../assets/logo.svg
+  actions:
+    - text: 快速开始
+      link: /zh-cn/getting-started/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: REST API
+      link: /reference/api/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/soren-labs/sbx-browser
+      icon: external
+      variant: minimal
 ---
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
-
-export const hero = {
-  tagline: '自带 Modal，自带订阅。一个 REST API 管理你的 Agent。',
-  image: {
-    file: '../../assets/logo.svg',
-  },
-  actions: [
-    { text: '快速开始', link: '/zh-cn/getting-started/quick-start/', variant: 'primary' },
-    { text: 'REST API', link: '/reference/api/', variant: 'secondary' },
-    { text: 'GitHub', link: 'https://github.com/soren-labs/sbx-browser', variant: 'minimal' },
-  ],
-};
 
 ## 你能做什么
 

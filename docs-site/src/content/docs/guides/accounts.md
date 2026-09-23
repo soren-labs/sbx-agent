@@ -1,5 +1,5 @@
 ---
-title: Accounts & credentials
+title: Accounts and credentials
 description: Import provider logins as accounts, size their slots, and understand how the scheduler picks, cools down and fails over between them.
 ---
 

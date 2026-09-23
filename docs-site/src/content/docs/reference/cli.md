@@ -1,5 +1,5 @@
 ---
-title: CLI Reference
+title: CLI
 description: sbx command-line interface and bootstrap tools.
 ---
 

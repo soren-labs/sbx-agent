@@ -1,5 +1,5 @@
 ---
-title: Provider Details
+title: Provider notes
 description: Per-provider configuration, quirks, and model support.
 ---
 
