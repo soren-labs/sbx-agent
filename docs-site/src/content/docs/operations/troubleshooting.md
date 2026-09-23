@@ -231,11 +231,11 @@ uv run sbx deploy
 
 ### Check sandbox logs
 
-If an agent seems stuck, view the sandbox logs:
+If an agent seems stuck, view the sandbox's container logs (sandboxes run as Modal containers):
 
 ```bash
-modal sandbox list
-modal sandbox logs <sandbox-id>
+modal container list
+modal container logs <container-id>
 ```
 
 ### Inspect durable state
@@ -244,7 +244,7 @@ Check the run ledger:
 
 ```bash
 modal dict list
-modal dict download sbx-runs
+modal dict items sbx-runs
 ```
 
 (Dicts are binary; use Modal CLI or the Python API to inspect.)

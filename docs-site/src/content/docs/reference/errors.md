@@ -40,7 +40,7 @@ All errors follow this shape:
 
 | Status | Code | Meaning | Action |
 | --- | --- | --- | --- |
-| 500 | (internal error) | Control-plane bug or infrastructure issue | Check `modal app logs sbx-control --tail`; retry later |
+| 500 | (internal error) | Control-plane bug or infrastructure issue | Check `modal app logs sbx-control --tail 100`; retry later |
 | 503 | (service unavailable) | Modal infrastructure down | Retry later |
 
 ## Run error codes

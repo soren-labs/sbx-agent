@@ -45,12 +45,16 @@ description: Per-provider configuration, quirks, and model support.
 
 **MCP support:** ✅ Devin is the only provider with MCP (Model Context Protocol)
 
+`resources.mcp` is a list of names referencing MCP server entries in the
+deployment registry (`SBX_MCP_REGISTRY` on the control plane — `{name:
+{url, transport?, headers?, providers?}}`; credential header values use
+`${env:VAR}` indirection). Refs are names only, never values; MCP refs on
+any other provider fail as `unsupported`.
+
 ```json
 {
   "resources": {
-    "mcp": [
-      {"name": "filesystem", "args": "${env:MCP_FILESYSTEM_ROOT}"}
-    ]
+    "mcp": ["filesystem"]
   }
 }
 ```
@@ -149,12 +153,10 @@ Response:
 {
   "models": [
     {
-      "id": "gpt-5-turbo",
       "provider": "codex",
-      "name": "GPT-5 Turbo",
-      "context_window": 100000,
-      "supports_reasoning": true,
-      "supports_mcp": false
+      "model": "gpt-5-turbo",
+      "accounts_available": 2,
+      "reasoning_efforts": ["low", "medium", "high"]
     }
   ]
 }

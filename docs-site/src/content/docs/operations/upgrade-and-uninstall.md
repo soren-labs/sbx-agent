@@ -75,7 +75,7 @@ This also deletes:
 - The managed Dicts (sessions, runs, accounts, workflows, artifacts, workspaces — plus `sbx-github-app` when configured)
 - All account credential Secrets (imported credentials are erased)
 
-The shared `sbx-codex-auth` and `sbx-basic-auth` Secrets are also deleted. Note that the lazily created `sbx-checkpoints` and `sbx-environments` Dicts are not part of the managed set — remove them manually if they exist (`modal dict ls` to check).
+The shared `sbx-codex-auth` and `sbx-basic-auth` Secrets are also deleted. Note that the lazily created `sbx-checkpoints` and `sbx-environments` Dicts are not part of the managed set — remove them manually if they exist (`modal dict list` to check).
 
 ### Verification
 
@@ -83,16 +83,16 @@ After uninstall, verify cleanup:
 
 ```bash
 modal app list
-modal secret ls
-modal dict ls
+modal secret list
+modal dict list
 ```
 
 Should show no `sbx-*` resources. If any remain, manually delete:
 
 ```bash
-modal app destroy sbx-control
-modal secret rm sbx-codex-auth
-modal secret rm sbx-acct-devin-1
+modal app stop sbx-control
+modal secret delete sbx-codex-auth
+modal secret delete sbx-acct-devin-1
 ```
 
 ## Key rotation

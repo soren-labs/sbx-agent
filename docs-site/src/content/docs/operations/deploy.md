@@ -195,13 +195,14 @@ uv run sbx credentials --verify
 
 **Sandbox creation timeout:**
 ```
-Modal may be slow. Try again. If persistent, check capacity in
-modal logs --tail --all
+Modal may be slow. Try again. If persistent, check the
+control-plane logs:
+modal app logs sbx-control --tail 100
 ```
 
 **Control plane not responding:**
 ```
 Check Modal app status:
 modal app list
-modal app logs sbx-control --tail
+modal app logs sbx-control --tail 100
 ```

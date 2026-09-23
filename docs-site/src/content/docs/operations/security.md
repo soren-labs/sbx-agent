@@ -113,8 +113,8 @@ Include: affected version, reproduction steps, impact. Never include real tokens
 
 The control plane does not provide audit logs (not yet). In the near term:
 
-- Review Modal app logs: `modal app logs sbx-control --tail`
-- Monitor Dict updates: `modal dict ls` (lists but not contents)
+- Review Modal app logs: `modal app logs sbx-control --tail 100`
+- Monitor Dict updates: `modal dict list` (lists but not contents)
 - Track agent creation via your client's logs
 
 Consider:

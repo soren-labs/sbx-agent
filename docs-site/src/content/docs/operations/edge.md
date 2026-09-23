@@ -149,4 +149,3 @@ If you don't want to use a Cloudflare Worker:
 - **Same-origin only** — the control plane doesn't send CORS headers; cross-origin requests fail
 - **HTTPS required** — the Worker runs on HTTPS by default; never expose over HTTP
 - **Rate limiting** — Cloudflare Workers has built-in DDoS protection
-EOFDEDGE

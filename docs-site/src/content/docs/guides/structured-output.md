@@ -34,30 +34,35 @@ When the run completes, the agent's final message is validated against the schem
 | Mode | Behavior |
 | --- | --- |
 | `strict` (default) | Invalid output → run `ERROR` with `contract_violation` code |
-| `warn` | Invalid output → run `FINISHED` with `structured_output.verdict.status: invalid` |
+| `warn` | Invalid output → run `FINISHED` with `output_contract.status: invalid` |
 
 ## Verdict structure
 
-Once a run is terminal, `structured_output` is populated:
+Once a run is terminal, `structured_output` holds the extracted JSON value
+and `output_contract` holds the verdict:
 
 ```json
 {
   "status": "FINISHED",
-  "structured_output": {
-    "raw": "{ \"emails\": [\"...\"]}",
+  "structured_output": {"emails": ["ada@example.com"]},
+  "output_contract": {
+    "schema": {"type": "object", "...": "..."},
+    "enforcement": "strict",
+    "schema_digest": "sha256:...",
+    "status": "valid",
     "extraction": "fence",
-    "output_contract": {
-      "enforcement": "strict",
-      "schema_digest": "sha256:..."
-    },
-    "verdict": {
-      "status": "valid|invalid|pending|skipped",
-      "violations": [
-        "emails: is required"
-      ]
-    }
+    "violations": []
   }
 }
+```
+
+`structured_output` is the bare JSON value recovered from the agent's final
+message — `null` when the run carried no contract or the message held no
+parseable JSON. `output_contract` echoes the declared `schema` and reports
+the verdict. Each `violations` entry is machine-diagnosable:
+
+```json
+{"path": "$", "code": "required", "message": "missing required property 'emails'"}
 ```
 
 ### Verdict status
@@ -65,7 +70,7 @@ Once a run is terminal, `structured_output` is populated:
 - **valid** — output satisfied the schema
 - **invalid** — output failed validation
 - **pending** — contract not yet evaluated (shouldn't happen at terminal)
-- **skipped** — no contract declared
+- **skipped** — the run ended without evaluable output
 
 ### Extraction types
 
@@ -167,11 +172,13 @@ Example (warn mode, same failure):
 ```json
 {
   "status": "FINISHED",
-  "structured_output": {
-    "verdict": {
-      "status": "invalid",
-      "violations": ["emails is required"]
-    }
+  "structured_output": {"emails": ["ada@example.com"]},
+  "output_contract": {
+    "status": "invalid",
+    "extraction": "fence",
+    "violations": [
+      {"path": "$", "code": "minItems", "message": "array has too few items"}
+    ]
   }
 }
 ```
@@ -186,4 +193,4 @@ The control plane attempts to extract JSON from the agent's final message in thi
 
 If no JSON is found:
 - **strict mode** → run ERROR with `contract_violation`
-- **warn mode** → `verdict.status = "skipped"`
+- **warn mode** → `output_contract.status = "invalid"` (extraction never ran)
