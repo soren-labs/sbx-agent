@@ -111,7 +111,7 @@ A durable package tying a workspace state to an output checkpoint:
 - SHA256 content hash for verification
 - Secret scan (fail-closed on leaked tokens)
 
-Used for cross-agent handoff via `handoff_type: "artifact_id"`.
+Used for cross-agent handoff via `handoff` (`{"artifact_id": "…"}` or `{"head_sha": "…"}`).
 
 ## Workflow
 

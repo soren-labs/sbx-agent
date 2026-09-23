@@ -31,7 +31,7 @@ Environment variables override config file values. Organized by category:
 | --- | --- | --- |
 | `SBX_PROVIDERS` | `codex` | Comma-separated provider list |
 | `SBX_MODAL_APP_NAME` | `sbx-control` | Modal App name |
-| `SBX_STATE_DIR` | `~/.config/sbx` | Local state dir |
+| `SBX_STATE_DIR` | `~/.local/state/sbx` | Local state dir |
 | `SBX_CONFIG` | `~/.config/sbx/config.toml` | Config file path |
 
 ### Lifecycle timers

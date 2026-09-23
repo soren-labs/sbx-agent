@@ -157,14 +157,15 @@ import { Steps, Aside } from '@astrojs/starlight/components';
        api_key=os.getenv("SBX_API_KEY"),
    )
 
-   # 创建并等待完成
-   agent = client.create_agent(
+   # 创建 agent（返回 {"agent": {...}, "run": {...}}）
+   created = client.create_agent(
        text="Write hello.txt containing hi",
        provider="codex",
    )
+   agent, run = created["agent"], created["run"]
 
    # 通过 SSE 观看实时事件
-   for event in client.watch(agent["id"], agent["runs"][0]["id"]):
+   for event in client.watch(agent["id"], run["id"]):
        print(f"{event.type}: {event.data}")
    ```
 
@@ -202,14 +203,14 @@ https://sbx.sorenforge.com
 
 **本地开发：**
 ```bash
-# 运行控制台开发服务器（无需 Modal 凭证）
+# 用本地 control plane 提供控制台（无需 Modal 凭证）
 make console-dev
 
 # 然后打开：
 http://localhost:8790
 ```
 
-控制台使用 `/v1` API 和 Bearer 认证，需要环境中的 `SBX_BASE_URL` 和 `SBX_API_KEY`。
+`make console-dev` 会启动一个真实的本地 `/v1` control plane（配模拟 provider CLI），提供控制台页面，并打印一个一次性 API key — 粘贴到 Connect 界面即可。
 
 ## 后续步骤
 

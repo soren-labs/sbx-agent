@@ -11,7 +11,7 @@ The optional Cloudflare Worker (`deploy/sbx-edge`) serves three purposes:
 2. **Same-origin proxy** — forwards `/v1/*` to the control plane (bypasses CORS)
 3. **Auth injection** — passes `Authorization` headers through
 
-The control plane does **not** send CORS headers (intentionally), so same-origin serving is required. Without the Worker, the web console can only run on `localhost` with a dev server.
+The control plane does **not** send CORS headers (intentionally), so same-origin serving is required. Without the Worker, the web console can only run on `localhost` via `make console-dev`.
 
 ## Deployment
 
@@ -22,24 +22,20 @@ The control plane does **not** send CORS headers (intentionally), so same-origin
 
 ### Steps
 
-1. **Build the console:**
-   ```bash
-   cd web
-   npm run build
-   ```
+The console in `web/` is a build-less static site — plain ES modules and CSS, no bundler, no `npm run build`. Deploying the Worker serves `web/` as-is via the `[assets]` binding.
 
-2. **Configure wrangler:**
+1. **Configure wrangler:**
    ```bash
    cd deploy/sbx-edge
-   # Edit wrangler.toml: set name, account_id, routes, etc.
+   # Edit wrangler.toml: set name, account_id, vars, routes, etc.
    ```
 
-3. **Deploy:**
+2. **Deploy:**
    ```bash
    wrangler deploy
    ```
 
-4. **Set secrets for HTTP Basic auth (optional):**
+3. **Set secrets for HTTP Basic auth (optional):**
    ```bash
    wrangler secret put SBX_BASIC_USER
    # When prompted, enter the username (e.g., sbx)
@@ -49,14 +45,24 @@ The control plane does **not** send CORS headers (intentionally), so same-origin
 
 ### Configuration
 
-Edit `wrangler.toml` to set your deployment details:
+Edit `wrangler.toml` to set your deployment details. The `[assets]` block is required — it is what serves the console; without it the Worker only proxies `/v1` and `/api`:
 
 ```toml
 name = "sbx-edge"
+main = "worker.js"
+compatibility_date = "2026-09-13"
 account_id = "your-account-id"
 
 [vars]
 SBX_CONTROL_URL = "https://your-sbx-control.modal.run"
+# Optional fallback origin for console assets not in the bundle:
+WEB_ORIGIN = "https://your-console-origin.example.com"
+
+[assets]
+directory = "../../web"
+binding = "ASSETS"
+run_worker_first = true
+not_found_handling = "single-page-application"
 
 [[routes]]
 pattern = "sbx.example.com"
@@ -67,9 +73,9 @@ The Secrets (`SBX_BASIC_USER`, `SBX_BASIC_PASS`) are never committed to the file
 
 ## How it works
 
-### `/v1/*` proxying
+### `/v1/*` and `/api/*` proxying
 
-The Worker intercepts `POST /v1/agents`, `GET /v1/agents/{id}/runs/{runId}/stream`, etc. and forwards them to the control plane:
+The Worker intercepts `POST /v1/agents`, `GET /v1/agents/{id}/runs/{runId}/stream`, etc. and forwards them to the control plane. It also proxies the legacy internal `/api/*` surface, injecting HTTP Basic auth from the `SBX_BASIC_*` secrets:
 
 ```javascript
 // Pseudo-code
@@ -88,13 +94,13 @@ The Bearer token (`Authorization: Bearer sbx_<key>`) is passed through untouched
 
 ### Static assets
 
-The Worker also serves the built web console (`web/dist`):
+The Worker also serves the web console directly from `web/` (there is no build step or `dist/` output):
 
 ```javascript
 if (request.url.endsWith("/")) {
   return new Response(/* index.html */);
 }
-// CSS, JS, etc. from the build output
+// CSS, JS, etc. from the web/ static bundle
 ```
 
 ### Streaming
@@ -118,12 +124,12 @@ The console (running on the Worker) will:
 
 If you don't want to use a Cloudflare Worker:
 
-1. **Local dev server** (`web/dev.server`):
+1. **Local console** (`make console-dev`):
    ```bash
-   cd web
-   npm run dev
-   # Open http://localhost:5173
-   # Set API_BASE_URL to your control plane
+   make console-dev
+   # Open http://localhost:8790
+   # Starts a real local /v1 control plane with fake provider CLIs
+   # and prints a throwaway API key for the Connect screen
    ```
 
 2. **Any reverse proxy** (nginx, Apache, etc.):

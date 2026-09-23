@@ -41,7 +41,7 @@ All tests must pass before a PR is accepted. Tests do not require cloud credenti
 | --- | --- |
 | `control/` | FastAPI control plane, scheduler, ledger, backends |
 | `runtime/` | Sandbox image, entrypoint, runner, provider adapters |
-| `web/` | Web console (Next.js dashboard for `/api` surface) |
+| `web/` | Web console (build-less static SPA for the `/v1` surface) |
 | `examples/` | Python client, reference implementations |
 | `deploy/` | Optional Cloudflare Worker edge |
 | `tests/` | Unit, integration, E2E, and real Modal tests |
@@ -97,46 +97,51 @@ Write task-oriented docs:
 
 ## Local console development
 
-The web console uses the public `/v1` API with Bearer authentication:
+The web console uses the public `/v1` API with Bearer authentication. One command runs everything locally — `tests/e2e/serve_console.py` boots a real `/v1` control plane on the local backend with fake provider CLIs (no Modal or cloud credentials) and serves `web/` at the same origin:
 
 ```bash
-# Terminal 1: local control plane
-export SBX_BACKEND=local
-uv run sbx deploy
-# Note the SBX_BASE_URL and API key from the output
-
-# Terminal 2: run the console dev server
 make console-dev
 ```
 
-The console will open at `http://localhost:8790` (or print the URL).
+The console opens at `http://localhost:8790`; the command prints a throwaway API key to paste into the Connect screen.
 
 ## Provider adapter contract
 
 To add a new provider, implement the `AgentAdapter` protocol (`runtime/runner/adapter.py`):
 
 ```python
+@runtime_checkable
 class AgentAdapter(Protocol):
-    def init(self, sandbox: Sandbox) -> dict:
-        \"\"\"Initialize sandbox; return session metadata.\"\"\"
-        
-    def turn(self, sandbox: Sandbox, prompt: str) -> list[dict]:
-        \"\"\"Run one turn; yield canonical events.\"\"\"
-        
-    def stop(self, sandbox: Sandbox) -> None:
-        \"\"\"Send SIGTERM to running CLI.\"\"\"
-        
-    def export_credentials(self, sandbox: Sandbox) -> dict | None:
-        \"\"\"Export refreshed credentials (OAuth providers).\"\"\"
+    provider: str
+    credential_files: tuple[str, ...]  # relative to $HOME, e.g. (".codex/auth.json",)
+
+    def prepare_home(self, home: Path, model: str) -> None:
+        \"\"\"Write CLI config / instructions under ``home`` before the first turn.\"\"\"
+
+    def first_turn_argv(self, prompt: str, model: str) -> list[str]:
+        \"\"\"argv for turn 1 (no native session id yet).\"\"\"
+
+    def resume_argv(self, prompt: str, native_session_id: str) -> list[str]:
+        \"\"\"argv for follow-up turns resuming ``native_session_id``.\"\"\"
+
+    def translate(self, raw_line: str) -> list[dict[str, Any]]:
+        \"\"\"Map one native stdout line to 0..n canonical events (events.md).\"\"\"
+
+    def extract_session_id(self, events: Iterable[dict[str, Any]]) -> str | None:
+        \"\"\"Return the native session id from translated events.\"\"\"
+
+    def health_from(self, exit_code: int | None, stderr_tail: str) -> Health:
+        \"\"\"Classify a finished CLI process for account health feedback
+        (``ok`` / ``auth_invalid`` / ``rate_limited`` / ``unknown``).\"\"\"
 ```
 
-Register in `get_adapter()`:
+Register a factory in the `get_adapter()` registry:
 
 ```python
-def get_adapter(provider: str) -> AgentAdapter:
-    match provider:
-        case "my_provider":
-            return MyProviderAdapter()
+_REGISTRY: dict[str, Callable[[], AgentAdapter]] = {
+    "codex": CodexAdapter,
+    # "my_provider": MyProviderAdapter,
+}
 ```
 
 ## Submitting a PR

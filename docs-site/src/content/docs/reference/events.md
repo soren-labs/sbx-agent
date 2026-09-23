@@ -61,7 +61,7 @@ Control plane events:
 | Status | Exit code | Meaning |
 | --- | --- | --- |
 | `success` | 0 | Turn completed successfully |
-| `cli_nonzero` | 2 | Provider CLI exited non-zero |
+| `codex_error` | 2 | Provider CLI exited non-zero |
 | `timeout` | 3 | Turn exceeded `SBX_TURN_MAX_SECONDS` |
 | `bad_json` | 4 | Event stream was malformed |
 | `auth_invalid` | 5 | Credential or auth check failed |

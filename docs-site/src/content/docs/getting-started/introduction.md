@@ -97,9 +97,9 @@ GET    /v1/me                        Current API key info
 
 Plus accounts, workflows, artifacts, and git/PR orchestration. Full schema: [API reference](/reference/api/).
 
-### `/api/*` — Internal dashboard API (HTTP Basic, legacy)
+### `/api/*` — Internal API (HTTP Basic, legacy)
 
-Used by the web console only. Not a public surface; all external integrations must use `/v1`.
+The web console calls `/v1`; `/api` is kept for internal/legacy callers only. Not a public surface; all external integrations must use `/v1`.
 
 ## Status and known limitations
 

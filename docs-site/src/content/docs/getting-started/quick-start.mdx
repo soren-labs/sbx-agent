@@ -157,14 +157,15 @@ For each provider, import the credential file from `$HOME` into your Modal works
        api_key=os.getenv("SBX_API_KEY"),
    )
 
-   # Create and wait for completion
-   agent = client.create_agent(
+   # Create the agent (returns {"agent": {...}, "run": {...}})
+   created = client.create_agent(
        text="Write hello.txt containing hi",
        provider="codex",
    )
+   agent, run = created["agent"], created["run"]
 
    # Watch real-time events over SSE
-   for event in client.watch(agent["id"], agent["runs"][0]["id"]):
+   for event in client.watch(agent["id"], run["id"]):
        print(f"{event.type}: {event.data}")
    ```
 
@@ -202,14 +203,14 @@ https://sbx.sorenforge.com
 
 **Local development:**
 ```bash
-# Run the console dev server locally (requires no Modal credentials)
+# Serve the console against a local control plane (no Modal credentials needed)
 make console-dev
 
 # Then open:
 http://localhost:8790
 ```
 
-The console uses the `/v1` API with Bearer authentication and requires `SBX_BASE_URL` and `SBX_API_KEY` in your environment.
+`make console-dev` starts a real local `/v1` control plane with fake provider CLIs, serves the console, and prints a throwaway API key — paste it into the Connect screen.
 
 ## Next steps
 

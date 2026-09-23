@@ -53,11 +53,13 @@ uv run sbx credentials --verify
 
 ### sbx config
 
-Read or edit config:
+Show the resolved non-sensitive config:
 
 ```bash
-uv run sbx config show
+uv run sbx config
 ```
+
+`config` takes no subcommands.
 
 ### sbx status
 
@@ -147,7 +149,7 @@ uv run sbx uninstall --purge-data --purge-credentials
 ```
 
 **Flags:**
-- `--purge-data` — also delete durable Dicts (runs, artifacts, workflows)
+- `--purge-data` — also delete durable Dicts (sessions, runs, accounts, workflows, artifacts, workspaces)
 - `--purge-credentials` — also delete account Secrets and the local key file
 - `--json` — JSON output
 
@@ -212,11 +214,10 @@ uv run python -m control.onboarding verify \
 
 `refresh ACCOUNT_ID`:
 - `--from SOURCE` — new credential blob (required)
-- `--experimental` — allow experimental providers
 - `--allow-open-permissions` — accept insecure file permissions
 
 `export ACCOUNT_ID`:
-- `--out PATH` — output file path (default: `~/.config/sbx/<provider>-<account-id>.json`)
+- `--out PATH` — output file path (required; never writes to stdout)
 
 `remove ACCOUNT_ID`:
 - `--yes` — skip confirmation (required to actually delete)
@@ -254,7 +255,7 @@ The repository includes common development and deployment commands via `make`:
 make lint       # ruff check + ruff format --check
 make test       # pytest (unit + integration, no cloud credentials)
 make test-e2e   # playwright smoke tests (mocked providers)
-make console-dev # start Next.js console dev server
+make console-dev # serve the console + local /v1 control plane at :8790
 make docs-dev   # start Astro docs dev server
 make docs-build # build docs site for production
 make deploy     # deploy to Modal workspace (requires config)

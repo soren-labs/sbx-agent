@@ -59,7 +59,9 @@ uv run sbx uninstall
 This:
 - Closes the Modal App (stops accepting new requests)
 - Closes all running sandboxes
-- Preserves Dicts: `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows`, `sbx-artifacts`
+- Preserves the managed Dicts: `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows`, `sbx-artifacts`, `sbx-workspaces` (plus `sbx-github-app` when the GitHub App is configured)
+
+Lazily created runtime Dicts (`sbx-checkpoints`, `sbx-environments`) are outside the managed set and are also left in place.
 
 You can re-deploy later and resume from the same durable state.
 
@@ -70,10 +72,10 @@ uv run sbx uninstall --purge-data --purge-credentials
 ```
 
 This also deletes:
-- All Dicts (runs, accounts, workflows, artifacts are gone)
+- The managed Dicts (sessions, runs, accounts, workflows, artifacts, workspaces — plus `sbx-github-app` when configured)
 - All account credential Secrets (imported credentials are erased)
 
-The shared `sbx-codex-auth` and `sbx-basic-auth` Secrets are also deleted.
+The shared `sbx-codex-auth` and `sbx-basic-auth` Secrets are also deleted. Note that the lazily created `sbx-checkpoints` and `sbx-environments` Dicts are not part of the managed set — remove them manually if they exist (`modal dict ls` to check).
 
 ### Verification
 
@@ -164,11 +166,11 @@ This closes all agents in the workflow and marks active runs as cancelled.
 
 ### Prune old artifacts
 
-The control plane does not auto-prune artifacts. Monitor storage and manually delete:
+The control plane does not auto-prune artifacts, and the public API has **no artifact delete route** — artifacts support create, list, detail, and download only. They live in the durable `sbx-artifacts` Dict and are designed to outlive their producing sandbox. To reclaim space, manage the Dict directly via the Modal CLI/dashboard, or remove it entirely with `sbx uninstall --purge-data`.
+
+List what is stored:
 
 ```bash
-curl -X GET "$SBX_BASE_URL/v1/artifacts?limit=100" \
-  -H "Authorization: Bearer $SBX_API_KEY" | jq '.artifacts[] | select(.created_at < "2026-01-01") | .id' | \
-  xargs -I {} curl -X DELETE "$SBX_BASE_URL/v1/artifacts/{}" \
-    -H "Authorization: Bearer $SBX_API_KEY"
+curl -s "$SBX_BASE_URL/v1/artifacts" \
+  -H "Authorization: Bearer $SBX_API_KEY" | jq '.artifacts[] | {artifact_id, created_at}'
 ```

@@ -207,25 +207,19 @@ Authorization: Bearer sbx_<key>
 
 ```json
 {
-  "runs": [
-    {
-      "id": "run_xyz789...",
-      "status": "FINISHED",
-      "usage": {
-        "input_tokens": 4200,
-        "cached_input_tokens": 2000,
-        "output_tokens": 1850,
-        "cache_write_input_tokens": 500,
-        "reasoning_output_tokens": 0
-      },
-      "cost_estimate_usd": 0.315
-    }
-  ],
-  "total_cost_estimate_usd": 0.315
+  "usage": {
+    "input_tokens": 4200,
+    "cached_input_tokens": 2000,
+    "output_tokens": 1850,
+    "cache_write_input_tokens": 500,
+    "reasoning_output_tokens": 0
+  },
+  "cost_estimate_usd": 0.315,
+  "sandbox_seconds": 640
 }
 ```
 
-`cost_estimate_usd` is a Modal list-price estimate. Token counts come from the provider.
+`cost_estimate_usd` is a Modal list-price estimate aggregated across the agent's runs. Token counts come from the provider; `usage` is `null` while nothing was ever measured. Per-run token usage lives on each run's `usage` field (`GET .../runs/{runId}`).
 
 ## Python client example
 
@@ -256,7 +250,7 @@ followup = client.followup(agent_id, text="Add POST verification")
 
 # Usage
 usage = client.usage(agent_id)
-print(f"Cost: ${usage['total_cost_estimate_usd']:.2f}")
+print(f"Cost: ${usage['cost_estimate_usd']:.2f}")
 
 # Clean up
 client.close_agent(agent_id)
@@ -288,7 +282,7 @@ curl -s $SBX_BASE_URL/v1/agents/$AGENT_ID/runs/$RUN_ID \
 
 # Usage
 curl -s $SBX_BASE_URL/v1/agents/$AGENT_ID/usage \
-  -H "Authorization: Bearer sbx_<key>" | jq '.total_cost_estimate_usd'
+  -H "Authorization: Bearer sbx_<key>" | jq '.cost_estimate_usd'
 
 # Cancel run
 curl -X POST \

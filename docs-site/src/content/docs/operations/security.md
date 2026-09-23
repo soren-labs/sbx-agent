@@ -63,12 +63,12 @@ Bearer token `Authorization: Bearer sbx_<key>`:
 - Server stores `sha256(key)` only
 - Scopes: `agents` (default) or `admin`
 
-### `/api/*` (internal dashboard API)
+### `/api/*` (internal API, legacy)
 
 HTTP Basic Auth (one shared deployment credential):
 - User: `sbx`
 - Password: `sbx` (not a real secret; only used locally)
-- Not a public surface; do not expose or build on it
+- The web console uses `/v1`, not `/api`. `/api` is not a public surface; do not expose or build on it
 
 ## Artifact collection
 
@@ -86,7 +86,7 @@ Content-Type: application/json
 }
 ```
 
-The control plane scans for credential-shaped filenames and aborts if any are found. Paths like `.git`, `.github`, `node_modules`, `.venv` are excluded. Remove sensitive files before creating an artifact.
+The control plane scans collected file **contents** for the agent's own credential values (the account's credential blob plus other sandbox secrets) and aborts the whole snapshot on a match — the check is a value scan, not a filename heuristic. Credential/key-material filenames (`.env*`, `*.pem`, `*.key`, `auth.json`, …) and git internals are refused outright. Remove sensitive files before creating an artifact.
 
 ## Rules
 
