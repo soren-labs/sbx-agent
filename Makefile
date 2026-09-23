@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e console-dev image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -15,6 +15,11 @@ test:
 test-e2e:
 	npm --prefix web ci
 	cd web && NODE_PATH="$(CURDIR)/web/node_modules" npx playwright test
+
+# Web console against a real, cloud-free control plane (SBX_BACKEND=local,
+# fake provider CLIs, throwaway state). Prints the URL and a dev API key.
+console-dev:
+	uv run python tests/e2e/serve_console.py --port $${PORT:-8790}
 
 # Named Image sbx-runtime (Modal credentials required). Equivalent: `python -m runtime.image`.
 image:

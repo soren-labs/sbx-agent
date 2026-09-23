@@ -1,56 +1,77 @@
-/** Runtime config. Override on `window` before this module loads, or via same-origin. */
+/**
+ * Connection settings: control-plane URL + `sbx_` API key.
+ *
+ * The key lives in sessionStorage by default (gone when the tab closes);
+ * "remember on this device" moves it to localStorage. It is only ever sent
+ * as `Authorization: Bearer` to the configured control plane.
+ */
 
-export function apiBase() {
+const STORE_KEY = "sbx.console.connection";
+
+function read(storage) {
+  try {
+    const raw = storage.getItem(STORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Default API origin: `window.SBX_API_BASE` (optional) or same origin. */
+export function defaultBaseUrl() {
   const raw = window.SBX_API_BASE;
-  if (typeof raw === "string" && raw.trim()) {
-    return raw.replace(/\/+$/, "");
+  return typeof raw === "string" && raw.trim() ? raw.trim().replace(/\/+$/, "") : "";
+}
+
+let cached = null;
+
+export function getConnection() {
+  if (cached) return cached;
+  const stored = read(sessionStorage) || read(localStorage);
+  cached = {
+    baseUrl: stored?.baseUrl ?? defaultBaseUrl(),
+    apiKey: stored?.apiKey ?? "",
+    remember: Boolean(stored?.remember),
+    identity: stored?.identity ?? null,
+  };
+  return cached;
+}
+
+export function saveConnection({ baseUrl, apiKey, remember, identity }) {
+  const value = {
+    baseUrl: (baseUrl || "").trim().replace(/\/+$/, ""),
+    apiKey: (apiKey || "").trim(),
+    remember: Boolean(remember),
+    identity: identity ?? null,
+  };
+  sessionStorage.removeItem(STORE_KEY);
+  localStorage.removeItem(STORE_KEY);
+  (value.remember ? localStorage : sessionStorage).setItem(STORE_KEY, JSON.stringify(value));
+  cached = value;
+  return value;
+}
+
+export function clearConnection() {
+  sessionStorage.removeItem(STORE_KEY);
+  localStorage.removeItem(STORE_KEY);
+  cached = null;
+}
+
+export function isConnected() {
+  return Boolean(getConnection().apiKey);
+}
+
+export function hasScope(scope) {
+  const scopes = getConnection().identity?.scopes || [];
+  return scopes.includes(scope);
+}
+
+/** Human label for the control plane the console talks to. */
+export function planeLabel() {
+  const base = getConnection().baseUrl;
+  try {
+    return new URL(base || window.location.origin).host;
+  } catch {
+    return base || window.location.host;
   }
-  return "";
-}
-
-function isLocalHost() {
-  const h = window.location.hostname;
-  return h === "localhost" || h === "127.0.0.1";
-}
-
-export function apiUser() {
-  if (typeof window.SBX_API_USER === "string") return window.SBX_API_USER;
-  // Local mock / Playwright only. Production (sbx.sorenforge.com) uses the
-  // Cloudflare edge proxy so the browser never sees Basic credentials.
-  return isLocalHost() ? "sbx" : "";
-}
-
-export function apiPassword() {
-  if (typeof window.SBX_API_PASSWORD === "string") return window.SBX_API_PASSWORD;
-  return isLocalHost() ? "sbx" : "";
-}
-
-export function origin() {
-  const base = apiBase();
-  if (base) return base;
-  return window.location.origin;
-}
-
-export function apiUrl(path) {
-  const p = path.startsWith("/") ? path : `/${path}`;
-  const base = apiBase();
-  return `${base}${p}`;
-}
-
-export function eventsUrl(sessionId) {
-  const u = new URL(`/api/sessions/${encodeURIComponent(sessionId)}/events`, origin());
-  const user = apiUser();
-  const password = apiPassword();
-  if (user) {
-    u.username = user;
-    u.password = password;
-  }
-  return u.toString();
-}
-
-export function authHeader() {
-  const user = apiUser();
-  if (!user) return {};
-  const token = btoa(`${user}:${apiPassword()}`);
-  return { Authorization: `Basic ${token}` };
 }

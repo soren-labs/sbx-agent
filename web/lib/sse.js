@@ -1,155 +1,132 @@
-import { apiUrl, authHeader } from "./config.js";
+import { apiUrl, authHeaders } from "./api.js";
 
 /**
- * Authenticated SSE reader.
+ * Authenticated SSE reader for `/v1/.../stream`.
  *
- * Native `EventSource` cannot set `Authorization` (and Chromium strips
- * `user:pass@` from the URL), so we follow the EventSource algorithm with
- * `fetch`: honor `retry:`, persist last id, reconnect with `Last-Event-ID`.
+ * EventSource cannot send `Authorization`, so this follows the EventSource
+ * algorithm over `fetch`: honours `retry:`, tracks the last `id`, and
+ * reconnects with `Last-Event-ID`. Reconnects are bounded — after
+ * `maxFailures` consecutive failures the caller falls back to polling the
+ * durable run record (the ledger is the source of truth).
  */
 
 function parseFrame(raw) {
-  const frame = { event: "message", data: "", id: "", retry: null, comment: false };
-  const lines = raw.split(/\r?\n/);
-  const dataLines = [];
-  for (const line of lines) {
-    if (line === "" || line.startsWith(":")) {
-      if (line.startsWith(":")) frame.comment = true;
-      continue;
-    }
+  const frame = { event: "message", data: "", id: null, retry: null };
+  const data = [];
+  for (const line of raw.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
     const idx = line.indexOf(":");
     const field = idx === -1 ? line : line.slice(0, idx);
     let value = idx === -1 ? "" : line.slice(idx + 1);
     if (value.startsWith(" ")) value = value.slice(1);
     if (field === "event") frame.event = value;
-    else if (field === "data") dataLines.push(value);
+    else if (field === "data") data.push(value);
     else if (field === "id") frame.id = value;
     else if (field === "retry") {
       const n = Number.parseInt(value, 10);
       if (Number.isFinite(n)) frame.retry = n;
     }
   }
-  frame.data = dataLines.join("\n");
+  frame.data = data.join("\n");
   return frame;
 }
 
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    if (signal) {
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(t);
-          reject(new DOMException("aborted", "AbortError"));
-        },
-        { once: true },
-      );
-    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException("aborted", "AbortError"));
+      },
+      { once: true },
+    );
   });
 }
 
-function mergeAbort(a, b) {
-  const out = new AbortController();
-  const forward = () => out.abort();
-  if (a.aborted || b.aborted) {
-    out.abort();
-    return out.signal;
-  }
-  a.addEventListener("abort", forward, { once: true });
-  b.addEventListener("abort", forward, { once: true });
-  return out.signal;
-}
+export function openStream(
+  path,
+  { onEvent, onStatus, lastEventId = "", maxFailures = 6, retryMs = 1000 } = {},
+) {
+  const controller = new AbortController();
+  let lastId = lastEventId;
+  let failures = 0;
+  let closed = false;
 
-export function subscribeSessionEvents(sessionId, { onEvent, onOpen, onError } = {}) {
-  const abort = new AbortController();
-  let lastId = "";
-  let retryMs = 300;
-  let stopped = false;
-  let connAbort = null;
-
-  const dropConn = () => {
-    if (connAbort && !connAbort.signal.aborted) connAbort.abort();
-  };
+  const status = (value, detail) => onStatus?.(value, detail);
 
   const run = async () => {
-    window.addEventListener("offline", dropConn);
-    try {
-      while (!stopped) {
-        connAbort = new AbortController();
-        const signal = mergeAbort(abort.signal, connAbort.signal);
-        try {
-          const headers = {
-            Accept: "text/event-stream",
-            ...authHeader(),
-          };
-          if (lastId) headers["Last-Event-ID"] = lastId;
-          const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/events`), {
-            headers,
-            signal,
-            cache: "no-store",
-          });
-          if (!res.ok) {
-            onError?.(res.status, 2);
-            await sleep(retryMs, abort.signal);
-            continue;
-          }
-          if (!res.body) {
-            onError?.("empty-body", 2);
-            await sleep(retryMs, abort.signal);
-            continue;
-          }
-          onOpen?.();
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buf = "";
-          while (!stopped) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            buf = buf.replace(/\r\n/g, "\n");
-            let sep;
-            while ((sep = buf.indexOf("\n\n")) !== -1) {
-              const raw = buf.slice(0, sep);
-              buf = buf.slice(sep + 2);
-              const frame = parseFrame(raw);
-              if (frame.retry != null) retryMs = frame.retry;
-              if (frame.id) lastId = frame.id;
-              if (!frame.data) continue;
-              let payload;
+    while (!closed) {
+      status(failures ? "reconnecting" : "connecting");
+      try {
+        const headers = { Accept: "text/event-stream", ...authHeaders() };
+        if (lastId) headers["Last-Event-ID"] = lastId;
+        const res = await fetch(apiUrl(path), {
+          headers,
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          status("closed", { status: res.status });
+          return;
+        }
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        failures = 0;
+        status("live");
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (!closed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+          let sep = buf.indexOf("\n\n");
+          while (sep !== -1) {
+            const frame = parseFrame(buf.slice(0, sep));
+            buf = buf.slice(sep + 2);
+            if (frame.retry != null) retryMs = frame.retry;
+            if (frame.id) lastId = frame.id;
+            if (frame.data) {
+              let payload = null;
               try {
                 payload = JSON.parse(frame.data);
               } catch {
-                continue;
+                payload = { type: "sbx.unparsed", raw: frame.data };
               }
-              onEvent?.({
-                id: frame.id || lastId,
-                type: payload.type || frame.event,
-                data: payload,
-              });
+              onEvent?.({ id: frame.id, type: payload?.type || frame.event, data: payload });
             }
+            if (closed) return;
+            sep = buf.indexOf("\n\n");
           }
-          onError?.("disconnect", 0);
-        } catch (err) {
-          if (stopped || abort.signal.aborted) return;
-          onError?.(err, 0);
         }
-        if (stopped) return;
-        try {
-          await sleep(retryMs, abort.signal);
-        } catch {
-          return;
-        }
+      } catch (err) {
+        if (closed || err?.name === "AbortError") return;
       }
-    } finally {
-      window.removeEventListener("offline", dropConn);
+      if (closed) return;
+      failures += 1;
+      if (failures >= maxFailures) {
+        status("gave_up");
+        return;
+      }
+      try {
+        await sleep(Math.min(retryMs * failures, 8000), controller.signal);
+      } catch {
+        return;
+      }
     }
   };
 
   void run();
-  return () => {
-    stopped = true;
-    dropConn();
-    abort.abort();
+  return {
+    close() {
+      if (closed) return;
+      closed = true;
+      controller.abort();
+      status("closed");
+    },
+    get lastEventId() {
+      return lastId;
+    },
   };
 }

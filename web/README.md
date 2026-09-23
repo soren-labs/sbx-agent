@@ -1,31 +1,47 @@
-# web/
+# web/ — sbx-browser console
 
-单页聊天看板（无构建步骤）。控制面把本目录当作静态文件挂在 `/`；本地开发：
+A build-less single-page console for the public `/v1` API: agents and live
+runs, repository workspaces (review pin, publish, merge, handoff), artifacts,
+workflows, capacity, and admin pages for accounts, API keys and the GitHub
+App. Plain ES modules + CSS — no bundler, no runtime dependencies.
+
+```
+index.html  app.js  styles.css  favicon.svg
+lib/        api client, SSE reader, router, i18n (en / zh-CN), formatting, UI kit
+views/      one module per page (agents, agent, new-agent, workspace, …)
+```
+
+## Develop
 
 ```bash
-python -m tests.fakes.mock_api --port 8787
+make console-dev          # http://127.0.0.1:8790 — real local /v1 plane + fake CLIs
 ```
 
-打开 <http://127.0.0.1:8787/>。API 基地址默认同源；也可在加载页面前设置：
+The command prints a throwaway API key; paste it into the Connect screen.
+Prompts containing `hang`, `slow`, `fail` or `auth` pick the matching fake-CLI
+scenario. `GET /__dev/info` returns the demo repository (path, base ref, base
+sha) for trying workspaces, git publishing and artifacts.
 
-```html
-<script>
-  window.SBX_API_BASE = "http://127.0.0.1:8787";
-  window.SBX_API_USER = "sbx";
-  window.SBX_API_PASSWORD = "sbx";
-</script>
-```
+## How it talks to the control plane
 
-`sbx` / `sbx` 只用于本地 mock（hostname 为 `localhost` / `127.0.0.1` 时的默认值），不是生产凭证。生产域名由 Cloudflare Worker 把 `/api/*` 代理到 Modal 控制面并注入 Basic Auth，**浏览器 bundle 不带密码**。
+- Auth is `Authorization: Bearer sbx_<key>`. The key is kept in
+  `sessionStorage` (or `localStorage` with "Remember on this device") and is
+  only sent to the configured control plane.
+- Serve the console **same-origin** with `/v1` — the control plane sends no
+  CORS headers. `deploy/sbx-edge` does this (static assets + `/v1` proxy); any
+  reverse proxy that serves `web/` and forwards `/v1/*` works too.
+- SSE is read with `fetch` (EventSource cannot send `Authorization`) and
+  resumes with `Last-Event-ID`; the durable run record stays the source of
+  truth when a stream ends.
+- Optional globals set before `app.js` loads: `window.SBX_API_BASE` (default
+  control-plane URL) and `window.SBX_DOCS_URL` (base URL of a hosted
+  `docs-site/` build; help links deep-link into it, `zh-cn/` pages for the
+  Chinese UI).
 
-SSE 按 EventSource 语义消费（`id` / `event` / `data` / `retry`、断线自动重连并带 `Last-Event-ID`）。原生 `EventSource` 无法设置 `Authorization`，且 Chromium 会丢掉 URL 里的 `user:pass`，因此客户端用 `fetch` 读 `text/event-stream`。
-
-Playwright：`make test-e2e`（配置在 `playwright.config.ts`，用例在 `../tests/e2e/`）。
-
-- `mock-api`（:8787）：对 `mock_api` 的冒烟（WP1-D）。
-- `local-control`（:8788）：对真控制面 + `LocalProcessBackend` + `fake_codex`（WP2-G）。本地启动：
+## Test
 
 ```bash
-SBX_BACKEND=local CODEX_BIN=tests/e2e/scenario_codex.py \
-  .venv/bin/python tests/e2e/serve_local.py --port 8788
+make test-e2e             # Playwright (config: playwright.config.ts, specs: ../tests/e2e/)
 ```
+
+Screenshots from the suite land in `tests/e2e/artifacts/`.
