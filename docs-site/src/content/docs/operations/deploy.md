@@ -152,7 +152,7 @@ modal secret create sbx-v1-bootstrap ...
 modal secret create sbx-basic-auth ...
 
 # Deploy
-python -m control.modal_app
+modal deploy -m control.modal_app
 ```
 
 See the `Makefile` for the complete build pipeline.

@@ -11,7 +11,7 @@ description: Per-provider configuration, quirks, and model support.
 
 **Login:** `codex login` (opens browser for ChatGPT auth)
 
-**CLI:** `codex exec [--resume <thread_id>] [--json] <prompt>`
+**CLI:** `codex exec [--json] <prompt>` (first turn); `codex exec resume --json <thread_id> <prompt>` (resume)
 
 **Config:**
 - Shared credential Secret: `sbx-codex-auth`
@@ -73,7 +73,7 @@ any other provider fail as `unsupported`.
 
 **Credential:** `~/.gemini/antigravity-cli/antigravity-oauth-token`
 
-**CLI:** `agy init <task> --conversation <id> --json`
+**CLI:** `agy -p <prompt> --output-format stream-json`
 
 **Config:**
 - Multi-account: `control.onboarding --modal add --provider antigravity --from <credential-path> --label <label>`

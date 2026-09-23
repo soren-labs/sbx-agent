@@ -34,7 +34,7 @@ Matrix rows cite only evidence that ran against **real accounts** on Modal. Cred
 
 **Stable.** Native events are canonical (pass-through). Requires `codex login` locally.
 
-- **Resume:** `--resume <thread_id>`
+- **Resume:** `codex exec resume <thread_id>`
 - **Cancel:** SIGTERM the process
 - **Multi-account:** Via separate CLI logins and credential imports
 - **Known limitations:** Authentication deferred (external token reauth needed)
