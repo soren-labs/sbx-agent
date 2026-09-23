@@ -1356,6 +1356,31 @@ def publish_git(
     return {"workspace": workspace_record_to_dict(record)}
 
 
+@router.post("/agents/{agent_id}/git/merge")
+def merge_git(
+    agent_id: str,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    workspaces: Any = Depends(get_workspaces),
+) -> dict[str, Any]:
+    """Merge the recorded pull request — review-gated (SOR-178).
+
+    Requires the policy's ``merge`` flag, a recorded pull request, and an
+    independent exact-sha review pin (``reviewed_head_sha`` set via
+    ``POST /agents/{id}/workspace/review``). The recorded PR head and the
+    remote PR ref must still equal the pin — any drift is
+    ``head_sha_mismatch`` and needs a fresh review; an absent pin is
+    ``review_required``. Merge metadata lands on ``workspace.merge``.
+    """
+    rec = _require_live_idle(plane, agent_id)
+    try:
+        with observe("v1.git.merge", agent_id=agent_id):
+            record = workspaces.merge(rec.handle(), agent_id)
+    except WorkspaceError as exc:
+        raise _workspace_error(exc) from exc
+    return {"workspace": workspace_record_to_dict(record)}
+
+
 @router.post("/agents/{agent_id}/handoff")
 def apply_handoff(
     agent_id: str,

@@ -52,6 +52,7 @@ HEAD_SHA_MISMATCH = "head_sha_mismatch"
 CHECKSUM_MISMATCH = "checksum_mismatch"
 ARTIFACT_NOT_FOUND = "artifact_not_found"
 ARTIFACT_INVALID = "artifact_invalid"
+REVIEW_REQUIRED = "review_required"
 WORKSPACE_ERROR_CODES = (
     WORKSPACE_INVALID,
     WORKSPACE_NOT_FOUND,
@@ -62,6 +63,7 @@ WORKSPACE_ERROR_CODES = (
     CHECKSUM_MISMATCH,
     ARTIFACT_NOT_FOUND,
     ARTIFACT_INVALID,
+    REVIEW_REQUIRED,
 )
 
 _COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -160,6 +162,8 @@ GIT_POLICY_KEYS = (
     "branch",
     "push",
     "auto_create_pr",
+    "auto_publish",
+    "merge",
     "target",
     "draft",
     "title",
@@ -181,6 +185,12 @@ def validate_git_policy(git: Any) -> None:
         raise WorkspaceError(WORKSPACE_INVALID, f"unknown git policy keys: {sorted(unknown)!r}")
     if git.get("auto_create_pr") and not git.get("push"):
         raise WorkspaceError(WORKSPACE_INVALID, "git.auto_create_pr requires git.push")
+    if git.get("auto_publish") and not git.get("push"):
+        raise WorkspaceError(WORKSPACE_INVALID, "git.auto_publish requires git.push")
+    if git.get("merge") and not git.get("auto_create_pr"):
+        # A mergeable policy needs a recorded pull request; only
+        # auto_create_pr produces one.
+        raise WorkspaceError(WORKSPACE_INVALID, "git.merge requires git.auto_create_pr")
     for key in ("branch", "target"):
         value = git.get(key)
         if value is not None and not is_safe_ref(value):
@@ -213,6 +223,8 @@ def normalize_git_policy(git: Any, *, agent_id: str, base_ref: str) -> dict[str,
         "branch": branch,
         "push": bool(git.get("push")),
         "auto_create_pr": bool(git.get("auto_create_pr")),
+        "auto_publish": bool(git.get("auto_publish")),
+        "merge": bool(git.get("merge")),
         "target": target,
         "draft": bool(git.get("draft")),
         "title": git.get("title"),
@@ -234,6 +246,12 @@ class WorkspaceRecord:
     on the remote; ``pull_request`` the structured PR metadata a publish
     recorded — ``{number, url, state, ref, head_sha, base, draft,
     review_comment_url?}``.
+
+    SOR-178 fields: ``merge`` is the durable merge record a review-gated
+    ``merge`` wrote — ``{merged, merge_commit_sha, head_sha, merged_at}``;
+    ``publish_error`` is the last publish failure (explicit or automatic),
+    cleared on the next successful publish — a failed auto-publish never
+    rewrites the finished run's verdict but is never silent either.
     """
 
     agent_id: str
@@ -248,6 +266,8 @@ class WorkspaceRecord:
     branch: str | None = None
     pushed_head_sha: str | None = None
     pull_request: dict[str, Any] | None = None
+    merge: dict[str, Any] | None = None
+    publish_error: str | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -291,6 +311,11 @@ def record_from_dict(data: Any) -> WorkspaceRecord:
     record.branch = branch
     record.git = _git_policy_from_dict(data.get("git"))
     record.pull_request = _pull_request_from_dict(data.get("pull_request"))
+    record.merge = _merge_from_dict(data.get("merge"))
+    publish_error = data.get("publish_error")
+    if publish_error is not None and not isinstance(publish_error, str):
+        raise ValueError("workspace record field publish_error must be a string")
+    record.publish_error = publish_error
     for key in ("created_at", "updated_at"):
         value = data.get(key)
         if value is not None and not isinstance(value, str):
@@ -309,7 +334,7 @@ def _git_policy_from_dict(data: Any) -> dict[str, Any] | None:
     if unknown:
         raise ValueError(f"workspace record field git has unknown keys: {sorted(unknown)!r}")
     out: dict[str, Any] = {}
-    for key in ("push", "auto_create_pr", "draft"):
+    for key in ("push", "auto_create_pr", "auto_publish", "merge", "draft"):
         value = data.get(key)
         if value is not None and not isinstance(value, bool):
             raise ValueError(f"workspace record field git.{key} must be a bool")
@@ -360,6 +385,39 @@ def _pull_request_from_dict(data: Any) -> dict[str, Any] | None:
         if value is not None and not isinstance(value, str):
             raise ValueError(f"pull_request.{key} must be a string")
         out[key] = value
+    return out
+
+
+_MERGE_KEYS = (
+    "merged",
+    "merge_commit_sha",
+    "head_sha",
+    "merged_at",
+)
+
+
+def _merge_from_dict(data: Any) -> dict[str, Any] | None:
+    """Strict decode of stored merge metadata; None passes through."""
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("workspace record field merge must be an object")
+    unknown = set(data) - set(_MERGE_KEYS)
+    if unknown:
+        raise ValueError(f"workspace record field merge has unknown keys: {sorted(unknown)!r}")
+    merged = data.get("merged")
+    if merged is not None and not isinstance(merged, bool):
+        raise ValueError("merge.merged must be a bool")
+    out: dict[str, Any] = {"merged": bool(merged)}
+    for key in ("merge_commit_sha", "head_sha"):
+        value = data.get(key)
+        if value is not None and not is_commit_sha(value):
+            raise ValueError(f"merge.{key} must be a commit sha")
+        out[key] = value
+    merged_at = data.get("merged_at")
+    if merged_at is not None and not isinstance(merged_at, str):
+        raise ValueError("merge.merged_at must be a string")
+    out["merged_at"] = merged_at
     return out
 
 
@@ -786,6 +844,68 @@ def create_issue_comment(
     return data if isinstance(data, dict) else {"result": data}
 
 
+def merge_pull_request(
+    backend: SandboxBackend,
+    handle: SandboxHandle,
+    repo: str,
+    *,
+    number: int,
+    sha: str,
+) -> dict[str, Any]:
+    """Merge a GitHub pull request from inside the sandbox (SOR-178).
+
+    The ``sha`` argument is sent as GitHub's required head-sha pin: GitHub
+    itself refuses the merge when the PR head moved since ``sha``, making
+    the server-side check a second fail-closed gate behind the control
+    plane's own reviewed-head comparison. Same opt-in + token-safety rules
+    as :func:`create_pull_request`.
+    """
+    if not github.injection_enabled():
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            "GitHub injection is off — export SBX_GITHUB_EPHEMERAL=1 with a "
+            "GH_TOKEN/GITHUB_TOKEN to merge pull requests from sandboxes",
+        )
+    slug = github.repo_slug(repo)
+    if slug is None:
+        raise WorkspaceError(
+            WORKSPACE_INVALID,
+            f"not a github.com repo URL: {github.redact_url_credentials(repo)!r}",
+        )
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise WorkspaceError(WORKSPACE_INVALID, f"invalid PR number: {number!r}")
+    if not is_commit_sha(sha):
+        raise WorkspaceError(WORKSPACE_INVALID, f"merge sha must be a commit sha: {sha!r}")
+    payload = json.dumps({"sha": sha, "merge_method": "merge"})
+    script = (
+        "curl -sS -X PUT "
+        f"https://api.github.com/repos/{slug}/pulls/{number}/merge "
+        '-H "Accept: application/vnd.github+json" '
+        '-H "Authorization: Bearer $GH_TOKEN" '
+        f"--data {shlex.quote(payload)} "
+        "-w '\\n%{http_code}'"
+    )
+    proc = backend.exec(handle, ["bash", "-c", script], env=sandbox_env(handle, github_repo=repo))
+    lines = list(proc.stdout)
+    code = proc.wait()
+    http_code = lines[-1].strip() if lines else ""
+    text = "\n".join(lines[:-1])
+    if code != 0 or not http_code.isdigit() or not (200 <= int(http_code) < 300):
+        detail = clip_message(text)[:200]
+        raise WorkspaceError(
+            REPO_UNAVAILABLE,
+            f"GitHub merge of {slug}#{number} failed "
+            f"(exit {code}, http {http_code or '?'})" + (f": {detail}" if detail else ""),
+        )
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise WorkspaceError(
+            REPO_UNAVAILABLE, f"GitHub merge of {slug}#{number} returned no JSON"
+        ) from exc
+    return data if isinstance(data, dict) else {"result": data}
+
+
 def write_payload(
     backend: SandboxBackend, handle: SandboxHandle, relative: str, data: bytes
 ) -> None:
@@ -1056,65 +1176,152 @@ class WorkspaceService:
         branch = record.branch or policy.get("branch") or f"sbx/{agent_id}"
         if not is_safe_ref(branch):
             raise WorkspaceError(WORKSPACE_INVALID, f"unsafe branch name: {branch!r}")
-        head = git_head(self._backend, handle, record.workdir)
-        if head is None:
-            raise WorkspaceError(
-                CHECKOUT_FAILED, f"no HEAD in workdir {record.workdir} for agent {agent_id}"
+        try:
+            head = git_head(self._backend, handle, record.workdir)
+            if head is None:
+                raise WorkspaceError(
+                    CHECKOUT_FAILED, f"no HEAD in workdir {record.workdir} for agent {agent_id}"
+                )
+            git_push(
+                self._backend,
+                handle,
+                record.workdir,
+                f"HEAD:refs/heads/{branch}",
+                github_repo=record.repo,
             )
-        git_push(
-            self._backend,
-            handle,
-            record.workdir,
-            f"HEAD:refs/heads/{branch}",
-            github_repo=record.repo,
-        )
+            remote_sha = git_ls_remote(
+                self._backend,
+                handle,
+                record.workdir,
+                f"refs/heads/{branch}",
+                github_repo=record.repo,
+            )
+            if remote_sha != head:
+                raise WorkspaceError(
+                    REPO_UNAVAILABLE,
+                    f"pushed {branch} but remote resolves to {remote_sha}, expected {head}",
+                )
+            record.head_sha = head
+            record.branch = branch
+            record.pushed_head_sha = head
+            # The verified push is a durable fact — persist it before the PR
+            # step so a PR failure never masks where the head actually landed.
+            self.save(record)
+            if policy.get("auto_create_pr"):
+                pr = record.pull_request
+                if pr is None or pr.get("state") in ("merged", "closed"):
+                    # A terminal PR cannot track new work — open a fresh one.
+                    data = create_pull_request(
+                        self._backend,
+                        handle,
+                        record.repo,
+                        head=branch,
+                        base=str(policy.get("target") or record.base_ref),
+                        title=str(policy.get("title") or f"sbx {agent_id}"),
+                        body=str(policy.get("body") or ""),
+                        draft=bool(policy.get("draft")),
+                    )
+                    number = data.get("number")
+                    record.pull_request = {
+                        "number": number if isinstance(number, int) else None,
+                        "url": data.get("html_url"),
+                        "state": data.get("state") or "open",
+                        "ref": (f"refs/pull/{number}/head" if isinstance(number, int) else None),
+                        "head_sha": head,
+                        "base": str(policy.get("target") or record.base_ref),
+                        "draft": bool(policy.get("draft")),
+                    }
+                else:
+                    # The PR tracks the branch — a fresh push moved its head.
+                    # Record the new pinned head rather than recreating.
+                    pr = dict(pr)
+                    pr["head_sha"] = head
+                    record.pull_request = pr
+        except WorkspaceError as exc:
+            # SOR-178: a publish failure is a durable fact on the record —
+            # an automatic publish must never be silent, and an explicit one
+            # leaves the same trail. Clipped like run errors.
+            record.publish_error = f"{exc.code}: {clip_message(exc.message)}"
+            self.save(record)
+            raise
+        record.publish_error = None
+        return self.save(record)
+
+    def merge(self, handle: SandboxHandle, agent_id: str) -> WorkspaceRecord:
+        """Merge the recorded pull request — gated on the independent
+        exact-SHA review pin (SOR-178).
+
+        Fail-closed chain, every link required: the policy must declare
+        ``merge``; a pull request must be recorded; an independent review
+        must have pinned ``reviewed_head_sha`` (missing →
+        ``review_required``); the recorded PR head and the remote PR ref
+        must still equal that pin (either drift → ``head_sha_mismatch``,
+        requiring a fresh review). Only then is the GitHub merge issued —
+        with the pinned sha as GitHub's own required-head check, so the
+        merge also fails closed server-side.
+        """
+        record = self._require(agent_id)
+        if not record.prepared:
+            raise WorkspaceError(
+                WORKSPACE_INVALID, f"workspace for agent {agent_id} is not prepared"
+            )
+        policy = record.git
+        if not policy or not policy.get("merge"):
+            raise WorkspaceError(
+                WORKSPACE_INVALID,
+                f"agent {agent_id} declared no merge-enabled git policy",
+            )
+        pr = record.pull_request
+        number = (pr or {}).get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise WorkspaceError(
+                WORKSPACE_INVALID,
+                f"agent {agent_id} has no recorded pull request to merge",
+            )
+        if (pr or {}).get("state") == "merged" and record.merge is not None:
+            return record  # already merged — idempotent
+        reviewed = record.reviewed_head_sha
+        if reviewed is None:
+            raise WorkspaceError(
+                REVIEW_REQUIRED,
+                f"agent {agent_id} PR #{number} has no reviewed head — "
+                "an independent review must pin the exact head sha first",
+            )
+        if pr.get("head_sha") != reviewed:
+            raise WorkspaceError(
+                HEAD_SHA_MISMATCH,
+                f"recorded PR head {pr.get('head_sha')} does not match "
+                f"reviewed head {reviewed} — re-review required",
+            )
+        pr_ref = pr.get("ref")
+        if not is_safe_ref(pr_ref):
+            pr_ref = f"refs/pull/{number}/head"
         remote_sha = git_ls_remote(
-            self._backend,
-            handle,
-            record.workdir,
-            f"refs/heads/{branch}",
-            github_repo=record.repo,
+            self._backend, handle, record.workdir, pr_ref, github_repo=record.repo
         )
-        if remote_sha != head:
+        if remote_sha != reviewed:
+            raise WorkspaceError(
+                HEAD_SHA_MISMATCH,
+                f"remote {pr_ref} resolves to {remote_sha}, not the reviewed "
+                f"head {reviewed} — re-review required",
+            )
+        data = merge_pull_request(self._backend, handle, record.repo, number=number, sha=reviewed)
+        if not data.get("merged"):
+            detail = clip_message(str(data.get("message") or ""))[:200]
             raise WorkspaceError(
                 REPO_UNAVAILABLE,
-                f"pushed {branch} but remote resolves to {remote_sha}, expected {head}",
+                f"GitHub refused merge of PR #{number}" + (f": {detail}" if detail else ""),
             )
-        record.head_sha = head
-        record.branch = branch
-        record.pushed_head_sha = head
-        # The verified push is a durable fact — persist it before the PR
-        # step so a PR failure never masks where the head actually landed.
-        self.save(record)
-        if policy.get("auto_create_pr"):
-            pr = record.pull_request
-            if pr is None:
-                data = create_pull_request(
-                    self._backend,
-                    handle,
-                    record.repo,
-                    head=branch,
-                    base=str(policy.get("target") or record.base_ref),
-                    title=str(policy.get("title") or f"sbx {agent_id}"),
-                    body=str(policy.get("body") or ""),
-                    draft=bool(policy.get("draft")),
-                )
-                number = data.get("number")
-                record.pull_request = {
-                    "number": number if isinstance(number, int) else None,
-                    "url": data.get("html_url"),
-                    "state": data.get("state") or "open",
-                    "ref": (f"refs/pull/{number}/head" if isinstance(number, int) else None),
-                    "head_sha": head,
-                    "base": str(policy.get("target") or record.base_ref),
-                    "draft": bool(policy.get("draft")),
-                }
-            else:
-                # The PR tracks the branch — a fresh push moved its head.
-                # Record the new pinned head rather than recreating.
-                pr = dict(pr)
-                pr["head_sha"] = head
-                record.pull_request = pr
+        merge_commit_sha = data.get("sha")
+        record.merge = {
+            "merged": True,
+            "merge_commit_sha": merge_commit_sha if is_commit_sha(merge_commit_sha) else None,
+            "head_sha": reviewed,
+            "merged_at": self._now(),
+        }
+        pr = dict(pr)
+        pr["state"] = "merged"
+        record.pull_request = pr
         return self.save(record)
 
     def post_review_comment(
@@ -1194,6 +1401,7 @@ __all__ = [
     "InMemoryWorkspaceStore",
     "ModalDictWorkspaceStore",
     "REPO_UNAVAILABLE",
+    "REVIEW_REQUIRED",
     "WORKSPACE_ERROR_CODES",
     "WORKSPACE_INVALID",
     "WORKSPACE_NOT_FOUND",
@@ -1205,6 +1413,7 @@ __all__ = [
     "WorkspaceStore",
     "create_issue_comment",
     "create_pull_request",
+    "merge_pull_request",
     "git_checkout",
     "git_fetch_ref",
     "git_head",

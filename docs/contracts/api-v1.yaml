@@ -53,6 +53,7 @@ x-canonical:
     - artifact_not_found
     - artifact_invalid
     - artifact_secret
+    - review_required
     - invalid_output_contract
     - invalid_resource
     - unsupported
@@ -134,6 +135,7 @@ x-canonical:
     - POST /v1/agents/{id}/workspace/review
     - POST /v1/agents/{id}/handoff
     - POST /v1/agents/{id}/git/publish
+    - POST /v1/agents/{id}/git/merge
     - POST /v1/agents/{id}/artifacts
     - GET /v1/artifacts
     - GET /v1/artifacts/{artifactId}
@@ -381,6 +383,42 @@ paths:
       responses:
         "200":
           description: Workspace record after publish
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/WorkspaceConflict"
+  /v1/agents/{id}/git/merge:
+    post:
+      tags: [workspaces]
+      summary: Merge the recorded pull request — review-gated (SOR-178)
+      description: |
+        Merges the pull request recorded on the workspace. Requires the
+        `git.merge` flag declared at create, a recorded `pull_request`, and
+        an independent exact-sha review pin (`reviewed_head_sha` set via
+        `POST /v1/agents/{id}/workspace/review`): no pin is 409
+        `review_required`; the recorded PR head and the remote PR ref must
+        both still equal the pin — any drift is 409 `head_sha_mismatch`
+        and requires a fresh review. The merge is issued to GitHub with
+        the pinned sha as its required-head check, so it also fails
+        closed server-side. Durable `merge` metadata (`merge_commit_sha`,
+        `head_sha`, `merged_at`) is persisted on the workspace record.
+        The agent must be `idle` with a live sandbox; an agent without a
+        merge-enabled `git` policy or recorded PR is 400
+        `workspace_invalid`.
+      operationId: mergeGit
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Workspace record after merge
           content:
             application/json:
               schema:
@@ -1268,8 +1306,12 @@ components:
         `push` publishes `HEAD` to `refs/heads/<branch>` on the workspace
         repo's remote via `POST /v1/agents/{id}/git/publish`; remote drift
         fails closed. `auto_create_pr` opens a PR to `target` through the
-        opt-in GitHub bridge and requires `push`. GitHub-backed operations
-        need the shared GitHub identity env (opt-in).
+        opt-in GitHub bridge and requires `push`. `auto_publish` (SOR-178)
+        publishes automatically when a run finishes successfully and
+        requires `push`; `merge` allows `POST /v1/agents/{id}/git/merge`
+        and requires `auto_create_pr` — the merge still refuses without an
+        independent exact-sha review pin. GitHub-backed operations need
+        the shared GitHub identity env (opt-in).
       properties:
         branch:
           type: string
@@ -1280,6 +1322,12 @@ components:
         auto_create_pr:
           type: boolean
           description: Open a pull request after push; requires `push`.
+        auto_publish:
+          type: boolean
+          description: Publish automatically on successful run finish; requires `push`.
+        merge:
+          type: boolean
+          description: Allow review-gated merge via `/git/merge`; requires `auto_create_pr`.
         target:
           type: string
           description: PR base branch; default the workspace `base_ref`.
@@ -1422,6 +1470,19 @@ components:
             `state`, `ref` (`refs/pull/<n>/head` — the reviewer-start
             handoff ref), `head_sha` (the pinned published head), `base`
             (PR target), `draft`, `review_comment_url`.
+        merge:
+          type: object
+          nullable: true
+          description: |
+            SOR-178 merge metadata recorded by `/git/merge`: `merged`,
+            `merge_commit_sha`, `head_sha` (the reviewed head that was
+            merged), `merged_at`.
+        publish_error:
+          type: string
+          nullable: true
+          description: |
+            SOR-178 last publish failure (`<code>: <message>`), explicit
+            or automatic — cleared on the next successful publish.
         created_at:
           type: string
           format: date-time
@@ -2144,6 +2205,7 @@ components:
                 - artifact_not_found
                 - artifact_invalid
                 - artifact_secret
+                - review_required
                 - invalid_output_contract
                 - github_app_unconfigured
                 - github_app_invalid
@@ -2178,8 +2240,8 @@ components:
         409 workspace/artifact domain failure (SOR-83):
         `workspace_not_found`, `repo_unavailable`, `checkout_failed`,
         `base_sha_mismatch`, `head_sha_mismatch`, `checksum_mismatch`,
-        `artifact_invalid`, or `artifact_secret` — always explicit, never a
-        silent mislabel or redact-and-ship.
+        `artifact_invalid`, `artifact_secret`, or `review_required` —
+        always explicit, never a silent mislabel or redact-and-ship.
       content:
         application/json:
           schema:
