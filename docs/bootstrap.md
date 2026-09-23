@@ -1,5 +1,9 @@
 # Deployment bootstrap (`sbx` CLI) — SOR-98 / Release 0.1
 
+> **Moved to the documentation website.** The maintained, user-facing version of this
+> page is `operations/deploy` and `reference/cli` in [`docs-site/`](../docs-site/) (`make docs-dev`).
+> This file stays as an engineering reference and may lag behind.
+
 `sbx` takes a clean checkout to a callable `/v1` control plane on the user's
 own Modal workspace. Run it as `uv run sbx …`, `python -m sbx …`, or the
 `sbx` console script after install. The full first-run walkthrough is the

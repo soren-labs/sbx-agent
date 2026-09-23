@@ -1,5 +1,9 @@
 # Deployment guide
 
+> **Moved to the documentation website.** The maintained, user-facing version of this
+> page is `operations/deploy`, `operations/configuration` and `operations/upgrade-and-uninstall` in [`docs-site/`](../docs-site/) (`make docs-dev`).
+> This file stays as an engineering reference and may lag behind.
+
 Everything below deploys into **your own Modal workspace**. You need:
 Python ≥ 3.12, `uv`, the Modal CLI (`uv sync` provides it), and Modal
 authentication — either an interactive login (`modal token new` once) or

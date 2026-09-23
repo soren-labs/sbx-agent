@@ -1,405 +1,147 @@
 # sbx-browser
 
-**Self-hosted orchestration for cloud coding agents.** One `POST /v1/agents`
-call creates an isolated [Modal](https://modal.com) Sandbox that runs the
-official provider CLI you already pay for (Codex, Devin, Antigravity, Grok,
-OpenCode) — multi-turn, streaming, with durable runs, artifacts and workflow
-recovery.
+**Run official coding-agent CLIs as an API — on your own Modal workspace.**
 
-> **Status: `v0.1.1` (public alpha).** Self-hosted bring-your-own-everything
-> release. The `/v1` API may still change; see [Known limitations](#known-limitations).
+One `POST /v1/agents` call starts an isolated [Modal](https://modal.com)
+Sandbox running the provider CLI you already pay for — Codex, Devin,
+Antigravity, Grok or OpenCode — and gives you multi-turn runs, live event
+streams, durable results, git/PR workflows and a web console to drive it all.
 
-## What it is — and what it is not
+> **Status: `v0.1.1`, public alpha.** Self-hosted, bring-your-own-everything.
+> The `/v1` API may still change before 1.0.
 
-sbx-browser gives you a single REST API (`/v1`, Bearer-authenticated) in front
-of per-agent Modal Sandboxes. Each agent is a long-lived sandbox running an
-official provider CLI under your own accounts; the control plane schedules
-turns across accounts, streams canonical events over SSE, persists run state,
-and hands work between agents via artifacts.
+![The sbx-browser console: an agent conversation with streamed commands, file changes and usage](docs-site/src/assets/console/conversation.png)
 
-**Boundary — read this before deploying:**
+## What you get
 
-- **BYO Modal**: the control plane and all sandboxes run in *your* Modal
-  workspace, billed to you. There is no hosted service.
-- **BYO subscriptions**: agents authenticate with *your* official provider
-  accounts and subscriptions. sbx-browser does **not** resell, proxy, or
-  convert subscription quota into a model API — tasks execute inside the
-  provider's own CLI/harness, under that provider's terms.
-- **No hosted accounts**: sbx-browser does not host user accounts, store
-  model weights, or call provider model APIs directly. Credentials you import
-  live in your Modal workspace (as Secrets / Dict blobs) and are injected
-  into your sandboxes only.
+- **One API for many agent CLIs.** Agents are long-lived sandboxes; each
+  follow-up run resumes the provider's native session.
+- **Live and durable.** Canonical events stream over SSE (resumable with
+  `Last-Event-ID`); run outcomes, structured errors and usage persist after
+  the sandbox is gone.
+- **Repository workflows.** Pin an exact base commit, publish a work branch,
+  open a PR, pin a review to an exact sha, merge only after that review.
+- **Handoffs and artifacts.** Snapshot a workspace into a checksum-verified
+  package and hand it to another agent — no shared remote needed.
+- **Account pools.** Several subscriptions per provider, slot limits, LRU
+  scheduling, cooldown and failover.
+- **Workflows.** Tag agents with a `workflow_id`; any client with the same
+  key can recover or clean up the whole group.
+- **A real console.** Create agents, watch runs, review and publish changes,
+  manage accounts, keys and GitHub access — in English or Chinese.
 
-## Architecture
+**What it is not:** a hosted service or a model API. Everything runs in
+*your* Modal workspace under *your* provider accounts; sbx-browser never
+resells or proxies subscription quota — tasks run inside each provider's own
+CLI, under that provider's terms.
 
-```
- you (client / CI)                     your Modal workspace
- ┌─────────────────┐   HTTPS +        ┌──────────────────────────────────────┐
- │ sbx_client.py   │   Bearer sbx_*   │ sbx-control (FastAPI, scales to 0)   │
- │ curl / your app │ ───────────────▶ │  /v1 API · run ledger · scheduler    │
- └─────────────────┘                  │  account pool · reaper (5 min cron)  │
-                                      │  state: modal.Dict sbx-sessions/-    │
-                                      │    runs/-accounts/-workflows         │
-                                      └───────────────┬──────────────────────┘
-                                                      │ Sandbox.create(
-                                                      │   image, idle_timeout,
-                                                      │   cpu/mem, secrets)
-                                                      ▼
-                                        ┌── 1 agent = 1 Modal Sandbox ──────┐
-                                        │ entrypoint → runner               │
-                                        │  init · turn · stop · export-     │
-                                        │  credentials                      │
-                                        │ official provider CLI             │
-                                        │  (codex / devin / agy / grok /    │
-                                        │   opencode)                       │
-                                        │ credential files only — no        │
-                                        │  Modal or platform keys inside    │
-                                        └───────────────────────────────────┘
-```
+## Documentation
 
-- **One agent = one sandbox.** The control-plane reaper reclaims an idle
-  agent after the post-session retention (5 min default); the sandbox's
-  own native `idle_timeout` bounds a live sandbox independently, and a
-  hard `timeout` (4 h default) is the backstop.
-- **The sandbox is the only security boundary.** Provider CLIs run with
-  approvals bypassed *inside* the sandbox; no Modal token or platform
-  credential exists inside it.
-- **Durable by design.** Run terminal states, workflow bindings and artifacts
-  persist in `modal.Dict` and survive sandbox teardown and control-plane
-  restarts.
+The documentation website lives in [`docs-site/`](docs-site/) (Astro
+Starlight, with the REST reference generated from the frozen OpenAPI
+contract). Build it with `make docs-build`, or preview it with
+`make docs-dev`. Good entry points:
 
-Deep dive: [docs/architecture.md](docs/architecture.md). Frozen interface
-contracts (filesystem, events, runner CLI, `/v1` OpenAPI):
-[docs/contracts/](docs/contracts/README.md).
+- **Start here** — introduction, quick start, core concepts
+  ([`getting-started/`](docs-site/src/content/docs/getting-started/))
+- **Guides** — web console, agents & runs, streaming, repositories & git,
+  handoffs & artifacts, workflows, structured output, accounts, GitHub
+  ([`guides/`](docs-site/src/content/docs/guides/))
+- **Operate** — deploy, configuration, upgrade, edge, security,
+  troubleshooting ([`operations/`](docs-site/src/content/docs/operations/))
+- **Reference** — errors, events, Python client, CLI, limits, and the REST
+  API from [`docs/contracts/api-v1.yaml`](docs/contracts/api-v1.yaml)
+  ([`reference/`](docs-site/src/content/docs/reference/))
 
-## Quick Start
+## Quick start
 
-Prerequisites: Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), git, a Modal
-account, and at least one provider CLI logged in locally — the
-[Credentials](#credentials) table lists each provider's login command and
-the file it writes.
+You need Python ≥ 3.12, [uv](https://docs.astral.sh/uv/), git, a Modal
+account, and at least one provider CLI logged in on your machine.
 
 ```bash
 git clone https://github.com/soren-labs/sbx-browser.git && cd sbx-browser
-git checkout v0.1.1              # optional: pin to the release tag
-uv sync                          # control-plane + client deps (provides `modal`)
-uv run modal token new           # authenticate YOUR Modal workspace
+uv sync
+uv run modal token new                   # authenticate your Modal workspace
+uv run sbx init --providers codex        # check toolchain, write ~/.config/sbx/config.toml
+uv run sbx credentials --verify          # find local provider logins, run their auth checks
+modal secret create sbx-codex-auth CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
+uv run sbx deploy                        # secrets → dicts → images → app → /v1 probe
+uv run sbx doctor                        # verify the deployment end to end
+uv run sbx smoke --provider codex        # one real agent run, then cleanup
 ```
 
-Modal auth is either the profile login above or exported `MODAL_TOKEN_ID` +
-`MODAL_TOKEN_SECRET` — both must be set; a partial pair is an explicit
-`init`/`doctor` failure with remediation. All bootstrap commands run as
-`uv run sbx …` (equivalently `python -m sbx …`, or the `sbx` console script
-once installed).
+Other providers import their login as an account instead of the shared codex
+Secret — the quick start in the docs has the exact commands. `sbx deploy`
+prints your control-plane URL and writes an admin API key to
+`~/.local/state/sbx/bootstrap.key` (mode 0600; the control plane stores only
+its sha256).
 
 ```bash
-uv run sbx init --providers codex,devin  # toolchain + Modal auth; writes
-                                         # ~/.config/sbx/config.toml; scans the
-                                         # selected providers' local logins
-uv run sbx credentials --verify          # discovery + each provider CLI's own
-                                         # auth check → verified / auth_invalid
-```
-
-`credentials` reports presence / permissions / schema / status per selected
-provider — never file contents. `permission_invalid` means the file is
-group/other readable: `chmod 600 <path>` (or pass
-`--allow-open-permissions`); `not_found` prints the provider's official
-login command; a plain scan caps at `discovered` — only `--verify` (which
-runs `codex login status`, `devin auth status`, `agy models`,
-`grok models`, `opencode auth list`) decides `verified` vs `auth_invalid`.
-
-Import the logins — codex uses the shared Secret path; the other providers
-import as accounts whose blobs `sbx deploy` materializes into
-`sbx-acct-<id>` Secrets:
-
-```bash
-modal secret create sbx-codex-auth \
-  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"        # only when codex is enabled
-uv run python -m control.onboarding --modal import \
-  --provider devin --from ~/.local/share/devin/credentials.toml --account-id devin-1
-uv run python -m control.onboarding --modal verify devin-1 --probe auth
-#  └─ optional authoritative check: runs the provider CLI's own auth command
-#    against the imported credential in a throwaway sandbox
-```
-
-Then deploy and prove the plane end to end:
-
-```bash
-uv run sbx deploy                  # secrets → dicts → images → app → /v1/me probe
-uv run sbx doctor                  # Modal auth, Secrets/Dicts, /v1 auth,
-                                   # providers, live agents vs the cap
-uv run sbx smoke --provider devin  # one minimal agent run to terminal, then cleanup
-```
-
-`deploy` prints your `SBX_BASE_URL` and mints a `sbx_<key>` admin key saved
-to `<state>/bootstrap.key` (mode 0600 — the control plane stores its sha256
-only):
-
-```bash
-export SBX_BASE_URL=<printed by sbx deploy / doctor>
+export SBX_BASE_URL=<printed by sbx deploy>
 export SBX_API_KEY=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/sbx/bootstrap.key")
-uv run python examples/sbx_client.py "Write hello.txt containing hi"
+
+curl -X POST "$SBX_BASE_URL/v1/agents" \
+  -H "Authorization: Bearer $SBX_API_KEY" -H "Content-Type: application/json" \
+  -d '{"prompt": {"text": "Add a /health endpoint with a test"}, "agent": {"provider": "codex"}}'
 ```
 
-> The equivalent manual steps — `modal secret create …`,
-> `make image && make deploy`, key bootstrap via the `sbx-v1-bootstrap`
-> Secret — are documented in [docs/deployment.md](docs/deployment.md);
-> per-command semantics live in [docs/bootstrap.md](docs/bootstrap.md), and
-> repo-bound agents in [docs/repo-workflow.md](docs/repo-workflow.md).
-
-## Provider Support Matrix
-
-| Provider | Status in v0.1.1 | CLI / version | Auth material | Multi-turn | Cancel | Multi-account | Real-E2E evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **codex** | **Stable** | `@openai/codex` 0.153.0 (pinned in image) | `~/.codex/auth.json` (ChatGPT login) | ✅ `exec resume` | ✅ | ✅ | Real-Modal suite `tests/e2e_modal/` + committed `timings.json`; P0 spike; RC gate lane CREDENTIAL_DEFERRED (stale ChatGPT token — interactive `codex login` needed, external) |
-| **devin** | Experimental | Devin CLI 3000.10.21 (sha256-pinned) | `~/.local/share/devin/credentials.toml` | ✅ via ACP | ✅ | ✅ | Modal clean-room credential + 8-way concurrency PASS, 2026-09-14 (`spike/p2/`); Release 0.1 `/v1` real-Modal gate PASS on the RC plane (`docs/reviews/release-0.1-gate-core.md`) |
-| **antigravity** | Experimental | your `agy` binary | OAuth token file | ✅ `--conversation` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/agy_gate.py`; SOR-68 fleet gate PASS 50/50 on the RC plane (`docs/reviews/release-0.1-gate-agy.md`) |
-| **grok** | Experimental | your `grok` binary (verified 1.0.24) | `~/.grok/auth.json` | ✅ `--resume` | ✅ | ✅ | Real-account gate harness `tests/e2e_modal/grok_gate.py`; SOR-68 runner + fleet gates PASS on the RC plane (`docs/reviews/release-0.1-gate-grok.md`) |
-| **opencode** | Experimental | `opencode-ai` 1.18.29 (npm-pinned) | `~/.local/share/opencode/auth.json` | ✅ `--session` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Release 0.1 real-account gate PASS on the RC plane — two turns on one native session, cancel, zero leaks (`docs/reviews/release-0.1-gate-core.md`) |
-| **claude** | Not supported | — | — | — | — | — | Experimental adapter seam merged but **not registered** (SOR-97, replay-only); not schedulable |
-
-**Evidence policy.** *Stable* requires a passing real-account E2E on the
-release tag, not fakes or replays. *Experimental* means the production adapter,
-image and credential path are merged and some real-account evidence exists,
-but the full release-gate matrix has not completed for that provider.
-*Preview* means the production adapter, image and credential path are merged
-but no real-account evidence exists yet — replay/fixture coverage only, so
-the provider is usable but unverified against a real account. The
-matrix is re-verified at each release; rows never claim support that was not
-exercised against a real account. `v0.1.1` changed no provider pin, adapter
-or credential path, so it carries over the `v0.1.0-alpha` RC-plane gate
-evidence unchanged. Details:
-[docs/providers.md](docs/providers.md).
-
-## Deploying
-
-Everything deploys into your Modal workspace. The deployment creates:
-
-| Resource | Name | Purpose |
-| --- | --- | --- |
-| Modal App | `sbx-control` (`SBX_MODAL_APP_NAME` to rename) | `/v1` + `/api` ASGI app, reaper cron |
-| Named Images | `sbx-runtime` (+ `-devin` / `-antigravity` / `-grok` / `-opencode`) | per-provider sandbox images |
-| Dicts | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows`, `sbx-artifacts`, `sbx-workspaces` | durable state |
-| Secrets | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<id>` | credentials — never committed |
-
-```bash
-uv run sbx deploy         # idempotent: builds images, seeds Dicts/Secrets, deploys
-uv run sbx upgrade        # re-deploy keeping durable runs/accounts/artifacts
-uv run sbx uninstall      # stop app + sandboxes; durable data stays unless
-                          # --purge-data / --purge-credentials is passed
-```
-
-Manual equivalent (`modal secret create`, `make image*`, `make deploy`),
-custom app names, the optional Cloudflare Worker edge (`deploy/sbx-edge`),
-and uninstall verification are in
-[docs/deployment.md](docs/deployment.md).
-
-## Credentials
-
-Provider credentials are imported as file blobs — the same files the official
-CLIs write on `login`:
-
-| Provider | Login locally | File imported |
-| --- | --- | --- |
-| codex | `codex login` | `~/.codex/auth.json` |
-| devin | `devin` (interactive login) | `~/.local/share/devin/credentials.toml` |
-| antigravity | `agy` (OAuth login) | `~/.gemini/antigravity-cli/antigravity-oauth-token` |
-| grok | `grok` login | `~/.grok/auth.json` |
-| opencode | `opencode auth login` | `~/.local/share/opencode/auth.json` |
-
-`sbx credentials` discovers these local logins for the selected providers and
-reports presence/permissions/schema/status only — never contents; `--verify`
-runs each provider CLI's own auth check so the provider's answer (not file
-shape) decides `verified` vs `auth_invalid`. Hints include the official login
-command above, and `0644` files get a `chmod 600` remediation (or
-`--allow-open-permissions`).
-
-```bash
-uv run python -m control.onboarding --modal import \
-  --provider <p> --from <path-or-home>
-# or: POST /v1/accounts {provider, label, credential:{files:{...}}} (admin key)
-```
-
-Rules enforced everywhere: blobs travel only over HTTPS into your workspace;
-files are restored at `0600` inside the sandbox; the runner strips the blob
-env var from the CLI child process; `runner export-credentials` writes
-refreshed credentials back to the account Secret; **never paste a token into
-an issue, log, PR, or fixture** (`REDACTED` placeholders only). See
-[SECURITY.md](SECURITY.md) and [docs/providers.md](docs/providers.md).
-
-### Repo workflows & GitHub auth (optional, opt-in)
-
-`POST /v1/agents` accepts a `workspace: {repo, base_ref, base_sha}`
-declaration — the control plane clones `repo` inside the sandbox and pins
-run-1 to the exact `base_sha` (a mismatch fails explicitly, never silently
-runs the wrong commit). The default path needs **no GitHub auth**: public
-repos clone over plain HTTPS, non-GitHub/local remotes work as declared,
-and code moves between agents through durable artifacts + handoffs — never
-through prompt text.
-
-For **private github.com** work — agent `git clone`/`push` and PR creation
-via `POST /v1/agents/{id}/git/publish` — the control-plane process env
-must carry **both**:
-
-```bash
-export GH_TOKEN=...              # or GITHUB_TOKEN
-export SBX_GITHUB_EPHEMERAL=1    # explicit opt-in gate
-```
-
-The gate and the Secret *name* persist in `~/.config/sbx/config.toml` — set
-them once with `uv run sbx init --github --github-secret sbx-github`
-(`[github] ephemeral` / `secret_name`; env vars still override). Only the
-Secret name is ever written — the token value stays in the Modal Secret.
-
-When armed, the token travels as an env var only — a `GIT_CONFIG_*`
-credential helper scoped to `https://github.com` echoes `$GH_TOKEN` at git
-runtime, so the value never lands in argv, git config, or a cloned repo's
-`.git/config`. The helper covers **HTTPS** github.com git operations (clone,
-fetch, push); SSH remotes are unaffected — declare `https://github.com/…`
-repo URLs when you want the token used. It applies to every provider's
-sandbox (not just Devin), and caller-supplied exec env can neither inject
-nor override the GitHub keys.
-`GIT_TERMINAL_PROMPT=0` makes a missing credential a fast failure instead of
-a hang. A remote (`sbx deploy`ed) control plane reads the token from a Modal
-Secret named via `SBX_GITHUB_SECRET_NAME` — `sbx deploy` fails fast if it is
-missing. `sbx doctor`/`sbx init` report which auth source exists
-(`GH_TOKEN`/`GITHUB_TOKEN`, or `gh auth status` under `--verify`) and whether
-the gate is armed — never token material.
-
-**Least privilege:** prefer a fine-grained PAT (or GitHub App token) scoped
-to the repositories the agents work on, `Contents: read/write` (+ `Pull
-requests: read/write` only if agents open PRs), and the shortest lifetime
-practical — the bridge is ephemeral per sandbox exec, nothing is persisted
-in Modal. A classic `repo`-scoped PAT works but is broader than needed.
-
-A **GitHub App** is the preferred source (SOR-177): configure
-`SBX_GITHUB_APP_ID` / `SBX_GITHUB_APP_SLUG` / `SBX_GITHUB_APP_PRIVATE_KEY`
-(via a named Modal Secret on deploys) and repo owners authorize in the
-browser — `POST /v1/github/app/authorize` → open the install URL →
-`POST /v1/github/app/authorize/callback`. The control plane records the
-selected-repo metadata durably and mints short-lived installation tokens
-server-side, injected through the same seam (same `SBX_GITHUB_EPHEMERAL=1`
-gate); the env PAT above remains the compatibility fallback and wins when
-both exist. See [docs/repo-workflow.md](docs/repo-workflow.md).
-
-Full repo workflow — workspace lifecycle, artifact/handoff chains, review
-pinning, error codes: [docs/repo-workflow.md](docs/repo-workflow.md).
-
-## API surfaces: public `/v1` vs internal `/api`
-
-The control plane serves **two** HTTP surfaces — they are not
-interchangeable:
-
-| Surface | Audience | Auth | Contract | Stability |
-| --- | --- | --- | --- | --- |
-| `/v1/*` | **public** — your clients, CI, orchestrators | `Bearer sbx_<key>` (sha256-stored, scoped) | [docs/contracts/api-v1.yaml](docs/contracts/api-v1.yaml) | versioned with the release; may change before 1.0 but only deliberately |
-| `/api/*` | **internal legacy** — the bundled `web/` dashboard only | HTTP Basic (single shared deployment credential from `sbx-basic-auth`) | [docs/contracts/api.yaml](docs/contracts/api.yaml) | no compatibility promise; do not build on it |
-
-Rules of thumb:
-
-- **Always integrate against `/v1`.** It is the Cursor Cloud Agents-shaped
-  API with per-key Bearer auth, `agents`/`admin` scopes, structured errors,
-  and the durable run ledger.
-- **`/api/*` is legacy and internal.** It predates `/v1` and exists only to
-  serve the bundled dashboard. Its Basic credential is one shared
-  deployment secret — there are no per-caller identities — so do not expose
-  it to untrusted networks or build new integrations on it. New work goes
-  on `/v1`.
-- Both are served by the same `sbx-control` app; the optional edge
-  (`deploy/sbx-edge`) publishes `/v1` for clients and proxies `/api/*` only
-  to serve the bundled dashboard, injecting the shared Basic credential
-  itself from Worker secrets.
-
-## API / SDK examples
-
-`examples/sbx_client.py` is a dependency-free (`httpx` only) reference client
-for the whole surface:
+Or with the dependency-free Python client in [`examples/`](examples/):
 
 ```python
 from examples.sbx_client import SbxClient
 
-client = SbxClient()  # SBX_BASE_URL + SBX_API_KEY
-
-created = client.create("Add a /health endpoint", provider="codex")
+client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
+created = client.create("Add a /health endpoint with a test", provider="codex")
 agent, run = created["agent"], created["run"]
-
-for ev in client.watch(agent["id"], run["id"]):  # SSE with Last-Event-ID resume
-    print(ev.type)
-
-final = client.wait(agent["id"], run["id"])  # persisted terminal status
-follow = client.followup(agent["id"], "Now add tests")
-client.cancel(agent["id"], follow["id"])
-
-results = client.wait_many([(agent["id"], run["id"]), (agent2, run2)])
-
-recovery = client.recover("wf-123")  # re-attach after process restart
-patch = client.artifacts.download(agent_id, artifact_id, dest="patch.diff")
-client.close_workflow("wf-123")  # scoped cleanup
+for event in client.watch(agent["id"], run["id"]):  # SSE, resumes on drop
+    print(event.type)
+final = client.wait(agent["id"], run["id"])  # durable terminal status
+client.followup(agent["id"], "Now run the tests")
+client.close_agent(agent["id"])
 ```
 
-The full OpenAPI contract is [docs/contracts/api-v1.yaml](docs/contracts/api-v1.yaml);
-the Cursor Cloud Agents field mapping is in [examples/README.md](examples/README.md).
+## The web console
 
-## Troubleshooting
+[`web/`](web/) is a build-less console for the `/v1` API. Serve it on the same
+origin as `/v1` — the optional Cloudflare Worker in
+[`deploy/sbx-edge`](deploy/sbx-edge/) does exactly that — then connect with an
+`sbx_` key. To try it locally with no cloud account at all:
 
-| Symptom | Likely cause / fix |
-| --- | --- |
-| `sbx deploy` can't reach Modal | Not authenticated: `uv run modal token new`, or wrong `MODAL_PROFILE`. `sbx doctor` reports presence/status, never values. |
-| `401 unauthorized` on `/v1` | Missing/wrong `SBX_API_KEY`, or key revoked (`DELETE /v1/api-keys/{id}` earlier). Verify with `GET /v1/me`. |
-| Run `ERROR` with `error.code=auth_invalid` | Provider credential expired/invalid. Re-import (`uv run python -m control.onboarding --modal import`) or probe it: `POST /v1/accounts/{id}/verify`. |
-| `429 provider_exhausted` / `concurrency_limit` | No free account slot, or the `SBX_MAX_CONCURRENT` live-agent cap (per-key default 2 / global default 8; idle agents hold slots until closed). Honor `error.retry_after`, close idle agents (`DELETE /v1/agents/{id}`), run scoped cleanup (`DELETE /v1/workflows/{id}`), add accounts (`SBX_<PROVIDER>_ACCOUNTS`), or raise the cap (`deploy.max_concurrent`) and `uv run sbx deploy`. `sbx status`/`sbx doctor` show live agents vs the cap. |
-| Agent stuck `creating` then `lost` | Sandbox create failed (image missing, Secret missing). Re-run `make image*` / `uv run sbx deploy`, then `sbx doctor`. |
-| Agent `timed_out` / `lost` | Idle timeout or reaper sweep — expected lifecycle. History stays read-only; create a new agent. |
-| Run `ERROR` with `repo_unavailable` / `base_sha_mismatch` | Repo unreachable from the sandbox, or `base_ref` didn't resolve to the declared `base_sha`. For private github.com arm the opt-in GitHub bridge — see [docs/repo-workflow.md](docs/repo-workflow.md). |
-| Event stream stalls | `watch` reconnects with `Last-Event-ID` (bounded); after it ends, `wait`/`get_run` is the durable fallback — never retry forever. |
-| Leftover sandboxes | `DELETE /v1/agents/{id}` or `client.close_workflow(id)`; reaper cron sweeps stale records. Verify `modal sandbox list` is empty. |
+```bash
+make console-dev   # real control plane (local backend) + fake provider CLIs
+```
 
-`sbx doctor` checks Modal auth, required Secrets, control URL, `/v1` auth,
-provider availability and cleanup capability — output is presence/hash-prefix
-only, never secret material.
+## Providers
 
-## Known limitations
+| Provider | Status | Multi-turn via |
+| --- | --- | --- |
+| codex | **Stable** | `codex exec resume` |
+| devin | Experimental | ACP session |
+| antigravity | Experimental | `--conversation` |
+| grok | Experimental | `--resume` |
+| opencode | Experimental | `--session` |
 
-- **Alpha.** `/v1` responses may change before 1.0; contracts live in
-  `docs/contracts/` and are versioned with the release.
-- **Self-hosted only.** No hosted SaaS, no multi-tenant control plane, no
-  billing. `cost_estimate_usd` is a Modal list-price *estimate*, not real
-  billing.
-- **No browser layer.** The noVNC/browser-execution tier is out of scope
-  for 0.1.
-- **Provider coverage.** Only codex is Stable in this tag; devin /
-  antigravity / grok / opencode are Experimental — all four passed
-  real-account Modal gates on the RC plane, while codex's own RC lane is
-  credential-deferred on a stale ChatGPT token (external, not a defect);
-  claude is **not** supported (see the matrix —
-  nothing is claimed without real-account evidence).
-- **Single workspace.** One deployment = one Modal workspace; API keys are
-  deployment-scoped (`sbx_<key>`, stored as `sha256` only).
-- **Lifecycle caps.** 5 min post-session idle reclaim (`SBX_IDLE_TIMEOUT_S`
-  / `deploy.idle_timeout_s`), native live-sandbox idle bound
-  (`SBX_SANDBOX_IDLE_TIMEOUT_S` / `deploy.sandbox_idle_timeout_s`, default
-  30 min and never below the turn bound + run grace), 4 h hard sandbox cap
-  (`SBX_SANDBOX_TIMEOUT_S`), 15 min per-turn soft cap
-  (`SBX_TURN_MAX_SECONDS`). One resolved chain — runner bound, native
-  sandbox timers, and reaper bounds all agree.
-- **Sandbox-local files are ephemeral.** `events.jsonl`, `inbox/`, `turns/`
-  live in the sandbox; durable outcomes are the run ledger and artifacts —
-  export artifacts before closing an agent if you need the patch.
+*Stable* means a passing real-account end-to-end run on the release tag;
+*Experimental* providers are fully wired with partial real-account evidence.
+Claude is not supported. CLI versions, credential files and evidence are in
+the providers section of the docs.
 
 ## Development
 
 ```bash
-make lint      # ruff check + format
-make test      # unit + integration — no cloud credentials needed
-make test-e2e  # Playwright against the local mock
+make lint          # ruff check + format check
+make test          # unit + integration — no cloud credentials needed
+make test-e2e      # Playwright: console vs a real local control plane
+make docs-dev      # documentation site with hot reload
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the provider adapter
-contract, and the rules for real-credential tests.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop and test rules.
+Interface contracts (filesystem, events, runner CLI, `/v1` OpenAPI) are frozen
+per release in [`docs/contracts/`](docs/contracts/README.md).
 
 ## License & security
 
-License selection is **pending Owner decision** — see [LICENSE](LICENSE)
-(it is an explicit placeholder, not a grant). Report vulnerabilities
-privately per [SECURITY.md](SECURITY.md); never file credentials, tokens, or
-credential blobs in issues or PRs.
+License selection is **pending owner decision** — see [LICENSE](LICENSE) (a
+placeholder, not a grant). Report vulnerabilities privately per
+[SECURITY.md](SECURITY.md); never post credentials, tokens or credential
+blobs in issues or pull requests.
