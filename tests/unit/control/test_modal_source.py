@@ -71,7 +71,7 @@ def test_modal_app_source_has_decorators() -> None:
     assert src.count("image=CONTROL_IMAGE") >= 2
     assert "debian_slim" in src
     assert "pip_install" in src
-    for pkg in ("fastapi", "httpx", "pydantic", "uvicorn", "anyio", "starlette"):
+    for pkg in ("fastapi", "httpx", "pydantic", "uvicorn", "anyio", "starlette", "pyjwt[crypto]"):
         assert pkg in src
 
 
