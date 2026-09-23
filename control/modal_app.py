@@ -45,6 +45,9 @@ CONTROL_IMAGE = (
         "uvicorn",
         "anyio",
         "starlette",
+        # GitHub App JWT signing (control.github_app) needs PyJWT's crypto
+        # extra for RS256 — same constraint as pyproject.toml.
+        "pyjwt[crypto]>=2.10.0",
     )
     .add_local_python_source("runtime")
 )
