@@ -51,6 +51,14 @@ _DICT_FANOUT = 32
 # binding-scan cache — mirrors ``control.store._LIST_CACHE_TTL_S``.
 _LIST_CACHE_TTL_S = float(os.environ.get("SBX_LIST_CACHE_TTL_S", "30"))
 
+# Same masking bound as ``control.store._LIST_CACHE_STALE_S``: Dict read
+# failures serve the last good scan only while it is still fresh enough.
+_LIST_CACHE_STALE_S = max(10 * _LIST_CACHE_TTL_S, 120.0)
+
+# Sentinel for "the version token could not be read" — distinct from a
+# stored ``None`` so a failed token read never looks like a write.
+_VER_UNREAD: Any = object()
+
 
 def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -388,6 +396,10 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
         self._build_lock = threading.Lock()
         # ``(ver, monotonic-ts, raw wf-agent dicts)`` for the last scan.
         self._raws_cache: tuple[Any, float, list[dict[str, Any]]] | None = None
+        # Background revalidation — mirrors ``ModalDictStore``: an expired
+        # scan is served stale while one thread repopulates it.
+        self._refresh_lock = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -405,9 +417,11 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
     def _put_agent_raw(self, record: WorkflowTaskRecord) -> None:
         self._manifest_add(record.agent_id)
         key = f"{self._AGENT_PREFIX}{record.agent_id}"
+        raw = record_to_dict(record)
         with observe("modal_dict.put", store=self._name, key=key):
-            self._d().put(key, record_to_dict(record))
-        self._ver_bump()
+            self._d().put(key, raw)
+        ver = self._ver_bump()
+        self._cache_merge(raw, ver)
 
     def _get_index_raw(self, owner: str, workflow_id: str) -> dict[str, Any] | None:
         key = f"{self._INDEX_PREFIX}{owner}/{workflow_id}"
@@ -421,34 +435,39 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
             self._d().put(key, index)
 
     def _iter_agent_raws(self) -> Iterator[dict[str, Any]]:
+        cached = self._raws_cache
+        ver: Any = _VER_UNREAD
         try:
-            self._manifest_ids()  # ensures the manifest + version token exist
+            self._ensure_manifest()  # manifest + version token exist
             # Read the version token before the manifest and records: a
             # write landing mid-scan moves ``ver`` past what we cache
             # under, so the next call refetches instead of serving stale.
             ver = self._d().get(self._VER_KEY)
-            cached = self._raws_cache
-            if (
-                cached is not None
-                and cached[0] == ver
-                and time.monotonic() - cached[1] < _LIST_CACHE_TTL_S
-            ):
-                return iter([copy.deepcopy(raw) for raw in cached[2]])
-            ids = self._manifest_ids()
-            with observe("modal_dict.get_agent_raws", store=self._name, agents=len(ids)):
-                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
-                    raws = [
-                        raw
-                        for raw in pool.map(
-                            lambda aid: self._d().get(f"{self._AGENT_PREFIX}{aid}"), ids
-                        )
-                        if isinstance(raw, dict)
-                    ]
-            # Stale ids fetch None and are skipped; agent records stay
-            # authoritative.
-            self._raws_cache = (ver, time.monotonic(), raws)
-            return iter([copy.deepcopy(raw) for raw in raws])
         except Exception:
+            pass
+        if cached is not None:
+            age = time.monotonic() - cached[1]
+            if ver is _VER_UNREAD:
+                # Token unreadable (transient Dict trouble): serve the
+                # last good scan while fresh and retry in the background.
+                if age < _LIST_CACHE_STALE_S:
+                    self._kick_scan_refresh()
+                    return iter([copy.deepcopy(raw) for raw in cached[2]])
+            elif cached[0] == ver:
+                if age < _LIST_CACHE_TTL_S:
+                    return iter([copy.deepcopy(raw) for raw in cached[2]])
+                # Past TTL with no confirmed write: serve stale and
+                # revalidate in the background — same lost-bump bound as
+                # ``ModalDictStore.list_all``.
+                self._kick_scan_refresh()
+                return iter([copy.deepcopy(raw) for raw in cached[2]])
+            # else: a confirmed write moved ``ver`` — rescan below.
+        try:
+            return iter(self._fetch_agent_raws(None if ver is _VER_UNREAD else ver))
+        except Exception:
+            if cached is not None and time.monotonic() - cached[1] < _LIST_CACHE_STALE_S:
+                self._kick_scan_refresh()
+                return iter([copy.deepcopy(raw) for raw in cached[2]])
             # Manifest path failed — the honest full enumeration keeps the
             # listing available.
             with observe("modal_dict.items", store=self._name):
@@ -459,6 +478,59 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
                 if isinstance(key, str)
                 and key.startswith(self._AGENT_PREFIX)
                 and isinstance(raw, dict)
+            )
+
+    def _fetch_agent_raws(self, ver: Any) -> list[dict[str, Any]]:
+        """Manifest + point-get scan; repopulates the raws cache."""
+        ids = self._manifest_ids()
+        with observe("modal_dict.get_agent_raws", store=self._name, agents=len(ids)):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                raws = [
+                    raw
+                    for raw in pool.map(
+                        lambda aid: self._d().get(f"{self._AGENT_PREFIX}{aid}"), ids
+                    )
+                    if isinstance(raw, dict)
+                ]
+        # Stale ids fetch None and are skipped; agent records stay
+        # authoritative.
+        self._raws_cache = (ver, time.monotonic(), raws)
+        return [copy.deepcopy(raw) for raw in raws]
+
+    def _kick_scan_refresh(self) -> None:
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_scan,
+            name=f"{self._name}-scan-refresh",
+            daemon=True,
+        )
+        self._refresh_thread.start()
+
+    def _refresh_scan(self) -> None:
+        try:
+            self._ensure_manifest()
+            ver = self._d().get(self._VER_KEY)
+            self._fetch_agent_raws(ver)
+        except Exception:
+            pass
+        finally:
+            self._refresh_lock.release()
+
+    def _cache_merge(self, raw: dict[str, Any], ver: Any) -> None:
+        """Fold an in-process ``attach`` into the warm scan — same
+        rationale as ``ModalDictStore._cache_merge``."""
+        with self._lock:
+            cached = self._raws_cache
+            if cached is None:
+                return
+            raws = [r for r in cached[2] if r.get("agent_id") != raw.get("agent_id")]
+            raws.append(raw)
+            raws.sort(key=lambda r: str(r.get("agent_id")))
+            self._raws_cache = (
+                ver if ver is not None else cached[0],
+                time.monotonic(),
+                raws,
             )
 
     # ---------------------------------------------------- listing manifest
@@ -481,42 +553,53 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
             except Exception:
                 pass
 
+    def _ensure_manifest(self) -> None:
+        """The flag-gated half of ``_manifest_ids``: rebuild once when the
+        manifest is absent, mint the version token for pre-cache deploys.
+        Kept separate so the warm scan path does not re-read the manifest
+        just to confirm it exists."""
+        if self._manifest_ready:
+            return
+        with self._build_lock:
+            if self._manifest_ready:
+                return
+            raw = self._d().get(self._AGENTS_MANIFEST)
+            if not isinstance(raw, list):
+                self.rebuild_manifest()
+            elif self._d().get(self._VER_KEY) is None:
+                # Manifest written by a pre-cache deploy: mint the
+                # token once so the scan cache can key on it.
+                self._ver_bump()
+            # A failed bump drops the manifest and clears the
+            # flag — re-verify both keys rather than trusting the
+            # maintenance path.
+            self._manifest_ready = (
+                isinstance(self._d().get(self._AGENTS_MANIFEST), list)
+                and self._d().get(self._VER_KEY) is not None
+            )
+
     def _manifest_ids(self) -> list[str]:
-        """Sorted bound-agent ids, rebuilding the manifest once when absent.
-        ``_build_lock`` double-checks so concurrent first scans share one
-        rebuild."""
-        if not self._manifest_ready:
-            with self._build_lock:
-                if not self._manifest_ready:
-                    raw = self._d().get(self._AGENTS_MANIFEST)
-                    if not isinstance(raw, list):
-                        self.rebuild_manifest()
-                    elif self._d().get(self._VER_KEY) is None:
-                        # Manifest written by a pre-cache deploy: mint the
-                        # token once so the scan cache can key on it.
-                        self._ver_bump()
-                    # A failed bump drops the manifest and clears the
-                    # flag — re-verify both keys rather than trusting the
-                    # maintenance path.
-                    self._manifest_ready = (
-                        isinstance(self._d().get(self._AGENTS_MANIFEST), list)
-                        and self._d().get(self._VER_KEY) is not None
-                    )
+        """Sorted bound-agent ids, rebuilding the manifest once when absent."""
+        self._ensure_manifest()
         raw = self._d().get(self._AGENTS_MANIFEST) or []
         return sorted({str(i) for i in raw}) if isinstance(raw, list) else []
 
-    def _ver_bump(self) -> None:
+    def _ver_bump(self) -> Any:
         """Advance the scan-version token after a mutation so cached
-        scans in every container refetch. Failure degrades to the same
-        rebuild path as manifest maintenance."""
+        scans in every container refetch. Returns the minted token so the
+        writing process can fold its own change into its cache; failure
+        degrades to the same rebuild path as manifest maintenance."""
         try:
-            self._d().put(self._VER_KEY, uuid.uuid4().hex)
+            token = uuid.uuid4().hex
+            self._d().put(self._VER_KEY, token)
+            return token
         except Exception:
             self._manifest_ready = False
             try:
                 self._d().pop(self._AGENTS_MANIFEST)
             except Exception:
                 pass
+            return None
 
     def rebuild_manifest(self) -> int:
         """Re-enumerate ``wf-agent/`` keys once and rewrite the manifest.

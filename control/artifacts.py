@@ -50,6 +50,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -73,6 +74,23 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 # Bounded concurrency for the Modal Dict member fan-out (SOR-118): enough
 # to hide per-RPC latency without turning one request into a Dict burst.
 _DICT_FANOUT = 8
+
+# Listing/page fetch pools run hotter (SOR-199): a 500-manifest page at
+# fanout 8 costs ~63 serial round-trips (~2.5s), over the Console's <2s
+# principal-data budget. Reads carry no commit-order constraint, so they
+# fan out wider than the write path.
+_LIST_FANOUT = 32
+
+# Listing page cache bounds — mirrors ``control.store``: TTL bounds the
+# staleness of a page whose ``ver`` bump was lost mid-write; the STALE
+# bound caps how long Dict read failures may be masked by a cached page.
+_LIST_CACHE_TTL_S = float(os.environ.get("SBX_LIST_CACHE_TTL_S", "30"))
+_LIST_CACHE_STALE_S = max(10 * _LIST_CACHE_TTL_S, 120.0)
+_PAGE_CACHE_MAX = 64
+
+# Sentinel for "the version token could not be read" — distinct from a
+# stored ``None`` so a failed token read never looks like a write.
+_VER_UNREAD: Any = object()
 
 # Always-on denylist. Applied to every collection regardless of the
 # caller's allowlist so provider credentials, auth stores and key material
@@ -685,7 +703,7 @@ def _page_from_entries_par(
         width = window if limit is None else min(window, max(1, limit - len(out)))
         chunk = pending[pos : pos + width]
         pos += len(chunk)
-        with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+        with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
             manifests = list(pool.map(fetch, (e.artifact_id for e in chunk)))
         for entry, manifest in zip(chunk, manifests):
             if limit is not None and len(out) >= limit:
@@ -1259,6 +1277,7 @@ class ModalDictArtifactStore:
     _IDX_GLOBAL_PREFIX = "index/global/"
     _IDX_GLOBAL_META = "index/_global_meta"
     _IDX_GLOBAL_BUILT = "index/_global_built"
+    _IDX_GLOBAL_VER = "index/_global_ver"
     _GLOBAL_CHUNK_MAX = 2000
 
     def __init__(self, name: str = ARTIFACTS_DICT_NAME) -> None:
@@ -1268,6 +1287,14 @@ class ModalDictArtifactStore:
         self._index_ready = False
         self._global_ready = False
         self._build_lock = threading.Lock()
+        # ``(cursor, limit) -> (ver, monotonic-ts, ArtifactPage)`` for the
+        # unfiltered listing: a page fetch costs ~limit/fanout serial
+        # round-trips, so repeat navigations serve from the page cache
+        # keyed on the global ``ver`` token (same pattern as
+        # ``ModalDictStore._list_cache``).
+        self._page_cache: dict[tuple[Any, Any], tuple[Any, float, ArtifactPage]] = {}
+        self._refresh_lock = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1330,6 +1357,7 @@ class ModalDictArtifactStore:
         self._index_add(manifest, old_agent)
         try:
             self._global_index_add(manifest)
+            self._global_ver_bump()
         except Exception:
             self._global_index_broken()
         return manifest
@@ -1391,7 +1419,7 @@ class ModalDictArtifactStore:
         """
         artifact_ids = self._all_manifest_ids()
         with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
-            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+            with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
                 raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
         groups: dict[str, list[ArtifactIndexEntry]] = {}
         for artifact_id, raw in zip(artifact_ids, raws):
@@ -1503,7 +1531,7 @@ class ModalDictArtifactStore:
         """
         artifact_ids = self._all_manifest_ids()
         with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
-            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+            with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
                 raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
         out: list[ArtifactManifest] = []
         for artifact_id, raw in zip(artifact_ids, raws):
@@ -1525,7 +1553,7 @@ class ModalDictArtifactStore:
             self._ensure_global_index()
             entries = self._global_entries()
             with observe("modal_dict.get_manifests", store=self._name, manifests=len(entries)):
-                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
                     manifests = list(
                         pool.map(self._fetch_global(), (e.artifact_id for e in entries))
                     )
@@ -1558,16 +1586,44 @@ class ModalDictArtifactStore:
             # Chunked global index: O(#chunks + page) reads, independent of
             # the Dict's total artifact count.
             self._ensure_global_index()
-            entries = self._global_entries()
+            ver = self._get(self._IDX_GLOBAL_VER)
         except Exception:
+            ver = _VER_UNREAD
+        cache_key = (cursor, limit)
+        cached = self._page_cache.get(cache_key)
+        if cached is not None:
+            age = time.monotonic() - cached[1]
+            if ver is _VER_UNREAD:
+                # Token unreadable: serve the last good page while fresh
+                # and revalidate in the background.
+                if age < _LIST_CACHE_STALE_S:
+                    self._kick_page_refresh(cache_key)
+                    return cached[2]
+            elif cached[0] == ver:
+                if age < _LIST_CACHE_TTL_S:
+                    return cached[2]
+                # Past TTL with no confirmed write: serve stale, refresh
+                # in the background — callers never block on a page
+                # fanout for a cache that merely aged out.
+                self._kick_page_refresh(cache_key)
+                return cached[2]
+            # else: a confirmed write moved ``ver`` — refetch below.
+        try:
+            entries = self._global_entries()
+            page = _page_from_entries_par(
+                entries,
+                cursor=cursor,
+                limit=limit,
+                fetch=self._fetch_global(),
+                drop=self._global_index_prune,
+            )
+        except Exception:
+            if cached is not None and time.monotonic() - cached[1] < _LIST_CACHE_STALE_S:
+                self._kick_page_refresh(cache_key)
+                return cached[2]
             return page_manifests(self._list_scan(), cursor=cursor, limit=limit)
-        return _page_from_entries_par(
-            entries,
-            cursor=cursor,
-            limit=limit,
-            fetch=self._fetch_global(),
-            drop=self._global_index_prune,
-        )
+        self._page_cache_store(cache_key, None if ver is _VER_UNREAD else ver, page)
+        return page
 
     def delete(self, artifact_id: str) -> None:
         agent_hint: str | None = None
@@ -1584,6 +1640,7 @@ class ModalDictArtifactStore:
             self._index_remove_row(artifact_id, agent_hint)
             try:
                 self._global_index_remove_locked(artifact_id)
+                self._global_ver_bump()
             except Exception:
                 self._global_index_broken()
 
@@ -1611,7 +1668,7 @@ class ModalDictArtifactStore:
         chunks = int(meta.get("chunks", 0)) if isinstance(meta, dict) else 0
         keys = [f"{self._IDX_GLOBAL_PREFIX}{i:06d}" for i in range(chunks)]
         with observe("modal_dict.get_global_index", store=self._name, chunks=chunks):
-            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+            with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
                 raws = list(pool.map(self._d().get, keys))
         entries: list[ArtifactIndexEntry] = []
         for raw in raws:
@@ -1648,7 +1705,7 @@ class ModalDictArtifactStore:
         if chunks < 1:
             return
         keys = [f"{self._IDX_GLOBAL_PREFIX}{i:06d}" for i in range(chunks)]
-        with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+        with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
             raws = list(pool.map(self._d().get, keys))
         for key, raw in zip(keys, raws):
             rows = _index_loads(raw)
@@ -1658,12 +1715,68 @@ class ModalDictArtifactStore:
 
     def _global_index_broken(self) -> None:
         """Global-index maintenance failed: drop the marker so the next
-        listing rebuilds and converges instead of serving drifted rows."""
+        listing rebuilds and converges instead of serving drifted rows.
+        Cached pages are invalidated too — the version token is dropped
+        so no reader can trust a cached page against a drifted index."""
         self._global_ready = False
+        self._page_cache.clear()
         try:
             self._pop(self._IDX_GLOBAL_BUILT)
+            self._pop(self._IDX_GLOBAL_VER)
         except Exception:
             pass
+
+    def _global_ver_bump(self) -> Any:
+        """Advance the global listing-version token after a mutation so
+        cached pages in every container refetch. Returns the minted
+        token. A failed bump leaves the old token in place — remote
+        readers keep serving their (now stale) page for at most
+        ``_LIST_CACHE_TTL_S`` before the background revalidation repairs
+        it — rather than forcing the expensive global rebuild."""
+        try:
+            token = uuid.uuid4().hex
+            self._put(self._IDX_GLOBAL_VER, token)
+        except Exception:
+            token = None
+        self._page_cache.clear()
+        return token
+
+    def _page_cache_store(self, key: tuple[Any, Any], ver: Any, page: ArtifactPage) -> None:
+        if len(self._page_cache) >= _PAGE_CACHE_MAX:
+            self._page_cache.clear()
+        self._page_cache[key] = (ver, time.monotonic(), page)
+
+    def _kick_page_refresh(self, key: tuple[Any, Any]) -> None:
+        """Repopulate a cached page off the request path; deduped by
+        ``_refresh_lock`` so stacked stale reads share one refetch."""
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_global_page,
+            args=(key,),
+            name=f"{self._name}-page-refresh",
+            daemon=True,
+        )
+        self._refresh_thread.start()
+
+    def _refresh_global_page(self, key: tuple[Any, Any]) -> None:
+        cursor, limit = key
+        try:
+            self._ensure_global_index()
+            ver = self._get(self._IDX_GLOBAL_VER)
+            entries = self._global_entries()
+            page = _page_from_entries_par(
+                entries,
+                cursor=cursor,
+                limit=limit,
+                fetch=self._fetch_global(),
+                drop=self._global_index_prune,
+            )
+            self._page_cache_store(key, ver, page)
+        except Exception:
+            pass
+        finally:
+            self._refresh_lock.release()
 
     def _ensure_global_index(self) -> None:
         """Lazily build the global index on the first unfiltered query —
@@ -1676,7 +1789,17 @@ class ModalDictArtifactStore:
                 return
             if self._get(self._IDX_GLOBAL_BUILT) is None:
                 self.rebuild_global_index()
-            self._global_ready = True
+            elif self._get(self._IDX_GLOBAL_VER) is None:
+                # Index built by a pre-cache deploy: mint the token once
+                # so the page cache can key on it.
+                self._global_ver_bump()
+            # Re-verify both keys rather than trusting the maintenance
+            # path — a failed bump leaves the token missing, so the flag
+            # stays unset and the next call retries the mint.
+            self._global_ready = (
+                self._get(self._IDX_GLOBAL_BUILT) is not None
+                and self._get(self._IDX_GLOBAL_VER) is not None
+            )
 
     def rebuild_global_index(self) -> int:
         """Re-enumerate keys once, fetch every manifest, and rewrite the
@@ -1690,7 +1813,7 @@ class ModalDictArtifactStore:
             if key.endswith("/manifest") and "/" not in key[: -len("/manifest")]
         ]
         with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
-            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+            with ThreadPoolExecutor(max_workers=_LIST_FANOUT) as pool:
                 raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
         entries: list[ArtifactIndexEntry] = []
         for artifact_id, raw in zip(artifact_ids, raws):
@@ -1716,7 +1839,9 @@ class ModalDictArtifactStore:
                 if key.startswith(self._IDX_GLOBAL_PREFIX) and key not in keep:
                     self._pop(key)
             self._put(self._IDX_GLOBAL_META, {"chunks": n_chunks})
+            self._put(self._IDX_GLOBAL_VER, uuid.uuid4().hex)
             self._put(self._IDX_GLOBAL_BUILT, b"1")
+            self._page_cache.clear()
         self._global_ready = True
         return len(entries)
 

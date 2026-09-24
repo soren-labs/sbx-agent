@@ -655,7 +655,7 @@ def create_app(
             for target, name in (
                 (store, "_ensure_index"),
                 (run_store, "_ensure_index"),
-                (workflow_store, "_manifest_ids"),
+                (workflow_store, "_ensure_manifest"),
                 (artifact_store, "_ensure_index"),
                 (artifact_store, "_ensure_global_index"),
             ):
@@ -665,6 +665,25 @@ def create_app(
                         fn()
                     except Exception:
                         pass
+            # Then pre-populate the read-through listing caches so the
+            # first user request isn't the cold fanout path. The
+            # ``list_page`` limit matches the Console's first-page size
+            # in ``web/views/artifacts.js``.
+            for fn in (
+                getattr(store, "list_all", None),
+                getattr(workflow_store, "all_bindings", None),
+            ):
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            list_page = getattr(artifact_store, "list_page", None)
+            if callable(list_page):
+                try:
+                    list_page(limit=100)
+                except Exception:
+                    pass
 
         threading.Thread(target=_warm_listing_indexes, daemon=True).start()
 

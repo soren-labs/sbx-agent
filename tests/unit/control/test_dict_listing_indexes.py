@@ -18,6 +18,7 @@ from control.artifacts import (
     ArtifactManifest,
     ModalDictArtifactStore,
     build_artifact,
+    manifest_dumps,
 )
 from control.run_store import (
     ModalDictRunStore,
@@ -395,6 +396,95 @@ class TestArtifactGlobalIndex:
         assert sorted(m.artifact_id for m in store.list()) == [f"art-{i}" for i in range(10)]
 
 
+class TestArtifactGlobalPageCache:
+    """SOR-199: ver-gated page cache on the unfiltered ``list_page`` —
+    repeat Console navigations cost one token read, writes invalidate
+    via the ``index/_global_ver`` bump."""
+
+    def _store(self) -> tuple[ModalDictArtifactStore, _FakeDict]:
+        store = ModalDictArtifactStore("test-artifacts")
+        fake = _FakeDict()
+        store._dict = fake
+        return store, fake
+
+    def _put(self, store, artifact_id: str, agent: str = "ag", i: int = 0) -> None:
+        import tempfile
+        from datetime import timedelta
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td)
+            (ws / "a.txt").write_text("x\n", encoding="utf-8")
+            base = datetime(2026, 9, 15, tzinfo=UTC) + timedelta(seconds=i)
+            build_artifact(
+                ws,
+                store=store,
+                agent_id=agent,
+                artifact_id=artifact_id,
+                clock=lambda: base,
+            )
+
+    def test_warm_global_page_hits_cache(self) -> None:
+        store, fake = self._store()
+        for i in range(3):
+            self._put(store, f"art-{i}", i=i)
+        page = store.list_page(limit=2)
+        assert [m.artifact_id for m in page.artifacts] == ["art-0", "art-1"]
+        gets = fake.gets
+        again = store.list_page(limit=2)
+        assert [m.artifact_id for m in again.artifacts] == ["art-0", "art-1"]
+        assert fake.gets - gets == 1  # the ``index/_global_ver`` read only
+
+    def test_put_bumps_global_ver_and_invalidates(self) -> None:
+        store, fake = self._store()
+        self._put(store, "art-1", i=1)
+        store.list_page(limit=10)
+        ver_before = fake.data[ModalDictArtifactStore._IDX_GLOBAL_VER]
+        self._put(store, "art-2", i=2)
+        assert fake.data[ModalDictArtifactStore._IDX_GLOBAL_VER] != ver_before
+        page = store.list_page(limit=10)
+        assert [m.artifact_id for m in page.artifacts] == ["art-1", "art-2"]
+
+    def test_delete_bumps_global_ver(self) -> None:
+        store, fake = self._store()
+        self._put(store, "art-1", i=1)
+        store.list_page(limit=10)
+        ver_before = fake.data[ModalDictArtifactStore._IDX_GLOBAL_VER]
+        store.delete("art-1")
+        assert fake.data[ModalDictArtifactStore._IDX_GLOBAL_VER] != ver_before
+        assert store.list_page(limit=10).artifacts == ()
+
+    def test_ttl_expiry_serves_stale_and_revalidates(self, monkeypatch) -> None:
+        import control.artifacts as art_mod
+
+        monkeypatch.setattr(art_mod, "_LIST_CACHE_TTL_S", -1.0)
+        store, fake = self._store()
+        self._put(store, "art-1", i=1)
+        store.list_page(limit=10)  # warm
+        # Lost-bump write: manifest + global index row, no ``ver`` bump.
+        ghost = ArtifactManifest(artifact_id="art-2", created_at="2026-09-16T00:00:00+00:00")
+        fake.put("art-2/manifest", manifest_dumps(ghost))
+        store._global_index_add(ghost)
+        page = store.list_page(limit=10)
+        assert [m.artifact_id for m in page.artifacts] == ["art-1"]  # stale serve
+        store._refresh_thread.join(timeout=5)
+        page = store.list_page(limit=10)
+        assert [m.artifact_id for m in page.artifacts] == ["art-1", "art-2"]
+
+    def test_ver_read_failure_serves_stale(self) -> None:
+        store, fake = self._store()
+        self._put(store, "art-1", i=1)
+        store.list_page(limit=10)
+        keys_calls = fake.keys_calls  # one-time migration rebuild
+        fake.fail_get = True
+        page = store.list_page(limit=10)
+        assert [m.artifact_id for m in page.artifacts] == ["art-1"]
+        assert fake.keys_calls == keys_calls  # masked by cache, no enumeration
+        store._refresh_thread.join(timeout=5)
+        fake.fail_get = False
+        assert [m.artifact_id for m in store.list_page(limit=10).artifacts] == ["art-1"]
+
+
 class TestKnownRunNsDedupe:
     def test_ledger_run_states_skips_duplicate_list(self) -> None:
         from control.api_v1.lifecycle import LedgerRunStates
@@ -494,16 +584,60 @@ class TestSessionListingCache:
         assert fresh.sandbox_tags["provider"] == "codex"
         assert fresh.messages == []
 
-    def test_ttl_expiry_refetches(self, monkeypatch) -> None:
+    def test_ttl_expiry_serves_stale_and_revalidates(self, monkeypatch) -> None:
         import control.store as store_mod
 
         monkeypatch.setattr(store_mod, "_LIST_CACHE_TTL_S", -1.0)
-        store, main, _index = self._store()
+        store, main, index = self._store()
         store.put(_session("a"))
         store.list_all()
-        gets_after_first = main.gets
+        # Lost-bump: a cross-container write that updated the record and
+        # the id manifest but crashed before the ``ver`` bump.
+        rec = _session("b")
+        main.put(rec.id, record_to_dict(rec))
+        ids = index.get(ModalDictStore._IDX_IDS)
+        index.put(ModalDictStore._IDX_IDS, sorted([*ids, "b"]))
+        # Expired page is served stale — the caller never blocks on the
+        # fanout — while a background refresh repairs the lost bump.
+        assert [r.id for r in store.list_all()] == ["a"]
+        store._refresh_thread.join(timeout=5)
+        assert sorted(r.id for r in store.list_all()) == ["a", "b"]
+
+    def test_put_merges_into_warm_cache(self) -> None:
+        store, main, index = self._store()
+        store.put(_session("a"))
         store.list_all()
-        assert main.gets > gets_after_first  # expired cache refetches
+        store.put(_session("b"))
+        main.gets = 0
+        index.gets = 0
+        records = store.list_all()
+        assert sorted(r.id for r in records) == ["a", "b"]
+        assert main.gets == 0  # same-container write folded into the page
+        assert index.gets == 1  # the single ``ver`` token read
+
+    def test_delete_merges_into_warm_cache(self) -> None:
+        store, main, index = self._store()
+        store.put(_session("a"))
+        store.put(_session("b"))
+        store.list_all()
+        store.delete("a")
+        main.gets = 0
+        index.gets = 0
+        assert [r.id for r in store.list_all()] == ["b"]
+        assert main.gets == 0
+        assert index.gets == 1
+
+    def test_ver_read_failure_serves_stale(self) -> None:
+        store, main, index = self._store()
+        store.put(_session("a"))
+        store.list_all()
+        index.fail_get = True
+        records = store.list_all()
+        assert [r.id for r in records] == ["a"]
+        assert main.items_calls == 0  # masked by cache, no enumeration
+        store._refresh_thread.join(timeout=5)
+        index.fail_get = False
+        assert [r.id for r in store.list_all()] == ["a"]
 
     def test_pre_cache_deploy_mints_ver(self) -> None:
         store, main, index = self._store()
@@ -579,13 +713,37 @@ class TestWorkflowScanCache:
         # manifest + ver + workflow index reads — no per-agent fetches
         assert fake.gets - gets <= 3
 
-    def test_ttl_expiry_refetches(self, monkeypatch) -> None:
+    def test_ttl_expiry_serves_stale_and_revalidates(self, monkeypatch) -> None:
         import control.workflow_store as wf_mod
 
         monkeypatch.setattr(wf_mod, "_LIST_CACHE_TTL_S", -1.0)
         store, fake = self._store()
         self._attach(store, "ag-1")
         store.all_bindings()
-        gets = fake.gets
+        # Lost-bump write: agent record + manifest id, no ``ver`` bump.
+        fake.put(
+            "wf-agent/ag-2",
+            {
+                "owner": "key-1",
+                "workflow_id": "wf-1",
+                "task_id": "t-ag-2",
+                "role": "worker",
+                "agent_id": "ag-2",
+                "created_at": "2026-09-20T00:00:00+00:00",
+                "updated_at": "2026-09-20T00:00:00+00:00",
+            },
+        )
+        ids = fake.get(ModalDictWorkflowStore._AGENTS_MANIFEST)
+        fake.put(ModalDictWorkflowStore._AGENTS_MANIFEST, sorted([*ids, "ag-2"]))
+        assert sorted(store.all_bindings()) == ["ag-1"]  # stale serve
+        store._refresh_thread.join(timeout=5)
+        assert sorted(store.all_bindings()) == ["ag-1", "ag-2"]
+
+    def test_attach_merges_into_warm_scan(self) -> None:
+        store, fake = self._store()
+        self._attach(store, "ag-1")
         store.all_bindings()
-        assert fake.gets - gets > 2  # expired cache pays the scan again
+        self._attach(store, "ag-2")
+        gets = fake.gets
+        assert sorted(store.all_bindings()) == ["ag-1", "ag-2"]
+        assert fake.gets - gets == 1  # the single ``ver`` token read

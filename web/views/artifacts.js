@@ -165,15 +165,15 @@ export function renderArtifacts({ route }) {
 
   async function load() {
     try {
-      // Page the listing: the first page is the principal data; remaining
-      // pages backfill in the background so a large global history never
-      // blocks first paint.
-      const query = { agent_id: state.agentId || undefined, limit: 500 };
-      let res = await api.listArtifacts(query);
+      // Page the listing: a small first page is the principal data so
+      // first paint stays well under the interaction budget even on a
+      // cold backend; larger pages backfill the full history behind it.
+      const base = { agent_id: state.agentId || undefined };
+      let res = await api.listArtifacts({ ...base, limit: 100 });
       const items = (res.artifacts || []).slice();
       renderItems(items);
       while (res.next_cursor) {
-        res = await api.listArtifacts({ ...query, cursor: res.next_cursor });
+        res = await api.listArtifacts({ ...base, limit: 500, cursor: res.next_cursor });
         items.push(...(res.artifacts || []));
         renderItems(items);
       }
