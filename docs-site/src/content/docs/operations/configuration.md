@@ -47,6 +47,18 @@ Environment variables override config file values. Organized by category:
 
 All must agree across runner, reaper, and native `Sandbox.create()`. The CLI resolves them once at deploy and injects them into remote functions.
 
+### Control-plane warmth
+
+Deploy-time Modal autoscaler knobs for the web function (applied at `sbx deploy` / `modal deploy`; the Agent sandbox lifecycle is unaffected):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SBX_CONTROL_SCALEDOWN_WINDOW_S` | `300` | Post-traffic idle window (seconds, 2–1200) before the last container scales to zero |
+| `SBX_CONTROL_MIN_CONTAINERS` | `0` | Always-warm containers (opt-in; continuous cost) |
+| `SBX_CONTROL_BUFFER_CONTAINERS` | `0` | Extra idle containers maintained while under load |
+
+Config-file equivalents: `deploy.control_scaledown_window_s`, `deploy.control_min_containers`, `deploy.control_buffer_containers`.
+
 ### Concurrency
 
 | Variable | Default | Purpose |

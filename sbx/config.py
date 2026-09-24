@@ -108,6 +108,23 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "sandbox_timeout_s": (("deploy", "sandbox_timeout_s"), ("SBX_SANDBOX_TIMEOUT_S",)),
     "create_grace_s": (("deploy", "create_grace_s"), ("SBX_CREATE_GRACE_S",)),
     "run_grace_s": (("deploy", "run_grace_s"), ("SBX_RUN_GRACE_S",)),
+    # SOR-203: control-plane web-container warmth. These are deploy-time
+    # autoscaler knobs only — ``control.modal_app`` resolves them while
+    # ``modal deploy`` builds the function, so ``deploy_env`` replays them
+    # into the subprocess but they never enter the remote env or the Agent
+    # Sandbox lifecycle.
+    "control_scaledown_window_s": (
+        ("deploy", "control_scaledown_window_s"),
+        ("SBX_CONTROL_SCALEDOWN_WINDOW_S",),
+    ),
+    "control_min_containers": (
+        ("deploy", "control_min_containers"),
+        ("SBX_CONTROL_MIN_CONTAINERS",),
+    ),
+    "control_buffer_containers": (
+        ("deploy", "control_buffer_containers"),
+        ("SBX_CONTROL_BUFFER_CONTAINERS",),
+    ),
 }
 
 # Optional positive-int knobs; ``None`` means "not configured" — never
@@ -122,6 +139,16 @@ _POSITIVE_INT_FIELDS = frozenset(
         "sandbox_timeout_s",
         "create_grace_s",
         "run_grace_s",
+    }
+)
+
+# Optional non-negative-int knobs — same absent-is-None semantics, but 0 is
+# a legal explicit value (e.g. ``control_min_containers = 0``).
+_NONNEG_INT_FIELDS = frozenset(
+    {
+        "control_scaledown_window_s",
+        "control_min_containers",
+        "control_buffer_containers",
     }
 )
 
@@ -177,6 +204,12 @@ class BootstrapConfig:
     sandbox_timeout_s: int | None = None
     create_grace_s: int | None = None
     run_grace_s: int | None = None
+    # SOR-203: control-plane web-function autoscaler warmth. Same
+    # ``None``-means-absent semantics — the Modal defaults and
+    # ``control.config.CONTROL_SCALEDOWN_WINDOW_S`` apply when unset.
+    control_scaledown_window_s: int | None = None
+    control_min_containers: int | None = None
+    control_buffer_containers: int | None = None
 
     def image_name(self, provider: str) -> str:
         """Published Modal image name for ``provider``."""
@@ -245,6 +278,9 @@ class BootstrapConfig:
             "sandbox_timeout_s",
             "create_grace_s",
             "run_grace_s",
+            "control_scaledown_window_s",
+            "control_min_containers",
+            "control_buffer_containers",
         )
         # ``None`` (e.g. an unset max_concurrent) is never replayed — the
         # remote defaults must win over an absent local value.
@@ -391,6 +427,16 @@ def _coerce(name: str, value: Any) -> Any:
             raise ValueError(f"{name} must be a positive integer") from None
         if n < 1:
             raise ValueError(f"{name} must be a positive integer")
+        return n
+    if name in _NONNEG_INT_FIELDS:
+        if value in (None, ""):
+            return None
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be a non-negative integer") from None
+        if n < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
         return n
     return str(value)
 

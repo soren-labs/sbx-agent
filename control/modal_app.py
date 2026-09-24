@@ -15,6 +15,7 @@ from control.app import create_app
 from control.config import (
     MODAL_APP_NAME,
     app_secret_names,
+    control_warmth_config,
     lifecycle_config,
     remote_env_overlay,
 )
@@ -57,8 +58,24 @@ CONTROL_IMAGE = (
 # material only ever arrives through the Secret mounts above.
 _REMOTE_ENV = remote_env_overlay(app_name=_APP_NAME)
 
+# SOR-203: web-function autoscaler warmth, resolved at deploy time from
+# SBX_CONTROL_SCALEDOWN_WINDOW_S / SBX_CONTROL_MIN_CONTAINERS /
+# SBX_CONTROL_BUFFER_CONTAINERS (defaults: 300s warm tail, no always-on
+# containers). Deliberately *not* applied to ``reap_cron`` — a 5-minute
+# cron's own startup latency is irrelevant and warming it would be pure
+# cost. The Agent Sandbox lifecycle (``Sandbox.create`` timers) is
+# untouched by these knobs.
+_WARMTH = control_warmth_config()
 
-@app.function(image=CONTROL_IMAGE, secrets=_secrets, env=_REMOTE_ENV)
+
+@app.function(
+    image=CONTROL_IMAGE,
+    secrets=_secrets,
+    env=_REMOTE_ENV,
+    scaledown_window=_WARMTH.scaledown_window_s,
+    min_containers=_WARMTH.min_containers or None,
+    buffer_containers=_WARMTH.buffer_containers or None,
+)
 @modal.concurrent(max_inputs=20)
 @modal.asgi_app()
 def fastapi_app():
