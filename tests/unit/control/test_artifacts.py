@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 from control.artifacts import (
     ArtifactCorruptError,
     ArtifactError,
+    ArtifactManifest,
     ArtifactNotFoundError,
     ArtifactSecretError,
     FileArtifactStore,
@@ -378,17 +380,29 @@ class TestModalDictStore:
 
     def test_list_never_pulls_member_bytes(self, tmp_path) -> None:
         """list/query enumerates keys then fetches manifests only — the Dict
-        ``items()`` scan that streamed every member blob is gone."""
+        ``items()`` scan that streamed every member blob is gone.
+
+        SOR-201: the filtered listing additionally stops enumerating keys
+        once the per-agent index exists — only the one lazy build scans.
+        """
         store, fake = _modal_store()
         ws = _workspace(tmp_path)
         _build(store, ws, payloads={"patch.diff": "p"})
         _build(store, ws, artifact_id="art-other", agent_id="agent-b")
         fake.gets.clear()
+        fake.keys_calls = 0
         assert [m.artifact_id for m in store.list()] == ["art-other", "art-test1"]
         assert [m.artifact_id for m in store.list(agent_id="agent-b")] == ["art-other"]
         assert fake.items_calls == 0
-        assert fake.keys_calls == 2  # one keys enumeration per list() call
-        assert set(fake.gets) == {"art-test1/manifest", "art-other/manifest"}
+        # One keys() for the unfiltered list + the one-time index build;
+        # steady-state filtered queries enumerate nothing.
+        assert fake.keys_calls >= 1
+        built = fake.keys_calls
+        fake.gets.clear()
+        assert [m.artifact_id for m in store.list(agent_id="agent-b")] == ["art-other"]
+        assert fake.keys_calls == built
+        assert set(fake.gets) <= {"art-other/manifest", store._idx_key("agent-b")}
+        assert not any(k.endswith("/member/patch.diff") for k in fake.gets)
 
     def test_list_skips_corrupt_and_member_named_manifest(self, tmp_path) -> None:
         """A payload literally named ``manifest`` produces a
@@ -413,6 +427,285 @@ class TestModalDictStore:
         with pytest.raises(ArtifactNotFoundError):
             store.manifest("art-test1")
         store.delete("art-test1")  # idempotent
+
+
+class TestAgentIndex:
+    """SOR-201: durable producer-agent -> artifact index + keyset pages."""
+
+    def _seed(self, store, ws: Path, specs: list[tuple[str, str, int]]) -> None:
+        """``(artifact_id, agent_id, tick)`` rows; deterministic created_at."""
+        for artifact_id, agent_id, tick in specs:
+            base = datetime(2026, 9, 15, tzinfo=UTC) + timedelta(seconds=tick)
+            _build(
+                store,
+                ws,
+                artifact_id=artifact_id,
+                agent_id=agent_id,
+                clock=lambda b=base: b,
+            )
+
+    def _file_index_bytes(self, store: FileArtifactStore, agent_id: str) -> bytes:
+        return store._index_path(agent_id).read_bytes()
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_index_maintained_on_put_and_delete(self, tmp_path, kind) -> None:
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0), ("art-2", "agent-a", 1)])
+        assert [m.artifact_id for m in store.list(agent_id="agent-a")] == [
+            "art-1",
+            "art-2",
+        ]
+        store.delete("art-1")
+        assert [m.artifact_id for m in store.list(agent_id="agent-a")] == ["art-2"]
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_reput_reindexes_producer_change(self, tmp_path, kind) -> None:
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0)])
+        manifest = store.manifest("art-1")
+        manifest.producer_agent_id = "agent-b"
+        store.put(manifest, store.open("art-1").members)
+        assert [m.artifact_id for m in store.list(agent_id="agent-a")] == []
+        assert [m.artifact_id for m in store.list(agent_id="agent-b")] == ["art-1"]
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_lazy_rebuild_covers_pre_index_data(self, tmp_path, kind) -> None:
+        """Artifacts written behind the index's back are still listed."""
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0)])
+        if kind == "file":
+            # Simulate a pre-SOR-201 store: index files removed.
+            shutil.rmtree(tmp_path / "store" / ".index", ignore_errors=True)
+            store._index_ready = False
+        else:
+            store._index.clear()
+            store._index_ready = False
+        assert [m.artifact_id for m in store.list(agent_id="agent-a")] == ["art-1"]
+        if kind == "file":
+            assert (tmp_path / "store" / ".index" / "_built").exists()
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_stale_index_row_pruned(self, tmp_path, kind) -> None:
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0), ("art-2", "agent-a", 1)])
+        store.list(agent_id="agent-a")  # build/marker
+        # Remove the package behind the index's back.
+        if kind == "file":
+            shutil.rmtree(tmp_path / "store" / "art-1")
+        else:
+            store._items.pop("art-1")
+        assert [m.artifact_id for m in store.list(agent_id="agent-a")] == ["art-2"]
+        # The stale row is repaired, not just hidden.
+        if kind == "file":
+            assert b"art-1" not in self._file_index_bytes(store, "agent-a")
+        else:
+            assert "art-1" not in {e.artifact_id for e in store._index["agent-a"]}
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_list_page_walks_keyset(self, tmp_path, kind) -> None:
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(
+            store,
+            ws,
+            [(f"art-{i}", "agent-a", i) for i in range(5)] + [("art-x", "agent-b", 99)],
+        )
+        seen: list[str] = []
+        cursor = None
+        for _ in range(10):
+            page = store.list_page(agent_id="agent-a", cursor=cursor, limit=2)
+            seen += [m.artifact_id for m in page.artifacts]
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert seen == [f"art-{i}" for i in range(5)]
+        assert cursor is None
+        # Unpaginated filtered listing is unchanged.
+        assert [m.artifact_id for m in store.list(agent_id="agent-a")] == [
+            f"art-{i}" for i in range(5)
+        ]
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_list_page_unfiltered(self, tmp_path, kind) -> None:
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0), ("art-2", "agent-b", 1)])
+        page = store.list_page(limit=1)
+        assert [m.artifact_id for m in page.artifacts] == ["art-1"]
+        page = store.list_page(cursor=page.next_cursor)
+        assert [m.artifact_id for m in page.artifacts] == ["art-2"]
+        assert page.next_cursor is None
+
+    @pytest.mark.parametrize("kind", ["memory", "file"])
+    def test_bad_cursor_and_limit(self, tmp_path, kind) -> None:
+        store = _stores(tmp_path)[kind == "file"]
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0)])
+        with pytest.raises(ArtifactError):
+            store.list_page(agent_id="agent-a", cursor="!!!")
+        with pytest.raises(ArtifactError):
+            store.list_page(agent_id="agent-a", limit=0)
+
+    def test_index_doc_carries_no_member_content(self, tmp_path) -> None:
+        store = FileArtifactStore(tmp_path / "store")
+        ws = _workspace(tmp_path)
+        _build(store, ws, forbidden_values=[CANARY])
+        doc = self._file_index_bytes(store, "agent-a")
+        assert CANARY not in doc
+        body = json.loads(doc)
+        assert set(body) == {"v", "entries"}
+        (row,) = body["entries"]
+        assert set(row) == {"a", "t", "r"}
+
+    def test_modal_index_written_and_cleaned(self, tmp_path) -> None:
+        store, fake = _modal_store()
+        ws = _workspace(tmp_path)
+        self._seed(store, ws, [("art-1", "agent-a", 0)])
+        idx_key = store._idx_key("agent-a")
+        assert idx_key.startswith("index/agent/")
+        assert json.loads(fake.data[idx_key])["entries"][0]["a"] == "art-1"
+        store.delete("art-1")
+        assert idx_key not in fake.data
+
+    def test_modal_lazy_migration_from_historical_keys(self, tmp_path) -> None:
+        """A Dict holding pre-index artifacts still answers filtered
+        queries: the first one builds the index, later ones never rescan."""
+        store, fake = _modal_store()
+        for i in range(4):
+            aid = f"art-old{i}"
+            m = ArtifactManifest(
+                artifact_id=aid,
+                created_at=f"2026-09-15T00:00:0{i}+00:00",
+                producer_agent_id="agent-old",
+            )
+            fake.data[f"{aid}/manifest"] = manifest_dumps(m)
+            fake.data[f"{aid}/members"] = []
+        assert [m.artifact_id for m in store.list(agent_id="agent-old")] == [
+            f"art-old{i}" for i in range(4)
+        ]
+        assert fake.data[ModalDictArtifactStore._IDX_BUILT] == b"1"
+        fake.keys_calls = 0
+        for _ in range(3):
+            store.list(agent_id="agent-old")
+        assert fake.keys_calls == 0  # index hit, no global scan
+
+
+class TestIndexScale:
+    """SOR-201 scale gate: 10k+ artifacts, P95 < 1.5s, global-count
+    independence proven by store-op counts, not just wall time."""
+
+    SCALE_N = 12_000
+    SCALE_AGENTS = 120
+    PAGE = 50
+    P95_LIMIT_S = 1.5
+    SAMPLES = 25
+
+    def _seed_fake_dict(self, fake: _FakeModalDict) -> None:
+        for i in range(self.SCALE_N):
+            aid = f"art-{i:05d}"
+            manifest = ArtifactManifest(
+                artifact_id=aid,
+                created_at=f"2026-09-15T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
+                producer_agent_id=f"agent-{i % self.SCALE_AGENTS}",
+            )
+            fake.data[f"{aid}/manifest"] = manifest_dumps(manifest)
+            fake.data[f"{aid}/members"] = []
+
+    def _seed_file_store(self, root: Path) -> FileArtifactStore:
+        store = FileArtifactStore(root)
+        for i in range(self.SCALE_N):
+            aid = f"art-{i:05d}"
+            manifest = ArtifactManifest(
+                artifact_id=aid,
+                created_at=f"2026-09-15T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
+                producer_agent_id=f"agent-{i % self.SCALE_AGENTS}",
+            )
+            d = root / aid
+            d.mkdir(parents=True)
+            (d / "manifest.json").write_bytes(manifest_dumps(manifest))
+        return store
+
+    @staticmethod
+    def _p95(samples: list[float]) -> float:
+        ordered = sorted(samples)
+        return ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))]
+
+    def test_modal_filtered_page_is_global_independent(self, tmp_path) -> None:
+        store, fake = _modal_store()
+        self._seed_fake_dict(fake)
+        assert store.rebuild_index() == self.SCALE_N
+        agent = "agent-7"  # 100 artifacts
+        latencies: list[float] = []
+        for _ in range(self.SAMPLES):
+            fake.gets.clear()
+            fake.keys_calls = 0
+            t0 = time.perf_counter()
+            page = store.list_page(agent_id=agent, limit=self.PAGE)
+            latencies.append(time.perf_counter() - t0)
+            assert len(page.artifacts) == self.PAGE
+            # The query surface is the index doc + the page's manifests —
+            # O(page), no key enumeration, no other agent's rows.
+            assert fake.keys_calls == 0
+            assert len(fake.gets) <= self.PAGE + 1
+        assert self._p95(latencies) < self.P95_LIMIT_S
+        # Keyset walk covers the agent's rows exactly once.
+        seen: list[str] = []
+        cursor = None
+        while True:
+            page = store.list_page(agent_id=agent, cursor=cursor, limit=self.PAGE)
+            seen += [m.artifact_id for m in page.artifacts]
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
+        assert len(seen) == self.SCALE_N // self.SCALE_AGENTS
+        assert len(set(seen)) == len(seen)
+
+    def test_file_filtered_page_is_global_independent(self, tmp_path) -> None:
+        store = self._seed_file_store(tmp_path / "store")
+        assert store.rebuild_index() == self.SCALE_N
+        agent = "agent-7"
+        calls: list[str] = []
+        orig_manifest = store.manifest
+        store.manifest = lambda aid: (calls.append(aid), orig_manifest(aid))[1]
+        try:
+            latencies: list[float] = []
+            for _ in range(self.SAMPLES):
+                calls.clear()
+                t0 = time.perf_counter()
+                page = store.list_page(agent_id=agent, limit=self.PAGE)
+                latencies.append(time.perf_counter() - t0)
+                assert len(page.artifacts) == self.PAGE
+                # Only the page's manifests are read from disk.
+                assert len(calls) == self.PAGE
+            assert self._p95(latencies) < self.P95_LIMIT_S
+        finally:
+            del store.manifest
+
+    def test_memory_filtered_page(self, tmp_path) -> None:
+        store = InMemoryArtifactStore()
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        _write(ws, "a.txt", "x\n")
+        for i in range(self.SCALE_N):
+            base = datetime(2026, 9, 15, tzinfo=UTC) + timedelta(seconds=i)
+            _build(
+                store,
+                ws,
+                artifact_id=f"art-{i:05d}",
+                agent_id=f"agent-{i % self.SCALE_AGENTS}",
+                clock=lambda: base,
+            )
+        latencies: list[float] = []
+        for _ in range(self.SAMPLES):
+            t0 = time.perf_counter()
+            page = store.list_page(agent_id="agent-7", limit=self.PAGE)
+            latencies.append(time.perf_counter() - t0)
+            assert len(page.artifacts) == self.PAGE
+        assert self._p95(latencies) < self.P95_LIMIT_S
 
 
 class TestManifestDecode:

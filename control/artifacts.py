@@ -24,6 +24,15 @@ The store re-verifies every member against the manifest on write and on
 read; corrupt or incomplete packages surface as ``ArtifactCorruptError``,
 never as inferred content.
 
+Listing (SOR-201): every store maintains a durable producer-agent ->
+artifact index (sorted ``ArtifactIndexEntry`` rows) written on
+``put``/``delete``. ``list_page`` serves keyset pages —
+``(created_at, artifact_id)`` order, opaque ``cursor`` — and a filtered
+``list``/``list_page`` reads one index document plus the page's
+manifests, never a global scan. ``rebuild_index`` reconstructs the index
+from stored manifests: the migration for pre-index data and the repair
+path for index drift.
+
 This module is the B1 core only: no workspace declaration, no API routes.
 Integration lanes wire a collector over ``SandboxBackend.exec`` for remote
 sandboxes and expose ``read`` as the download seam.
@@ -31,6 +40,8 @@ sandboxes and expose ``read`` as the download seam.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import hashlib
 import json
@@ -506,6 +517,163 @@ class ArtifactPackage:
         return sorted(bad)
 
 
+@dataclass(frozen=True)
+class ArtifactIndexEntry:
+    """One row of the durable producer-agent -> artifact index (SOR-201).
+
+    Only listing metadata is stored — never member bytes or workspace
+    content — so the index carries no secrets beyond what a manifest
+    already exposes.
+    """
+
+    artifact_id: str
+    created_at: str
+    producer_run_id: str | None = None
+
+    @property
+    def sort_key(self) -> tuple[str, str]:
+        return (self.created_at, self.artifact_id)
+
+
+@dataclass(frozen=True)
+class ArtifactPage:
+    """One keyset page of a listing (SOR-201)."""
+
+    artifacts: tuple[ArtifactManifest, ...]
+    next_cursor: str | None
+
+
+_INDEX_FORMAT = 1
+
+
+def _index_entry(manifest: ArtifactManifest) -> ArtifactIndexEntry:
+    return ArtifactIndexEntry(manifest.artifact_id, manifest.created_at, manifest.producer_run_id)
+
+
+def _index_add_entry(
+    entries: Sequence[ArtifactIndexEntry], entry: ArtifactIndexEntry
+) -> list[ArtifactIndexEntry]:
+    """Sorted index rows with ``entry`` inserted (same artifact_id replaces)."""
+    kept = [e for e in entries if e.artifact_id != entry.artifact_id]
+    kept.append(entry)
+    kept.sort(key=lambda e: e.sort_key)
+    return kept
+
+
+def _index_dumps(entries: Sequence[ArtifactIndexEntry]) -> bytes:
+    """Canonical bytes for one agent's index document."""
+    body = {
+        "v": _INDEX_FORMAT,
+        "entries": [
+            {"a": e.artifact_id, "t": e.created_at, "r": e.producer_run_id} for e in entries
+        ],
+    }
+    return (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _index_loads(raw: Any) -> list[ArtifactIndexEntry]:
+    """Tolerant decode of one index document; unusable payloads read empty."""
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not isinstance(raw, bytes):
+        return []
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(body, dict) or body.get("v") != _INDEX_FORMAT:
+        return []
+    items = body.get("entries")
+    if not isinstance(items, list):
+        return []
+    out: list[ArtifactIndexEntry] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        artifact_id, created_at = item.get("a"), item.get("t")
+        if not isinstance(artifact_id, str) or not isinstance(created_at, str):
+            continue
+        run_id = item.get("r")
+        out.append(
+            ArtifactIndexEntry(artifact_id, created_at, run_id if isinstance(run_id, str) else None)
+        )
+    out.sort(key=lambda e: e.sort_key)
+    return out
+
+
+def _encode_cursor(entry: ArtifactIndexEntry) -> str:
+    """Opaque keyset cursor over (created_at, artifact_id)."""
+    payload = json.dumps([entry.created_at, entry.artifact_id], separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[str, str]:
+    """``(created_at, artifact_id)`` encoded by ``_encode_cursor``."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        data = json.loads(raw)
+        if isinstance(data, list) and len(data) == 2 and all(isinstance(v, str) for v in data):
+            return data[0], data[1]
+    except (binascii.Error, ValueError):
+        pass
+    raise ArtifactError(f"malformed artifact cursor {cursor!r}")
+
+
+def _page_from_entries(
+    entries: Sequence[ArtifactIndexEntry],
+    *,
+    cursor: str | None,
+    limit: int | None,
+    fetch: Callable[[str], ArtifactManifest | None],
+    drop: Callable[[str], None] | None = None,
+) -> ArtifactPage:
+    """Keyset page over sorted index rows.
+
+    ``fetch`` decodes one manifest, or returns ``None`` when the row is
+    stale (package deleted, corrupt, or re-owned by another producer);
+    stale rows are dropped from the durable index via ``drop`` rather
+    than served.
+    """
+    if limit is not None and limit < 1:
+        raise ArtifactError(f"limit must be a positive int, got {limit!r}")
+    after = _decode_cursor(cursor) if cursor else None
+    out: list[ArtifactManifest] = []
+    remaining = False
+    for entry in entries:
+        if after is not None and entry.sort_key <= after:
+            continue
+        if limit is not None and len(out) >= limit:
+            remaining = True
+            break
+        manifest = fetch(entry.artifact_id)
+        if manifest is None:
+            if drop is not None:
+                drop(entry.artifact_id)
+            continue
+        out.append(manifest)
+    next_cursor = _encode_cursor(_index_entry(out[-1])) if remaining and out else None
+    return ArtifactPage(tuple(out), next_cursor)
+
+
+def page_manifests(
+    manifests: Sequence[ArtifactManifest],
+    *,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> ArtifactPage:
+    """Keyset page over already-sorted manifests (created_at, artifact_id).
+
+    The pagination surface for callers that hold full result sets —
+    e.g. stores where listing is inherently unfiltered/global.
+    """
+    return _page_from_entries(
+        [_index_entry(m) for m in manifests],
+        cursor=cursor,
+        limit=limit,
+        fetch=lambda aid: next((m for m in manifests if m.artifact_id == aid), None),
+    )
+
+
 @runtime_checkable
 class ArtifactStore(Protocol):
     """Persistence for artifact packages, keyed by artifact_id.
@@ -513,6 +681,12 @@ class ArtifactStore(Protocol):
     Implementations must verify member integrity against the manifest on
     ``put`` and ``open``/``read`` — a store that persists mismatched bytes
     silently is a corruption amplifier.
+
+    SOR-201: stores also maintain a durable producer-agent -> artifact
+    index so single-agent listing/pagination never scans every historical
+    artifact. ``rebuild_index`` reconstructs it from stored manifests —
+    the safe migration for pre-index data and the repair path for index
+    drift (e.g. lost read-modify-write under concurrent writers).
     """
 
     def put(self, manifest: ArtifactManifest, members: Mapping[str, bytes]) -> ArtifactManifest:
@@ -530,6 +704,19 @@ class ArtifactStore(Protocol):
 
     def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
         """Decodable manifests, optionally filtered by producer agent."""
+
+    def list_page(
+        self,
+        *,
+        agent_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> ArtifactPage:
+        """Keyset page of manifests (created_at, artifact_id order)."""
+
+    def rebuild_index(self) -> int:
+        """Rebuild the per-agent index from stored manifests; returns the
+        number of index rows written."""
 
     def delete(self, artifact_id: str) -> None:
         """Remove the package; missing ids are ignored."""
@@ -554,16 +741,68 @@ class InMemoryArtifactStore:
 
     def __init__(self) -> None:
         self._items: dict[str, tuple[bytes, dict[str, bytes]]] = {}
+        # SOR-201: producer-agent -> sorted index rows; maintained on
+        # put/delete, lazily rebuilt on the first filtered query.
+        self._index: dict[str, list[ArtifactIndexEntry]] = {}
+        self._index_ready = False
         self._lock = threading.Lock()
+
+    def _index_remove_row(self, artifact_id: str, agent_id: str | None) -> None:
+        agents = (agent_id,) if agent_id is not None else tuple(self._index)
+        for agent in agents:
+            rows = self._index.get(agent)
+            if rows is None:
+                continue
+            kept = [e for e in rows if e.artifact_id != artifact_id]
+            if len(kept) != len(rows):
+                if kept:
+                    self._index[agent] = kept
+                else:
+                    self._index.pop(agent, None)
+
+    def _index_update_put(self, manifest: ArtifactManifest, old_agent: str | None) -> None:
+        if old_agent is not None and old_agent != manifest.producer_agent_id:
+            self._index_remove_row(manifest.artifact_id, old_agent)
+        self._index[manifest.producer_agent_id] = _index_add_entry(
+            self._index.get(manifest.producer_agent_id, []), _index_entry(manifest)
+        )
+
+    def _ensure_index(self) -> None:
+        if not self._index_ready:
+            self.rebuild_index()
+
+    def rebuild_index(self) -> int:
+        """Rescan every stored manifest and rewrite all agent index rows."""
+        with self._lock:
+            groups: dict[str, list[ArtifactIndexEntry]] = {}
+            for raw, _members in self._items.values():
+                try:
+                    manifest = manifest_loads(raw)
+                except ArtifactError:
+                    continue
+                groups.setdefault(manifest.producer_agent_id, []).append(_index_entry(manifest))
+            self._index = {
+                agent: sorted(rows, key=lambda e: e.sort_key) for agent, rows in groups.items()
+            }
+            self._index_ready = True
+            return sum(len(rows) for rows in groups.values())
 
     def put(self, manifest: ArtifactManifest, members: Mapping[str, bytes]) -> ArtifactManifest:
         _validate_artifact_id(manifest.artifact_id)
         _verify_members(manifest, members)
         with self._lock:
+            old_agent: str | None = None
+            existing = self._items.get(manifest.artifact_id)
+            if existing is not None:
+                try:
+                    old_agent = manifest_loads(existing[0]).producer_agent_id
+                except ArtifactError:
+                    old_agent = None
             self._items[manifest.artifact_id] = (
                 manifest_dumps(manifest),
                 dict(members),
             )
+            self._index_update_put(manifest, old_agent)
         return manifest
 
     def _entry(self, artifact_id: str) -> tuple[bytes, dict[str, bytes]]:
@@ -605,7 +844,25 @@ class InMemoryArtifactStore:
             raise ArtifactCorruptError(f"member {member!r} checksum mismatch")
         return data
 
+    def _fetch_for_agent(self, agent_id: str) -> Callable[[str], ArtifactManifest | None]:
+        def fetch(artifact_id: str) -> ArtifactManifest | None:
+            try:
+                manifest = self.manifest(artifact_id)
+            except ArtifactError:
+                return None
+            # Index row from before a producer re-assignment is stale.
+            return manifest if manifest.producer_agent_id == agent_id else None
+
+        return fetch
+
+    def _index_drop_row(self, agent_id: str, artifact_id: str) -> None:
+        with self._lock:
+            self._index_remove_row(artifact_id, agent_id)
+
     def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
+        if agent_id is not None:
+            page = self.list_page(agent_id=agent_id)
+            return list(page.artifacts)
         with self._lock:
             keys = list(self._items)
         out: list[ArtifactManifest] = []
@@ -614,13 +871,40 @@ class InMemoryArtifactStore:
                 manifest = self.manifest(key)
             except ArtifactError:
                 continue
-            if agent_id is None or manifest.producer_agent_id == agent_id:
-                out.append(manifest)
+            out.append(manifest)
         return sorted(out, key=lambda m: (m.created_at, m.artifact_id))
+
+    def list_page(
+        self,
+        *,
+        agent_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> ArtifactPage:
+        if agent_id is not None:
+            self._ensure_index()
+            with self._lock:
+                entries = list(self._index.get(agent_id, []))
+            return _page_from_entries(
+                entries,
+                cursor=cursor,
+                limit=limit,
+                fetch=self._fetch_for_agent(agent_id),
+                drop=lambda aid: self._index_drop_row(agent_id, aid),
+            )
+        return page_manifests(self.list(), cursor=cursor, limit=limit)
 
     def delete(self, artifact_id: str) -> None:
         with self._lock:
+            agent_hint: str | None = None
+            existing = self._items.get(artifact_id)
+            if existing is not None:
+                try:
+                    agent_hint = manifest_loads(existing[0]).producer_agent_id
+                except ArtifactError:
+                    agent_hint = None
             self._items.pop(artifact_id, None)
+            self._index_remove_row(artifact_id, agent_hint)
 
 
 class FileArtifactStore:
@@ -635,6 +919,7 @@ class FileArtifactStore:
 
     def __init__(self, root: Path | str) -> None:
         self._root = Path(root)
+        self._index_ready = False
         self._lock = threading.Lock()
 
     @property
@@ -644,10 +929,123 @@ class FileArtifactStore:
     def _dir(self, artifact_id: str) -> Path:
         return self._root / _validate_artifact_id(artifact_id)
 
+    # ---- SOR-201 producer-agent index -------------------------------------
+    # Layout: ``<root>/.index/<sha256(agent_id)>.json`` (one sorted doc per
+    # agent) plus ``<root>/.index/_built`` once the index covers the store.
+    # Dot-prefixed, so package enumeration in ``list`` never sees it; agent
+    # ids are hashed into filenames so arbitrary ids stay filesystem-safe.
+
+    def _index_dir(self) -> Path:
+        return self._root / ".index"
+
+    def _index_path(self, agent_id: str) -> Path:
+        return self._index_dir() / f"{sha256_hex(agent_id.encode('utf-8'))}.json"
+
+    def _index_marker(self) -> Path:
+        return self._index_dir() / "_built"
+
+    def _load_index(self, agent_id: str) -> list[ArtifactIndexEntry]:
+        try:
+            raw = self._index_path(agent_id).read_bytes()
+        except OSError:
+            return []
+        return _index_loads(raw)
+
+    def _write_index(self, agent_id: str, rows: list[ArtifactIndexEntry]) -> None:
+        """Atomically persist one agent's index doc (empty removes it)."""
+        path = self._index_path(agent_id)
+        if not rows:
+            path.unlink(missing_ok=True)
+            return
+        self._index_dir().mkdir(parents=True, exist_ok=True)
+        staging = self._index_dir() / f".tmp-{uuid.uuid4().hex}"
+        staging.write_bytes(_index_dumps(rows))
+        os.replace(staging, path)
+
+    def _index_add(self, manifest: ArtifactManifest, old_agent: str | None) -> None:
+        """Maintain index rows for one write; caller holds ``_lock``."""
+        if old_agent is not None and old_agent != manifest.producer_agent_id:
+            self._index_remove_row(manifest.artifact_id, old_agent)
+        agent = manifest.producer_agent_id
+        self._write_index(agent, _index_add_entry(self._load_index(agent), _index_entry(manifest)))
+
+    def _index_remove_row(self, artifact_id: str, agent_id: str | None) -> None:
+        """Drop ``artifact_id`` from the index; caller holds ``_lock``.
+
+        ``agent_id`` narrows the write to one doc; without it (e.g. the
+        manifest was already corrupt) every agent doc is scanned — bounded
+        by agent count, not artifact count.
+        """
+        if agent_id is not None:
+            rows = self._load_index(agent_id)
+            kept = [e for e in rows if e.artifact_id != artifact_id]
+            if len(kept) != len(rows):
+                self._write_index(agent_id, kept)
+            return
+        index_dir = self._index_dir()
+        try:
+            files = list(index_dir.iterdir())
+        except OSError:
+            return
+        for path in files:
+            if path.suffix != ".json":
+                continue
+            rows = _index_loads(path.read_bytes())
+            kept = [e for e in rows if e.artifact_id != artifact_id]
+            if len(kept) != len(rows):
+                if kept:
+                    staging = index_dir / f".tmp-{uuid.uuid4().hex}"
+                    staging.write_bytes(_index_dumps(kept))
+                    os.replace(staging, path)
+                else:
+                    path.unlink(missing_ok=True)
+
+    def _ensure_index(self) -> None:
+        if not self._index_ready and not self._index_marker().exists():
+            self.rebuild_index()
+        self._index_ready = True
+
+    def rebuild_index(self) -> int:
+        """Rescan every stored manifest and rewrite all agent index docs.
+
+        Idempotent and safe to run on a live store: it only touches
+        ``.index/`` files, and re-running converges the index to the
+        current package set.
+        """
+        groups: dict[str, list[ArtifactIndexEntry]] = {}
+        try:
+            entries = sorted(self._root.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            try:
+                manifest = self.manifest(entry.name)
+            except ArtifactError:
+                continue
+            groups.setdefault(manifest.producer_agent_id, []).append(_index_entry(manifest))
+        with self._lock:
+            self._index_dir().mkdir(parents=True, exist_ok=True)
+            keep = {f"{sha256_hex(agent.encode('utf-8'))}.json" for agent in groups}
+            for path in self._index_dir().iterdir():
+                if path.suffix == ".json" and path.name not in keep:
+                    path.unlink(missing_ok=True)
+            for agent, rows in groups.items():
+                self._write_index(agent, sorted(rows, key=lambda e: e.sort_key))
+            self._index_marker().write_bytes(b"1\n")
+            self._index_ready = True
+        return sum(len(rows) for rows in groups.values())
+
     def put(self, manifest: ArtifactManifest, members: Mapping[str, bytes]) -> ArtifactManifest:
         _validate_artifact_id(manifest.artifact_id)
         _verify_members(manifest, members)
         target = self._dir(manifest.artifact_id)
+        old_agent: str | None = None
+        try:
+            old_agent = self.manifest(manifest.artifact_id).producer_agent_id
+        except ArtifactError:
+            old_agent = None
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(dir=self._root, prefix=".staging-"))
@@ -672,6 +1070,7 @@ class FileArtifactStore:
             except Exception:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise
+            self._index_add(manifest, old_agent)
         return manifest
 
     def _member_path(self, artifact_id: str, member: str) -> Path:
@@ -719,7 +1118,23 @@ class FileArtifactStore:
             raise ArtifactCorruptError(f"member {member!r} checksum mismatch")
         return data
 
+    def _fetch_for_agent(self, agent_id: str) -> Callable[[str], ArtifactManifest | None]:
+        def fetch(artifact_id: str) -> ArtifactManifest | None:
+            try:
+                manifest = self.manifest(artifact_id)
+            except ArtifactError:
+                return None
+            return manifest if manifest.producer_agent_id == agent_id else None
+
+        return fetch
+
+    def _index_prune(self, agent_id: str, artifact_id: str) -> None:
+        with self._lock:
+            self._index_remove_row(artifact_id, agent_id)
+
     def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
+        if agent_id is not None:
+            return list(self.list_page(agent_id=agent_id).artifacts)
         try:
             entries = sorted(self._root.iterdir())
         except OSError:
@@ -732,14 +1147,39 @@ class FileArtifactStore:
                 manifest = self.manifest(entry.name)
             except ArtifactError:
                 continue
-            if agent_id is None or manifest.producer_agent_id == agent_id:
-                out.append(manifest)
+            out.append(manifest)
         return sorted(out, key=lambda m: (m.created_at, m.artifact_id))
+
+    def list_page(
+        self,
+        *,
+        agent_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> ArtifactPage:
+        if agent_id is not None:
+            # Index path: O(agent's artifacts), never scans every package.
+            self._ensure_index()
+            entries = self._load_index(agent_id)
+            return _page_from_entries(
+                entries,
+                cursor=cursor,
+                limit=limit,
+                fetch=self._fetch_for_agent(agent_id),
+                drop=lambda aid: self._index_prune(agent_id, aid),
+            )
+        return page_manifests(self.list(), cursor=cursor, limit=limit)
 
     def delete(self, artifact_id: str) -> None:
         _validate_artifact_id(artifact_id)
+        agent_hint: str | None = None
+        try:
+            agent_hint = self.manifest(artifact_id).producer_agent_id
+        except ArtifactError:
+            agent_hint = None
         with self._lock:
             shutil.rmtree(self._dir(artifact_id), ignore_errors=True)
+            self._index_remove_row(artifact_id, agent_hint)
 
 
 class ModalDictArtifactStore:
@@ -747,11 +1187,25 @@ class ModalDictArtifactStore:
 
     Keys: ``<id>/manifest`` -> canonical manifest bytes, ``<id>/members``
     -> member name list, ``<id>/member/<name>`` -> bytes.
+
+    SOR-201 index keys: ``index/agent/<sha256(agent_id)>`` ->
+    one JSON doc of sorted ``ArtifactIndexEntry`` rows, and ``index/_built``
+    once the index covers the whole Dict. ``modal.Dict`` has no prefix
+    scan, so single-agent listing reads exactly one index document plus
+    the page's manifests — never ``keys()`` over the global store. The
+    doc is read-modify-write on ``put``/``delete`` under the process
+    lock; a lost update is repaired by ``rebuild_index`` (or lazily on
+    the first filtered query of a pre-index Dict).
     """
+
+    _IDX_AGENT_PREFIX = "index/agent/"
+    _IDX_BUILT = "index/_built"
 
     def __init__(self, name: str = ARTIFACTS_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
+        self._lock = threading.Lock()
+        self._index_ready = False
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -759,6 +1213,10 @@ class ModalDictArtifactStore:
 
             self._dict = modal.Dict.from_name(self._name, create_if_missing=True)
         return self._dict
+
+    @staticmethod
+    def _idx_key(agent_id: str) -> str:
+        return f"{ModalDictArtifactStore._IDX_AGENT_PREFIX}{sha256_hex(agent_id.encode('utf-8'))}"
 
     @staticmethod
     def _mkey(artifact_id: str, member: str) -> str:
@@ -786,6 +1244,11 @@ class ModalDictArtifactStore:
         # One Dict RPC per member serialized artifact create behind N network
         # round-trips (SOR-118); a bounded pool keeps the commit order —
         # manifest last — while the member fan-out runs concurrently.
+        old_agent: str | None = None
+        try:
+            old_agent = self.manifest(aid).producer_agent_id
+        except ArtifactError:
+            old_agent = None
         with observe(
             "modal_dict.put_members",
             store=self._name,
@@ -802,7 +1265,104 @@ class ModalDictArtifactStore:
                     future.result()
         self._put(f"{aid}/members", sorted(members))
         self._put(f"{aid}/manifest", manifest_dumps(manifest))
+        self._index_add(manifest, old_agent)
         return manifest
+
+    def _index_add(self, manifest: ArtifactManifest, old_agent: str | None) -> None:
+        """RMW the producer's index doc under the process lock."""
+        with self._lock:
+            if old_agent is not None and old_agent != manifest.producer_agent_id:
+                self._index_remove_row(manifest.artifact_id, old_agent)
+            key = self._idx_key(manifest.producer_agent_id)
+            rows = _index_loads(self._get(key))
+            self._put(key, _index_dumps(_index_add_entry(rows, _index_entry(manifest))))
+
+    def _index_remove_row(self, artifact_id: str, agent_id: str | None) -> None:
+        """Drop ``artifact_id`` from the index; caller holds ``_lock``.
+
+        With ``agent_id`` this is one doc RMW; without it (a corrupt
+        manifest hides the producer) every ``index/agent/*`` doc is
+        scanned — bounded by agent count, and only on the rare
+        undecodable-delete path.
+        """
+        if agent_id is not None:
+            keys = [self._idx_key(agent_id)]
+        else:
+            keys = [
+                k
+                for k in self._d().keys()
+                if isinstance(k, str) and k.startswith(self._IDX_AGENT_PREFIX)
+            ]
+        for key in keys:
+            rows = _index_loads(self._get(key))
+            kept = [e for e in rows if e.artifact_id != artifact_id]
+            if len(kept) == len(rows):
+                continue
+            if kept:
+                self._put(key, _index_dumps(kept))
+            else:
+                self._pop(key)
+
+    def _ensure_index(self) -> None:
+        """Lazily build the index on the first filtered query — the safe
+        migration for Dicts that predate the index."""
+        if self._index_ready:
+            return
+        if self._get(self._IDX_BUILT) is None:
+            self.rebuild_index()
+        self._index_ready = True
+
+    def rebuild_index(self) -> int:
+        """Rescan every manifest in the Dict and rewrite all agent docs.
+
+        One ``keys()`` enumeration plus one point get per artifact — the
+        only path that still touches global history, and it converges the
+        index (drops docs for producers with no artifacts left).
+        """
+        artifact_ids = self._all_manifest_ids()
+        with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
+        groups: dict[str, list[ArtifactIndexEntry]] = {}
+        for artifact_id, raw in zip(artifact_ids, raws):
+            if raw is None:
+                continue
+            try:
+                manifest = manifest_loads(raw)
+            except ArtifactError:
+                continue
+            if manifest.artifact_id != artifact_id:
+                continue
+            groups.setdefault(manifest.producer_agent_id, []).append(_index_entry(manifest))
+        keep = {self._idx_key(agent) for agent in groups}
+        with observe("modal_dict.write_index", store=self._name, agents=len(groups)):
+            existing = [
+                k
+                for k in self._d().keys()
+                if isinstance(k, str) and k.startswith(self._IDX_AGENT_PREFIX)
+            ]
+            for key in existing:
+                if key not in keep:
+                    self._pop(key)
+            for agent, rows in groups.items():
+                self._put(self._idx_key(agent), _index_dumps(rows))
+            self._put(self._IDX_BUILT, b"1")
+        self._index_ready = True
+        return sum(len(rows) for rows in groups.values())
+
+    def _all_manifest_ids(self) -> list[str]:
+        with observe("modal_dict.keys", store=self._name):
+            keys = list(self._d().keys())
+        # Artifact ids never contain "/", so ``<id>/manifest`` has exactly
+        # two segments; the ``/`` check also drops ``<id>/member/manifest``
+        # and every ``index/`` key.
+        return [
+            key[: -len("/manifest")]
+            for key in keys
+            if isinstance(key, str)
+            and key.endswith("/manifest")
+            and "/" not in key[: -len("/manifest")]
+        ]
 
     def manifest(self, artifact_id: str) -> ArtifactManifest:
         raw = self._get(f"{artifact_id}/manifest")
@@ -848,24 +1408,31 @@ class ModalDictArtifactStore:
             raise ArtifactCorruptError(f"member {member!r} checksum mismatch")
         return data
 
+    def _fetch_for_agent(self, agent_id: str) -> Callable[[str], ArtifactManifest | None]:
+        def fetch(artifact_id: str) -> ArtifactManifest | None:
+            try:
+                manifest = self.manifest(artifact_id)
+            except ArtifactError:
+                return None
+            return manifest if manifest.producer_agent_id == agent_id else None
+
+        return fetch
+
+    def _index_prune(self, agent_id: str, artifact_id: str) -> None:
+        with self._lock:
+            self._index_remove_row(artifact_id, agent_id)
+
     def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
+        if agent_id is not None:
+            return list(self.list_page(agent_id=agent_id).artifacts)
         # Enumerate keys only: ``items()`` streams every value in the Dict —
         # all member blobs — so one list call used to download the entire
         # store and materialize it in memory. ``keys()`` carries no values;
         # manifests are then fetched point-wise through the same bounded
         # pool as put/open, so a list/query costs O(#artifacts) small reads,
-        # never O(store bytes).
-        with observe("modal_dict.keys", store=self._name):
-            keys = list(self._d().keys())
-        # Artifact ids never contain "/", so ``<id>/manifest`` has exactly
-        # two segments; the ``/`` check also drops ``<id>/member/manifest``.
-        artifact_ids = [
-            key[: -len("/manifest")]
-            for key in keys
-            if isinstance(key, str)
-            and key.endswith("/manifest")
-            and "/" not in key[: -len("/manifest")]
-        ]
+        # never O(store bytes). Unfiltered listing is inherently global;
+        # agent-filtered listing takes the index path (SOR-201).
+        artifact_ids = self._all_manifest_ids()
         with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
             with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
                 raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
@@ -879,16 +1446,43 @@ class ModalDictArtifactStore:
                 continue
             if manifest.artifact_id != artifact_id:
                 continue
-            if agent_id is None or manifest.producer_agent_id == agent_id:
-                out.append(manifest)
+            out.append(manifest)
         return sorted(out, key=lambda m: (m.created_at, m.artifact_id))
 
+    def list_page(
+        self,
+        *,
+        agent_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> ArtifactPage:
+        if agent_id is not None:
+            # One index doc + ≤limit point gets: O(page), independent of
+            # the Dict's total artifact count.
+            self._ensure_index()
+            entries = _index_loads(self._get(self._idx_key(agent_id)))
+            return _page_from_entries(
+                entries,
+                cursor=cursor,
+                limit=limit,
+                fetch=self._fetch_for_agent(agent_id),
+                drop=lambda aid: self._index_prune(agent_id, aid),
+            )
+        return page_manifests(self.list(), cursor=cursor, limit=limit)
+
     def delete(self, artifact_id: str) -> None:
+        agent_hint: str | None = None
+        try:
+            agent_hint = self.manifest(artifact_id).producer_agent_id
+        except ArtifactError:
+            agent_hint = None
         members = self._get(f"{artifact_id}/members") or []
         for name in members:
             self._pop(self._mkey(artifact_id, name))
         self._pop(f"{artifact_id}/members")
         self._pop(f"{artifact_id}/manifest")
+        with self._lock:
+            self._index_remove_row(artifact_id, agent_hint)
 
 
 def _to_bytes(value: bytes | str) -> bytes:
@@ -980,9 +1574,11 @@ __all__ = [
     "ArtifactCorruptError",
     "ArtifactError",
     "ArtifactFile",
+    "ArtifactIndexEntry",
     "ArtifactManifest",
     "ArtifactNotFoundError",
     "ArtifactPackage",
+    "ArtifactPage",
     "ArtifactSecretError",
     "ArtifactStore",
     "FileArtifactStore",
@@ -996,5 +1592,6 @@ __all__ = [
     "manifest_from_dict",
     "manifest_loads",
     "manifest_to_dict",
+    "page_manifests",
     "sha256_hex",
 ]
