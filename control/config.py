@@ -85,6 +85,17 @@ SANDBOX_USD_PER_S = CPU_USD_PER_CORE_S * REQUEST_CPU_CORES + MEM_USD_PER_GIB_S *
 TERMINAL_STATUSES = frozenset({"closed", "timed_out", "lost"})
 ACTIVE_STATUSES = frozenset({"creating", "idle", "running"})
 
+# SOR-203: control-plane web-container warmth (Modal autoscaler). Modal's
+# default idle window is 60s, so nearly every interactive request bursts a
+# ~7s cold start; a longer ``scaledown_window`` keeps the last container
+# warm after traffic and is billed only for the idle tail — the smallest
+# cost-rational strategy for a request-driven control plane (``min_containers``
+# is always-on cost; offered as an opt-in override, not the default).
+CONTROL_SCALEDOWN_WINDOW_S = 300
+# Modal autoscaler bounds for ``scaledown_window``: 2s .. 20min.
+CONTROL_SCALEDOWN_WINDOW_MIN_S = 2
+CONTROL_SCALEDOWN_WINDOW_MAX_S = 1200
+
 
 def env_str(name: str, default: str) -> str:
     raw = os.environ.get(name)
@@ -164,6 +175,39 @@ def lifecycle_config(env: Mapping[str, str] | None = None) -> LifecycleConfig:
         sandbox_timeout_s=_env_int(env, "SBX_SANDBOX_TIMEOUT_S", SANDBOX_TIMEOUT_S),
         create_grace_s=_env_int(env, "SBX_CREATE_GRACE_S", CREATE_GRACE_S),
         run_grace_s=run_grace_s,
+    )
+
+
+@dataclass(frozen=True)
+class ControlWarmthConfig:
+    """Resolved Modal autoscaler warmth for the control-plane web function.
+
+    ``scaledown_window_s`` is the post-traffic idle window before the last
+    container scales to zero; ``min_containers`` / ``buffer_containers``
+    are opt-in always-warm / headroom knobs (0 = unset, Modal's scale-to-
+    zero default). These are *control-plane* tunables only — they resolve
+    at deploy time into the ASGI function's autoscaler config and never
+    touch the Agent ``Sandbox.create`` lifecycle chain.
+    """
+
+    scaledown_window_s: int
+    min_containers: int
+    buffer_containers: int
+
+
+def control_warmth_config(env: Mapping[str, str] | None = None) -> ControlWarmthConfig:
+    """Resolve the web function's autoscaler warmth once per deploy.
+
+    The scaledown window clamps into Modal's accepted range (2s..1200s)
+    rather than failing a deploy on an out-of-range override.
+    """
+    env = os.environ if env is None else env
+    scaledown = _env_int(env, "SBX_CONTROL_SCALEDOWN_WINDOW_S", CONTROL_SCALEDOWN_WINDOW_S)
+    scaledown = min(max(scaledown, CONTROL_SCALEDOWN_WINDOW_MIN_S), CONTROL_SCALEDOWN_WINDOW_MAX_S)
+    return ControlWarmthConfig(
+        scaledown_window_s=scaledown,
+        min_containers=max(0, _env_int(env, "SBX_CONTROL_MIN_CONTAINERS", 0)),
+        buffer_containers=max(0, _env_int(env, "SBX_CONTROL_BUFFER_CONTAINERS", 0)),
     )
 
 

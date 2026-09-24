@@ -75,6 +75,22 @@ def test_modal_app_source_has_decorators() -> None:
         assert pkg in src
 
 
+def test_modal_app_web_function_carries_resolved_warmth() -> None:
+    """SOR-203: the ASGI function binds the resolved autoscaler warmth —
+    ``scaledown_window`` (post-traffic warm tail) plus opt-in
+    ``min_containers``/``buffer_containers`` — while ``reap_cron`` stays
+    on scale-to-zero defaults (a periodic cron has no latency budget)."""
+    src = MODAL_APP.read_text(encoding="utf-8")
+    assert "control_warmth_config" in src
+    assert "scaledown_window=_WARMTH.scaledown_window_s" in src
+    assert "min_containers=_WARMTH.min_containers" in src
+    assert "buffer_containers=_WARMTH.buffer_containers" in src
+    cron_idx = src.index("def reap_cron")
+    cron_deco = src[src.rindex("@app.function", 0, cron_idx) : cron_idx]
+    for knob in ("scaledown_window", "min_containers", "buffer_containers"):
+        assert knob not in cron_deco
+
+
 def test_modal_app_deploy_source_closure_includes_runtime() -> None:
     """SOR-138: the deploy image must carry the ``runtime`` package.
 

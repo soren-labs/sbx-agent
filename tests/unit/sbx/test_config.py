@@ -207,6 +207,75 @@ def test_lifecycle_fields_reject_nonpositive(tmp_path) -> None:
             load(tmp_path / "missing.toml", env={env_name: "bogus"})
 
 
+def test_control_warmth_env_and_file(tmp_path) -> None:
+    """SOR-203: the warmth knobs resolve file → env → absent like the
+    other deploy tunables."""
+    cfg = load(
+        tmp_path / "missing.toml",
+        env={
+            "SBX_CONTROL_SCALEDOWN_WINDOW_S": "600",
+            "SBX_CONTROL_MIN_CONTAINERS": "1",
+            "SBX_CONTROL_BUFFER_CONTAINERS": "0",
+        },
+    )
+    assert cfg.config.control_scaledown_window_s == 600
+    assert cfg.config.control_min_containers == 1
+    assert cfg.config.control_buffer_containers == 0
+    assert cfg.sources["control_scaledown_window_s"] == "env"
+    save(
+        BootstrapConfig(control_scaledown_window_s=900, control_min_containers=1),
+        tmp_path / "c.toml",
+    )
+    cfg = load(tmp_path / "c.toml", env={})
+    assert cfg.config.control_scaledown_window_s == 900
+    assert cfg.config.control_min_containers == 1
+    assert cfg.config.control_buffer_containers is None
+    assert cfg.sources["control_scaledown_window_s"] == "file"
+
+
+def test_control_warmth_unset_stays_absent(tmp_path) -> None:
+    """Unset warmth knobs must not leak into the file or the deploy env —
+    the ``control.config`` defaults win over an absent local value."""
+    config = BootstrapConfig()
+    save(config, tmp_path / "c.toml")
+    text = (tmp_path / "c.toml").read_text()
+    env = config.deploy_env()
+    for key, name in (
+        ("control_scaledown_window_s", "SBX_CONTROL_SCALEDOWN_WINDOW_S"),
+        ("control_min_containers", "SBX_CONTROL_MIN_CONTAINERS"),
+        ("control_buffer_containers", "SBX_CONTROL_BUFFER_CONTAINERS"),
+    ):
+        assert key not in text
+        assert name not in env
+
+
+def test_control_warmth_reaches_deploy_env() -> None:
+    """The resolved warmth reaches the ``modal deploy`` subprocess env —
+    ``control.modal_app`` bakes it into the function's autoscaler config
+    at deploy time (it is not remote env)."""
+    env = BootstrapConfig(
+        control_scaledown_window_s=600,
+        control_min_containers=1,
+        control_buffer_containers=2,
+    ).deploy_env()
+    assert env["SBX_CONTROL_SCALEDOWN_WINDOW_S"] == "600"
+    assert env["SBX_CONTROL_MIN_CONTAINERS"] == "1"
+    assert env["SBX_CONTROL_BUFFER_CONTAINERS"] == "2"
+
+
+def test_control_warmth_rejects_negative(tmp_path) -> None:
+    """Zero is legal (explicit scale-to-zero); negatives are not."""
+    for env_name in (
+        "SBX_CONTROL_SCALEDOWN_WINDOW_S",
+        "SBX_CONTROL_MIN_CONTAINERS",
+        "SBX_CONTROL_BUFFER_CONTAINERS",
+    ):
+        with pytest.raises(ValueError):
+            load(tmp_path / "missing.toml", env={env_name: "-1"})
+        with pytest.raises(ValueError):
+            load(tmp_path / "missing.toml", env={env_name: "bogus"})
+
+
 def test_github_bridge_persists_via_file(tmp_path) -> None:
     """SOR-133: gate + Secret *name* round-trip through config.toml."""
     config = BootstrapConfig(github_ephemeral=True, github_secret_name="sbx-github")

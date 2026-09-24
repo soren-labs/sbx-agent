@@ -79,6 +79,16 @@ models?}`). Devin's seeded account takes `SBX_DEVIN_BURST_SLOTS` (default 8).
 serves — the shared `sbx-codex-auth` Secret is only required and mounted when
 `codex` is selected, so e.g. a devin-only deploy does not need it.
 
+SOR-203 web-container warmth (deploy-time autoscaler knobs, applied to the
+ASGI function only — never to Agent sandboxes or `reap_cron`):
+`SBX_CONTROL_SCALEDOWN_WINDOW_S` (default 300, clamped to Modal's 2–1200s
+range) keeps the last container warm after traffic so interactive requests
+skip the ~7.5s cold start; `SBX_CONTROL_MIN_CONTAINERS` and
+`SBX_CONTROL_BUFFER_CONTAINERS` (default 0 = scale to zero) are opt-in
+always-warm/burst-headroom overrides. All three are also settable as
+`deploy.<name>` in `$SBX_CONFIG` and are replayed into the `modal deploy`
+subprocess env. Benchmark + cost assumptions: `docs/reviews/SOR-203.md`.
+
 ### Provider CLI versions (SOR-175)
 
 `runtime/packages.txt` pins every provider CLI version. Any `*_version` key
