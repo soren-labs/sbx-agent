@@ -28,8 +28,18 @@ from _fake_native import (
 
 PROVIDER = "devin"
 DEFAULT_SESSION_ID = "devin-session-01a09b11"
-# SOR-204 canned listing: the SWE-2 tiers the subscription exposes.
+# SOR-204 canned listing: the SWE-2 tiers the subscription exposes. The
+# real CLI's ``models list`` defaults to a text layout organized by family;
+# ``--format json`` returns the ``families -> variants -> model_uid``
+# catalog instead.
 DEFAULT_MODELS = "swe-2-medium\nswe-2-high\nswe-2-max\n"
+DEFAULT_MODELS_JSON = (
+    '{"families": [{"family_label": "SWE-2", "family_uid": "swe-2",'
+    ' "slug": "swe-2", "aliases": ["swe"], "variants": ['
+    ' {"model_uid": "swe-2-medium", "label": "SWE-2 Medium"},'
+    ' {"model_uid": "swe-2-high", "label": "SWE-2 High"},'
+    ' {"model_uid": "swe-2-max", "label": "SWE-2 Max"}]}]}\n'
+)
 
 _BOOL_FLAGS = {"-p", "--print", "--acp", "--no-git"}
 _VALUE_FLAGS = {"-m", "--model", "-C", "--cd", "--resume", "--session", "--export"}
@@ -47,12 +57,14 @@ def main() -> None:
     install_term_handler()
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     credential = data_home / "devin" / "credentials.toml"
+    argv = sys.argv[1:]
     models_listing(
-        sys.argv[1:],
+        argv,
         ("models", "list"),
         credential,
         "FAKE_DEVIN_MODELS",
-        DEFAULT_MODELS,
+        DEFAULT_MODELS_JSON if argv[2:4] == ["--format", "json"] else DEFAULT_MODELS,
+        banner=False,
     )
     auth_check(sys.argv[1:], ("auth", "status"), credential)
     positionals, values, _seen = scan_argv(

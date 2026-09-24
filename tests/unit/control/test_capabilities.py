@@ -296,6 +296,30 @@ class TestSandboxCapabilityProbe:
         result = probe.probe(_account("grok"), None)
         assert result.error == "no_credential"
 
+    def test_devin_models_list_json_catalog(self, stub_runner: Path, repo_root: Path) -> None:
+        """``devin models list --format json`` → exact ``model_uid`` rows.
+
+        The real text layout interleaves family headers (``SWE-2 (swe-2)``)
+        that parse as phantom model ids — the probe requests JSON so the
+        discovered catalog advertises only real variants (cap-e2e).
+        """
+        fake = repo_root / "tests" / "fakes" / "fake_devin.py"
+        probe = self._probe(stub_runner, {"DEVIN_BIN": str(fake)})
+        account = _account("devin", id="devin-1")
+        blob = {
+            "provider": "devin",
+            "files": {".local/share/devin/credentials.toml": "REDACTED"},
+        }
+        result = probe.probe(account, blob)
+        assert result.error is None
+        assert [m.model for m in result.models] == [
+            "swe-2-medium",
+            "swe-2-high",
+            "swe-2-max",
+        ]
+        assert all(not m.reasoning_efforts for m in result.models)
+        assert all("swe" in m.aliases for m in result.models)
+
     def test_cli_rejection_is_error(
         self, stub_runner: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

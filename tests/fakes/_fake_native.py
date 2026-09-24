@@ -154,6 +154,8 @@ def models_listing(
     credential: Path,
     env_name: str,
     default: str,
+    *,
+    banner: bool = True,
 ) -> None:
     """Dispatch the provider's models subcommand (SOR-204); no-op otherwise.
 
@@ -169,8 +171,11 @@ def models_listing(
         sys.exit(1)
     # ``models`` doubles as the auth probe for agy/grok — keep the
     # logged-in marker line ahead of the listing so both readers are
-    # satisfied (capability parsing skips non-model lines).
-    print("Logged in")
+    # satisfied (capability parsing skips non-model lines). Providers with
+    # a separate auth argv or a structured format (devin ``--format json``)
+    # emit the listing raw — a banner would corrupt the payload.
+    if banner:
+        print("Logged in")
     raw = os.environ.get(env_name, default)
     sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
     sys.exit(0)
