@@ -1344,6 +1344,57 @@ def list_agents(
     return {"agents": agents, "next_cursor": next_cursor}
 
 
+@router.get("/agents/summary")
+def agents_summary(
+    provider: ProviderId | None = None,
+    account_id: str | None = None,
+    status: str | None = None,
+    workflow_id: str | None = None,
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    v1: V1State = Depends(get_v1_state),
+    workflows: WorkflowService = Depends(get_workflow_service),
+) -> dict[str, Any]:
+    """Cheap rollup the Console polls instead of a full ``GET /v1/agents``.
+
+    Applies the same record-level filters as the list route but skips the
+    per-agent payload build and the all-bindings scan: one store pass.
+    ``version`` pins ``{total}:{max updated_at}`` so clients only refetch
+    the expensive page when the set actually changed (SOR-202).
+    """
+    records = plane.store.list_all()
+    if workflow_id is not None:
+        try:
+            scoped = workflows.agent_ids(key.id, workflow_id)
+        except Exception:
+            scoped = set()
+        records = [rec for rec in records if rec.id in scoped]
+    by_status: dict[str, int] = {}
+    latest: datetime | None = None
+    live = 0
+    for rec in records:
+        meta = _meta_for(v1, rec)
+        if provider is not None and (meta.provider or "codex") != provider:
+            continue
+        if account_id is not None and (meta.account_id or "auto") != account_id:
+            continue
+        public_status = "idle" if rec.status == "suspended" else rec.status
+        if status is not None and public_status != status:
+            continue
+        by_status[public_status] = by_status.get(public_status, 0) + 1
+        if public_status in ("creating", "idle", "running"):
+            live += 1
+        if latest is None or rec.updated_at > latest:
+            latest = rec.updated_at
+    total = sum(by_status.values())
+    return {
+        "total": total,
+        "live": live,
+        "by_status": by_status,
+        "version": f"{total}:{latest.isoformat() if latest else ''}",
+    }
+
+
 @router.get("/agents/{agent_id}")
 def get_agent(
     agent_id: str,

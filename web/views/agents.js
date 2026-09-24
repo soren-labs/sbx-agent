@@ -67,6 +67,15 @@ export function renderAgents({ route }) {
   const statsEl = h("div", { class: "stats", "data-testid": "agent-stats" });
   const listEl = h("div");
 
+  const summaryQuery = () => ({
+    provider: state.provider || undefined,
+    workflow_id: state.workflow || undefined,
+  });
+  // SOR-202: `stamp` baselines the rollup version after each full page;
+  // `hot` (live agents present) picks the summary tick cadence.
+  let stamp = null;
+  let hot = false;
+
   const syncQuery = () =>
     navigate("/agents", {
       filter: state.filter !== "all" ? state.filter : null,
@@ -84,6 +93,13 @@ export function renderAgents({ route }) {
       state.agents = append ? [...state.agents, ...(res.agents || [])] : res.agents || [];
       state.nextCursor = res.next_cursor || null;
       state.error = null;
+      try {
+        const sum = await api.agentsSummary(summaryQuery());
+        stamp = sum?.version || stamp;
+        hot = Boolean(sum?.live);
+      } catch {
+        // Baseline stays; the next tick re-baselines.
+      }
     } catch (err) {
       state.error = err;
     } finally {
@@ -282,6 +298,19 @@ export function renderAgents({ route }) {
 
   render();
   void load();
-  const poll = poller(() => load(), 5000);
+  // Cheap summary tick (SOR-202): the full listAgents page is only
+  // refetched when the rollup's version moved — never on a fixed cadence.
+  const poll = poller(async () => {
+    let sum = null;
+    try {
+      sum = await api.agentsSummary(summaryQuery());
+    } catch {
+      return; // transient failure — keep the current cadence
+    }
+    hot = Boolean(sum?.live);
+    const version = sum?.version || "";
+    if (stamp !== null && version !== stamp) await load();
+    stamp = version;
+  }, () => (hot ? 5000 : 30000));
   return { el, title: t("Agents"), dispose: () => poll.stop() };
 }

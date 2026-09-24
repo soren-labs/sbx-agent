@@ -86,7 +86,7 @@ function chipInput(values, onChange, { placeholder, testid }) {
   return root;
 }
 
-export function renderNewAgent({ route }) {
+export function renderNewAgent({ route, shell }) {
   const q = route.query;
   const f = {
     prompt: q.prompt || "",
@@ -686,6 +686,7 @@ export function renderNewAgent({ route }) {
       const res = await api.createAgent(build(), idempotencyKey);
       prompts.set(res.agent.id, res.run.id, f.prompt);
       toast(t("Agent created — first run queued"), { tone: "success" });
+      shell?.bumpLive();
       navigate(`/agents/${encodeURIComponent(res.agent.id)}`);
     } catch (err) {
       const info = explainApiError(err);
