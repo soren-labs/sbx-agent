@@ -89,6 +89,17 @@ class WorkflowService:
         """The workflow binding for one agent, or None when untagged."""
         return self._store.for_agent(agent_id)
 
+    def all_bindings(self) -> dict[str, WorkflowTaskRecord]:
+        """Every agent→task binding in one store pass (SOR-200).
+
+        The ``GET /v1/agents`` page resolves every ``metadata`` echo at
+        once instead of serializing a Dict read per agent — and because
+        it needs no agent ids up front, it can run concurrently with the
+        session listing itself. Agents with no decodable binding are
+        absent from the map.
+        """
+        return self._store.all_bindings()
+
     def agent_ids(self, owner: str, workflow_id: str) -> set[str]:
         """Ids bound to ``(owner, workflow_id)`` — the ``GET /v1/agents``
         ``workflow_id`` filter."""

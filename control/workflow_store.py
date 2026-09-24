@@ -136,6 +136,15 @@ class WorkflowStore(Protocol):
     def for_agent(self, agent_id: str) -> WorkflowTaskRecord | None:
         """The task binding for one agent, or None."""
 
+    def all_bindings(self) -> dict[str, WorkflowTaskRecord]:
+        """Every decodable per-agent binding in one backing-store pass.
+
+        ``GET /v1/agents`` resolves the ``metadata`` echo for a whole
+        page; serial per-agent gets would turn every list into an N+1 of
+        remote reads (SOR-200). Agents with no decodable binding are
+        absent from the map.
+        """
+
     def list_workflow(self, owner: str, workflow_id: str) -> list[WorkflowTaskRecord]:
         """All task records of ``(owner, workflow_id)``, created_at order.
 
@@ -152,7 +161,7 @@ class _WorkflowStoreBase:
 
     Public methods serialize on ``self._lock``; the ``_*_raw`` primitives
     are plain reads/writes used inside that lock (and by the lock-free
-    reads ``for_agent``/``list_workflow``).
+    reads ``for_agent``/``all_bindings``/``list_workflow``).
     """
 
     _lock: threading.RLock
@@ -203,6 +212,23 @@ class _WorkflowStoreBase:
 
     def for_agent(self, agent_id: str) -> WorkflowTaskRecord | None:
         return _decode(self._get_agent_raw(agent_id))
+
+    def all_bindings(self) -> dict[str, WorkflowTaskRecord]:
+        """Batch ``for_agent``: one scan, same decode-and-skip rules.
+
+        On the ``modal.Dict`` backend this costs a single ``items()`` call
+        for any page size instead of one ``get`` round-trip per agent.
+        """
+        out: dict[str, WorkflowTaskRecord] = {}
+        try:
+            raws = self._iter_agent_raws()
+        except Exception:
+            return out
+        for raw in raws:
+            record = _decode(raw)
+            if record is not None:
+                out[record.agent_id] = record
+        return out
 
     def list_workflow(self, owner: str, workflow_id: str) -> list[WorkflowTaskRecord]:
         by_agent: dict[str, WorkflowTaskRecord] = {}
