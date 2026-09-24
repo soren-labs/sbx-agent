@@ -31,7 +31,7 @@ from runtime.runner.credentials import (
     restore_credential_blob,
     write_secret_file,
 )
-from runtime.runner.effort import effort_error, normalize_effort
+from runtime.runner.effort import effort_error, native_effort, normalize_effort
 from runtime.runner.workspace import (
     atomic_write,
     codex_home,
@@ -56,9 +56,12 @@ def render_config_toml(*, model: str, auth: str, reasoning_effort: str | None = 
         f"model = {_toml_str(model)}",
     ]
     if reasoning_effort:
-        # SOR-179: durable codex-native effort — config.toml applies to
-        # ``codex exec`` first turns and ``codex exec resume`` alike.
-        lines.append(f"model_reasoning_effort = {_toml_str(reasoning_effort)}")
+        # SOR-179/204: durable codex-native effort — config.toml applies to
+        # ``codex exec`` first turns and ``codex exec resume`` alike. The
+        # canonical level is translated through the explicit native map.
+        lines.append(
+            f"model_reasoning_effort = {_toml_str(native_effort('codex', reasoning_effort))}"
+        )
     if auth == "provider":
         lines.append('model_provider = "sbx"')
     lines += [
@@ -126,10 +129,23 @@ def cmd_init(
     home = codex_home(root)
 
     try:
-        # SOR-179: the in-sandbox backstop — an effort the provider cannot
-        # honor fails init explicitly rather than being silently dropped.
+        # SOR-179/204: the in-sandbox backstop — an effort the provider
+        # cannot honor fails init explicitly rather than being silently
+        # dropped. ``SBX_EFFORT_SURFACE`` (SOR-204) carries the account's
+        # discovered canonical levels; without it the verified floor applies.
         effort = normalize_effort(reasoning_effort)
-        refusal = effort_error(provider, effort)
+        surface = os.environ.get("SBX_EFFORT_SURFACE")
+        if surface is not None and effort is not None:
+            allowed = {tok.strip() for tok in surface.split(",") if tok.strip()}
+            if effort not in allowed:
+                refusal = (
+                    f"account does not support reasoning_effort {effort!r} "
+                    f"(surface: {sorted(allowed)})"
+                )
+            else:
+                refusal = None
+        else:
+            refusal = effort_error(provider, effort)
         if refusal is not None:
             print(f"runner init: {refusal}", file=sys.stderr)
             return EXIT_INTERNAL

@@ -20,6 +20,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    models_listing,
     rewrite_json,
     run_scenario,
     scan_argv,
@@ -27,6 +28,8 @@ from _fake_native import (
 
 PROVIDER = "devin"
 DEFAULT_SESSION_ID = "devin-session-01a09b11"
+# SOR-204 canned listing: the SWE-2 tiers the subscription exposes.
+DEFAULT_MODELS = "swe-2-medium\nswe-2-high\nswe-2-max\n"
 
 _BOOL_FLAGS = {"-p", "--print", "--acp", "--no-git"}
 _VALUE_FLAGS = {"-m", "--model", "-C", "--cd", "--resume", "--session", "--export"}
@@ -43,11 +46,15 @@ def _rewrite_session(line: str, session_id: str) -> str:
 def main() -> None:
     install_term_handler()
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    auth_check(
+    credential = data_home / "devin" / "credentials.toml"
+    models_listing(
         sys.argv[1:],
-        ("auth", "status"),
-        data_home / "devin" / "credentials.toml",
+        ("models",),
+        credential,
+        "FAKE_DEVIN_MODELS",
+        DEFAULT_MODELS,
     )
+    auth_check(sys.argv[1:], ("auth", "status"), credential)
     positionals, values, _seen = scan_argv(
         sys.argv[1:], bool_flags=_BOOL_FLAGS, value_flags=_VALUE_FLAGS
     )

@@ -174,6 +174,18 @@ PROVIDER_AUTH_CHECKS: dict[str, tuple[str, ...]] = {
     "opencode": ("auth", "list"),
 }
 
+# SOR-204: argv tail that makes each provider CLI enumerate the account's
+# servable models (and effort tiers where it emits them). ``capabilities``
+# parses the output tolerantly; a CLI that lacks the subcommand exits
+# non-zero and the catalog falls back to declared data.
+PROVIDER_MODEL_CHECKS: dict[str, tuple[str, ...]] = {
+    "codex": ("models",),
+    "devin": ("models",),
+    "antigravity": ("models",),
+    "grok": ("models",),
+    "opencode": ("models",),
+}
+
 # provider -> (*_BIN env override, default binary) — mirrors the runner
 # adapters so tests can point the check at a fake CLI.
 _PROVIDER_BINS: dict[str, tuple[str, str]] = {
@@ -200,14 +212,10 @@ _AUTH_FAIL_MARKERS = (
 _MARKER_REQUIRED_PROVIDERS = ("devin", "grok")
 
 
-def provider_auth_argv(provider: str, env: Mapping[str, str] | None = None) -> list[str] | None:
-    """Argv for the provider's own auth check; None when unsupported.
-
-    ``*_BIN`` overrides mirror the runner adapters; a single ``.py`` token
-    is re-executed with the current interpreter.
-    """
+def _provider_cli_argv(
+    provider: str, tail: tuple[str, ...] | None, env: Mapping[str, str] | None
+) -> list[str] | None:
     env = os.environ if env is None else env
-    tail = PROVIDER_AUTH_CHECKS.get(provider)
     if tail is None:
         return None
     bin_env, default_bin = _PROVIDER_BINS.get(provider, ("", provider))
@@ -217,6 +225,20 @@ def provider_auth_argv(provider: str, env: Mapping[str, str] | None = None) -> l
     if len(tokens) == 1 and tokens[0].endswith(".py"):
         return [sys.executable, tokens[0], *tail]
     return [*tokens, *tail]
+
+
+def provider_auth_argv(provider: str, env: Mapping[str, str] | None = None) -> list[str] | None:
+    """Argv for the provider's own auth check; None when unsupported.
+
+    ``*_BIN`` overrides mirror the runner adapters; a single ``.py`` token
+    is re-executed with the current interpreter.
+    """
+    return _provider_cli_argv(provider, PROVIDER_AUTH_CHECKS.get(provider), env)
+
+
+def provider_models_argv(provider: str, env: Mapping[str, str] | None = None) -> list[str] | None:
+    """Argv for the provider's models listing (SOR-204); None when unsupported."""
+    return _provider_cli_argv(provider, PROVIDER_MODEL_CHECKS.get(provider), env)
 
 
 def classify_auth_output(provider: str, returncode: int, output: str) -> str:
@@ -642,34 +664,7 @@ class SandboxAuthVerifyProbe(SandboxVerifyProbe):
             return ProbeResult(
                 "probe_unavailable", f"no auth check for provider {account.provider!r}"
             )
-        home = handle.root / "home"
-        # Never forward credential env to the provider CLI — the restored
-        # files under the sandbox HOME are the only credential source.
-        check_env = {
-            k: v
-            for k, v in env.items()
-            if k
-            not in (
-                CREDENTIAL_ENV,
-                ACCOUNT_ID_ENV,
-                "CODEX_AUTH_JSON",
-                "SBX_PROVIDER_API_KEY",
-                "SBX_PROVIDER_BASE_URL",
-            )
-        }
-        check_env["HOME"] = str(home)
-        check_env.setdefault("PATH", os.environ.get("PATH", os.defpath))
-        if account.provider in ("devin", "opencode"):
-            # XDG-data credentials (same pinning as runtime.image
-            # devin_runtime_env) — keeps the lookup at the restored home.
-            check_env.update(
-                {
-                    "XDG_CONFIG_HOME": str(home / ".config"),
-                    "XDG_CACHE_HOME": str(home / ".cache"),
-                    "XDG_DATA_HOME": str(home / ".local" / "share"),
-                    "XDG_STATE_HOME": str(home / ".local" / "state"),
-                }
-            )
+        check_env = provider_cli_env(account.provider, env, handle.root / "home")
         try:
             proc = self._backend.exec(handle, argv, env=check_env)
             output = "\n".join(proc.stdout)
@@ -680,6 +675,41 @@ class SandboxAuthVerifyProbe(SandboxVerifyProbe):
 
 
 # ------------------------------------------------------------------ service
+
+
+def provider_cli_env(provider: str, env: Mapping[str, str], home: Path) -> dict[str, str]:
+    """Exec env for a provider CLI inside a probe sandbox.
+
+    Credential-bearing control vars are stripped — the restored files under
+    the sandbox ``HOME`` are the only credential source. ``devin`` and
+    ``opencode`` additionally pin XDG dirs (same pinning as
+    ``runtime.image`` devin_runtime_env) so the lookup stays at the
+    restored home.
+    """
+    check_env = {
+        k: v
+        for k, v in env.items()
+        if k
+        not in (
+            CREDENTIAL_ENV,
+            ACCOUNT_ID_ENV,
+            "CODEX_AUTH_JSON",
+            "SBX_PROVIDER_API_KEY",
+            "SBX_PROVIDER_BASE_URL",
+        )
+    }
+    check_env["HOME"] = str(home)
+    check_env.setdefault("PATH", os.environ.get("PATH", os.defpath))
+    if provider in ("devin", "opencode"):
+        check_env.update(
+            {
+                "XDG_CONFIG_HOME": str(home / ".config"),
+                "XDG_CACHE_HOME": str(home / ".cache"),
+                "XDG_DATA_HOME": str(home / ".local" / "share"),
+                "XDG_STATE_HOME": str(home / ".local" / "state"),
+            }
+        )
+    return check_env
 
 
 class OnboardingService:
@@ -750,7 +780,20 @@ class OnboardingService:
             status="active",
             max_concurrent=slots,
             secret_name=f"{account_secret_prefix()}{account_id}",
-            models=tuple(models) if models else desc.default_models,
+            # Declared-seed models only — SOR-204's capability discovery
+            # supersedes them once the account's first probe lands.
+            models=(
+                tuple(models)
+                if models
+                else (
+                    tuple(
+                        part.strip()
+                        for part in os.environ.get(f"SBX_{provider.upper()}_MODELS", "").split(",")
+                        if part.strip()
+                    )
+                    or desc.default_models
+                )
+            ),
             created_at=datetime.now(UTC).isoformat(),
         )
         self._registry.put(account)

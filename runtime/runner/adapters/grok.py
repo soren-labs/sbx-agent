@@ -79,6 +79,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from runtime.runner.constants import NOOP_EVENT_TYPE
+from runtime.runner.effort import native_effort
 from runtime.runner.events import parse_event_line
 from runtime.runner.workspace import load_session, work_root
 
@@ -245,7 +246,7 @@ class GrokAdapter:
             argv += ["--model", model]
         effort = _session_effort()
         if effort:
-            argv += ["--effort", effort]
+            argv += ["--effort", native_effort("grok", effort)]
         argv += ["--permission-mode", "bypassPermissions"]
         return argv
 
@@ -266,7 +267,7 @@ class GrokAdapter:
         effort = _session_effort()
         if effort:
             # Resume turns inherit the declared effort natively (SOR-179).
-            argv += ["--effort", effort]
+            argv += ["--effort", native_effort("grok", effort)]
         argv += ["--permission-mode", "bypassPermissions"]
         return argv
 

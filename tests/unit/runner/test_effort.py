@@ -10,8 +10,11 @@ from runtime.runner.adapters.antigravity import AntigravityAdapter
 from runtime.runner.adapters.grok import GrokAdapter
 from runtime.runner.effort import (
     CANONICAL_EFFORTS,
+    canonical_effort,
     effort_error,
+    native_effort,
     normalize_effort,
+    split_effort_suffix,
     supported_efforts,
 )
 from tests.unit.runner.conftest import MODEL, init_runner, load_json, run_runner, write_message
@@ -26,12 +29,23 @@ def _write_session(work: Path, **fields: object) -> None:
 
 class TestEffortModule:
     def test_canonical_order(self) -> None:
-        assert CANONICAL_EFFORTS == ("low", "medium", "high")
+        # SOR-204: the full ladder, canonical order.
+        assert CANONICAL_EFFORTS == (
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
 
     @pytest.mark.parametrize("provider", ["codex", "antigravity", "grok"])
     def test_supported_providers(self, provider: str) -> None:
-        assert supported_efforts(provider) == CANONICAL_EFFORTS
+        # The static verified floor; discovery may widen it per account.
+        assert supported_efforts(provider) == ("low", "medium", "high")
         assert effort_error(provider, "high") is None
+        assert effort_error(provider, "xhigh") is not None
 
     @pytest.mark.parametrize("provider", PROVIDERS_NO_EFFORT)
     def test_unsupported_providers(self, provider: str) -> None:
@@ -50,6 +64,24 @@ class TestEffortModule:
     def test_normalize_rejects_unknown(self) -> None:
         with pytest.raises(ValueError, match="turbo"):
             normalize_effort("turbo")
+
+    def test_canonical_effort_maps_native_spellings(self) -> None:
+        assert canonical_effort("codex", "ultra") == "xhigh"
+        assert canonical_effort("codex", "off") == "none"
+        assert canonical_effort("codex", "med") == "medium"
+        assert canonical_effort("codex", "nonsense") is None
+
+    def test_native_effort_identity_default(self) -> None:
+        assert native_effort("codex", "xhigh") == "xhigh"
+
+    def test_split_effort_suffix(self) -> None:
+        assert split_effort_suffix("gemini-3.8-flash-low") == ("gemini-3.8-flash", "low")
+        assert split_effort_suffix("swe-2-max") == ("swe-2", "max")
+        assert split_effort_suffix("gpt-5.6-luna") == ("gpt-5.6-luna", None)
+        assert split_effort_suffix("muse-spark-1.3-contributor-free") == (
+            "muse-spark-1.3-contributor-free",
+            None,
+        )
 
 
 class TestInitEffort:

@@ -761,8 +761,14 @@ paths:
   /v1/models:
     get:
       tags: [meta]
-      summary: Available models per provider with free account counts
+      summary: Discovered models + effort tiers per provider account
       operationId: listModels
+      description: |
+        SOR-204: rows are per (account, model) and come from the
+        capability catalog — live CLI discovery with a TTL cache
+        (`SBX_CAPABILITY_TTL_S`, default 300 s) and stale-last-good
+        semantics, falling back to declared/env/static data until the
+        first probe lands.
       responses:
         "200":
           description: Model list
@@ -778,6 +784,47 @@ paths:
                       $ref: "#/components/schemas/Model"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /v1/models/refresh:
+    post:
+      tags: [meta]
+      summary: Synchronous capability refresh (admin scope)
+      operationId: refreshModels
+      description: |
+        SOR-204: re-probes the provider CLIs of the matching accounts and
+        returns the updated rows. Failed probes keep serving last-good
+        data marked `stale` — refresh never empties the catalog.
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ProviderId"
+        - name: account_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Refresh summary + updated model rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [refreshed, models]
+                properties:
+                  refreshed:
+                    type: integer
+                    minimum: 0
+                    description: Number of accounts re-probed.
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Model"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /v1/me:
     get:
       tags: [meta]
@@ -1195,7 +1242,7 @@ components:
           type: string
         reasoning_effort:
           type: string
-          enum: [low, medium, high]
+          enum: [none, minimal, low, medium, high, xhigh, max]
           description: |
             SOR-179 canonical reasoning effort, agent-scoped: every run of
             the agent (first and follow-up turns, incl. provider resume)
@@ -1668,7 +1715,7 @@ components:
           type: string
         reasoning_effort:
           type: string
-          enum: [low, medium, high]
+          enum: [none, minimal, low, medium, high, xhigh, max]
           nullable: true
           description: |
             SOR-179: the canonical reasoning effort declared at create
@@ -1763,7 +1810,7 @@ components:
           nullable: true
         reasoning_effort:
           type: string
-          enum: [low, medium, high]
+          enum: [none, minimal, low, medium, high, xhigh, max]
           nullable: true
           description: |
             SOR-179: the effective canonical effort the run executed
@@ -1987,21 +2034,73 @@ components:
       properties:
         provider:
           $ref: "#/components/schemas/ProviderId"
+        account:
+          type: string
+          description: SOR-204 — the account id this row was discovered on.
         model:
           type: string
+        display_name:
+          type: string
+        family:
+          type: string
+          description: SOR-204 — product family inferred from the model id (e.g. `swe-2`, `gemini`).
+        aliases:
+          type: array
+          items:
+            type: string
+          description: |
+            SOR-204 — other ids that resolve to this model (e.g. the
+            effort-stripped stem of `swe-2-high` is `swe-2`).
         accounts_available:
           type: integer
           minimum: 0
+          description: Active accounts with a free slot that serve the model.
+        availability:
+          type: string
+          enum: [available, busy, unavailable]
         reasoning_efforts:
           type: array
           items:
             type: string
-            enum: [low, medium, high]
+            enum: [none, minimal, low, medium, high, xhigh, max]
           description: |
-            SOR-179: canonical reasoning-effort levels the provider
-            honors for this model. Empty means the provider has no
-            native effort surface — a declared `reasoning_effort` on
-            agent create is refused as `unsupported`, never ignored.
+            SOR-204: canonical reasoning-effort levels the provider
+            honors for this model, discovered or floor. Empty means the
+            provider has no native effort surface — a declared
+            `reasoning_effort` on agent create is refused as
+            `unsupported`, never ignored.
+        effort_native:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            SOR-204 — canonical level -> provider-native token the
+            adapters emit on argv/config (identity when the CLI spells
+            the canonical levels identically).
+        default_effort:
+          type: string
+          enum: [none, minimal, low, medium, high, xhigh, max]
+          nullable: true
+          description: |
+            SOR-204 — the effort the provider applies when none is
+            declared (e.g. the tier encoded in `gemini-3.8-flash-low`).
+        source:
+          type: string
+          enum: [discovered, declared, env, static]
+          description: |
+            SOR-204 — where this capability row came from: the live CLI
+            probe, `account.models`, `SBX_<PROVIDER>_MODELS`, or the
+            built-in provider defaults.
+        refreshed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: SOR-204 — last successful live refresh; `null` for non-discovered rows.
+        stale:
+          type: boolean
+          description: |
+            SOR-204 — the row is last-good: the last refresh failed or
+            the TTL expired. Stale rows are still servable.
     Me:
       type: object
       required: [key_id, scopes]

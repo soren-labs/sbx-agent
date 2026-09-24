@@ -64,23 +64,43 @@ def _fixture(scenario: str) -> Path:
     return path
 
 
+def _credential_ok() -> bool:
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    auth = home / "auth.json"
+    try:
+        return auth.is_file() and isinstance(json.loads(auth.read_text()), dict)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def _auth_status() -> None:
     """``codex login status`` — the provider CLI's own auth check.
 
     Reflects the restored credential file only: ``$CODEX_HOME`` (else
     ``$HOME/.codex``) ``auth.json`` must exist and hold a JSON object.
     """
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    auth = home / "auth.json"
-    try:
-        ok = auth.is_file() and isinstance(json.loads(auth.read_text()), dict)
-    except (OSError, json.JSONDecodeError):
-        ok = False
-    if ok:
+    if _credential_ok():
         print("Logged in using ChatGPT")
         sys.exit(0)
     print("Not logged in")
     sys.exit(1)
+
+
+DEFAULT_MODELS = "gpt-5.6-luna\ngpt-5.3-codex\n"
+
+
+def _models_listing() -> None:
+    """``codex models`` — the subscription's servable models (SOR-204).
+
+    Answers only with a restored credential; ``FAKE_CODEX_MODELS``
+    overrides the canned listing (JSON or line-per-model).
+    """
+    if not _credential_ok():
+        print("Not logged in")
+        sys.exit(1)
+    raw = os.environ.get("FAKE_CODEX_MODELS", DEFAULT_MODELS)
+    sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
+    sys.exit(0)
 
 
 def parse_argv(argv: list[str]) -> dict:
@@ -89,6 +109,8 @@ def parse_argv(argv: list[str]) -> dict:
         tokens = tokens[1:]
     if tokens[:2] == ["login", "status"]:
         _auth_status()
+    if tokens[:1] == ["models"]:
+        _models_listing()
     if not tokens or tokens[0] != "exec":
         print("expected: exec [--json] ... [resume] [PROMPT]", file=sys.stderr)
         sys.exit(2)

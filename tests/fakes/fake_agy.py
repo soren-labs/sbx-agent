@@ -15,6 +15,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    models_listing,
     rewrite_json,
     run_scenario,
     scan_argv,
@@ -22,6 +23,7 @@ from _fake_native import (
 
 PROVIDER = "antigravity"
 DEFAULT_SESSION_ID = "c3b66b04-872b-4fbe-a3a4-058a026ef20a"
+DEFAULT_MODELS = "gemini-3.8-flash-low\ngemini-3.8-flash-high\ngemini-3.8-pro\n"
 
 _BOOL_FLAGS = {"-p", "--print", "--yolo", "--json"}
 _VALUE_FLAGS = {"--output-format", "-m", "--model", "-C", "--cd", "--resume"}
@@ -39,11 +41,9 @@ def _rewrite_session(line: str, session_id: str) -> str:
 
 def main() -> None:
     install_term_handler()
-    auth_check(
-        sys.argv[1:],
-        ("models",),
-        Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token",
-    )
+    credential = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    models_listing(sys.argv[1:], ("models",), credential, "FAKE_AGY_MODELS", DEFAULT_MODELS)
+    auth_check(sys.argv[1:], ("models",), credential)
     positionals, values, _seen = scan_argv(
         sys.argv[1:], bool_flags=_BOOL_FLAGS, value_flags=_VALUE_FLAGS
     )
