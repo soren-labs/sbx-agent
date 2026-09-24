@@ -131,6 +131,12 @@ def record_from_dict(data: dict[str, Any]) -> SessionRecord:
     return SessionRecord(**payload)
 
 
+def _cached_records(
+    cached: tuple[Any, float, list[dict[str, Any]]],
+) -> list[SessionRecord]:
+    return [record_from_dict(copy.deepcopy(raw)) for raw in cached[2]]
+
+
 class InMemoryStore:
     """Thread-safe dict store for tests and local mode."""
 
@@ -164,8 +170,18 @@ _DICT_FANOUT = 32
 
 # SOR-199: upper bound on cross-container staleness for the read-through
 # listing cache. A write whose ``ver`` bump is lost mid-crash leaves
-# remote readers on their cached page only until this TTL expires.
+# remote readers on their cached page only until this TTL expires plus
+# one background revalidation.
 _LIST_CACHE_TTL_S = float(os.environ.get("SBX_LIST_CACHE_TTL_S", "30"))
+
+# Dict read failures (transient Modal stragglers/outages) are masked by
+# the last good page only while it is still reasonably fresh; beyond this
+# bound an outage surfaces as the honest enumeration path again.
+_LIST_CACHE_STALE_S = max(10 * _LIST_CACHE_TTL_S, 120.0)
+
+# Sentinel for "the version token could not be read" — distinct from a
+# stored ``None`` so a failed token read never looks like a write.
+_VER_UNREAD: Any = object()
 
 
 class ModalDictStore:
@@ -207,6 +223,11 @@ class ModalDictStore:
         self._build_lock = threading.Lock()
         # ``(ver, monotonic-ts, raw record dicts)`` for the last fetch.
         self._list_cache: tuple[Any, float, list[dict[str, Any]]] | None = None
+        # Background revalidation: a TTL-expired page is served stale
+        # while one refresh thread repopulates it — callers never pay
+        # the full fanout for a cache that merely aged out.
+        self._refresh_lock = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -230,47 +251,126 @@ class ModalDictStore:
         return record_from_dict(raw)
 
     def put(self, record: SessionRecord) -> None:
+        raw = record_to_dict(record)
         self._index_add(record.id)
         with observe("modal_dict.put", store=self._name, key=record.id):
-            self._d().put(record.id, record_to_dict(record))
-        self._index_bump_ver()
+            self._d().put(record.id, raw)
+        ver = self._index_bump_ver()
+        self._cache_merge(raw, ver)
 
     def list_all(self) -> list[SessionRecord]:
-        raws: list[Any] | None = None
+        cached = self._list_cache
+        ver: Any = _VER_UNREAD
         try:
             self._ensure_index()
             # Read the version token first: a write that lands anywhere
             # after this point moves ``ver`` past what we cache under, so
             # the next call refetches instead of serving stale records.
             ver = self._idx().get(self._IDX_VER)
-            cached = self._list_cache
-            if (
-                cached is not None
-                and cached[0] == ver
-                and time.monotonic() - cached[1] < _LIST_CACHE_TTL_S
-            ):
-                return [record_from_dict(copy.deepcopy(raw)) for raw in cached[2]]
-            ids = self._idx().get(self._IDX_IDS) or []
-            ids = sorted({str(i) for i in ids})
-            with observe("modal_dict.get_records", store=self._name, records=len(ids)):
-                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
-                    raws = [r for r in pool.map(self._d().get, ids) if isinstance(r, dict)]
         except Exception:
-            raws = None
-        if raws is None:
+            pass
+        if cached is not None:
+            age = time.monotonic() - cached[1]
+            if ver is _VER_UNREAD:
+                # The token itself is unreadable (transient Dict trouble):
+                # serve the last good page while it is still fresh enough
+                # and let a background refresh retry the read, rather
+                # than streaming ``items()`` behind a straggler.
+                if age < _LIST_CACHE_STALE_S:
+                    self._kick_refresh()
+                    return _cached_records(cached)
+            elif cached[0] == ver:
+                if age < _LIST_CACHE_TTL_S:
+                    return _cached_records(cached)
+                # Past TTL with no confirmed write: serve stale and
+                # revalidate in the background — a lost ``ver`` bump is
+                # still repaired within ~TTL + one refetch, but callers
+                # no longer block on the full fanout every TTL window.
+                self._kick_refresh()
+                return _cached_records(cached)
+            # else: a confirmed write moved ``ver`` — refetch below.
+        try:
+            return self._fetch_indexed(None if ver is _VER_UNREAD else ver)
+        except Exception:
+            if cached is not None and time.monotonic() - cached[1] < _LIST_CACHE_STALE_S:
+                self._kick_refresh()
+                return _cached_records(cached)
             # Index unavailable: fall back to the honest full enumeration
             # rather than fail the listing.
-            out: list[SessionRecord] = []
-            with observe("modal_dict.items", store=self._name):
-                items: Iterator[tuple[Any, Any]] = self._d().items()
-                for _key, raw in items:
-                    if isinstance(raw, dict):
-                        out.append(record_from_dict(raw))
-            return out
+            return self._list_scan_fallback()
+
+    def _fetch_indexed(self, ver: Any) -> list[SessionRecord]:
+        """Manifest + point-get fetch; repopulates the listing cache."""
+        ids = self._idx().get(self._IDX_IDS) or []
+        ids = sorted({str(i) for i in ids})
+        with observe("modal_dict.get_records", store=self._name, records=len(ids)):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                raws = [r for r in pool.map(self._d().get, ids) if isinstance(r, dict)]
         # Stale ids (record deleted between index write and read) fetch
         # None and are skipped.
         self._list_cache = (ver, time.monotonic(), raws)
         return [record_from_dict(copy.deepcopy(raw)) for raw in raws]
+
+    def _list_scan_fallback(self) -> list[SessionRecord]:
+        out: list[SessionRecord] = []
+        with observe("modal_dict.items", store=self._name):
+            items: Iterator[tuple[Any, Any]] = self._d().items()
+            for _key, raw in items:
+                if isinstance(raw, dict):
+                    out.append(record_from_dict(raw))
+        return out
+
+    def _kick_refresh(self) -> None:
+        """Repopulate the listing cache off the request path; deduped by
+        ``_refresh_lock`` so stacked stale reads share one refetch."""
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_listing,
+            name=f"{self._name}-list-refresh",
+            daemon=True,
+        )
+        self._refresh_thread.start()
+
+    def _refresh_listing(self) -> None:
+        try:
+            self._ensure_index()
+            ver = self._idx().get(self._IDX_VER)
+            self._fetch_indexed(ver)
+        except Exception:
+            pass
+        finally:
+            self._refresh_lock.release()
+
+    def _cache_merge(self, raw: dict[str, Any], ver: Any) -> None:
+        """Fold an in-process ``put`` into the warm page: same-container
+        reads stay fresh *and* fast instead of paying a refetch for a
+        write this process already knows about. Cross-container writes
+        still invalidate through the ``ver`` mismatch."""
+        with self._lock:
+            cached = self._list_cache
+            if cached is None:
+                return
+            raws = [r for r in cached[2] if r.get("id") != raw.get("id")]
+            raws.append(raw)
+            raws.sort(key=lambda r: str(r.get("id")))
+            self._list_cache = (
+                ver if ver is not None else cached[0],
+                time.monotonic(),
+                raws,
+            )
+
+    def _cache_merge_delete(self, session_id: str, ver: Any) -> None:
+        with self._lock:
+            cached = self._list_cache
+            if cached is None:
+                return
+            raws = [r for r in cached[2] if r.get("id") != session_id]
+            self._list_cache = (
+                ver if ver is not None else cached[0],
+                time.monotonic(),
+                raws,
+            )
 
     def delete(self, session_id: str) -> None:
         try:
@@ -279,7 +379,8 @@ class ModalDictStore:
         except KeyError:
             pass
         self._index_remove(session_id)
-        self._index_bump_ver()
+        ver = self._index_bump_ver()
+        self._cache_merge_delete(session_id, ver)
 
     # ------------------------------------------------------- listing index
 
@@ -312,14 +413,18 @@ class ModalDictStore:
         except Exception:
             pass
 
-    def _index_bump_ver(self) -> None:
+    def _index_bump_ver(self) -> Any:
         """Advance the listing-version token after a mutation so cached
-        pages in every container refetch. Failure degrades to the same
-        rebuild path as index maintenance."""
+        pages in every container refetch. Returns the minted token so the
+        writing process can fold its own change into its cache; failure
+        degrades to the same rebuild path as index maintenance."""
         try:
-            self._idx().put(self._IDX_VER, uuid.uuid4().hex)
+            token = uuid.uuid4().hex
+            self._idx().put(self._IDX_VER, token)
+            return token
         except Exception:
             self._index_broken()
+            return None
 
     def _ensure_index(self) -> None:
         """Lazily build the id manifest on the first listing — the safe
