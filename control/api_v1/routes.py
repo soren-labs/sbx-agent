@@ -87,7 +87,8 @@ from control.artifacts import (
 from control.capabilities import CapabilitySnapshot, declared_snapshot
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
 from control.config import TERMINAL_STATUSES, selected_providers
-from control.credsync import TAG_CRED_RUN_FP
+from control.credlifecycle import CredentialLifecycleService, CredentialRefresher
+from control.credsync import TAG_CRED_RUN_FP, CredentialSync
 from control.devin_pool import ScheduleRefused
 from control.github_app import GitHubAppError
 from control.latency import observe
@@ -2204,10 +2205,12 @@ def create_account(
             raise V1ApiError(400, "invalid_provider", "credential.files must be a string map")
     registry.put(account)
     if body.credential is not None:
-        registry.put_credential_blob(
-            account.id,
-            {"provider": body.provider, "files": dict(files or {})},
-        )
+        blob = {"provider": body.provider, "files": dict(files or {})}
+        registry.put_credential_blob(account.id, blob)
+        try:
+            CredentialLifecycleService(registry).note_credential(account.id, blob)
+        except Exception:
+            pass
     return account_public(account, _running_or_zero(registry, account.id))
 
 
@@ -2310,6 +2313,14 @@ def verify_account(
                 backend.terminate(handle)
             except Exception:
                 pass
+    try:
+        lifecycle = CredentialLifecycleService(registry)
+        if code == 0 and blob:
+            lifecycle.note_credential(account_id, blob)
+        elif code == 5:
+            lifecycle.on_auth_invalid(account_id, detail="auth_invalid", mark_account=False)
+    except Exception:
+        pass
     if code == 0:
         updated = registry.mark_status(account_id, "active", last_error=None)
     elif code == 5:
@@ -2319,6 +2330,58 @@ def verify_account(
     else:
         updated = account
     return account_public(updated, registry.running_count(account_id))
+
+
+@router.get("/accounts/{account_id}/lifecycle")
+def account_credential_lifecycle(
+    account_id: str,
+    key: ApiKey = Depends(admin_key),
+    registry: AccountRegistry = Depends(get_registry),
+) -> dict[str, Any]:
+    """Non-secret credential lifecycle metadata (SOR-176).
+
+    States: ``healthy`` / ``access_expiring`` / ``refreshing`` /
+    ``healthy_refreshed`` / ``reauth_required`` / ``revoked``.
+    """
+    account = _registry_account(registry, account_id)
+    return {
+        "account_id": account.id,
+        "credential_lifecycle": CredentialLifecycleService(registry).describe(account_id),
+    }
+
+
+@router.post("/accounts/{account_id}/lifecycle/refresh")
+def refresh_account_credential(
+    account_id: str,
+    key: ApiKey = Depends(admin_key),
+    plane: Any = Depends(get_plane),
+    registry: AccountRegistry = Depends(get_registry),
+) -> dict[str, Any]:
+    """Run one synchronous credential refresh through the worker path (SOR-176).
+
+    Reuses the app's background refresher when the plane has one; otherwise
+    builds an ad-hoc refresher over the plane's backend. Returns the refresh
+    outcome plus the resulting lifecycle metadata — never token material.
+    """
+    _registry_account(registry, account_id)
+    refresher = getattr(plane, "credential_refresher", None)
+    backend = getattr(plane, "backend", None)
+    if refresher is None:
+        if backend is None:
+            raise V1ApiError(503, "unavailable", "no backend for credential refresh")
+        sync = getattr(plane, "credential_sync", None) or CredentialSync(lambda: registry)
+        refresher = CredentialRefresher(
+            registry_source=lambda: registry,
+            backend=backend,
+            runner_cmd=list(getattr(plane, "runner_cmd", []) or []),
+            sync=sync,
+            lifecycle=CredentialLifecycleService(registry),
+            default_model=getattr(plane, "default_model", None) or "gpt-5.6-luna",
+        )
+    try:
+        return refresher.refresh_account(account_id)
+    except Exception:
+        raise V1ApiError(500, "internal", "credential refresh failed") from None
 
 
 # -------------------------------------------------------------- api keys

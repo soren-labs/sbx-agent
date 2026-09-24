@@ -152,6 +152,22 @@ class RunFailureReporter:
             registry = getattr(scheduler, "registry", None) or getattr(scheduler, "_registry", None)
             if credential_rotated(registry, account_id, credential_fp):
                 return
+        if kind == "auth_invalid":
+            # SOR-176: terminal credential rejection also feeds the lifecycle
+            # record — invalid_grant/revoked markers pin ``revoked``, the rest
+            # land in ``reauth_required``. The scheduler's own report_failure
+            # still marks the account ``invalid`` for failover below.
+            registry = getattr(scheduler, "registry", None) or getattr(scheduler, "_registry", None)
+            try:
+                from control.credlifecycle import CredentialLifecycleService
+
+                CredentialLifecycleService(lambda: registry).on_auth_invalid(
+                    account_id,
+                    detail=str(error.get("message") or ""),
+                    mark_account=False,
+                )
+            except Exception:
+                pass
         report = getattr(scheduler, "report_failure", None)
         if not callable(report):
             return

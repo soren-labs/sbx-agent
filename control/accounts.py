@@ -210,6 +210,7 @@ class InMemoryAccountStore:
     def __init__(self) -> None:
         self._records: dict[str, dict[str, Any]] = {}
         self._blobs: dict[str, dict[str, Any]] = {}
+        self._lifecycle: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def get_record(self, account_id: str) -> dict[str, Any] | None:
@@ -248,6 +249,22 @@ class InMemoryAccountStore:
         with self._lock:
             self._blobs.pop(account_id, None)
 
+    def get_lifecycle(self, account_id: str) -> dict[str, Any] | None:
+        validate_account_id(account_id)
+        with self._lock:
+            rec = self._lifecycle.get(account_id)
+            return dict(rec) if isinstance(rec, dict) else None
+
+    def put_lifecycle(self, account_id: str, record: dict[str, Any]) -> None:
+        validate_account_id(account_id)
+        with self._lock:
+            self._lifecycle[account_id] = dict(record)
+
+    def delete_lifecycle(self, account_id: str) -> None:
+        validate_account_id(account_id)
+        with self._lock:
+            self._lifecycle.pop(account_id, None)
+
 
 class FileAccountStore:
     """Local durable store: JSON files under ``root``.
@@ -277,6 +294,10 @@ class FileAccountStore:
     def _blob_path(self, account_id: str) -> Path:
         validate_account_id(account_id)
         return self._root / "credentials" / f"{account_id}.json"
+
+    def _lifecycle_path(self, account_id: str) -> Path:
+        validate_account_id(account_id)
+        return self._root / "lifecycle" / f"{account_id}.json"
 
     @staticmethod
     def _write(path: Path, payload: dict[str, Any], *, secret: bool) -> None:
@@ -336,6 +357,18 @@ class FileAccountStore:
         with self._lock:
             self._blob_path(account_id).unlink(missing_ok=True)
 
+    def get_lifecycle(self, account_id: str) -> dict[str, Any] | None:
+        raw = self._read(self._lifecycle_path(account_id))
+        return raw if isinstance(raw, dict) else None
+
+    def put_lifecycle(self, account_id: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._write(self._lifecycle_path(account_id), record, secret=False)
+
+    def delete_lifecycle(self, account_id: str) -> None:
+        with self._lock:
+            self._lifecycle_path(account_id).unlink(missing_ok=True)
+
 
 class ModalDictAccountStore:
     """Production store backed by ``modal.Dict sbx-accounts``.
@@ -346,6 +379,7 @@ class ModalDictAccountStore:
 
     _ACCOUNT_PREFIX = "account/"
     _BLOB_PREFIX = "credential/"
+    _LIFECYCLE_PREFIX = "credential_lifecycle/"
 
     def __init__(self, name: str = ACCOUNTS_DICT_NAME) -> None:
         self._name = name
@@ -409,6 +443,25 @@ class ModalDictAccountStore:
         except KeyError:
             return
 
+    def get_lifecycle(self, account_id: str) -> dict[str, Any] | None:
+        validate_account_id(account_id)
+        with observe("modal_dict.get", store=self._name, key=f"lifecycle/{account_id}"):
+            raw = self._d().get(self._LIFECYCLE_PREFIX + account_id)
+        return raw if isinstance(raw, dict) else None
+
+    def put_lifecycle(self, account_id: str, record: dict[str, Any]) -> None:
+        validate_account_id(account_id)
+        with observe("modal_dict.put", store=self._name, key=f"lifecycle/{account_id}"):
+            self._d().put(self._LIFECYCLE_PREFIX + account_id, dict(record))
+
+    def delete_lifecycle(self, account_id: str) -> None:
+        validate_account_id(account_id)
+        try:
+            with observe("modal_dict.pop", store=self._name, key=account_id):
+                self._d().pop(self._LIFECYCLE_PREFIX + account_id)
+        except KeyError:
+            return
+
 
 class PersistentAccountRegistry:
     """``ports.AccountRegistry`` over an ``AccountStore``.
@@ -430,6 +483,7 @@ class PersistentAccountRegistry:
         self._store = store
         self._running_src = running
         self._counts: dict[str, int] = {}
+        self._lifecycle_memo: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -513,8 +567,12 @@ class PersistentAccountRegistry:
         validate_account_id(account_id)
         self._store.delete_record(account_id)
         self._store.delete_blob(account_id)
+        delete_lifecycle = getattr(self._store, "delete_lifecycle", None)
+        if delete_lifecycle is not None:
+            delete_lifecycle(account_id)
         with self._lock:
             self._counts.pop(account_id, None)
+            self._lifecycle_memo.pop(account_id, None)
 
     def running_count(self, account_id: str) -> int:
         validate_account_id(account_id)
@@ -541,6 +599,24 @@ class PersistentAccountRegistry:
                     f"account {account.provider!r}"
                 )
         self._store.put_blob(account_id, blob)
+
+    def get_credential_lifecycle(self, account_id: str) -> dict[str, Any] | None:
+        """Non-secret lifecycle record (SOR-176); falls back to memory."""
+        validate_account_id(account_id)
+        read = getattr(self._store, "get_lifecycle", None)
+        if read is not None:
+            rec = read(account_id)
+            return dict(rec) if isinstance(rec, dict) else None
+        return self._lifecycle_memo.get(account_id)
+
+    def put_credential_lifecycle(self, account_id: str, record: dict[str, Any]) -> None:
+        """Persist non-secret lifecycle metadata; never contains tokens."""
+        validate_account_id(account_id)
+        write = getattr(self._store, "put_lifecycle", None)
+        if write is not None:
+            write(account_id, dict(record))
+        else:
+            self._lifecycle_memo[account_id] = dict(record)
 
 
 def select_store(

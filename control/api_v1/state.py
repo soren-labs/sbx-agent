@@ -44,6 +44,7 @@ class InMemoryAccountRegistry:
     def __init__(self) -> None:
         self._accounts: dict[str, Account] = {}
         self._blobs: dict[str, dict[str, Any]] = {}
+        self._lifecycle: dict[str, dict[str, Any]] = {}
         self._running: dict[str, int] = {}
         self._running_src: Any = None
         self._lock = threading.Lock()
@@ -99,6 +100,7 @@ class InMemoryAccountRegistry:
         with self._lock:
             self._accounts.pop(account_id, None)
             self._blobs.pop(account_id, None)
+            self._lifecycle.pop(account_id, None)
             self._running.pop(account_id, None)
 
     def running_count(self, account_id: str) -> int:
@@ -120,6 +122,15 @@ class InMemoryAccountRegistry:
     def put_credential_blob(self, account_id: str, blob: dict[str, Any]) -> None:
         with self._lock:
             self._blobs[account_id] = dict(blob)
+
+    def get_credential_lifecycle(self, account_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            rec = self._lifecycle.get(account_id)
+            return dict(rec) if isinstance(rec, dict) else None
+
+    def put_credential_lifecycle(self, account_id: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._lifecycle[account_id] = dict(record)
 
 
 class InMemoryScheduler:

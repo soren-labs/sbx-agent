@@ -420,12 +420,38 @@ def create_app(
     # tests may install one later — so the sync is inert until a registry
     # exists. Modal deployments also refresh the managed ``<prefix><id>``
     # Secret in place (no redeploy); local writes stay in the account store.
+    from control.credlifecycle import (
+        CredentialLifecycleService,
+        CredentialRefresher,
+        worker_enabled,
+    )
     from control.credsync import CredentialSync, ModalCredentialSecretWriter
 
+    # SOR-176: the credential lifecycle is independent of local CLI files —
+    # the cloud lane owns the store blob + managed Secret; local auth files
+    # remain import sources only and are never overwritten by refresh.
+    plane.credential_lifecycle = CredentialLifecycleService(
+        lambda: getattr(app.state, "account_registry", None)
+    )
+    app.state.credential_lifecycle = plane.credential_lifecycle
     plane.credential_sync = CredentialSync(
         lambda: getattr(app.state, "account_registry", None),
         secret_writer=(ModalCredentialSecretWriter() if backend_kind == "modal" else None),
+        lifecycle=plane.credential_lifecycle,
     )
+    if worker_enabled(backend_kind):
+        # Proactive OAuth refresh: a per-account claim + the official CLI's
+        # own refresh path inside a throwaway sandbox, committed via the
+        # SOR-147 CAS write-back (store blob + managed Secret).
+        plane.credential_refresher = CredentialRefresher(
+            registry_source=lambda: getattr(app.state, "account_registry", None),
+            backend=backend,
+            runner_cmd=runner_cmd,
+            sync=plane.credential_sync,
+            lifecycle=plane.credential_lifecycle,
+            default_model=getattr(plane, "default_model", None) or "gpt-5.6-luna",
+        )
+        plane.credential_refresher.start()
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:

@@ -804,6 +804,12 @@ class OnboardingService:
             # pick: roll the record back if the blob write fails.
             self._registry.remove(account_id)
             raise
+        try:
+            from control.credlifecycle import CredentialLifecycleService
+
+            CredentialLifecycleService(self._registry).note_credential(account_id, blob)
+        except Exception:
+            pass
         return account
 
     def refresh(
@@ -829,6 +835,12 @@ class OnboardingService:
         )
         old = self._registry.get_credential_blob(account_id)
         self._registry.put_credential_blob(account_id, blob)
+        try:
+            from control.credlifecycle import CredentialLifecycleService
+
+            CredentialLifecycleService(self._registry).note_credential(account_id, blob)
+        except Exception:
+            pass
         return {"changed": blob != old, "files": len(blob["files"])}
 
     def export(self, account_id: str, out_path: Path | str) -> Path:
@@ -866,8 +878,19 @@ class OnboardingService:
         one (operator intent wins).
         """
         account = self._get_account(account_id)
-        result = self._probe.probe(account, self._registry.get_credential_blob(account_id))
+        blob = self._registry.get_credential_blob(account_id)
+        result = self._probe.probe(account, blob)
         status = result.status
+        try:
+            from control.credlifecycle import CredentialLifecycleService
+
+            lifecycle = CredentialLifecycleService(self._registry)
+            if status == "ok" and blob is not None:
+                lifecycle.note_credential(account_id, blob)
+            elif status == "auth_invalid":
+                lifecycle.on_auth_invalid(account_id, detail=status, mark_account=False)
+        except Exception:
+            pass
         if status == "ok":
             new_status = "disabled" if account.status == "disabled" else "active"
             updated = self._registry.mark_status(account_id, new_status, last_error=None)

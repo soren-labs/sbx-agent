@@ -119,6 +119,13 @@ _NEEDLES: tuple[tuple[tuple[str, ...], RunErrorCode, RunErrorSource, bool], ...]
             "expired api key",
             "invalid token",
             "expired token",
+            # SOR-176: OAuth grant-level rejections (e.g. codex
+            # ``{"code":"invalid_refresh_token"}``) are terminal credential
+            # failures — they must mark the account, not loop 401s.
+            "invalid_grant",
+            "invalid refresh token",
+            "invalid_refresh_token",
+            "token_expired",
             "authentication failed",
             "authentication required",
             "not signed in",
