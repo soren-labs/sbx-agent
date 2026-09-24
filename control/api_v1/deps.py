@@ -169,6 +169,21 @@ class RunFailureReporter:
             pass  # feedback is best-effort; never mask the API response
 
 
+def get_capabilities(request: Request) -> Any:
+    """SOR-204 capability catalog: per-account model/effort discovery.
+
+    ``app.state.capabilities`` when a test/deploy injects one; else bound
+    to the plane's backend (sandbox probe) or the declared fallback probe.
+    """
+    catalog = getattr(request.app.state, "capabilities", None)
+    if catalog is None:
+        from control.capabilities import catalog_for_plane
+
+        catalog = catalog_for_plane(get_plane(request), get_registry(request))
+        request.app.state.capabilities = catalog
+    return catalog
+
+
 def get_run_reporter(request: Request) -> RunFailureReporter:
     reporter = getattr(request.app.state, "run_failure_reporter", None)
     if reporter is None:

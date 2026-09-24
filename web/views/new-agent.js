@@ -1,7 +1,7 @@
 import { api } from "../lib/api.js";
 import { getConnection, hasScope } from "../lib/config.js";
 import { debounce, h, mount } from "../lib/dom.js";
-import { explainApiError, PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
+import { CANONICAL_EFFORTS, explainApiError, PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
 import { navigate } from "../lib/router.js";
@@ -302,21 +302,50 @@ export function renderNewAgent({ route }) {
   const dynamicSections = h("div", { class: "stack" });
   mount(sections, errorSlot, taskCard, dynamicSections);
 
-  function providerModels(provider) {
-    return models.filter((m) => m.provider === provider);
+  // SOR-204: /v1/models rows are per (account, model) — dedupe across
+  // accounts when the scheduler picks one (auto), else pin to the
+  // selected account so only its servable models are offered.
+  function providerModels(provider, accountId) {
+    const rows = models.filter((m) => m.provider === provider);
+    if (!accountId || accountId === "auto") {
+      const byModel = new Map();
+      for (const r of rows) {
+        const cur = byModel.get(r.model);
+        if (!cur || (r.accounts_available || 0) > (cur.accounts_available || 0)) {
+          byModel.set(r.model, r);
+        }
+      }
+      return [...byModel.values()];
+    }
+    return rows.filter((m) => !m.account || m.account === accountId);
+  }
+
+  // Canonical ladder filtered to what the selected account/model rows
+  // actually advertise — unsupported levels are hidden, never offered.
+  function effortOptions(rows) {
+    const supported = new Set();
+    for (const r of rows) for (const e of r.reasoning_efforts || []) supported.add(e);
+    return CANONICAL_EFFORTS.filter((e) => supported.has(e));
   }
 
   function renderSections() {
-    const provModels = providerModels(f.provider);
-    const efforts = provModels[0]?.reasoning_efforts || [];
+    const provModels = providerModels(f.provider, f.account);
+    if (f.model && provModels.length && !provModels.some((m) => m.model === f.model)) {
+      f.model = "";
+    }
+    const selectedRows = f.model
+      ? provModels.filter((m) => m.model === f.model || (m.aliases || []).includes(f.model))
+      : provModels;
+    const efforts = effortOptions(selectedRows);
     if (f.effort && !efforts.includes(f.effort)) f.effort = "";
+    const capsStale = provModels.some((m) => m.stale);
     const provAccounts = accounts.filter((a) => a.provider === f.provider);
 
     const providerPicker = h(
       "div",
       { class: "provider-picker", role: "radiogroup", "data-testid": "provider-picker" },
       PROVIDERS.map((p) => {
-        const pm = providerModels(p);
+        const pm = providerModels(p, "auto");
         const free = pm.reduce((n, m) => Math.max(n, m.accounts_available || 0), 0);
         const configured = pm.length > 0;
         return h(
@@ -356,15 +385,17 @@ export function renderNewAgent({ route }) {
         "data-testid": "f-model",
         onChange: (ev) => {
           f.model = ev.target.value;
+          // Re-render: the effort ladder is model-scoped (SOR-204).
+          renderSections();
           refreshPreview();
         },
       },
       h("option", { value: "" }, provModels.length ? t("Default ({model})", { model: provModels[0].model }) : t("Provider default")),
-      provModels.map((m) => h("option", { value: m.model, selected: f.model === m.model }, `${m.model} — ${t("{n} free", { n: m.accounts_available })}`)),
+      provModels.map((m) => h("option", { value: m.model, selected: f.model === m.model }, `${m.display_name || m.model} (${m.model}) — ${t("{n} free", { n: m.accounts_available || 0 })}`)),
     );
 
     const effortControl = segmented(
-      [{ value: "", label: t("Default") }, ...["low", "medium", "high"].map((v) => ({ value: v, label: t(v), disabled: !efforts.includes(v), title: efforts.includes(v) ? null : t("Not supported by this provider") }))],
+      [{ value: "", label: t("Default") }, ...efforts.map((v) => ({ value: v, label: t(v) }))],
       f.effort,
       (v) => {
         f.effort = v;
@@ -381,6 +412,8 @@ export function renderNewAgent({ route }) {
             "data-testid": "f-account",
             onChange: (ev) => {
               f.account = ev.target.value;
+              // Re-render: the model list is account-scoped (SOR-204).
+              renderSections();
               refreshPreview();
             },
           },
@@ -392,9 +425,12 @@ export function renderNewAgent({ route }) {
           value: f.account,
           "data-testid": "f-account",
           onInput: (ev) => {
+            // No re-render per keystroke — the input would lose focus.
+            // Model filtering applies on blur via the change event.
             f.account = ev.target.value.trim() || "auto";
             refreshPreview();
           },
+          onChange: () => renderSections(),
         });
 
     const agentCard = card({
@@ -407,11 +443,18 @@ export function renderNewAgent({ route }) {
         h(
           "div",
           { class: "fields-2" },
-          field(t("Model"), modelSelect, { htmlFor: "f-model" }),
+          field(t("Model"), modelSelect, {
+            htmlFor: "f-model",
+            hint: capsStale ? t("Showing last-known capabilities — live discovery is refreshing.") : null,
+          }),
           field(t("Account"), accountControl, { hint: t("Pinning an account fails fast when it is busy instead of waiting.") }),
         ),
         field(t("Reasoning effort"), effortControl, {
-          hint: efforts.length ? t("Applies to every run of this agent.") : t("{provider} has no native effort setting.", { provider: providerLabel(f.provider) }),
+          hint: efforts.length
+            ? t("Applies to every run of this agent.")
+            : f.model
+              ? t("{model} has no native effort setting.", { model: f.model })
+              : t("{provider} has no native effort setting.", { provider: providerLabel(f.provider) }),
         }),
       ),
     });

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -252,6 +252,7 @@ class ControlPlane:
         resource_refs: dict[str, Any] | None = None,
         compute: dict[str, Any] | ComputeSpec | None = None,
         reasoning_effort: str | None = None,
+        effort_surface: Sequence[str] | None = None,
     ) -> str:
         """Publish a ``creating`` record without provisioning the sandbox.
 
@@ -309,6 +310,11 @@ class ControlPlane:
                 # SOR-179: the declared canonical effort rides the durable
                 # tags so the agent view stays truthful across restarts.
                 tags["reasoning_effort"] = reasoning_effort
+            if effort_surface:
+                # SOR-204: the account's discovered effort surface rides
+                # with the record so the in-sandbox backstop validates the
+                # declaration against live capabilities, not the floor.
+                tags["effort_surface"] = ",".join(effort_surface)
             now = self.clock()
             messages: list[dict[str, Any]] = []
             if first_prompt is not None:
@@ -465,6 +471,8 @@ class ControlPlane:
                 if account_id != "auto":
                     init_args += ["--account-id", account_id]
                     init_env["SBX_ACCOUNT_ID"] = account_id
+            if rec.sandbox_tags.get("effort_surface"):
+                init_env["SBX_EFFORT_SURFACE"] = rec.sandbox_tags["effort_surface"]
             if mcp_servers:
                 # SOR-129: resolved MCP config templates (${env:VAR}
                 # indirection only — no secret values) for ``runner init``.

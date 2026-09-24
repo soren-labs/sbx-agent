@@ -15,6 +15,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    models_listing,
     rewrite_json,
     run_scenario,
     scan_argv,
@@ -22,6 +23,7 @@ from _fake_native import (
 
 PROVIDER = "grok"
 DEFAULT_SESSION_ID = "01a09b11-0000-7f90-b96e-42adeefa05e0"
+DEFAULT_MODELS = "grok-4.6\ngrok-4.5\n"
 
 _BOOL_FLAGS = {"-p", "--print", "--resume", "--last"}
 _VALUE_FLAGS = {"--output-format", "-m", "--model", "-C", "--cd", "-s", "--session"}
@@ -37,11 +39,9 @@ def _rewrite_session(line: str, session_id: str) -> str:
 
 def main() -> None:
     install_term_handler()
-    auth_check(
-        sys.argv[1:],
-        ("models",),
-        Path.home() / ".grok" / "auth.json",
-    )
+    credential = Path.home() / ".grok" / "auth.json"
+    models_listing(sys.argv[1:], ("models",), credential, "FAKE_GROK_MODELS", DEFAULT_MODELS)
+    auth_check(sys.argv[1:], ("models",), credential)
     positionals, values, seen = scan_argv(
         sys.argv[1:], bool_flags=_BOOL_FLAGS, value_flags=_VALUE_FLAGS
     )

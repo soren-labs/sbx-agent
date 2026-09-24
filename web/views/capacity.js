@@ -1,7 +1,7 @@
 import { api } from "../lib/api.js";
 import { hasScope } from "../lib/config.js";
 import { h, mount } from "../lib/dom.js";
-import { PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
+import { CANONICAL_EFFORTS, PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
 import { badge, card, emptyState, errorBanner, pageHeader, poller, progressBar, providerTag, skeleton, statusBadge } from "../lib/ui.js";
@@ -32,7 +32,11 @@ export function renderCapacity() {
         providers.map((p) => {
           const pm = models.filter((m) => m.provider === p);
           const pa = accounts ? accounts.filter((a) => a.provider === p) : null;
-          const efforts = pm[0]?.reasoning_efforts || [];
+          // SOR-204: rows are per (account, model) — union the advertised
+          // efforts, ordered by the canonical ladder.
+          const efforts = CANONICAL_EFFORTS.filter((e) =>
+            pm.some((m) => (m.reasoning_efforts || []).includes(e)),
+          );
           const tier = PROVIDER_META[p]?.tier;
           return card({
             class: "provider-card",

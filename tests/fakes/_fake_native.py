@@ -126,6 +126,13 @@ def append_hello(cwd: Path, content: str) -> None:
         fh.write(content)
 
 
+def _credential_ok(credential: Path) -> bool:
+    try:
+        return credential.is_file() and bool(credential.read_bytes().strip())
+    except OSError:
+        return False
+
+
 def auth_check(argv: list[str], subcommand: tuple[str, ...], credential: Path) -> None:
     """Dispatch the provider's auth-check subcommand; no-op for other argv.
 
@@ -134,15 +141,39 @@ def auth_check(argv: list[str], subcommand: tuple[str, ...], credential: Path) -
     """
     if tuple(argv[: len(subcommand)]) != subcommand:
         return
-    try:
-        ok = credential.is_file() and bool(credential.read_bytes().strip())
-    except OSError:
-        ok = False
-    if ok:
+    if _credential_ok(credential):
         print("Logged in")
         sys.exit(0)
     print("Not logged in")
     sys.exit(1)
+
+
+def models_listing(
+    argv: list[str],
+    subcommand: tuple[str, ...],
+    credential: Path,
+    env_name: str,
+    default: str,
+) -> None:
+    """Dispatch the provider's models subcommand (SOR-204); no-op otherwise.
+
+    Mirrors ``auth_check`` — the listing answers only when the restored
+    credential is present, so it stays usable as the provider's auth
+    probe. ``FAKE_<P>_MODELS`` supplies the listing verbatim (JSON or
+    line-per-model); ``default`` is the canned listing otherwise.
+    """
+    if tuple(argv[: len(subcommand)]) != subcommand:
+        return
+    if not _credential_ok(credential):
+        print("Not logged in")
+        sys.exit(1)
+    # ``models`` doubles as the auth probe for agy/grok — keep the
+    # logged-in marker line ahead of the listing so both readers are
+    # satisfied (capability parsing skips non-model lines).
+    print("Logged in")
+    raw = os.environ.get(env_name, default)
+    sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
+    sys.exit(0)
 
 
 def run_scenario(

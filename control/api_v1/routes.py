@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import Depends, Header, Request
 from fastapi.responses import Response
 from runtime.runner.contract import STATUS_SKIPPED, ContractError, normalize_contract
-from runtime.runner.effort import effort_error, normalize_effort, supported_efforts
+from runtime.runner.effort import effort_error, normalize_effort
 
 from control.api_v1 import router
 from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
@@ -35,6 +35,7 @@ from control.api_v1.deps import (
     agents_key,
     api_key,
     get_artifact_store,
+    get_capabilities,
     get_github_app,
     get_handoffs,
     get_key_store,
@@ -83,6 +84,7 @@ from control.artifacts import (
     manifest_to_dict,
     page_manifests,
 )
+from control.capabilities import CapabilitySnapshot, declared_snapshot
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
 from control.config import TERMINAL_STATUSES, selected_providers
 from control.credsync import TAG_CRED_RUN_FP
@@ -732,13 +734,51 @@ def _discard_agent(plane: Any, v1: V1State, agent_id: str, lease: Any = None) ->
         _release_lease(lease)
 
 
-def _default_model(provider: str, account: Account | None) -> str | None:
+def _snapshot_for(
+    capabilities: Any, account: Account | None, *, ensure: bool = True
+) -> CapabilitySnapshot | None:
+    """Catalog snapshot for the resolved account.
+
+    ``None`` only when there is no account. A missing or non-catalog
+    ``capabilities`` (e.g. a direct unit call) degrades to declared rows —
+    the endpoint always advertises the models a seeded account carries.
+    ``ensure=False`` serves the current cache only — used on the agent
+    create path so a request can never spawn a probe sandbox as a
+    side-effect of validation.
+    """
+    if account is None:
+        return None
+    if capabilities is None or not callable(getattr(capabilities, "get", None)):
+        return declared_snapshot(account)
+    try:
+        return capabilities.get(account, ensure=ensure)
+    except TypeError:
+        return capabilities.get(account)
+    except Exception:
+        return declared_snapshot(account)
+
+
+def _model_row(snapshot: CapabilitySnapshot, model: str | None) -> Any:
+    """The capability row for ``model`` (id or alias); ``None`` if absent."""
+    if model is None:
+        return None
+    for m in snapshot.models:
+        if m.model == model or model in m.aliases:
+            return m
+    return None
+
+
+def _default_model(provider: str, account: Account | None, capabilities: Any = None) -> str | None:
     """Omitted ``AgentSpec.model`` → a valid provider/account default.
 
-    The resolved account's first advertised model wins; otherwise the
-    provider's seeded default. ``None`` defers to the plane's configured
-    default (``gpt-5.6-luna``, codex backward compatibility).
+    SOR-204: the capability catalog's default wins — a discovered snapshot
+    reflects what the account actually serves. Then the account's declared
+    models, then the provider's seeded default. ``None`` defers to the
+    plane's configured default (``gpt-5.6-luna``, codex compatibility).
     """
+    snapshot = _snapshot_for(capabilities, account, ensure=False)
+    if snapshot is not None and snapshot.default_model:
+        return snapshot.default_model
     if account is not None and account.models:
         return account.models[0]
     defaults = PROVIDER_DEFAULT_MODELS.get(provider) or ()
@@ -854,18 +894,48 @@ def _validate_compute(body: CreateAgentRequest) -> ComputeSpec:
 
 
 def _validate_reasoning_effort(body: CreateAgentRequest) -> str | None:
-    """Validate a declared canonical ``reasoning_effort`` (SOR-179).
+    """Validate a declared canonical ``reasoning_effort`` (SOR-179/204).
 
-    The level set is canonical; what varies per provider is the *native
-    surface* it maps to. A provider without one — or one missing the level
-    — fails as ``400 unsupported`` before any claim or sandbox work, never
-    silently ignored (the SOR-129 MCP precedent).
+    Only the canonical shape is checked here — whether the *account* can
+    honor the level depends on discovered capabilities, which are known
+    only after the scheduler resolves the account; that check lives in
+    ``_create_agent_once`` (``_check_effort_capability``).
     """
-    effort = normalize_effort(body.agent.reasoning_effort)
-    refusal = effort_error(body.agent.provider, effort)
+    try:
+        return normalize_effort(body.agent.reasoning_effort)
+    except ValueError as exc:
+        raise V1ApiError(400, "unsupported", str(exc)) from exc
+
+
+def _check_effort_capability(
+    provider: str, model: str | None, effort: str, snapshot: CapabilitySnapshot | None
+) -> None:
+    """Refuse an effort the resolved account/model cannot honor (SOR-204).
+
+    A discovered snapshot is authoritative — the row's ``reasoning_efforts``
+    decide. Declared/env/static rows still carry the provider's verified
+    floor, so an empty list there means the provider has no native surface
+    at all. No snapshot → the static floor applies.
+    """
+    refusal: str | None = None
+    if snapshot is not None:
+        row = _model_row(snapshot, model)
+        if row is not None:
+            if not row.reasoning_efforts:
+                refusal = f"model {model!r} on {provider!r} has no native effort surface"
+            elif effort not in row.reasoning_efforts:
+                refusal = (
+                    f"model {model!r} does not support reasoning_effort {effort!r} "
+                    f"(supported: {list(row.reasoning_efforts)})"
+                )
+        elif snapshot.source == "discovered":
+            refusal = f"model {model!r} is not advertised by this account"
+        else:
+            refusal = effort_error(provider, effort)
+    else:
+        refusal = effort_error(provider, effort)
     if refusal is not None:
         raise V1ApiError(400, "unsupported", refusal)
-    return effort
 
 
 def _validate_resources(body: CreateAgentRequest, registry: Any) -> dict[str, Any] | None:
@@ -894,6 +964,7 @@ def create_agent(
     artifacts: Any = Depends(get_artifact_store),
     workflows: WorkflowService = Depends(get_workflow_service),
     resources_registry: Any = Depends(get_resources),
+    capabilities: Any = Depends(get_capabilities),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Create an agent and queue its first run (SOR-82 A2).
@@ -990,6 +1061,7 @@ def create_agent(
             v1,
             run_states,
             workflows,
+            capabilities=capabilities,
             reporter=reporter,
             idempotency_key=idempotency_key,
             idempotency_fingerprint=fingerprint,
@@ -1028,6 +1100,7 @@ def _create_agent_once(
     run_states: RunStateStore,
     workflows: WorkflowService,
     *,
+    capabilities: Any = None,
     reporter: RunFailureReporter | None = None,
     idempotency_key: str | None = None,
     idempotency_fingerprint: str | None = None,
@@ -1074,7 +1147,38 @@ def _create_agent_once(
     secret_name = None
     if account is not None:
         secret_name = account.secret_name or None
-    model = body.agent.model or _default_model(provider, account)
+    snapshot = _snapshot_for(capabilities, account, ensure=False)
+    model = body.agent.model or _default_model(provider, account, capabilities)
+
+    # SOR-204: reject combinations the account cannot serve. A discovered
+    # snapshot is authoritative — an explicit model it does not advertise
+    # fails fast instead of surfacing as a provider error mid-run.
+    if (
+        body.agent.model
+        and snapshot is not None
+        and snapshot.source == "discovered"
+        and _model_row(snapshot, body.agent.model) is None
+    ):
+        _release_lease(lease)
+        advertised = [m.model for m in snapshot.models]
+        raise V1ApiError(
+            400,
+            "unsupported",
+            f"model {body.agent.model!r} is not advertised by account "
+            f"{account.id!r} (available: {advertised})",
+        )
+    if reasoning_effort is not None:
+        try:
+            _check_effort_capability(provider, model, reasoning_effort, snapshot)
+        except V1ApiError:
+            _release_lease(lease)
+            raise
+
+    # SOR-204: carry the resolved row's effort surface to init so the
+    # in-sandbox backstop validates the declaration against the same
+    # (possibly discovered-widened) surface the API just checked.
+    surface_row = _model_row(snapshot, model) if snapshot is not None else None
+    effort_surface = list(surface_row.reasoning_efforts) if surface_row is not None else None
 
     try:
         session_id = plane.open_session(
@@ -1090,6 +1194,7 @@ def _create_agent_once(
             resource_refs=resource_refs(resources),
             compute=compute,
             reasoning_effort=reasoning_effort,
+            effort_surface=effort_surface,
         )
     except ConcurrencyLimit as exc:
         _release_lease(lease)
@@ -1962,41 +2067,93 @@ def get_agent_usage(
     }
 
 
-@router.get("/models")
-def list_models(
-    key: ApiKey = Depends(agents_key),
-    registry: AccountRegistry = Depends(get_registry),
-) -> dict[str, Any]:
-    """Advertised models come from account declarations; availability counts
-    active accounts with a free slot that list the model."""
+def _capability_rows(registry: AccountRegistry, capabilities: Any) -> list[dict[str, Any]]:
+    """One row per (account, model) from the capability catalog.
+
+    SOR-204: each row carries the full capability surface — display name,
+    family, aliases, canonical efforts with the provider-native map,
+    availability, discovery provenance (``source``/``refreshed_at``/
+    ``stale``) — plus ``accounts_available`` for compatibility.
+    """
     enabled = frozenset(selected_providers())
-    counts: dict[tuple[str, str], int] = {}
+    rows: list[dict[str, Any]] = []
     for account in registry.list():
         # Durable registries can retain accounts from an earlier deployment
         # with a wider provider set. Never advertise a provider whose image
         # and credential mounts are intentionally absent from this deploy.
         if account.provider not in enabled:
             continue
-        free = (
-            account.status == "active"
-            and _running_or_zero(registry, account.id) < account.max_concurrent
-        )
-        for model in account.models:
-            key_ = (account.provider, model)
-            counts[key_] = counts.get(key_, 0) + (1 if free else 0)
-    models = [
-        {
-            "provider": provider,
-            "model": model,
-            "accounts_available": count,
-            # SOR-179: the canonical effort levels this provider honors
-            # (empty when it has no native effort surface — a declared
-            # effort is refused at create time, never silently ignored).
-            "reasoning_efforts": list(supported_efforts(provider)),
-        }
-        for (provider, model), count in sorted(counts.items())
-    ]
-    return {"models": models}
+        snapshot = _snapshot_for(capabilities, account)
+        if snapshot is None:
+            continue
+        active = account.status == "active"
+        free = active and _running_or_zero(registry, account.id) < account.max_concurrent
+        availability = "available" if free else ("busy" if active else "unavailable")
+        for m in snapshot.models:
+            rows.append(
+                {
+                    "provider": account.provider,
+                    "account": account.id,
+                    "model": m.model,
+                    "display_name": m.display_name,
+                    "family": m.family,
+                    "aliases": list(m.aliases),
+                    "reasoning_efforts": list(m.reasoning_efforts),
+                    "effort_native": dict(m.effort_native),
+                    "default_effort": m.default_effort,
+                    "availability": availability,
+                    "accounts_available": 0,
+                    "source": snapshot.source,
+                    "refreshed_at": snapshot.refreshed_at,
+                    "stale": snapshot.stale,
+                }
+            )
+    free_counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        if row["availability"] == "available":
+            key_ = (row["provider"], row["model"])
+            free_counts[key_] = free_counts.get(key_, 0) + 1
+    for row in rows:
+        row["accounts_available"] = free_counts.get((row["provider"], row["model"]), 0)
+    rows.sort(key=lambda r: (r["provider"], r["model"], r["account"]))
+    return rows
+
+
+@router.get("/models")
+def list_models(
+    key: ApiKey = Depends(agents_key),
+    registry: AccountRegistry = Depends(get_registry),
+    capabilities: Any = Depends(get_capabilities),
+) -> dict[str, Any]:
+    """Advertised models come from the capability catalog (SOR-204): live
+    CLI discovery per account with TTL + stale-last-good, falling back to
+    declared/env/static models until the first probe lands."""
+    return {"models": _capability_rows(registry, capabilities)}
+
+
+@router.post("/models/refresh")
+def refresh_models(
+    provider: str | None = None,
+    account_id: str | None = None,
+    key: ApiKey = Depends(admin_key),
+    registry: AccountRegistry = Depends(get_registry),
+    capabilities: Any = Depends(get_capabilities),
+) -> dict[str, Any]:
+    """Synchronous capability refresh (SOR-204).
+
+    Re-probes the matching accounts' provider CLIs and returns the updated
+    catalog rows. Failed probes keep serving last-good data marked
+    ``stale`` — refresh never empties the catalog.
+    """
+    if provider is not None and provider not in PROVIDER_DEFAULT_MODELS:
+        raise V1ApiError(400, "invalid_provider", f"unknown provider {provider!r}")
+    refreshed = 0
+    for account in registry.list(provider):
+        if account_id is not None and account.id != account_id:
+            continue
+        capabilities.refresh(account, registry.get_credential_blob(account.id))
+        refreshed += 1
+    return {"refreshed": refreshed, "models": _capability_rows(registry, capabilities)}
 
 
 @router.get("/me")

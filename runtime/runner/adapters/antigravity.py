@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from runtime.runner.constants import NOOP_EVENT_TYPE
+from runtime.runner.effort import native_effort
 from runtime.runner.events import parse_event_line
 from runtime.runner.workspace import load_session, work_root
 
@@ -204,7 +205,7 @@ class AntigravityAdapter:
             argv += ["--model", model]
         effort = _session_effort()
         if effort:
-            argv += ["--effort", effort]
+            argv += ["--effort", native_effort("antigravity", effort)]
         argv += ["--dangerously-skip-permissions", "--disable-slash-commands"]
         return argv
 
@@ -225,7 +226,7 @@ class AntigravityAdapter:
         effort = _session_effort()
         if effort:
             # Resume turns inherit the declared effort natively (SOR-179).
-            argv += ["--effort", effort]
+            argv += ["--effort", native_effort("antigravity", effort)]
         argv += ["--dangerously-skip-permissions", "--disable-slash-commands"]
         return argv
 

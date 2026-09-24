@@ -16,6 +16,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    models_listing,
     rewrite_json,
     run_scenario,
     scan_argv,
@@ -23,6 +24,10 @@ from _fake_native import (
 
 PROVIDER = "opencode"
 DEFAULT_SESSION_ID = "ses_01a09b11abcd"
+# Canned Zen listing (SOR-204): subscription channel + free tier.
+DEFAULT_MODELS = (
+    "openai/gpt-5.6-luna\nopencode/claude-sonnet-4-5\nmuse-spark-1.3-contributor-free\n"
+)
 
 _BOOL_FLAGS = {"--print-logs", "--continue", "--last", "-c"}
 _VALUE_FLAGS = {"-m", "--model", "-C", "--cd", "-s", "--session"}
@@ -42,11 +47,15 @@ def _rewrite_session(line: str, session_id: str) -> str:
 def main() -> None:
     install_term_handler()
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    auth_check(
+    credential = data_home / "opencode" / "auth.json"
+    models_listing(
         sys.argv[1:],
-        ("auth", "list"),
-        data_home / "opencode" / "auth.json",
+        ("models",),
+        credential,
+        "FAKE_OPENCODE_MODELS",
+        DEFAULT_MODELS,
     )
+    auth_check(sys.argv[1:], ("auth", "list"), credential)
     positionals, values, seen = scan_argv(
         sys.argv[1:],
         bool_flags=_BOOL_FLAGS,

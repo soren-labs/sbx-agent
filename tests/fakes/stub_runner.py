@@ -105,13 +105,23 @@ def cmd_init(args: argparse.Namespace) -> int:
     root = work_root()
     root.mkdir(parents=True, exist_ok=True)
 
-    # SOR-179: mirror runtime.runner.bootstrap — a provider/effort
-    # combination with no native mapping fails init explicitly.
+    # SOR-179/204: mirror runtime.runner.bootstrap — a provider/effort
+    # combination with no native mapping fails init explicitly;
+    # SBX_EFFORT_SURFACE carries the discovered capability surface.
     from runtime.runner.effort import effort_error, normalize_effort
 
     try:
         effort = normalize_effort(args.reasoning_effort)
-        refusal = effort_error(args.provider, effort)
+        surface = os.environ.get("SBX_EFFORT_SURFACE")
+        if surface is not None and effort is not None:
+            allowed = {tok.strip() for tok in surface.split(",") if tok.strip()}
+            refusal = (
+                None
+                if effort in allowed
+                else f"account does not support reasoning_effort {effort!r}"
+            )
+        else:
+            refusal = effort_error(args.provider, effort)
     except ValueError as exc:
         refusal = str(exc)
     if refusal is not None:

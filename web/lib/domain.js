@@ -3,6 +3,10 @@ import { t } from "./i18n.js";
 
 export const PROVIDERS = ["codex", "devin", "antigravity", "grok", "opencode"];
 
+// SOR-204 canonical reasoning-effort ladder — the provider-native levels
+// an agent may declare, in canonical order.
+export const CANONICAL_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 export const PROVIDER_META = {
   codex: {
     label: "Codex",
