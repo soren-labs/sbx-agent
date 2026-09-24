@@ -914,9 +914,10 @@ def _check_effort_capability(
     """Refuse an effort the resolved account/model cannot honor (SOR-204).
 
     A discovered snapshot is authoritative — the row's ``reasoning_efforts``
-    decide. Declared/env/static rows still carry the provider's verified
-    floor, so an empty list there means the provider has no native surface
-    at all. No snapshot → the static floor applies.
+    decide. Declared/env/static rows carry the provider's verified floor
+    only where effort is an orthogonal CLI flag (codex, grok); an empty
+    list there means the provider has no native surface at all. No
+    snapshot → the static floor applies.
     """
     refusal: str | None = None
     if snapshot is not None:

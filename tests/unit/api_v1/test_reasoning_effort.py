@@ -132,7 +132,11 @@ class TestReasoningEffortCapabilityReporting:
         resp = client.get("/v1/models", headers=auth)
         assert resp.status_code == 200
         efforts = {m["provider"]: m["reasoning_efforts"] for m in resp.json()["models"]}
-        for provider in PROVIDERS_EFFORT:
+        # Declared rows carry the verified floor only where effort is an
+        # orthogonal CLI flag (codex config, grok --reasoning-effort).
+        # antigravity encodes the tier in the model id, so a bare declared
+        # id like ``gemini-3.8`` advertises no effort surface.
+        for provider in ("codex", "grok"):
             assert efforts[provider] == ["low", "medium", "high"]
-        for provider in PROVIDERS_NO_EFFORT:
+        for provider in ("antigravity", *PROVIDERS_NO_EFFORT):
             assert efforts[provider] == []

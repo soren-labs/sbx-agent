@@ -49,7 +49,7 @@ def main() -> None:
     credential = data_home / "devin" / "credentials.toml"
     models_listing(
         sys.argv[1:],
-        ("models",),
+        ("models", "list"),
         credential,
         "FAKE_DEVIN_MODELS",
         DEFAULT_MODELS,

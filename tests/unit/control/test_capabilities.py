@@ -91,9 +91,10 @@ class TestParseModelsOutput:
         flash = caps[1]
         assert "gemini-3.8-flash" in flash.aliases
         assert flash.default_effort == "low"
-        # Suffix-encoded tier does not grant an effort surface — the
-        # provider's floor still does.
-        assert flash.reasoning_efforts == ("low", "medium", "high")
+        # agy encodes the tier in the model id — the row advertises exactly
+        # that level, never the provider floor (``--effort`` on tier-less
+        # models like claude-sonnet-4-6 fails ``model_unavailable``).
+        assert flash.reasoning_efforts == ("low",)
 
     def test_effortless_provider_keeps_baked_in_tier(self) -> None:
         caps = parse_models_output("devin", "swe-2-medium\nswe-2-high\nswe-2-max\n")
@@ -102,6 +103,51 @@ class TestParseModelsOutput:
             assert cap.reasoning_efforts == ()  # devin has no effort knob
             assert "swe-2" in cap.aliases
         assert caps[2].default_effort == "max"
+
+    def test_codex_debug_models_json(self) -> None:
+        """``codex debug models`` emits the raw catalog as JSON."""
+        out = (
+            '{"models": ['
+            '{"slug": "gpt-6-sol", "display_name": "GPT-6-Sol",'
+            ' "default_reasoning_level": "medium",'
+            ' "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"},'
+            '  {"effort": "high"}, {"effort": "xhigh"}, {"effort": "max"},'
+            '  {"effort": "ultra"}],'
+            ' "visibility": "list", "supported_in_api": true},'
+            ' {"slug": "gpt-hidden", "visibility": "hide", "supported_in_api": true}]}'
+        )
+        caps = parse_models_output("codex", out)
+        assert [c.model for c in caps] == ["gpt-6-sol"]  # hidden row dropped
+        assert caps[0].reasoning_efforts == ("low", "medium", "high", "xhigh", "max")
+        assert caps[0].default_effort == "medium"
+
+    def test_devin_models_list_json_families(self) -> None:
+        """``devin models list --format json`` nests variants under families."""
+        out = (
+            '{"families": [{"family_label": "SWE-2", "family_uid": "swe-2",'
+            ' "slug": "swe-2", "aliases": ["swe"], "variants": ['
+            ' {"model_uid": "swe-2-medium", "label": "SWE-2 Medium"},'
+            ' {"model_uid": "swe-2-max", "label": "SWE-2 Max"}]}]}'
+        )
+        caps = parse_models_output("devin", out)
+        assert [c.model for c in caps] == ["swe-2-medium", "swe-2-max"]
+        assert caps[1].default_effort == "max"
+        assert caps[1].family == "swe-2"
+
+    def test_agy_tierless_model_has_no_effort_surface(self) -> None:
+        """Real ``agy models`` output: claude rows carry no tier suffix, so
+        they must not advertise an effort surface — ``agy --effort`` on them
+        fails ``model_unavailable`` (cap-e2e finding)."""
+        out = (
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+            "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n"
+        )
+        caps = {c.model: c for c in parse_models_output("antigravity", out)}
+        assert caps["gemini-3.8-flash-high"].reasoning_efforts == ("high",)
+        assert caps["gemini-3.8-flash-high"].default_effort == "high"
+        assert caps["claude-sonnet-4-6"].reasoning_efforts == ()
+        assert caps["claude-sonnet-4-6"].default_effort is None
 
     def test_opencode_zen_free_model(self) -> None:
         out = "openai/gpt-5.6-luna\nopencode/claude-sonnet-4-5\nmuse-spark-1.3-contributor-free\n"
@@ -260,4 +306,4 @@ class TestSandboxCapabilityProbe:
         # Blob restores a different path than the CLI checks → not logged in.
         blob = {"provider": "grok", "files": {".grok/other.json": "REDACTED"}}
         result = probe.probe(account, blob)
-        assert result.error == "models_list_failed:1"
+        assert result.error == "auth_invalid"
