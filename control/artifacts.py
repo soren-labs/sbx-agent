@@ -655,6 +655,53 @@ def _page_from_entries(
     return ArtifactPage(tuple(out), next_cursor)
 
 
+def _page_from_entries_par(
+    entries: Sequence[ArtifactIndexEntry],
+    *,
+    cursor: str | None,
+    limit: int | None,
+    fetch: Callable[[str], ArtifactManifest | None],
+    drop: Callable[[str], None] | None = None,
+    window: int = 128,
+) -> ArtifactPage:
+    """``_page_from_entries`` with bounded parallel manifest fetches.
+
+    Global listings page over thousands of index rows; a serial ``fetch``
+    per row costs one Dict round-trip each. Windows keep the fan-out
+    bounded while preserving ``limit``-over-valid-rows semantics — stale
+    rows are dropped and never consume the page budget.
+    """
+    if limit is not None and limit < 1:
+        raise ArtifactError(f"limit must be a positive int, got {limit!r}")
+    after = _decode_cursor(cursor) if cursor else None
+    pending = [e for e in entries if after is None or e.sort_key > after]
+    out: list[ArtifactManifest] = []
+    remaining = False
+    pos = 0
+    while pos < len(pending):
+        if limit is not None and len(out) >= limit:
+            remaining = True
+            break
+        width = window if limit is None else min(window, max(1, limit - len(out)))
+        chunk = pending[pos : pos + width]
+        pos += len(chunk)
+        with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+            manifests = list(pool.map(fetch, (e.artifact_id for e in chunk)))
+        for entry, manifest in zip(chunk, manifests):
+            if limit is not None and len(out) >= limit:
+                remaining = True
+                break
+            if manifest is None:
+                if drop is not None:
+                    drop(entry.artifact_id)
+                continue
+            out.append(manifest)
+        if remaining:
+            break
+    next_cursor = _encode_cursor(_index_entry(out[-1])) if remaining and out else None
+    return ArtifactPage(tuple(out), next_cursor)
+
+
 def page_manifests(
     manifests: Sequence[ArtifactManifest],
     *,
@@ -1196,16 +1243,31 @@ class ModalDictArtifactStore:
     doc is read-modify-write on ``put``/``delete`` under the process
     lock; a lost update is repaired by ``rebuild_index`` (or lazily on
     the first filtered query of a pre-index Dict).
+
+    SOR-199 global index: ``index/global/<seq>`` -> chunked JSON docs of
+    sorted ``ArtifactIndexEntry`` rows (``_GLOBAL_CHUNK_MAX`` per chunk)
+    and ``index/_global_meta`` -> ``{"chunks": n}``, ``index/_global_built``
+    once the index covers the whole Dict. Unfiltered ``list_page``/``list``
+    read the chunk docs and fetch the page's manifests through a bounded
+    pool — never ``keys()``/``items()`` over the global store, whose
+    server-paged enumeration costs ~one round-trip per key (~85s at 11k
+    keys). A lost index update is repaired by ``rebuild_global_index``.
     """
 
     _IDX_AGENT_PREFIX = "index/agent/"
     _IDX_BUILT = "index/_built"
+    _IDX_GLOBAL_PREFIX = "index/global/"
+    _IDX_GLOBAL_META = "index/_global_meta"
+    _IDX_GLOBAL_BUILT = "index/_global_built"
+    _GLOBAL_CHUNK_MAX = 2000
 
     def __init__(self, name: str = ARTIFACTS_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
         self._lock = threading.Lock()
         self._index_ready = False
+        self._global_ready = False
+        self._build_lock = threading.Lock()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1266,6 +1328,10 @@ class ModalDictArtifactStore:
         self._put(f"{aid}/members", sorted(members))
         self._put(f"{aid}/manifest", manifest_dumps(manifest))
         self._index_add(manifest, old_agent)
+        try:
+            self._global_index_add(manifest)
+        except Exception:
+            self._global_index_broken()
         return manifest
 
     def _index_add(self, manifest: ArtifactManifest, old_agent: str | None) -> None:
@@ -1305,12 +1371,16 @@ class ModalDictArtifactStore:
 
     def _ensure_index(self) -> None:
         """Lazily build the index on the first filtered query — the safe
-        migration for Dicts that predate the index."""
+        migration for Dicts that predate the index. ``_build_lock``
+        double-checks so concurrent first queries share one rebuild."""
         if self._index_ready:
             return
-        if self._get(self._IDX_BUILT) is None:
-            self.rebuild_index()
-        self._index_ready = True
+        with self._build_lock:
+            if self._index_ready:
+                return
+            if self._get(self._IDX_BUILT) is None:
+                self.rebuild_index()
+            self._index_ready = True
 
     def rebuild_index(self) -> int:
         """Rescan every manifest in the Dict and rewrite all agent docs.
@@ -1422,16 +1492,15 @@ class ModalDictArtifactStore:
         with self._lock:
             self._index_remove_row(artifact_id, agent_id)
 
-    def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
-        if agent_id is not None:
-            return list(self.list_page(agent_id=agent_id).artifacts)
-        # Enumerate keys only: ``items()`` streams every value in the Dict —
-        # all member blobs — so one list call used to download the entire
-        # store and materialize it in memory. ``keys()`` carries no values;
-        # manifests are then fetched point-wise through the same bounded
-        # pool as put/open, so a list/query costs O(#artifacts) small reads,
-        # never O(store bytes). Unfiltered listing is inherently global;
-        # agent-filtered listing takes the index path (SOR-201).
+    def _list_scan(self) -> list[ArtifactManifest]:
+        """Honest full enumeration: ``keys()`` then point manifest gets.
+
+        ``items()`` streams every value in the Dict — all member blobs —
+        so one list call used to download the entire store and
+        materialize it in memory. ``keys()`` carries no values. This is
+        the degraded-path fallback and the rebuild source; steady-state
+        reads go through the chunked global index (SOR-199).
+        """
         artifact_ids = self._all_manifest_ids()
         with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
             with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
@@ -1449,6 +1518,23 @@ class ModalDictArtifactStore:
             out.append(manifest)
         return sorted(out, key=lambda m: (m.created_at, m.artifact_id))
 
+    def list(self, *, agent_id: str | None = None) -> list[ArtifactManifest]:
+        if agent_id is not None:
+            return list(self.list_page(agent_id=agent_id).artifacts)
+        try:
+            self._ensure_global_index()
+            entries = self._global_entries()
+            with observe("modal_dict.get_manifests", store=self._name, manifests=len(entries)):
+                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                    manifests = list(
+                        pool.map(self._fetch_global(), (e.artifact_id for e in entries))
+                    )
+            return [m for m in manifests if m is not None]
+        except Exception:
+            # Global index unavailable: fall back to the honest scan
+            # rather than fail the listing.
+            return self._list_scan()
+
     def list_page(
         self,
         *,
@@ -1461,14 +1547,27 @@ class ModalDictArtifactStore:
             # the Dict's total artifact count.
             self._ensure_index()
             entries = _index_loads(self._get(self._idx_key(agent_id)))
-            return _page_from_entries(
+            return _page_from_entries_par(
                 entries,
                 cursor=cursor,
                 limit=limit,
                 fetch=self._fetch_for_agent(agent_id),
                 drop=lambda aid: self._index_prune(agent_id, aid),
             )
-        return page_manifests(self.list(), cursor=cursor, limit=limit)
+        try:
+            # Chunked global index: O(#chunks + page) reads, independent of
+            # the Dict's total artifact count.
+            self._ensure_global_index()
+            entries = self._global_entries()
+        except Exception:
+            return page_manifests(self._list_scan(), cursor=cursor, limit=limit)
+        return _page_from_entries_par(
+            entries,
+            cursor=cursor,
+            limit=limit,
+            fetch=self._fetch_global(),
+            drop=self._global_index_prune,
+        )
 
     def delete(self, artifact_id: str) -> None:
         agent_hint: str | None = None
@@ -1483,6 +1582,143 @@ class ModalDictArtifactStore:
         self._pop(f"{artifact_id}/manifest")
         with self._lock:
             self._index_remove_row(artifact_id, agent_hint)
+            try:
+                self._global_index_remove_locked(artifact_id)
+            except Exception:
+                self._global_index_broken()
+
+    # ----------------------------------------------------- global index
+
+    def _fetch_global(self) -> Callable[[str], ArtifactManifest | None]:
+        def fetch(artifact_id: str) -> ArtifactManifest | None:
+            try:
+                return self.manifest(artifact_id)
+            except ArtifactError:
+                return None
+
+        return fetch
+
+    def _global_index_prune(self, artifact_id: str) -> None:
+        with self._lock:
+            try:
+                self._global_index_remove_locked(artifact_id)
+            except Exception:
+                self._global_index_broken()
+
+    def _global_entries(self) -> list[ArtifactIndexEntry]:
+        """All global index rows, sorted; duplicate ids keep the freshest."""
+        meta = self._get(self._IDX_GLOBAL_META)
+        chunks = int(meta.get("chunks", 0)) if isinstance(meta, dict) else 0
+        keys = [f"{self._IDX_GLOBAL_PREFIX}{i:06d}" for i in range(chunks)]
+        with observe("modal_dict.get_global_index", store=self._name, chunks=chunks):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                raws = list(pool.map(self._d().get, keys))
+        entries: list[ArtifactIndexEntry] = []
+        for raw in raws:
+            entries.extend(_index_loads(raw))
+        entries.sort(key=lambda e: e.sort_key)
+        deduped: dict[str, ArtifactIndexEntry] = {}
+        for entry in entries:
+            deduped[entry.artifact_id] = entry
+        return sorted(deduped.values(), key=lambda e: e.sort_key)
+
+    def _global_index_add(self, manifest: ArtifactManifest) -> None:
+        """RMW the chunked global index: drop any existing row for this id,
+        append to the tail chunk, split it at ``_GLOBAL_CHUNK_MAX``."""
+        with self._lock:
+            self._global_index_remove_locked(manifest.artifact_id)
+            meta = self._get(self._IDX_GLOBAL_META)
+            chunks = int(meta.get("chunks", 0)) if isinstance(meta, dict) else 0
+            tail_key = f"{self._IDX_GLOBAL_PREFIX}{max(chunks - 1, 0):06d}"
+            tail = _index_add_entry(_index_loads(self._get(tail_key)), _index_entry(manifest))
+            if len(tail) > self._GLOBAL_CHUNK_MAX:
+                mid = len(tail) // 2
+                self._put(tail_key, _index_dumps(tail[:mid]))
+                self._put(f"{self._IDX_GLOBAL_PREFIX}{chunks:06d}", _index_dumps(tail[mid:]))
+                chunks += 1
+            else:
+                self._put(tail_key, _index_dumps(tail))
+            self._put(self._IDX_GLOBAL_META, {"chunks": max(chunks, 1)})
+
+    def _global_index_remove_locked(self, artifact_id: str) -> None:
+        """Drop ``artifact_id`` from whichever chunk holds it; caller holds
+        ``_lock``. Reads all chunk docs — bounded by ``ceil(N/2000)``."""
+        meta = self._get(self._IDX_GLOBAL_META)
+        chunks = int(meta.get("chunks", 0)) if isinstance(meta, dict) else 0
+        if chunks < 1:
+            return
+        keys = [f"{self._IDX_GLOBAL_PREFIX}{i:06d}" for i in range(chunks)]
+        with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+            raws = list(pool.map(self._d().get, keys))
+        for key, raw in zip(keys, raws):
+            rows = _index_loads(raw)
+            kept = [e for e in rows if e.artifact_id != artifact_id]
+            if len(kept) != len(rows):
+                self._put(key, _index_dumps(kept))
+
+    def _global_index_broken(self) -> None:
+        """Global-index maintenance failed: drop the marker so the next
+        listing rebuilds and converges instead of serving drifted rows."""
+        self._global_ready = False
+        try:
+            self._pop(self._IDX_GLOBAL_BUILT)
+        except Exception:
+            pass
+
+    def _ensure_global_index(self) -> None:
+        """Lazily build the global index on the first unfiltered query —
+        the safe migration for Dicts that predate it. ``_build_lock``
+        double-checks so concurrent first queries share one rebuild."""
+        if self._global_ready:
+            return
+        with self._build_lock:
+            if self._global_ready:
+                return
+            if self._get(self._IDX_GLOBAL_BUILT) is None:
+                self.rebuild_global_index()
+            self._global_ready = True
+
+    def rebuild_global_index(self) -> int:
+        """Re-enumerate keys once, fetch every manifest, and rewrite the
+        chunked global index. Idempotent; converges drift (drops stale
+        chunk docs). Returns the number of rows written."""
+        with observe("modal_dict.keys", store=self._name):
+            all_keys = [k for k in self._d().keys() if isinstance(k, str)]
+        artifact_ids = [
+            key[: -len("/manifest")]
+            for key in all_keys
+            if key.endswith("/manifest") and "/" not in key[: -len("/manifest")]
+        ]
+        with observe("modal_dict.get_manifests", store=self._name, manifests=len(artifact_ids)):
+            with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                raws = list(pool.map(lambda aid: self._d().get(f"{aid}/manifest"), artifact_ids))
+        entries: list[ArtifactIndexEntry] = []
+        for artifact_id, raw in zip(artifact_ids, raws):
+            if raw is None:
+                continue
+            try:
+                manifest = manifest_loads(raw)
+            except ArtifactError:
+                continue
+            if manifest.artifact_id != artifact_id:
+                continue
+            entries.append(_index_entry(manifest))
+        entries.sort(key=lambda e: e.sort_key)
+        with self._lock:
+            n_chunks = (len(entries) + self._GLOBAL_CHUNK_MAX - 1) // self._GLOBAL_CHUNK_MAX
+            keep = set()
+            for i in range(n_chunks):
+                key = f"{self._IDX_GLOBAL_PREFIX}{i:06d}"
+                keep.add(key)
+                lo = i * self._GLOBAL_CHUNK_MAX
+                self._put(key, _index_dumps(entries[lo : lo + self._GLOBAL_CHUNK_MAX]))
+            for key in all_keys:
+                if key.startswith(self._IDX_GLOBAL_PREFIX) and key not in keep:
+                    self._pop(key)
+            self._put(self._IDX_GLOBAL_META, {"chunks": n_chunks})
+            self._put(self._IDX_GLOBAL_BUILT, b"1")
+        self._global_ready = True
+        return len(entries)
 
 
 def _to_bytes(value: bytes | str) -> bytes:

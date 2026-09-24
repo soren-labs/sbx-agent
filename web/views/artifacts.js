@@ -148,21 +148,35 @@ export function renderArtifacts({ route }) {
   const state = { agentId: route.query.agent || "" };
   const listEl = h("div", null, h("div", { class: "card" }, h("div", { class: "card-body" }, skeleton(4))));
 
+  function renderItems(items) {
+    const sorted = items.slice().sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+    mount(
+      listEl,
+      sorted.length
+        ? artifactTable(sorted)
+        : emptyState({
+            iconName: "package",
+            title: state.agentId ? t("No artifacts from this agent") : t("No artifacts yet"),
+            body: t("Artifacts are sha256-verified snapshots of an agent's workspace — patch, git bundle and files. Create one from an agent with a repository, then hand it to another agent."),
+            testid: "artifacts-empty",
+          }),
+    );
+  }
+
   async function load() {
     try {
-      const res = await api.listArtifacts({ agent_id: state.agentId || undefined });
-      const items = (res.artifacts || []).slice().sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
-      mount(
-        listEl,
-        items.length
-          ? artifactTable(items)
-          : emptyState({
-              iconName: "package",
-              title: state.agentId ? t("No artifacts from this agent") : t("No artifacts yet"),
-              body: t("Artifacts are sha256-verified snapshots of an agent's workspace — patch, git bundle and files. Create one from an agent with a repository, then hand it to another agent."),
-              testid: "artifacts-empty",
-            }),
-      );
+      // Page the listing: the first page is the principal data; remaining
+      // pages backfill in the background so a large global history never
+      // blocks first paint.
+      const query = { agent_id: state.agentId || undefined, limit: 500 };
+      let res = await api.listArtifacts(query);
+      const items = (res.artifacts || []).slice();
+      renderItems(items);
+      while (res.next_cursor) {
+        res = await api.listArtifacts({ ...query, cursor: res.next_cursor });
+        items.push(...(res.artifacts || []));
+        renderItems(items);
+      }
     } catch (err) {
       mount(listEl, errorBanner(err, { retry: load }));
     }

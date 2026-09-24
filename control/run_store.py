@@ -17,9 +17,11 @@ the transition rules (idempotent ``begin``, monotonic ``finish`` /
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -520,12 +522,37 @@ class FileRunStore:
             self._path(agent_id, n).unlink(missing_ok=True)
 
 
+_DICT_FANOUT = 8
+
+
 class ModalDictRunStore:
-    """Production store backed by ``modal.Dict``. Lazy-imports modal."""
+    """Production store backed by ``modal.Dict``. Lazy-imports modal.
+
+    Per-agent run index (SOR-199): a companion ``<name>-index`` Dict holds
+    ``agent/<sha256(agent_id)>`` -> sorted run numbers and ``built`` once
+    the index covers the whole store. ``modal.Dict`` enumeration is
+    server-paged at ~one round-trip per key, so ``list(agent_id)`` reads
+    one index doc plus the agent's own records through a bounded pool —
+    never ``items()`` over the global store, which made
+    ``GET /v1/agents/{id}/runs`` cost ~2s at a few hundred run keys and
+    grows linearly with global run history. ``put`` writes the index
+    *before* the record and ``delete`` removes the record *before* the
+    index row, so a crash between the pair leaves at most a stale run
+    number — skipped on read — never an invisible live run. A lost index
+    update is repaired by ``rebuild_index`` (also the lazy migration for
+    pre-index Dicts).
+    """
+
+    _IDX_PREFIX = "agent/"
+    _IDX_BUILT = "built"
 
     def __init__(self, name: str = RUNS_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
+        self._index: Any = None
+        self._index_ready = False
+        self._lock = threading.Lock()
+        self._build_lock = threading.Lock()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -534,9 +561,21 @@ class ModalDictRunStore:
             self._dict = modal.Dict.from_name(self._name, create_if_missing=True)
         return self._dict
 
+    def _idx(self) -> Any:
+        if self._index is None:
+            import modal
+
+            self._index = modal.Dict.from_name(f"{self._name}-index", create_if_missing=True)
+        return self._index
+
     @staticmethod
     def _key(agent_id: str, n: int) -> str:
         return f"{agent_id}/{n}"
+
+    @staticmethod
+    def _idx_key(agent_id: str) -> str:
+        digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
+        return f"{ModalDictRunStore._IDX_PREFIX}{digest}"
 
     def get(self, agent_id: str, n: int) -> RunRecord | None:
         key = self._key(agent_id, n)
@@ -547,11 +586,30 @@ class ModalDictRunStore:
         return _decode(raw, agent_id, n)
 
     def put(self, record: RunRecord) -> None:
+        self._index_add(record.agent_id, record.n)
         key = self._key(record.agent_id, record.n)
         with observe("modal_dict.put", store=self._name, key=key):
             self._d().put(key, record_to_dict(record))
 
     def list(self, agent_id: str) -> list[RunRecord]:
+        raws: list[Any] | None = None
+        ns: list[int] = []
+        try:
+            self._ensure_index()
+            raw_ns = self._idx().get(self._idx_key(agent_id)) or []
+            ns = sorted({int(v) for v in raw_ns if isinstance(v, int)})
+            with observe("modal_dict.get_runs", store=self._name, agent_id=agent_id, runs=len(ns)):
+                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                    raws = list(pool.map(lambda n: self._d().get(self._key(agent_id, n)), ns))
+        except Exception:
+            raws = None
+        if raws is not None:
+            # Stale run numbers (record deleted between index write and
+            # read) fetch None and are skipped.
+            out = [_decode(raw, agent_id, n) for n, raw in zip(ns, raws) if isinstance(raw, dict)]
+            return sorted(out, key=lambda r: r.n)
+        # Index unavailable: fall back to the honest full enumeration
+        # rather than fail the listing.
         prefix = f"{agent_id}/"
         out = []
         with observe("modal_dict.items", store=self._name, agent_id=agent_id):
@@ -571,7 +629,89 @@ class ModalDictRunStore:
             with observe("modal_dict.pop", store=self._name, key=self._key(agent_id, n)):
                 self._d().pop(self._key(agent_id, n))
         except KeyError:
+            pass
+        self._index_remove(agent_id, n)
+
+    # --------------------------------------------------------- run index
+
+    def _index_add(self, agent_id: str, n: int) -> None:
+        try:
+            with self._lock:
+                key = self._idx_key(agent_id)
+                ns = self._idx().get(key) or []
+                if n in ns:
+                    return
+                self._idx().put(key, sorted([*ns, n]))
+        except Exception:
+            self._index_broken()
+
+    def _index_remove(self, agent_id: str, n: int) -> None:
+        try:
+            with self._lock:
+                key = self._idx_key(agent_id)
+                ns = self._idx().get(key) or []
+                if n not in ns:
+                    return
+                kept = [v for v in ns if v != n]
+                if kept:
+                    self._idx().put(key, kept)
+                else:
+                    self._idx().pop(key)
+        except Exception:
+            self._index_broken()
+
+    def _index_broken(self) -> None:
+        """Index maintenance failed: drop the marker so the next listing
+        rebuilds and converges instead of serving a drifted index."""
+        self._index_ready = False
+        try:
+            self._idx().pop(self._IDX_BUILT)
+        except Exception:
+            pass
+
+    def _ensure_index(self) -> None:
+        """Lazily build the index on the first listing — the safe
+        migration for Dicts that predate the index. ``_build_lock``
+        double-checks so concurrent first listings share one rebuild."""
+        if self._index_ready:
             return
+        with self._build_lock:
+            if self._index_ready:
+                return
+            if self._idx().get(self._IDX_BUILT) is None:
+                self.rebuild_index()
+            self._index_ready = True
+
+    def rebuild_index(self) -> int:
+        """Re-enumerate keys once and rewrite every agent index doc.
+
+        Idempotent and safe on a live store: converges the index (drops
+        docs for agents with no runs left). Returns the number of run
+        numbers indexed.
+        """
+        with observe("modal_dict.keys", store=self._name):
+            keys = [k for k in self._d().keys() if isinstance(k, str)]
+        groups: dict[str, set[int]] = {}
+        for key in keys:
+            head, sep, tail = key.rpartition("/")
+            if not sep or not head or not tail.isdigit():
+                continue
+            groups.setdefault(head, set()).add(int(tail))
+        with self._lock:
+            keep = {self._idx_key(agent) for agent in groups}
+            existing = [
+                k
+                for k in self._idx().keys()
+                if isinstance(k, str) and k.startswith(self._IDX_PREFIX)
+            ]
+            for key in existing:
+                if key not in keep:
+                    self._idx().pop(key)
+            for agent, ns in groups.items():
+                self._idx().put(self._idx_key(agent), sorted(ns))
+            self._idx().put(self._IDX_BUILT, b"1")
+        self._index_ready = True
+        return sum(len(ns) for ns in groups.values())
 
 
 class RunLedger:

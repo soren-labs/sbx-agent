@@ -211,10 +211,14 @@ def _known_run_ns(rec: Any, ledger: Any = None, run_states: Any = None) -> set[i
             ns.update(record.n for record in ledger.list(rec.id))
         except Exception:
             pass
-    if run_states is not None:
+    rs_ledger = getattr(run_states, "_ledger", None)
+    if run_states is not None and (rs_ledger is None or rs_ledger is not ledger):
         # A separate run-state seam (ledger-less deployments, injected test
         # stores) can know runs the ledger does not — e.g. a queued CREATING
-        # run-1 before the ledger saw it.
+        # run-1 before the ledger saw it. ``LedgerRunStates`` over the same
+        # ledger is skipped: its list is the identical store pass the
+        # ledger branch just ran, and on a ``modal.Dict`` backend that
+        # second serialized enumeration costs seconds.
         try:
             ns.update(s.n for s in run_states.list(rec.id))
         except Exception:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,8 @@ from urllib.parse import quote
 
 from control.config import WORKFLOWS_DICT_NAME
 from control.latency import observe
+
+_DICT_FANOUT = 8
 
 
 def _iso_now() -> str:
@@ -343,15 +346,30 @@ class FileWorkflowStore(_WorkflowStoreBase):
 
 
 class ModalDictWorkflowStore(_WorkflowStoreBase):
-    """Production store backed by ``modal.Dict``. Lazy-imports modal."""
+    """Production store backed by ``modal.Dict``. Lazy-imports modal.
+
+    Listing manifest (SOR-199): ``wf-index/_agents`` -> sorted bound-agent
+    id list. ``modal.Dict`` enumeration is server-paged at ~one round-trip
+    per key, so ``all_bindings``/``list_workflow`` read the manifest and
+    fetch agent records point-wise through a bounded pool instead of
+    ``items()`` over the Dict. The manifest is written *before* the agent
+    record so a crash between the pair leaves at most a stale id —
+    skipped on read — never an invisible binding; per-agent records stay
+    authoritative (the merge semantics of ``list_workflow`` are
+    unchanged). A missing/corrupt manifest is rebuilt once from
+    ``keys()`` — the lazy migration for pre-manifest Dicts.
+    """
 
     _AGENT_PREFIX = "wf-agent/"
     _INDEX_PREFIX = "wf-index/"
+    _AGENTS_MANIFEST = "wf-index/_agents"
 
     def __init__(self, name: str = WORKFLOWS_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
         self._lock = threading.RLock()
+        self._manifest_ready = False
+        self._build_lock = threading.Lock()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -367,6 +385,7 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
         return raw if isinstance(raw, dict) else None
 
     def _put_agent_raw(self, record: WorkflowTaskRecord) -> None:
+        self._manifest_add(record.agent_id)
         key = f"{self._AGENT_PREFIX}{record.agent_id}"
         with observe("modal_dict.put", store=self._name, key=key):
             self._d().put(key, record_to_dict(record))
@@ -383,13 +402,76 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
             self._d().put(key, index)
 
     def _iter_agent_raws(self) -> Iterator[dict[str, Any]]:
-        with observe("modal_dict.items", store=self._name):
-            items = list(self._d().items())
-        return (
-            raw
-            for key, raw in items
-            if isinstance(key, str) and key.startswith(self._AGENT_PREFIX) and isinstance(raw, dict)
-        )
+        try:
+            ids = self._manifest_ids()
+            with observe("modal_dict.get_agent_raws", store=self._name, agents=len(ids)):
+                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                    raws = list(
+                        pool.map(lambda aid: self._d().get(f"{self._AGENT_PREFIX}{aid}"), ids)
+                    )
+            # Stale ids fetch None and are skipped; agent records stay
+            # authoritative.
+            return iter([raw for raw in raws if isinstance(raw, dict)])
+        except Exception:
+            # Manifest path failed — the honest full enumeration keeps the
+            # listing available.
+            with observe("modal_dict.items", store=self._name):
+                items = list(self._d().items())
+            return (
+                raw
+                for key, raw in items
+                if isinstance(key, str)
+                and key.startswith(self._AGENT_PREFIX)
+                and isinstance(raw, dict)
+            )
+
+    # ---------------------------------------------------- listing manifest
+
+    def _manifest_add(self, agent_id: str) -> None:
+        try:
+            with self._lock:
+                ids = self._d().get(self._AGENTS_MANIFEST) or []
+                if not isinstance(ids, list):
+                    ids = []
+                if agent_id in ids:
+                    return
+                self._d().put(self._AGENTS_MANIFEST, sorted({*ids, agent_id}))
+        except Exception:
+            # Manifest maintenance must never fail the binding write;
+            # dropping the manifest forces the next scan to rebuild it.
+            self._manifest_ready = False
+            try:
+                self._d().pop(self._AGENTS_MANIFEST)
+            except Exception:
+                pass
+
+    def _manifest_ids(self) -> list[str]:
+        """Sorted bound-agent ids, rebuilding the manifest once when absent.
+        ``_build_lock`` double-checks so concurrent first scans share one
+        rebuild."""
+        if not self._manifest_ready:
+            with self._build_lock:
+                if not self._manifest_ready:
+                    raw = self._d().get(self._AGENTS_MANIFEST)
+                    if not isinstance(raw, list):
+                        self.rebuild_manifest()
+                    self._manifest_ready = True
+        raw = self._d().get(self._AGENTS_MANIFEST) or []
+        return sorted({str(i) for i in raw}) if isinstance(raw, list) else []
+
+    def rebuild_manifest(self) -> int:
+        """Re-enumerate ``wf-agent/`` keys once and rewrite the manifest.
+
+        Idempotent and safe on a live store; returns the number of ids
+        indexed.
+        """
+        with observe("modal_dict.keys", store=self._name):
+            keys = [k for k in self._d().keys() if isinstance(k, str)]
+        ids = sorted(k[len(self._AGENT_PREFIX) :] for k in keys if k.startswith(self._AGENT_PREFIX))
+        with self._lock:
+            self._d().put(self._AGENTS_MANIFEST, ids)
+        self._manifest_ready = True
+        return len(ids)
 
 
 __all__ = [
