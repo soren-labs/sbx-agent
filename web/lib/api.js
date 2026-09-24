@@ -108,6 +108,7 @@ export const api = {
   models: () => request("GET", "/v1/models"),
 
   listAgents: (query) => request("GET", "/v1/agents", { query }),
+  agentsSummary: (query) => request("GET", "/v1/agents/summary", { query }),
   getAgent: (id) => request("GET", `/v1/agents/${enc(id)}`),
   createAgent: (body, idempotencyKey) =>
     request("POST", "/v1/agents", {

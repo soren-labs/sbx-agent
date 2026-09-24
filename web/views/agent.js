@@ -119,7 +119,16 @@ export function renderAgent({ route, shell }) {
       onStatus: (value) => {
         block?.setStreamState(value);
         if (value === "live") armIdleClose(runId);
-        if (value === "gave_up") void refresh();
+        if (value === "gave_up") {
+          // The stream is done but the run may have settled unseen —
+          // refresh state and usage once instead of polling for it.
+          void (async () => {
+            await refresh();
+            await loadUsage();
+            renderHeader();
+            if (tab === "conversation") renderAside();
+          })();
+        }
       },
       onEvent: (ev) => {
         blocks.get(runId)?.applyEvent(ev);
@@ -571,16 +580,22 @@ export function renderAgent({ route, shell }) {
     if (disposed) return;
     renderHeader();
     if (tab === "conversation") renderAside();
+    // An agent that was already terminal on arrival can never change —
+    // don't let the refresh poll tick even once.
+    if (state.agent && isAgentEnded(state.agent.status)) poll.stop();
   }
 
   renderHeader();
   renderBody();
   void start();
 
+  // Status/runs refresh only; usage is loaded at start and on
+  // turn_finished / stream give-up — an ended agent cannot change, so
+  // the poll stops outright instead of ticking forever (SOR-202).
   const poll = poller(
     async () => {
       await refresh();
-      if (!activeRun()) await loadUsage();
+      if (state.agent && isAgentEnded(state.agent.status)) poll.stop();
     },
     () => (state.agent && (state.agent.status === "creating" || activeRun()) ? 2500 : 10000),
   );

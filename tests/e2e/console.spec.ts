@@ -178,6 +178,54 @@ test.describe("web console against a real local /v1 control plane", () => {
     await expect(page.getByTestId("github-status")).toContainText("not configured");
   });
 
+  test("live badge polls the summary rollup, never a full agent list (SOR-202)", async ({ page }) => {
+    // Count every GET by shape: the collection, the rollup, agent detail,
+    // and a detail's run list — the sidebar must not burn the first.
+    const hits = { list: 0, summary: 0, detail: 0, runs: 0 };
+    page.on("request", (req) => {
+      if (req.method() !== "GET") return;
+      const p = new URL(req.url()).pathname;
+      if (p === "/v1/agents") hits.list += 1;
+      else if (p === "/v1/agents/summary") hits.summary += 1;
+      else if (/^\/v1\/agents\/[^/]+$/.test(p)) hits.detail += 1;
+      else if (/^\/v1\/agents\/[^/]+\/runs$/.test(p)) hits.runs += 1;
+    });
+
+    await connect(page);
+    await expect(page.getByTestId("agents-table")).toBeVisible();
+    // Mounting the Agents page costs exactly one full page plus the cheap
+    // rollup (shell badge + the list's own baseline). The baseline fires
+    // just after the first render, so poll for it rather than racing it.
+    expect(hits.list).toBe(1);
+    await expect.poll(() => hits.summary).toBeGreaterThanOrEqual(2);
+
+    // Event-driven: creating an agent bumps the rollup immediately, not
+    // on the next interval.
+    const s0 = hits.summary;
+    await createAgent(page, "Write poll.txt containing ok", "poll-check");
+    await waitRun(page, "run-1", "FINISHED");
+    await waitAgent(page, "idle");
+    await expect.poll(() => hits.summary, { timeout: 10_000 }).toBeGreaterThan(s0);
+
+    // Parked away from the Agents page: over the old 15s sidebar cadence
+    // no full-list fetch may recur at all.
+    await page.getByTestId("nav-capacity").click();
+    const listBefore = hits.list;
+    await page.waitForTimeout(16_500);
+    expect(hits.list).toBe(listBefore);
+
+    // Agent detail stops refreshing once the agent is ended: over the old
+    // 10s cadence no detail or runs call may fire for a closed agent.
+    await page.getByTestId("nav-agents").click();
+    await page.getByTestId("agent-row").filter({ hasText: "failing agent" }).click();
+    await expect(page.getByTestId("readonly-banner")).toBeVisible();
+    const d0 = hits.detail;
+    const r0 = hits.runs;
+    await page.waitForTimeout(11_000);
+    expect(hits.detail).toBe(d0);
+    expect(hits.runs).toBe(r0);
+  });
+
   test("admin: accounts import/remove and API key lifecycle with scopes", async ({ page, browser }) => {
     await connect(page);
     await page.getByTestId("nav-accounts").click();

@@ -165,20 +165,25 @@ export function createShell() {
   renderIdentity();
   renderTools();
 
-  // Live-agent badge on the nav.
+  // Live-agent badge on the nav: the cheap /v1/agents/summary rollup, not
+  // a full listAgents page. View actions call bumpLive() for immediate
+  // refresh; the 30s tick is only the fallback while events are absent.
   const live = poller(async () => {
     if (!root.isConnected) {
       live.stop();
       return;
     }
-    const res = await api.listAgents();
-    const count = (res.agents || []).filter((a) => a.status === "running" || a.status === "creating").length;
+    const res = await api.agentsSummary();
+    const counts = res?.by_status || {};
+    const count = (counts.running || 0) + (counts.creating || 0);
     if (count !== liveCount) {
       liveCount = count;
       renderNav();
     }
-  }, 15000);
-  live.now();
+  }, 30000);
+  // root is attached synchronously right after createShell() returns; a bare
+  // now() here would trip the not-connected guard and stop the poller.
+  queueMicrotask(() => live.now());
 
   return {
     el: root,
