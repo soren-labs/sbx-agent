@@ -385,6 +385,8 @@ export function renderNewAgent({ route }) {
         "data-testid": "f-model",
         onChange: (ev) => {
           f.model = ev.target.value;
+          // Re-render: the effort ladder is model-scoped (SOR-204).
+          renderSections();
           refreshPreview();
         },
       },
@@ -417,7 +419,7 @@ export function renderNewAgent({ route }) {
           },
           h("option", { value: "auto" }, t("Auto — scheduler picks a free account")),
           provAccounts.map((a) => h("option", { value: a.id, selected: f.account === a.id, disabled: a.status !== "active" }, `${a.label} (${a.id}) — ${a.running}/${a.max_concurrent} · ${a.status}`)),
-        );
+        )
       : h("input", {
           class: "input mono",
           value: f.account,
