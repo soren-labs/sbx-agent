@@ -85,6 +85,50 @@ local official CLI login                your Modal workspace
   Linear — fixtures use `REDACTED` placeholders; the e2e gates record
   sha256-16 fingerprints only.
 
+## Credential lifecycle (SOR-176)
+
+Local CLI credentials and SBX cloud credentials are **independent
+lifecycles**: the local auth files above are import sources only — cloud
+refresh never writes to them. The cloud lane owns two artifacts per
+account: the stored credential **blob** (atomic, `0600`, CAS-committed)
+and the deployment-managed Secret `sbx-acct-<id>` (recreated in place on
+each commit — no redeploy).
+
+For OAuth providers (codex, antigravity, grok, opencode oauth entries)
+the full bundle is persisted, the **official CLI performs the refresh
+itself** inside a throwaway sandbox (`CredentialRefresher`), file
+mutation is detected by sha256 fingerprint, and the rotated bundle is
+written back under a per-account lock with the `cred_base_fp` CAS —
+stale writers are dropped, never merged. Static credentials (OpenCode
+Zen `api` entries, Devin key files) have no refresh channel: they are
+classified `api_key` and never spend a refresh exec.
+
+Non-secret lifecycle metadata is served at
+`GET /v1/accounts/{id}/lifecycle` (kind, state, expiry epoch, fingerprint,
+generation — never token material). `POST /v1/accounts/{id}/lifecycle/refresh`
+runs one synchronous refresh through the same worker path.
+
+| State | Meaning |
+| --- | --- |
+| `healthy` | credential verified/imported, no expiry signal due |
+| `access_expiring` | access token inside the 30-minute expiry window |
+| `refreshing` | a refresh claim is in flight (per-account lock) |
+| `healthy_refreshed` | a rotated bundle was committed by write-back |
+| `reauth_required` | provider rejected the credential; re-import needed |
+| `revoked` | `invalid_grant`/revocation observed — grant is dead |
+
+`invalid_grant`/`invalid_refresh_token`/`token_expired` classify as
+`auth_invalid` run errors; `RunFailureReporter` marks the account
+`invalid` (scheduler failover — auto-pick never selects it) and pins the
+terminal lifecycle state, so a dead grant fails over once instead of
+looping 401s. A *new* credential import clears the terminal flag only
+when its fingerprint differs from the condemned bundle.
+
+Knobs: `SBX_CRED_WRITEBACK=0` disables write-back (SOR-147);
+`SBX_CRED_REFRESH=0` disables the proactive refresher;
+`SBX_CRED_REFRESH_INTERVAL_S`/`_JITTER_S` tune the scan;
+`SBX_ACCESS_EXPIRING_WINDOW_S` tunes the `access_expiring` window.
+
 ## Importing credentials
 
 ```bash

@@ -143,9 +143,11 @@ class CredentialSync:
         registry_source: Callable[[], Any | None],
         *,
         secret_writer: CredentialSecretWriter | None = None,
+        lifecycle: Any = None,
     ) -> None:
         self._registry_source = registry_source
         self._secret_writer = secret_writer
+        self._lifecycle = lifecycle
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
 
@@ -212,6 +214,17 @@ class CredentialSync:
         if account is None:
             return WritebackOutcome("skipped:account")
 
+        # SOR-176: static credentials (OpenCode Zen ``api`` entries, Devin
+        # keys) have no refresh channel — never spend an export exec on them.
+        try:
+            from control.credlifecycle import credential_kind
+
+            stored_blob = registry.get_credential_blob(account_id)
+        except Exception:
+            stored_blob = None
+        if credential_kind(getattr(account, "provider", ""), stored_blob) == "api_key":
+            return WritebackOutcome("skipped:static_credential")
+
         exported = self._export_blob(backend, handle, runner_cmd)
         if exported is None:
             return WritebackOutcome("unchanged")
@@ -254,9 +267,32 @@ class CredentialSync:
                     healed = True
             except Exception:
                 pass
-        return WritebackOutcome(
+        outcome = WritebackOutcome(
             "committed", fingerprint=exported_fp, healed=healed, secret=secret_state
         )
+        self._note_commit(account_id, exported)
+        return outcome
+
+    def _note_commit(self, account_id: str, blob: dict) -> None:
+        """SOR-176: feed the committed rotation into the lifecycle record."""
+        service = self._lifecycle_service()
+        if service is None:
+            return
+        try:
+            service.finish_refresh(account_id, outcome="committed", blob=blob)
+        except Exception:
+            pass
+
+    def _lifecycle_service(self) -> Any | None:
+        if self._lifecycle is not None:
+            return self._lifecycle
+        try:
+            from control.credlifecycle import CredentialLifecycleService
+
+            self._lifecycle = CredentialLifecycleService(self._registry_source)
+        except Exception:
+            self._lifecycle = None
+        return self._lifecycle
 
     # ------------------------------------------------------------ internals
 
