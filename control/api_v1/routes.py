@@ -84,7 +84,11 @@ from control.artifacts import (
     manifest_to_dict,
     page_manifests,
 )
-from control.capabilities import CapabilitySnapshot, declared_snapshot
+from control.capabilities import (
+    CapabilitySnapshot,
+    capability_from_model_id,
+    declared_snapshot,
+)
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
 from control.config import TERMINAL_STATUSES, selected_providers
 from control.credlifecycle import CredentialLifecycleService, CredentialRefresher
@@ -769,6 +773,21 @@ def _model_row(snapshot: CapabilitySnapshot, model: str | None) -> Any:
     return None
 
 
+def _effort_row(provider: str, model: str | None, snapshot: CapabilitySnapshot | None) -> Any:
+    """Catalog row for ``model``, derived from the id when uncatalogued.
+
+    Non-discovered snapshots don't gate model ids, but the effort surface
+    stays model-scoped — a tier-less ``agy`` id must not inherit the
+    provider floor (real ``agy --effort`` on it fails ``model_unavailable``
+    mid-run). Deriving the row keeps the create gate and the init
+    ``effort_surface`` tag on the same data.
+    """
+    row = _model_row(snapshot, model) if snapshot is not None else None
+    if row is None and model is not None and (snapshot is None or snapshot.source != "discovered"):
+        row = capability_from_model_id(provider, model)
+    return row
+
+
 def _default_model(provider: str, account: Account | None, capabilities: Any = None) -> str | None:
     """Omitted ``AgentSpec.model`` → a valid provider/account default.
 
@@ -916,24 +935,22 @@ def _check_effort_capability(
     A discovered snapshot is authoritative — the row's ``reasoning_efforts``
     decide. Declared/env/static rows carry the provider's verified floor
     only where effort is an orthogonal CLI flag (codex, grok); an empty
-    list there means the provider has no native surface at all. No
-    snapshot → the static floor applies.
+    list there means the provider has no native surface at all. Uncatalogued
+    ids on non-discovered snapshots get the same id-derived surface
+    (``_effort_row``); model-less checks fall back to the static floor.
     """
     refusal: str | None = None
-    if snapshot is not None:
-        row = _model_row(snapshot, model)
-        if row is not None:
-            if not row.reasoning_efforts:
-                refusal = f"model {model!r} on {provider!r} has no native effort surface"
-            elif effort not in row.reasoning_efforts:
-                refusal = (
-                    f"model {model!r} does not support reasoning_effort {effort!r} "
-                    f"(supported: {list(row.reasoning_efforts)})"
-                )
-        elif snapshot.source == "discovered":
-            refusal = f"model {model!r} is not advertised by this account"
-        else:
-            refusal = effort_error(provider, effort)
+    row = _effort_row(provider, model, snapshot)
+    if row is not None:
+        if not row.reasoning_efforts:
+            refusal = f"model {model!r} on {provider!r} has no native effort surface"
+        elif effort not in row.reasoning_efforts:
+            refusal = (
+                f"model {model!r} does not support reasoning_effort {effort!r} "
+                f"(supported: {list(row.reasoning_efforts)})"
+            )
+    elif snapshot is not None and snapshot.source == "discovered":
+        refusal = f"model {model!r} is not advertised by this account"
     else:
         refusal = effort_error(provider, effort)
     if refusal is not None:
@@ -1179,7 +1196,7 @@ def _create_agent_once(
     # SOR-204: carry the resolved row's effort surface to init so the
     # in-sandbox backstop validates the declaration against the same
     # (possibly discovered-widened) surface the API just checked.
-    surface_row = _model_row(snapshot, model) if snapshot is not None else None
+    surface_row = _effort_row(provider, model, snapshot)
     effort_surface = list(surface_row.reasoning_efforts) if surface_row is not None else None
 
     try:

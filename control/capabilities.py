@@ -398,6 +398,17 @@ def _capability_from(provider: str, entry: _Entry) -> ModelCapability:
     )
 
 
+def capability_from_model_id(provider: str, model: str) -> ModelCapability:
+    """Capability derived from a bare model id — no catalog row required.
+
+    Non-discovered snapshots permit arbitrary model ids, but the effort
+    surface is still model-scoped: flag-effort providers get the verified
+    floor, tier-in-id providers their suffix, and tier-less ids nothing
+    (``agy --effort`` on ``claude-sonnet-4-6`` fails ``model_unavailable``).
+    """
+    return _capability_from(provider, _Entry(model=model))
+
+
 def parse_models_output(provider: str, output: str) -> tuple[ModelCapability, ...]:
     """Best-effort parse of a provider CLI's models listing.
 
