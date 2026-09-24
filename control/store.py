@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import os
 import threading
+import time
+import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -156,7 +160,12 @@ class InMemoryStore:
             self._items.pop(session_id, None)
 
 
-_DICT_FANOUT = 8
+_DICT_FANOUT = 32
+
+# SOR-199: upper bound on cross-container staleness for the read-through
+# listing cache. A write whose ``ver`` bump is lost mid-crash leaves
+# remote readers on their cached page only until this TTL expires.
+_LIST_CACHE_TTL_S = float(os.environ.get("SBX_LIST_CACHE_TTL_S", "30"))
 
 
 class ModalDictStore:
@@ -172,10 +181,22 @@ class ModalDictStore:
     between the pair leaves at most a stale id — skipped on read — never
     an invisible live record. A lost index update is repaired by
     ``rebuild_index`` (also the lazy migration for pre-index Dicts).
+
+    Listing cache: even the indexed listing costs ~N/fanout serial
+    round-trips (25+ at production scale), which put the pooled P95 over
+    budget on stragglers and cron overlap. ``put``/``delete`` therefore
+    bump an opaque ``ver`` token in the index Dict *after* the record
+    write, and ``list_all`` reads ``ver`` first: an unchanged token
+    serves the in-process page with a single round-trip. The token is
+    read *before* the manifest and records so a write landing mid-fetch
+    can only make the cached page stale-early (next call refetches),
+    never stale-late. A lost ``ver`` bump (crash between record write
+    and token write) is bounded by ``_LIST_CACHE_TTL_S``.
     """
 
     _IDX_IDS = "agents"
     _IDX_BUILT = "built"
+    _IDX_VER = "ver"
 
     def __init__(self, name: str = SESSIONS_DICT_NAME) -> None:
         self._name = name
@@ -184,6 +205,8 @@ class ModalDictStore:
         self._index_ready = False
         self._lock = threading.Lock()
         self._build_lock = threading.Lock()
+        # ``(ver, monotonic-ts, raw record dicts)`` for the last fetch.
+        self._list_cache: tuple[Any, float, list[dict[str, Any]]] | None = None
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -210,16 +233,28 @@ class ModalDictStore:
         self._index_add(record.id)
         with observe("modal_dict.put", store=self._name, key=record.id):
             self._d().put(record.id, record_to_dict(record))
+        self._index_bump_ver()
 
     def list_all(self) -> list[SessionRecord]:
         raws: list[Any] | None = None
         try:
             self._ensure_index()
+            # Read the version token first: a write that lands anywhere
+            # after this point moves ``ver`` past what we cache under, so
+            # the next call refetches instead of serving stale records.
+            ver = self._idx().get(self._IDX_VER)
+            cached = self._list_cache
+            if (
+                cached is not None
+                and cached[0] == ver
+                and time.monotonic() - cached[1] < _LIST_CACHE_TTL_S
+            ):
+                return [record_from_dict(copy.deepcopy(raw)) for raw in cached[2]]
             ids = self._idx().get(self._IDX_IDS) or []
             ids = sorted({str(i) for i in ids})
             with observe("modal_dict.get_records", store=self._name, records=len(ids)):
                 with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
-                    raws = list(pool.map(self._d().get, ids))
+                    raws = [r for r in pool.map(self._d().get, ids) if isinstance(r, dict)]
         except Exception:
             raws = None
         if raws is None:
@@ -234,7 +269,8 @@ class ModalDictStore:
             return out
         # Stale ids (record deleted between index write and read) fetch
         # None and are skipped.
-        return [record_from_dict(raw) for raw in raws if isinstance(raw, dict)]
+        self._list_cache = (ver, time.monotonic(), raws)
+        return [record_from_dict(copy.deepcopy(raw)) for raw in raws]
 
     def delete(self, session_id: str) -> None:
         try:
@@ -243,6 +279,7 @@ class ModalDictStore:
         except KeyError:
             pass
         self._index_remove(session_id)
+        self._index_bump_ver()
 
     # ------------------------------------------------------- listing index
 
@@ -275,6 +312,15 @@ class ModalDictStore:
         except Exception:
             pass
 
+    def _index_bump_ver(self) -> None:
+        """Advance the listing-version token after a mutation so cached
+        pages in every container refetch. Failure degrades to the same
+        rebuild path as index maintenance."""
+        try:
+            self._idx().put(self._IDX_VER, uuid.uuid4().hex)
+        except Exception:
+            self._index_broken()
+
     def _ensure_index(self) -> None:
         """Lazily build the id manifest on the first listing — the safe
         migration for Dicts that predate the index. ``_build_lock``
@@ -286,7 +332,16 @@ class ModalDictStore:
                 return
             if self._idx().get(self._IDX_BUILT) is None:
                 self.rebuild_index()
-            self._index_ready = True
+            elif self._idx().get(self._IDX_VER) is None:
+                # Indexed by a pre-cache deploy: mint the token once so
+                # the listing cache can key on it.
+                self._index_bump_ver()
+            # A failed bump drops the marker and clears the flag —
+            # re-verify both keys rather than trusting maintenance.
+            self._index_ready = (
+                self._idx().get(self._IDX_BUILT) is not None
+                and self._idx().get(self._IDX_VER) is not None
+            )
 
     def rebuild_index(self) -> int:
         """Re-enumerate keys once and rewrite the id manifest.
@@ -299,5 +354,6 @@ class ModalDictStore:
         with self._lock:
             self._idx().put(self._IDX_IDS, keys)
             self._idx().put(self._IDX_BUILT, b"1")
+            self._idx().put(self._IDX_VER, uuid.uuid4().hex)
         self._index_ready = True
         return len(keys)

@@ -428,3 +428,164 @@ class TestKnownRunNsDedupe:
         run_states.begin("ag", 2, status="CREATING")
         ns = _known_run_ns(_session("ag"), ledger, run_states)
         assert ns == {1, 2}
+
+
+class TestSessionListingCache:
+    """SOR-199: ver-gated read-through cache on ``list_all`` — steady-state
+    listings cost one token read, writes invalidate via the ``ver`` bump."""
+
+    def _store(self) -> tuple[ModalDictStore, _FakeDict, _FakeDict]:
+        store = ModalDictStore("test-sessions")
+        main, index = _FakeDict(), _FakeDict()
+        store._dict = main
+        store._index = index
+        return store, main, index
+
+    def test_warm_listing_hits_cache(self) -> None:
+        store, main, index = self._store()
+        for i in range(5):
+            store.put(_session(f"ag-{i}"))
+        store.list_all()
+        main.gets = 0
+        index.gets = 0
+        records = store.list_all()
+        assert sorted(r.id for r in records) == [f"ag-{i}" for i in range(5)]
+        assert main.gets == 0  # no record fetches at all
+        assert index.gets == 1  # the single ``ver`` token read
+
+    def test_put_bumps_ver_and_invalidates(self) -> None:
+        store, main, index = self._store()
+        store.put(_session("a"))
+        store.list_all()
+        ver_before = index.data[ModalDictStore._IDX_VER]
+        store.put(_session("b"))
+        assert index.data[ModalDictStore._IDX_VER] != ver_before
+        assert sorted(r.id for r in store.list_all()) == ["a", "b"]
+
+    def test_put_same_id_bumps_ver(self) -> None:
+        store, main, index = self._store()
+        store.put(_session("a"))
+        store.list_all()
+        ver_before = index.data[ModalDictStore._IDX_VER]
+        rec = _session("a")
+        rec.status = "running"
+        store.put(rec)  # id already indexed — content update still bumps
+        assert index.data[ModalDictStore._IDX_VER] != ver_before
+        assert store.list_all()[0].status == "running"
+
+    def test_delete_bumps_ver_and_invalidates(self) -> None:
+        store, main, index = self._store()
+        store.put(_session("a"))
+        store.put(_session("b"))
+        store.list_all()
+        ver_before = index.data[ModalDictStore._IDX_VER]
+        store.delete("a")
+        assert index.data[ModalDictStore._IDX_VER] != ver_before
+        assert [r.id for r in store.list_all()] == ["b"]
+
+    def test_cached_records_are_independent_copies(self) -> None:
+        store, main, _index = self._store()
+        store.put(_session("a"))
+        store.list_all()
+        rec = store.list_all()[0]  # served from cache
+        rec.sandbox_tags["provider"] = "corrupted"
+        rec.messages.append({"role": "x"})
+        fresh = store.list_all()[0]
+        assert fresh.sandbox_tags["provider"] == "codex"
+        assert fresh.messages == []
+
+    def test_ttl_expiry_refetches(self, monkeypatch) -> None:
+        import control.store as store_mod
+
+        monkeypatch.setattr(store_mod, "_LIST_CACHE_TTL_S", -1.0)
+        store, main, _index = self._store()
+        store.put(_session("a"))
+        store.list_all()
+        gets_after_first = main.gets
+        store.list_all()
+        assert main.gets > gets_after_first  # expired cache refetches
+
+    def test_pre_cache_deploy_mints_ver(self) -> None:
+        store, main, index = self._store()
+        rec = _session("old")
+        main.put(rec.id, record_to_dict(rec))
+        # Pre-cache-deploy index: ids + built, no version token.
+        index.put(ModalDictStore._IDX_IDS, ["old"])
+        index.put(ModalDictStore._IDX_BUILT, b"1")
+        assert [r.id for r in store.list_all()] == ["old"]
+        assert index.data[ModalDictStore._IDX_VER] is not None
+        main.gets = 0
+        assert [r.id for r in store.list_all()] == ["old"]
+        assert main.gets == 0
+
+    def test_rebuild_bumps_ver(self) -> None:
+        store, _main, index = self._store()
+        store.put(_session("a"))
+        store.list_all()
+        ver_before = index.data[ModalDictStore._IDX_VER]
+        store.rebuild_index()
+        assert index.data[ModalDictStore._IDX_VER] != ver_before
+
+
+class TestWorkflowScanCache:
+    """SOR-199: ver-gated read-through cache on ``_iter_agent_raws`` —
+    ``all_bindings``/``list_workflow`` stop refetching every wf-agent row."""
+
+    def _store(self) -> tuple[ModalDictWorkflowStore, _FakeDict]:
+        store = ModalDictWorkflowStore("test-workflows")
+        fake = _FakeDict()
+        store._dict = fake
+        return store, fake
+
+    def _attach(self, store, agent_id: str, wf: str = "wf-1") -> None:
+        store.attach(
+            WorkflowTaskRecord(
+                owner="key-1",
+                workflow_id=wf,
+                task_id=f"t-{agent_id}",
+                role="worker",
+                agent_id=agent_id,
+            )
+        )
+
+    def test_warm_scan_hits_cache(self) -> None:
+        store, fake = self._store()
+        for i in range(4):
+            self._attach(store, f"ag-{i}")
+        store.all_bindings()
+        gets = fake.gets
+        bindings = store.all_bindings()
+        assert sorted(bindings) == [f"ag-{i}" for i in range(4)]
+        # manifest + ver reads only — zero per-agent fetches
+        assert fake.gets - gets <= 2
+
+    def test_attach_bumps_ver_and_invalidates(self) -> None:
+        store, fake = self._store()
+        self._attach(store, "ag-1")
+        store.all_bindings()
+        ver_before = fake.data[ModalDictWorkflowStore._VER_KEY]
+        self._attach(store, "ag-2")
+        assert fake.data[ModalDictWorkflowStore._VER_KEY] != ver_before
+        assert sorted(store.all_bindings()) == ["ag-1", "ag-2"]
+
+    def test_list_workflow_hits_cached_scan(self) -> None:
+        store, fake = self._store()
+        self._attach(store, "ag-1", "wf-a")
+        self._attach(store, "ag-2", "wf-b")
+        store.all_bindings()  # warm
+        gets = fake.gets
+        tasks = store.list_workflow("key-1", "wf-a")
+        assert [t.agent_id for t in tasks] == ["ag-1"]
+        # manifest + ver + workflow index reads — no per-agent fetches
+        assert fake.gets - gets <= 3
+
+    def test_ttl_expiry_refetches(self, monkeypatch) -> None:
+        import control.workflow_store as wf_mod
+
+        monkeypatch.setattr(wf_mod, "_LIST_CACHE_TTL_S", -1.0)
+        store, fake = self._store()
+        self._attach(store, "ag-1")
+        store.all_bindings()
+        gets = fake.gets
+        store.all_bindings()
+        assert fake.gets - gets > 2  # expired cache pays the scan again

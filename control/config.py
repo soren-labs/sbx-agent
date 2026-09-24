@@ -308,6 +308,8 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_SANDBOX_TIMEOUT_S",
     "SBX_CREATE_GRACE_S",
     "SBX_RUN_GRACE_S",
+    # SOR-199: staleness bound for the Dict listing caches (seconds).
+    "SBX_LIST_CACHE_TTL_S",
     "SBX_DEFAULT_MODEL",
     "SBX_SSE_KEEPALIVE_SECONDS",
     "SBX_DEVIN_BURST_SLOTS",

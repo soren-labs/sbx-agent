@@ -28,8 +28,12 @@ cleanup or double-list one that moved workflows.
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import threading
+import time
+import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -41,7 +45,11 @@ from urllib.parse import quote
 from control.config import WORKFLOWS_DICT_NAME
 from control.latency import observe
 
-_DICT_FANOUT = 8
+_DICT_FANOUT = 32
+
+# SOR-199: upper bound on cross-container staleness for the read-through
+# binding-scan cache — mirrors ``control.store._LIST_CACHE_TTL_S``.
+_LIST_CACHE_TTL_S = float(os.environ.get("SBX_LIST_CACHE_TTL_S", "30"))
 
 
 def _iso_now() -> str:
@@ -358,11 +366,19 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
     authoritative (the merge semantics of ``list_workflow`` are
     unchanged). A missing/corrupt manifest is rebuilt once from
     ``keys()`` — the lazy migration for pre-manifest Dicts.
+
+    Scan cache (SOR-199): ``attach`` bumps the opaque ``wf-index/_ver``
+    token *after* the agent record write, and ``_iter_agent_raws`` reads
+    it first — an unchanged token serves the cached scan with no
+    per-agent fetches at all. Same ordering argument as
+    ``ModalDictStore``: a write landing mid-scan can only make the cache
+    stale-early; a lost bump is bounded by ``_LIST_CACHE_TTL_S``.
     """
 
     _AGENT_PREFIX = "wf-agent/"
     _INDEX_PREFIX = "wf-index/"
     _AGENTS_MANIFEST = "wf-index/_agents"
+    _VER_KEY = "wf-index/_ver"
 
     def __init__(self, name: str = WORKFLOWS_DICT_NAME) -> None:
         self._name = name
@@ -370,6 +386,8 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
         self._lock = threading.RLock()
         self._manifest_ready = False
         self._build_lock = threading.Lock()
+        # ``(ver, monotonic-ts, raw wf-agent dicts)`` for the last scan.
+        self._raws_cache: tuple[Any, float, list[dict[str, Any]]] | None = None
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -389,6 +407,7 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
         key = f"{self._AGENT_PREFIX}{record.agent_id}"
         with observe("modal_dict.put", store=self._name, key=key):
             self._d().put(key, record_to_dict(record))
+        self._ver_bump()
 
     def _get_index_raw(self, owner: str, workflow_id: str) -> dict[str, Any] | None:
         key = f"{self._INDEX_PREFIX}{owner}/{workflow_id}"
@@ -403,15 +422,32 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
 
     def _iter_agent_raws(self) -> Iterator[dict[str, Any]]:
         try:
+            self._manifest_ids()  # ensures the manifest + version token exist
+            # Read the version token before the manifest and records: a
+            # write landing mid-scan moves ``ver`` past what we cache
+            # under, so the next call refetches instead of serving stale.
+            ver = self._d().get(self._VER_KEY)
+            cached = self._raws_cache
+            if (
+                cached is not None
+                and cached[0] == ver
+                and time.monotonic() - cached[1] < _LIST_CACHE_TTL_S
+            ):
+                return iter([copy.deepcopy(raw) for raw in cached[2]])
             ids = self._manifest_ids()
             with observe("modal_dict.get_agent_raws", store=self._name, agents=len(ids)):
                 with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
-                    raws = list(
-                        pool.map(lambda aid: self._d().get(f"{self._AGENT_PREFIX}{aid}"), ids)
-                    )
+                    raws = [
+                        raw
+                        for raw in pool.map(
+                            lambda aid: self._d().get(f"{self._AGENT_PREFIX}{aid}"), ids
+                        )
+                        if isinstance(raw, dict)
+                    ]
             # Stale ids fetch None and are skipped; agent records stay
             # authoritative.
-            return iter([raw for raw in raws if isinstance(raw, dict)])
+            self._raws_cache = (ver, time.monotonic(), raws)
+            return iter([copy.deepcopy(raw) for raw in raws])
         except Exception:
             # Manifest path failed — the honest full enumeration keeps the
             # listing available.
@@ -455,9 +491,32 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
                     raw = self._d().get(self._AGENTS_MANIFEST)
                     if not isinstance(raw, list):
                         self.rebuild_manifest()
-                    self._manifest_ready = True
+                    elif self._d().get(self._VER_KEY) is None:
+                        # Manifest written by a pre-cache deploy: mint the
+                        # token once so the scan cache can key on it.
+                        self._ver_bump()
+                    # A failed bump drops the manifest and clears the
+                    # flag — re-verify both keys rather than trusting the
+                    # maintenance path.
+                    self._manifest_ready = (
+                        isinstance(self._d().get(self._AGENTS_MANIFEST), list)
+                        and self._d().get(self._VER_KEY) is not None
+                    )
         raw = self._d().get(self._AGENTS_MANIFEST) or []
         return sorted({str(i) for i in raw}) if isinstance(raw, list) else []
+
+    def _ver_bump(self) -> None:
+        """Advance the scan-version token after a mutation so cached
+        scans in every container refetch. Failure degrades to the same
+        rebuild path as manifest maintenance."""
+        try:
+            self._d().put(self._VER_KEY, uuid.uuid4().hex)
+        except Exception:
+            self._manifest_ready = False
+            try:
+                self._d().pop(self._AGENTS_MANIFEST)
+            except Exception:
+                pass
 
     def rebuild_manifest(self) -> int:
         """Re-enumerate ``wf-agent/`` keys once and rewrite the manifest.
@@ -470,6 +529,7 @@ class ModalDictWorkflowStore(_WorkflowStoreBase):
         ids = sorted(k[len(self._AGENT_PREFIX) :] for k in keys if k.startswith(self._AGENT_PREFIX))
         with self._lock:
             self._d().put(self._AGENTS_MANIFEST, ids)
+            self._d().put(self._VER_KEY, uuid.uuid4().hex)
         self._manifest_ready = True
         return len(ids)
 
