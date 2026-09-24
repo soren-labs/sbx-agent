@@ -101,6 +101,24 @@ class TestAttach:
             assert store.for_agent("ghost") is None
             assert store.list_workflow("key_a", "wf-ghost") == []
 
+    @pytest.mark.parametrize("store_kind", ["memory", "file"])
+    def test_all_bindings_batch_matches_serial(self, tmp_path, store_kind) -> None:
+        """SOR-200: one batched pass echoes exactly what serial gets did."""
+        store = _stores(tmp_path)[store_kind == "file"]
+        for i in range(3):
+            store.attach(_record(f"agent-{i}", task_id=f"t-{i}"))
+        got = store.all_bindings()
+        assert set(got) == {"agent-0", "agent-1", "agent-2"}
+        assert got["agent-0"] == store.for_agent("agent-0")
+        assert got["agent-2"] == store.for_agent("agent-2")
+        assert "ghost" not in got
+
+    def test_all_bindings_skips_corrupt_records(self, tmp_path) -> None:
+        store = FileWorkflowStore(tmp_path / "wf")
+        store.attach(_record("agent-1"))
+        (tmp_path / "wf" / "agents" / "agent-bad.json").write_text("{not json", encoding="utf-8")
+        assert set(store.all_bindings()) == {"agent-1"}
+
 
 class TestDurability:
     def test_file_store_reopen_survives_restart(self, tmp_path) -> None:

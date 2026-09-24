@@ -10,6 +10,7 @@ until P2-C persists it on the session record.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import queue
 import re
@@ -589,17 +590,32 @@ def _require_agent(plane: Any, agent_id: str) -> Any:
     return rec
 
 
-def _agent_payload(plane: Any, v1: V1State, workflows: WorkflowService, rec: Any) -> dict[str, Any]:
+# Sentinel: ``task`` not supplied → resolve the binding serially (single
+# record reads); ``None`` → pre-resolved as "no binding" by a batch pass.
+_TASK_UNRESOLVED = object()
+
+
+def _agent_payload(
+    plane: Any,
+    v1: V1State,
+    workflows: WorkflowService,
+    rec: Any,
+    *,
+    task: Any = _TASK_UNRESOLVED,
+) -> dict[str, Any]:
     """Agent view: contract fields + workflow binding + honest usage.
 
     ``usage`` comes from the session record — ``None`` (never measured)
     serializes as ``null``, never fabricated zeros (SOR-84). ``metadata``
-    echoes the durable workflow/task binding when one is attached.
+    echoes the durable workflow/task binding when one is attached. List
+    paths pass a batch-resolved ``task`` so the per-agent Dict read is
+    amortized into one store pass (SOR-200).
     """
-    try:
-        task = workflows.for_agent(rec.id)
-    except Exception:
-        task = None
+    if task is _TASK_UNRESOLVED:
+        try:
+            task = workflows.for_agent(rec.id)
+        except Exception:
+            task = None
     metadata = (
         {
             "workflow_id": task.workflow_id,
@@ -1171,24 +1187,53 @@ def list_agents(
             start = max(0, int(cursor))
         except ValueError:
             raise V1ApiError(400, "invalid_provider", "malformed cursor") from None
-    records = plane.store.list_all()
-    if workflow_id is not None:
-        # SOR-84: index-backed scope — only agents whose durable binding
-        # matches (caller key id, workflow_id) are listed.
-        scoped = workflows.agent_ids(key.id, workflow_id)
-        records = [rec for rec in records if rec.id in scoped]
-    agents = [_agent_payload(plane, v1, workflows, rec) for rec in records]
+    # SOR-200: the independent store passes run concurrently — the
+    # session listing, the workflow scope index (when filtered) and the
+    # binding scan each cost a remote round-trip, so serializing them
+    # would multiply the page latency; per-agent reads would be an N+1.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        records_fut = pool.submit(plane.store.list_all)
+        scoped_fut = (
+            pool.submit(workflows.agent_ids, key.id, workflow_id)
+            if workflow_id is not None
+            else None
+        )
+        bindings_fut = pool.submit(workflows.all_bindings)
+        records = records_fut.result()
+        if scoped_fut is not None:
+            # SOR-84: index-backed scope — only agents whose durable
+            # binding matches (caller key id, workflow_id) are listed.
+            scoped = scoped_fut.result()
+            records = [rec for rec in records if rec.id in scoped]
+        try:
+            bindings = bindings_fut.result()
+        except Exception:
+            # Same degradation as a failed serial ``for_agent``: echo
+            # no metadata rather than fail the whole listing.
+            bindings = {}
+    # Filter, sort and page on record-level fields *before* enrichment —
+    # provider/account/status derive from the durable record and
+    # in-process meta/tags, so off-page and filtered-out rows never pay
+    # a payload build.
+    rows: list[tuple[Any, AgentMeta]] = []
+    for rec in records:
+        meta = _meta_for(v1, rec)
+        if provider is not None and (meta.provider or "codex") != provider:
+            continue
+        if account_id is not None and (meta.account_id or "auto") != account_id:
+            continue
+        public_status = "idle" if rec.status == "suspended" else rec.status
+        if status is not None and public_status != status:
+            continue
+        rows.append((rec, meta))
+    rows.sort(key=lambda row: (row[0].created_at.isoformat(), row[0].id))
+    page_rows = rows[start : start + AGENTS_PAGE_SIZE]
+    next_cursor = str(start + AGENTS_PAGE_SIZE) if start + AGENTS_PAGE_SIZE < len(rows) else None
     agents = [
-        a
-        for a in agents
-        if (provider is None or a["provider"] == provider)
-        and (account_id is None or a["account_id"] == account_id)
-        and (status is None or a["status"] == status)
+        _agent_payload(plane, v1, workflows, rec, task=bindings.get(rec.id))
+        for rec, _meta in page_rows
     ]
-    agents.sort(key=lambda a: (a["created_at"], a["id"]))
-    page = agents[start : start + AGENTS_PAGE_SIZE]
-    next_cursor = str(start + AGENTS_PAGE_SIZE) if start + AGENTS_PAGE_SIZE < len(agents) else None
-    return {"agents": page, "next_cursor": next_cursor}
+    return {"agents": agents, "next_cursor": next_cursor}
 
 
 @router.get("/agents/{agent_id}")
