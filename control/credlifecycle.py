@@ -470,14 +470,10 @@ class CredentialLifecycleService:
             state = "access_expiring"
         elif not state:
             state = "healthy_refreshed" if rec.get("generation") else "healthy"
-        refresh_due = (
-            state == "access_expiring"
-            or (
-                expires is None
-                and kind == "oauth"
-                and (self._now() - float(rec.get("last_refresh_at") or 0))
-                >= _MIN_REFRESH_GAP_S
-            )
+        refresh_due = state == "access_expiring" or (
+            expires is None
+            and kind == "oauth"
+            and (self._now() - float(rec.get("last_refresh_at") or 0)) >= _MIN_REFRESH_GAP_S
         )
         return {
             "account_id": account_id,
