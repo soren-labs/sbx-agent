@@ -470,7 +470,14 @@ paths:
   /v1/artifacts:
     get:
       tags: [artifacts]
-      summary: List durable artifact manifests (SOR-83)
+      summary: List durable artifact manifests (SOR-83; paginated SOR-201)
+      description: |
+        `agent_id` filters by producing agent through the durable
+        per-agent index — a filtered listing never scans the full
+        artifact store. `limit` + `cursor` page the
+        `(created_at, artifact_id)` keyset; `next_cursor` in the
+        response resumes the listing and is null at the end. Omit both
+        to get the complete (unpaginated) listing, as before.
       operationId: listArtifacts
       parameters:
         - name: agent_id
@@ -479,6 +486,20 @@ paths:
           schema:
             type: string
           description: Filter by producing agent.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque keyset cursor from a prior `next_cursor`.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+          description: Max artifacts per page.
       responses:
         "200":
           description: Artifact manifests
@@ -1570,6 +1591,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Artifact"
+        next_cursor:
+          type: string
+          nullable: true
+          description: Keyset cursor for the next page; null at the end.
     ArtifactResponse:
       type: object
       required: [artifact]

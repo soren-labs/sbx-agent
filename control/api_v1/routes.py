@@ -80,6 +80,7 @@ from control.artifacts import (
     ArtifactNotFoundError,
     ArtifactSecretError,
     manifest_to_dict,
+    page_manifests,
 )
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
 from control.config import TERMINAL_STATUSES, selected_providers
@@ -112,6 +113,7 @@ from control.workspace import (
 from control.workspace import record_to_dict as workspace_record_to_dict
 
 AGENTS_PAGE_SIZE = 100
+ARTIFACTS_PAGE_MAX = 500  # SOR-201: cap per-page manifest fetches
 _TURN_ID_RE = re.compile(r"^turn-(\d+)$")
 _RUN_ID_RE = re.compile(r"^run-(\d+)$")
 _VERIFY_TAG = "account-verify"
@@ -1516,13 +1518,35 @@ def create_artifact(
 @router.get("/artifacts")
 def list_artifacts(
     agent_id: str | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
     key: ApiKey = Depends(agents_key),
     artifacts: Any = Depends(get_artifact_store),
 ) -> dict[str, Any]:
-    """Durable artifact manifests (``?agent_id=`` filters by producer)."""
-    with observe("v1.artifact.list", agent_id=agent_id):
-        manifests = artifacts.list(agent_id=agent_id)
-    return {"artifacts": [_artifact_public(m) for m in manifests]}
+    """Durable artifact manifests, ``(created_at, artifact_id)`` keyset order.
+
+    ``?agent_id=`` filters by producer through the durable per-agent
+    index — the query reads one index document plus the page's manifests,
+    never scans the whole store (SOR-201). ``?limit=`` pages the result
+    and ``next_cursor`` resumes it; omit both for the full listing.
+    """
+    if limit is not None and not 1 <= limit <= ARTIFACTS_PAGE_MAX:
+        raise V1ApiError(400, "invalid_provider", f"limit must be 1..{ARTIFACTS_PAGE_MAX}")
+    list_page = getattr(artifacts, "list_page", None)
+    try:
+        with observe("v1.artifact.list", agent_id=agent_id):
+            if callable(list_page):
+                page = list_page(agent_id=agent_id, cursor=cursor, limit=limit)
+            else:
+                # Stores without list_page (custom injects): page in memory
+                # over the full listing so the route contract still holds.
+                page = page_manifests(artifacts.list(agent_id=agent_id), cursor=cursor, limit=limit)
+    except ArtifactError as exc:
+        raise V1ApiError(400, "invalid_provider", str(exc)) from exc
+    return {
+        "artifacts": [_artifact_public(m) for m in page.artifacts],
+        "next_cursor": page.next_cursor,
+    }
 
 
 @router.get("/artifacts/{artifact_id}")
