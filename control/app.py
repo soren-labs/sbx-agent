@@ -645,6 +645,29 @@ def create_app(
             },
         )
 
+    # SOR-199: warm the durable listing indexes at startup so the one-time
+    # migration rebuild on pre-index Dicts happens off the request path.
+    # Each store's ``_build_lock`` makes a request that lands mid-warmup
+    # share the same rebuild rather than starting a second enumeration.
+    if backend_kind == "modal":
+
+        def _warm_listing_indexes() -> None:
+            for target, name in (
+                (store, "_ensure_index"),
+                (run_store, "_ensure_index"),
+                (workflow_store, "_manifest_ids"),
+                (artifact_store, "_ensure_index"),
+                (artifact_store, "_ensure_global_index"),
+            ):
+                fn = getattr(target, name, None)
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_warm_listing_indexes, daemon=True).start()
+
     return app
 
 
