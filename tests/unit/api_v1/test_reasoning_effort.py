@@ -132,7 +132,63 @@ class TestReasoningEffortCapabilityReporting:
         resp = client.get("/v1/models", headers=auth)
         assert resp.status_code == 200
         efforts = {m["provider"]: m["reasoning_efforts"] for m in resp.json()["models"]}
-        for provider in PROVIDERS_EFFORT:
+        # Declared rows carry the verified floor only where effort is an
+        # orthogonal CLI flag (codex config, grok --reasoning-effort).
+        # antigravity encodes the tier in the model id, so a bare declared
+        # id like ``gemini-3.8`` advertises no effort surface.
+        for provider in ("codex", "grok"):
             assert efforts[provider] == ["low", "medium", "high"]
-        for provider in PROVIDERS_NO_EFFORT:
+        for provider in ("antigravity", *PROVIDERS_NO_EFFORT):
             assert efforts[provider] == []
+
+
+class TestReasoningEffortUncataloguedModel:
+    """Declared snapshots permit arbitrary model ids, but the effort
+    surface is still model-scoped — a tier-less ``agy`` id must not
+    inherit the provider floor (cap-e2e: ``agy --effort`` on it fails
+    ``model_unavailable`` mid-run)."""
+
+    @pytest.fixture(autouse=True)
+    def _agy_account(self, v1_env) -> None:
+        seed_account(v1_env, "acct-agy-1", provider="antigravity", models=("gemini-3.8-flash-low",))
+
+    def test_tierless_model_rejects_effort(self, client, auth, spy) -> None:
+        resp = _post(
+            client,
+            auth,
+            agent={
+                "provider": "antigravity",
+                "model": "claude-sonnet-4-6",
+                "reasoning_effort": "low",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "unsupported"
+        assert "no native effort surface" in resp.json()["error"]["message"]
+        assert spy.specs == []
+
+    def test_suffixed_model_accepts_only_its_tier(self, client, auth, v1_env, spy) -> None:
+        bad = _post(
+            client,
+            auth,
+            agent={
+                "provider": "antigravity",
+                "model": "gemini-3.8-flash-high",
+                "reasoning_effort": "low",
+            },
+        )
+        assert bad.status_code == 400
+        assert "supported: ['high']" in bad.json()["error"]["message"]
+
+        body = create_agent(
+            client,
+            auth,
+            agent={
+                "provider": "antigravity",
+                "model": "gemini-3.8-flash-high",
+                "reasoning_effort": "high",
+            },
+        )
+        rec = wait_sandbox(v1_env, body["agent"]["id"])
+        # The derived surface reaches init as the backstop tag.
+        assert rec.sandbox_tags["effort_surface"] == "high"

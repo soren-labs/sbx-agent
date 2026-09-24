@@ -90,7 +90,7 @@ DEFAULT_MODELS = "gpt-5.6-luna\ngpt-5.3-codex\n"
 
 
 def _models_listing() -> None:
-    """``codex models`` — the subscription's servable models (SOR-204).
+    """``codex debug models`` — the subscription's servable models (SOR-204).
 
     Answers only with a restored credential; ``FAKE_CODEX_MODELS``
     overrides the canned listing (JSON or line-per-model).
@@ -109,7 +109,7 @@ def parse_argv(argv: list[str]) -> dict:
         tokens = tokens[1:]
     if tokens[:2] == ["login", "status"]:
         _auth_status()
-    if tokens[:1] == ["models"]:
+    if tokens[:2] == ["debug", "models"]:
         _models_listing()
     if not tokens or tokens[0] != "exec":
         print("expected: exec [--json] ... [resume] [PROMPT]", file=sys.stderr)

@@ -178,9 +178,13 @@ PROVIDER_AUTH_CHECKS: dict[str, tuple[str, ...]] = {
 # servable models (and effort tiers where it emits them). ``capabilities``
 # parses the output tolerantly; a CLI that lacks the subcommand exits
 # non-zero and the catalog falls back to declared data.
+# Real-CLI verified (cap-e2e acceptance): ``devin models`` alone is a usage
+# error (the listing lives under ``models list``) and ``codex models`` is
+# parsed as a prompt that spawns the TUI — the machine catalog is
+# ``codex debug models``.
 PROVIDER_MODEL_CHECKS: dict[str, tuple[str, ...]] = {
-    "codex": ("models",),
-    "devin": ("models",),
+    "codex": ("debug", "models"),
+    "devin": ("models", "list"),
     "antigravity": ("models",),
     "grok": ("models",),
     "opencode": ("models",),
@@ -201,10 +205,13 @@ _PROVIDER_BINS: dict[str, tuple[str, str]] = {
 _AUTH_FAIL_MARKERS = (
     "not authenticated",
     "not logged in",
+    "not signed in",
     "unauthorized",
     "authentication failed",
     "invalid api key",
     "no credentials",
+    "please log in",
+    "login required",
 )
 
 # CLIs that can exit 0 while reporting a logged-out status page — a passing
@@ -239,6 +246,17 @@ def provider_auth_argv(provider: str, env: Mapping[str, str] | None = None) -> l
 def provider_models_argv(provider: str, env: Mapping[str, str] | None = None) -> list[str] | None:
     """Argv for the provider's models listing (SOR-204); None when unsupported."""
     return _provider_cli_argv(provider, PROVIDER_MODEL_CHECKS.get(provider), env)
+
+
+def output_has_auth_failure(output: str) -> bool:
+    """True when CLI output carries a credential-rejection marker.
+
+    Used by the models discovery probe: some CLIs (``grok models``) print an
+    auth banner and still list a static catalog at rc 0, so exit status alone
+    cannot distinguish a live account listing from a signed-out fallback.
+    """
+    low = output.lower()
+    return any(marker in low for marker in _AUTH_FAIL_MARKERS)
 
 
 def classify_auth_output(provider: str, returncode: int, output: str) -> str:

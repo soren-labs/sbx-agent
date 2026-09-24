@@ -42,12 +42,22 @@ from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
 from control.onboarding import (
     ACCOUNT_ID_ENV,
     CREDENTIAL_ENV,
+    classify_auth_output,
+    output_has_auth_failure,
+    provider_auth_argv,
     provider_cli_env,
     provider_models_argv,
 )
 from control.ports import Account
 
 _DISCOVERY_PURPOSE = "capability-probe"
+
+# Providers whose effort is an orthogonal CLI flag/config knob — the
+# verified ``SUPPORTED_EFFORTS`` floor may fill in when a listing omits
+# per-model efforts. Providers absent here (devin, antigravity, opencode)
+# encode the tier in the model id or have no effort surface, so a bare
+# listing row must not inherit a floor.
+_FLAG_EFFORT_PROVIDERS = frozenset({"codex", "grok"})
 
 
 def _iso_now() -> str:
@@ -176,12 +186,31 @@ def _json_entries(output: str) -> list[_Entry] | None:
     except json.JSONDecodeError:
         return None
     if isinstance(data, dict):
-        for key in ("models", "data", "results", "items"):
+        for key in ("models", "data", "results", "items", "families"):
             if isinstance(data.get(key), list):
                 data = data[key]
                 break
         else:
             data = [data]
+    # ``devin models list --format json`` nests rows under families:
+    # {"families": [{"slug", "family_label", "aliases", "variants": [
+    #   {"model_uid", "label", ...}]}]} — flatten variants into entries.
+    flattened: list[Any] = []
+    for item in data if isinstance(data, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("variants"), list):
+            fam = item.get("family_uid") or item.get("slug")
+            fam_aliases = item.get("aliases") or ()
+            for variant in item["variants"]:
+                if not isinstance(variant, dict):
+                    continue
+                row = dict(variant)
+                row.setdefault("family", fam)
+                if fam_aliases and not row.get("aliases"):
+                    row["aliases"] = fam_aliases
+                flattened.append(row)
+        else:
+            flattened.append(item)
+    data = flattened or data
     if not isinstance(data, list):
         return None
     entries: list[_Entry] = []
@@ -191,8 +220,15 @@ def _json_entries(output: str) -> list[_Entry] | None:
             continue
         if not isinstance(item, dict):
             continue
+        # Hidden/non-API catalog rows are not servable (codex debug models
+        # marks them ``visibility: "hide"`` / ``supported_in_api: false``).
+        if item.get("supported_in_api") is False:
+            continue
+        if str(item.get("visibility") or "").lower() in ("hide", "hidden"):
+            continue
         model = next(
-            (str(item[k]) for k in ("id", "model", "slug", "model_id") if item.get(k)), None
+            (str(item[k]) for k in ("id", "model", "slug", "model_id", "model_uid") if item.get(k)),
+            None,
         )
         if model is None and item.get("name"):
             model = str(item["name"])
@@ -205,7 +241,10 @@ def _json_entries(output: str) -> list[_Entry] | None:
         if display is None and isinstance(item.get("name"), str) and item["name"] != model:
             display = item["name"]
         efforts_raw = (
-            item.get("efforts") or item.get("reasoning_efforts") or item.get("effort_levels")
+            item.get("efforts")
+            or item.get("reasoning_efforts")
+            or item.get("effort_levels")
+            or item.get("supported_reasoning_levels")
         )
         efforts: list[str] = []
         if isinstance(efforts_raw, dict):
@@ -215,7 +254,7 @@ def _json_entries(output: str) -> list[_Entry] | None:
                 if isinstance(e, str):
                     efforts.append(e)
                 elif isinstance(e, dict):
-                    val = e.get("level") or e.get("id") or e.get("name")
+                    val = e.get("level") or e.get("effort") or e.get("id") or e.get("name")
                     if val:
                         efforts.append(str(val))
         aliases_raw = item.get("aliases") or item.get("alias") or ()
@@ -224,7 +263,12 @@ def _json_entries(output: str) -> list[_Entry] | None:
         default = next(
             (
                 str(item[k])
-                for k in ("default_effort", "default_reasoning_effort", "default_level")
+                for k in (
+                    "default_effort",
+                    "default_reasoning_effort",
+                    "default_reasoning_level",
+                    "default_level",
+                )
                 if item.get(k)
             ),
             None,
@@ -308,8 +352,14 @@ def _capability_from(provider: str, entry: _Entry) -> ModelCapability:
         if level and level not in canon:
             canon.append(level)
             effort_native[level] = token
-    if not canon:
-        # No explicit effort list: the provider's verified floor applies.
+    if not canon and provider in _FLAG_EFFORT_PROVIDERS:
+        # No explicit effort list: the verified floor applies only where
+        # effort is an orthogonal CLI flag/config (codex config.toml,
+        # grok --reasoning-effort). Providers that encode the tier in the
+        # model id (devin ``swe-2-max``, agy ``gemini-3.8-flash-high``) must
+        # not inherit it — the floor made ``claude-sonnet-4-6`` advertise
+        # low/medium/high while real ``agy --effort`` runs fail
+        # ``model_unavailable``.
         canon = list(supported_efforts(provider))
         effort_native = {lv: native_effort(provider, lv) for lv in canon}
     canon.sort(key=CANONICAL_EFFORTS.index)
@@ -322,6 +372,15 @@ def _capability_from(provider: str, entry: _Entry) -> ModelCapability:
         if stem not in aliases:
             aliases.insert(0, stem)
         default_effort = default_effort or suffix
+        if provider == "antigravity" and not canon:
+            # agy still accepts ``--effort`` for the tier the id encodes —
+            # advertise exactly that level so the UI offers it and
+            # ``agy --model gemini-3.8-flash-high --effort high`` is the
+            # only combination produced. Tier-less models (claude-*) keep
+            # an empty surface: ``--effort`` on them fails closed at the
+            # API instead of ``model_unavailable`` mid-run.
+            canon = [suffix]
+            effort_native = {suffix: native_effort(provider, suffix)}
     if default_effort is not None and canon and default_effort not in canon:
         # An advertised default outside the effort surface is dropped; an
         # empty surface keeps it — the tier is baked into the model id
@@ -337,6 +396,17 @@ def _capability_from(provider: str, entry: _Entry) -> ModelCapability:
         effort_native=effort_native,
         default_effort=default_effort,
     )
+
+
+def capability_from_model_id(provider: str, model: str) -> ModelCapability:
+    """Capability derived from a bare model id — no catalog row required.
+
+    Non-discovered snapshots permit arbitrary model ids, but the effort
+    surface is still model-scoped: flag-effort providers get the verified
+    floor, tier-in-id providers their suffix, and tier-less ids nothing
+    (``agy --effort`` on ``claude-sonnet-4-6`` fails ``model_unavailable``).
+    """
+    return _capability_from(provider, _Entry(model=model))
 
 
 def parse_models_output(provider: str, output: str) -> tuple[ModelCapability, ...]:
@@ -486,9 +556,30 @@ class SandboxCapabilityProbe:
             if code != 0:
                 return DiscoveryResult(error=f"init_failed:{code}")
             check_env = provider_cli_env(account.provider, env, Path(handle.root) / "home")
+            # Auth gate: providers whose models argv is not itself an auth
+            # check (codex ``debug models`` renders the bundled catalog
+            # signed-out; devin ``models list`` likewise) run their own
+            # auth argv first, so a dead credential can never mark the
+            # static listing ``discovered``. When the auth argv *is* the
+            # models argv (agy/grok), the output-marker screen below
+            # covers it — ``grok models`` prints "You are not
+            # authenticated." then still lists a catalog at rc 0.
+            auth_argv = provider_auth_argv(account.provider, env=self._bin_env)
+            if auth_argv is not None and auth_argv != argv:
+                aproc = self._backend.exec(handle, auth_argv, env=check_env)
+                aout = "\n".join(aproc.stdout)
+                acode = aproc.wait()
+                if classify_auth_output(account.provider, acode, aout) == "auth_invalid":
+                    return DiscoveryResult(error="auth_invalid")
             proc = self._backend.exec(handle, argv, env=check_env)
             output = "\n".join(proc.stdout)
             code = proc.wait()
+            # Marker screen only applies to text listings — JSON payloads
+            # (``codex debug models`` embeds full prompt text that can
+            # legitimately contain phrases like "unauthorized") are covered
+            # by the auth argv pre-check above instead.
+            if not output.lstrip().startswith(("[", "{")) and output_has_auth_failure(output):
+                return DiscoveryResult(error="auth_invalid")
             if code != 0:
                 return DiscoveryResult(error=f"models_list_failed:{code}")
             caps = parse_models_output(account.provider, output)
