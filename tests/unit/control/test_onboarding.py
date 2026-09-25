@@ -518,7 +518,7 @@ class TestRefresh:
         new_blob = {"provider": "grok", "files": {GROK_AUTH_REL: '{"token": "new"}'}}
         blob_file = _write(tmp_path / "blob.json", json.dumps(new_blob))
         outcome = svc.refresh(account.id, blob_file)
-        assert outcome == {"changed": True, "files": 1}
+        assert outcome == {"changed": True, "files": 1, "secret": "skipped"}
         # Next sandbox restore uses the refreshed credential.
         assert _registry(svc).get_credential_blob(account.id) == new_blob
 
@@ -528,7 +528,7 @@ class TestRefresh:
         svc = _service()
         account = svc.add("grok", src)
         outcome = svc.refresh(account.id, src)
-        assert outcome == {"changed": False, "files": 1}
+        assert outcome == {"changed": False, "files": 1, "secret": "skipped"}
 
     def test_failed_refresh_preserves_last_good(self, tmp_path: Path) -> None:
         src = _write(tmp_path / "auth.json", '{"token": "good"}')
@@ -570,6 +570,77 @@ class TestRefresh:
         with pytest.raises(OnboardingError) as exc:
             svc.refresh("nope", src)
         assert exc.value.code == "account_not_found"
+
+
+class _RecordingSecretWriter:
+    def __init__(self, fail: bool = False) -> None:
+        self.calls: list[tuple[str, dict[str, str]]] = []
+        self._fail = fail
+
+    def refresh(self, secret_name: str, env: dict[str, str]) -> None:
+        if self._fail:
+            raise RuntimeError("modal down")
+        self.calls.append((secret_name, env))
+
+
+class TestRefreshSecretMaterialization:
+    """``--modal`` refresh recreates the deployment-managed Secret in place
+    so a relinked credential reaches sandboxes without a redeploy."""
+
+    def test_managed_secret_recreated_on_refresh(self, tmp_path: Path) -> None:
+        src = _write(tmp_path / "auth.json", '{"token": "old"}')
+        writer = _RecordingSecretWriter()
+        svc = OnboardingService(
+            PersistentAccountRegistry(InMemoryAccountStore()), secret_writer=writer
+        )
+        account = svc.add("grok", src)
+
+        new_blob = {"provider": "grok", "files": {GROK_AUTH_REL: '{"token": "new"}'}}
+        blob_file = _write(tmp_path / "blob.json", json.dumps(new_blob))
+        outcome = svc.refresh(account.id, blob_file)
+        assert outcome["secret"] == "refreshed"
+        assert len(writer.calls) == 1
+        name, env = writer.calls[0]
+        assert name == account.secret_name
+        assert json.loads(env["SBX_ACCOUNT_CREDENTIAL"]) == new_blob
+
+    def test_custom_secret_name_never_overwritten(self, tmp_path: Path) -> None:
+        src = _write(tmp_path / "auth.json", '{"token": "old"}')
+        writer = _RecordingSecretWriter()
+        svc = OnboardingService(
+            PersistentAccountRegistry(InMemoryAccountStore()), secret_writer=writer
+        )
+        account = svc.add("grok", src)
+        _registry(svc).put(
+            Account(
+                id=account.id,
+                provider=account.provider,
+                label=account.label,
+                status=account.status,
+                max_concurrent=account.max_concurrent,
+                secret_name="external-bring-your-own",
+                models=account.models,
+                created_at=account.created_at,
+            )
+        )
+        new_blob = {"provider": "grok", "files": {GROK_AUTH_REL: '{"token": "new"}'}}
+        blob_file = _write(tmp_path / "blob.json", json.dumps(new_blob))
+        outcome = svc.refresh(account.id, blob_file)
+        assert outcome["secret"] == "skipped"
+        assert writer.calls == []
+
+    def test_secret_failure_preserves_store_commit(self, tmp_path: Path) -> None:
+        src = _write(tmp_path / "auth.json", '{"token": "old"}')
+        writer = _RecordingSecretWriter(fail=True)
+        svc = OnboardingService(
+            PersistentAccountRegistry(InMemoryAccountStore()), secret_writer=writer
+        )
+        account = svc.add("grok", src)
+        new_blob = {"provider": "grok", "files": {GROK_AUTH_REL: '{"token": "new"}'}}
+        blob_file = _write(tmp_path / "blob.json", json.dumps(new_blob))
+        outcome = svc.refresh(account.id, blob_file)
+        assert outcome["secret"] == "failed"
+        assert _registry(svc).get_credential_blob(account.id) == new_blob
 
 
 class TestExport:

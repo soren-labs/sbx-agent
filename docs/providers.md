@@ -148,6 +148,22 @@ curl -X POST $SBX_BASE_URL/v1/accounts \
        "max_concurrent":2}'
 ```
 
+Relinking an existing account (re-auth after `reauth_required`, or adopting
+a newly authenticated provider session) uses `refresh` — it atomically
+replaces the stored blob and, under `--modal`, recreates the
+deployment-managed `<account_secret_prefix><id>` Secret in place so the new
+credential reaches sandboxes without a redeploy (accounts with a custom or
+empty `secret_name` are externally managed and never overwritten):
+
+```bash
+uv run python -m control.onboarding --modal refresh <account-id> --from <blob-or-credential>
+uv run python -m control.onboarding --modal verify <account-id> --probe auth
+```
+
+`refresh` clears the terminal lifecycle flag when the new bundle's
+fingerprint differs from the condemned one; `verify --probe auth` then
+reactivates the `invalid` account only on the provider's own answer.
+
 Credential files per provider (the adapter's declared `credential_files` —
 directory imports take the containing dir):
 

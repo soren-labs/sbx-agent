@@ -733,20 +733,57 @@ def provider_cli_env(provider: str, env: Mapping[str, str], home: Path) -> dict[
     return check_env
 
 
+class CredentialSecretWriter(Protocol):
+    """Recreate a named Modal Secret in place. Never logs ``env`` values."""
+
+    def refresh(self, secret_name: str, env: dict[str, str]) -> None: ...
+
+
 class OnboardingService:
     """Provider credential lifecycle over a ``PersistentAccountRegistry``.
 
     Every method returns metadata or raises ``OnboardingError`` — credential
     content is never returned, logged, or printed.
+
+    ``secret_writer`` (optional) materializes the deployment-managed
+    ``<account_secret_prefix><id>`` Modal Secret on credential writes so a
+    relinked credential reaches sandboxes without a full redeploy — the same
+    bridge ``sbx deploy`` performs and ``CredentialSync.writeback`` applies
+    on rotation commits.
     """
 
     def __init__(
         self,
         registry: PersistentAccountRegistry,
         probe: CredentialProbe | None = None,
+        secret_writer: CredentialSecretWriter | None = None,
     ) -> None:
         self._registry = registry
         self._probe = probe or StaticCredentialProbe()
+        self._secret_writer = secret_writer
+
+    def _materialize_secret(self, account: Account, blob: dict[str, Any]) -> str:
+        """Recreate the deployment-managed Secret for ``account``.
+
+        Only the ``<prefix><id>`` naming convention is managed here — empty
+        or custom ``secret_name`` values are externally managed lanes and are
+        never overwritten. Returns ``skipped`` | ``refreshed`` | ``failed``;
+        a Secret failure never undoes the store commit, which stays
+        authoritative.
+        """
+        if self._secret_writer is None:
+            return "skipped"
+        expected = f"{account_secret_prefix()}{account.id}"
+        if account.secret_name != expected:
+            return "skipped"
+        try:
+            self._secret_writer.refresh(
+                account.secret_name,
+                {CREDENTIAL_ENV: json.dumps(blob, ensure_ascii=False, separators=(",", ":"))},
+            )
+        except Exception:
+            return "failed"
+        return "refreshed"
 
     @property
     def registry(self) -> PersistentAccountRegistry:
@@ -845,7 +882,10 @@ class OnboardingService:
 
         All validation completes before the single store write, so a refused
         refresh leaves the previous blob byte-identical. Returns
-        ``{"changed": bool, "files": int}`` — never blob content.
+        ``{"changed": bool, "files": int, "secret": str}`` — never blob
+        content. With a ``secret_writer`` configured (the ``--modal`` CLI
+        path), the deployment-managed Secret is recreated in place so the
+        new credential reaches sandboxes without a redeploy.
         """
         account = self._get_account(account_id)
         blob = collect_credential_blob(
@@ -862,7 +902,8 @@ class OnboardingService:
             CredentialLifecycleService(self._registry).note_credential(account_id, blob)
         except Exception:
             pass
-        return {"changed": blob != old, "files": len(blob["files"])}
+        secret = self._materialize_secret(account, blob)
+        return {"changed": blob != old, "files": len(blob["files"]), "secret": secret}
 
     def export(self, account_id: str, out_path: Path | str) -> Path:
         """Write the stored blob to ``out_path`` (mode 600, atomic)."""
@@ -1090,7 +1131,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     backend = "modal" if args.modal else os.environ.get("SBX_BACKEND", "local")
     registry = PersistentAccountRegistry(select_store(store_dir=args.store_dir, backend=backend))
-    service = OnboardingService(registry)
+    secret_writer = None
+    if backend == "modal":
+        from control.credsync import ModalCredentialSecretWriter
+
+        secret_writer = ModalCredentialSecretWriter()
+    service = OnboardingService(registry, secret_writer=secret_writer)
 
     try:
         if args.cmd == "providers":
@@ -1182,8 +1228,11 @@ def main(argv: list[str] | None = None) -> int:
                 allow_open_permissions=args.allow_open_permissions,
             )
             state = "replaced" if outcome["changed"] else "unchanged"
-            print(f"refreshed {args.account_id}: {state} files={outcome['files']}")
-            return 0
+            print(
+                f"refreshed {args.account_id}: {state} files={outcome['files']} "
+                f"secret={outcome['secret']}"
+            )
+            return 0 if outcome["secret"] != "failed" else 1
 
         if args.cmd == "export":
             path = service.export(args.account_id, args.out)
