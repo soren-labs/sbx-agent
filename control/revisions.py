@@ -484,13 +484,16 @@ class ModalDictRevisionStore:
     """``modal.Dict``-backed durable store for deployed control planes.
 
     Keys: ``revision/<id>`` → row, ``revisions/<agent_id>`` → id index,
-    ``review/<id>`` → row, ``reviews/<agent_id>`` → id index.
+    ``review/<id>`` → row, ``reviews/<agent_id>`` → id index,
+    ``__agents__`` → agent-id index for agent-agnostic review lookups
+    (``current_review``'s revision-only read depends on it).
     """
 
     def __init__(self, name: str = REVISIONS_DICT_NAME) -> None:
         import modal
 
         self._dict = modal.Dict.from_name(name, create_if_missing=True)
+        self._index_ready = False
 
     def _d(self) -> Any:
         return self._dict
@@ -531,6 +534,27 @@ class ModalDictRevisionStore:
             ids = list(d.get(key) or [])
             ids.append(review.review_id)
             d.put(key, ids)
+            agents = list(d.get("__agents__") or [])
+            if review.agent_id not in agents:
+                agents.append(review.agent_id)
+                d.put("__agents__", agents)
+
+    def _ensure_agent_index(self) -> None:
+        """Backfill ``__agents__`` once for Dicts written before the index
+        existed — a bounded ``keys()`` pass over ``reviews/`` index keys,
+        then the write-maintained index is trusted (the SOR-199 listing
+        contract still holds on the warm path)."""
+        if self._index_ready:
+            return
+        d = self._d()
+        if d.get("__agents__") is None:
+            agents = sorted(
+                str(key).split("/", 1)[1]
+                for key in list(d.keys())
+                if str(key).startswith("reviews/")
+            )
+            d.put("__agents__", agents)
+        self._index_ready = True
 
     def get_review(self, review_id: str) -> Review | None:
         raw = self._d().get(f"review/{review_id}")
@@ -545,6 +569,7 @@ class ModalDictRevisionStore:
         self, agent_id: str | None = None, revision_id: str | None = None
     ) -> list[Review]:
         if agent_id is None:
+            self._ensure_agent_index()
             agent_ids = list(self._d().get("__agents__") or [])
             out: list[Review] = []
             for aid in agent_ids:
@@ -934,6 +959,17 @@ class RevisionService:
             raise RevisionError(
                 WORKSPACE_INVALID, f"unsafe branch name: {branch!r}", status_code=400
             )
+        existing_delivery = revision.delivery or {}
+        if (
+            existing_delivery.get("status") == "delivered"
+            and existing_delivery.get("branch") == branch
+            and existing_delivery.get("pushed_head_sha")
+        ):
+            # Idempotent replay: this exact revision payload already landed
+            # on the resolved branch — return the durable record rather than
+            # re-pushing (a patch-kind re-commit would mint a fresh sha and
+            # non-FF fail against the delivered remote head).
+            return revision
         try:
             kind, payload = self._payload(revision)
             base_ref = (
@@ -948,15 +984,38 @@ class RevisionService:
                 head_sha=revision.head_sha,
                 base_ref=base_ref,
                 env=self._env(),
+                # Pin the delivery commit's dates so a retry after a
+                # crash between push and record re-mints the identical
+                # sha and converges instead of non-FF failing.
+                commit_date=revision.created_at or None,
             )
             pr_data: dict[str, Any] | None = dict((record.pull_request if record else None) or {})
             if policy.get("auto_create_pr"):
                 existing = record.pull_request if record else None
                 if existing and existing.get("state") not in ("merged", "closed"):
-                    # The tracked PR rides the pushed branch — head moved.
-                    pr_data = dict(existing)
-                    pr_data["head_sha"] = pushed
-                else:
+                    # The locally-recorded state may lag upstream — refresh
+                    # it when a remote resolves so a merged/closed PR is
+                    # never carried forward as if still open.
+                    state = existing.get("state")
+                    number = existing.get("number")
+                    slug = github.repo_slug(repo)
+                    remote = self._remote_for(repo) if slug and isinstance(number, int) else None
+                    if remote is not None:
+                        try:
+                            live = remote.get_pull(slug, number)
+                            if live.get("merged") is True:
+                                state = "merged"
+                            elif isinstance(live.get("state"), str):
+                                state = live["state"]
+                        except RemoteGitHubError:
+                            pass  # unreachable → trust the recorded state
+                    if state not in ("merged", "closed"):
+                        # The tracked PR rides the pushed branch — head moved.
+                        pr_data = dict(existing)
+                        pr_data["head_sha"] = pushed
+                    else:
+                        existing = None
+                if existing is None:
                     slug = github.repo_slug(repo)
                     if slug is None:
                         raise RevisionError(
@@ -1156,6 +1215,12 @@ class RevisionService:
                 DELIVERY_NOT_FOUND,
                 f"revision {revision.revision_id} has no delivered pull request",
             )
+        if delivery.get("merged") is True:
+            # Idempotent replay: the recorded merge already committed — the
+            # remote PR now reads merged/closed, so re-running the drift
+            # check would fail closed on its own success. Return the
+            # durable record as-is.
+            return revision
         record = self._workspaces.get(revision.agent_id) if self._workspaces else None
         pushed = delivery.get("pushed_head_sha") or revision.head_sha
         review = self.current_review(revision)

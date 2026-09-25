@@ -24,9 +24,12 @@ from control.revisions import (
     REVISION_NOT_READY,
     FileRevisionStore,
     InMemoryRevisionStore,
+    ModalDictRevisionStore,
+    Review,
     Revision,
     RevisionError,
     RevisionService,
+    review_to_dict,
 )
 from control.workspace import (
     HEAD_SHA_MISMATCH,
@@ -353,6 +356,46 @@ class TestDeliver:
         assert out.delivery["status"] == "failed"
         assert out.delivery["error"]["code"] == "repo_unavailable"
 
+    def test_deliver_replay_returns_recorded_delivery(
+        self, tmp_path, backend, handle, workspaces, revisions
+    ) -> None:
+        """A retried deliver of an already-delivered revision returns the
+        durable record — a patch-leg re-commit would mint a fresh sha and
+        non-FF fail against its own remote head."""
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", spec(origin, base))
+        write_in_workdir(handle, workspaces, "a1")
+        revision = _materialize(revisions, backend, handle)
+        backend.terminate(handle)
+        out = revisions.deliver(revision, overrides={"branch": "feat/dup"})
+        assert out.delivery["status"] == "delivered"
+        pushed = out.delivery["pushed_head_sha"]
+
+        again = revisions.deliver(out, overrides={"branch": "feat/dup"})
+        assert again.delivery["status"] == "delivered"
+        assert again.delivery["pushed_head_sha"] == pushed
+        assert again.delivery["delivered_at"] == out.delivery["delivered_at"]
+
+    def test_deliver_patch_retry_after_lost_record_converges(
+        self, tmp_path, backend, handle, workspaces, revisions
+    ) -> None:
+        """Crash window: the push landed but the durable delivery record
+        was lost. The pinned committer/author date re-mints the identical
+        patch commit, so the retry's push is 'up-to-date' instead of a
+        non-fast-forward rejection."""
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", spec(origin, base))
+        write_in_workdir(handle, workspaces, "a1")
+        revision = _materialize(revisions, backend, handle)
+        backend.terminate(handle)
+        out = revisions.deliver(revision, overrides={"branch": "feat/retry"})
+        pushed = out.delivery["pushed_head_sha"]
+
+        revision.delivery = None  # simulate the lost record
+        retry = revisions.deliver(revision, overrides={"branch": "feat/retry"})
+        assert retry.delivery["status"] == "delivered"
+        assert retry.delivery["pushed_head_sha"] == pushed
+
 
 class FakeRemote:
     """Test seam for the control-plane GitHub client."""
@@ -562,3 +605,109 @@ class TestReviewAndMerge:
         url = revisions.post_review_comment(rev, "sbx-review: approve")
         assert url.endswith("issuecomment-1")
         assert remote.comments == [("acme/widgets", 7, "sbx-review: approve")]
+
+    def test_merge_replay_returns_durable_record(
+        self, revisions, revision_store, monkeypatch, artifacts
+    ) -> None:
+        """A retried merge after success returns the durable record — the
+        remote PR now reads merged, so re-running the drift check would
+        fail closed on its own success."""
+        remote = FakeRemote(head_sha=SHA_B)
+        rev = self._delivered(revisions, revision_store, monkeypatch, artifacts, remote)
+        revisions.add_review(rev, reviewer_identity="key:k", verdict="approve")
+        out = revisions.merge(rev)
+        assert out.delivery["merged"] is True
+        remote.state = "merged"  # remote now reports the merge
+        again = revisions.merge(out)
+        assert again.delivery["merged"] is True
+        assert again.delivery["merge_commit_sha"] == "e" * 40
+        assert len(remote.merge_calls) == 1  # no second upstream merge
+
+
+class _FakeDict:
+    """``modal.Dict``-shaped fake: string keys, arbitrary values."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+        self.keys_calls = 0
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def put(self, key, value):
+        self.data[key] = value
+
+    def pop(self, key):
+        return self.data.pop(key)
+
+    def keys(self):
+        self.keys_calls += 1
+        return iter(list(self.data))
+
+
+def _modal_store() -> tuple[ModalDictRevisionStore, _FakeDict]:
+    """Dict-backed store without importing/connecting real modal."""
+    store = ModalDictRevisionStore.__new__(ModalDictRevisionStore)
+    store._dict = _FakeDict()
+    store._index_ready = False
+    return store, store._dict
+
+
+def _review(review_id: str, revision_id: str, agent_id: str = "a1") -> Review:
+    return Review(
+        review_id=review_id,
+        revision_id=revision_id,
+        agent_id=agent_id,
+        reviewer_identity="key:k",
+        verdict="approve",
+        reviewed_head_sha=SHA_B,
+        created_at="t",
+    )
+
+
+class TestModalDictRevisionStoreReviews:
+    """SOR-221 acceptance: ``current_review`` (the merge gate) calls
+    ``list_reviews`` with only a ``revision_id`` — on the Dict backend that
+    path used to read an ``__agents__`` index nothing ever wrote, so merge
+    always failed ``review_required``."""
+
+    def test_revision_scoped_lookup_finds_reviews(self) -> None:
+        store, _ = _modal_store()
+        store.put_review(_review("rvw-1", "rev-1"))
+        store.put_review(_review("rvw-2", "rev-2", agent_id="a2"))
+        rows = store.list_reviews(revision_id="rev-1")
+        assert [r.review_id for r in rows] == ["rvw-1"]
+
+    def test_current_review_satisfies_merge_gate(self, artifacts) -> None:
+        store, _ = _modal_store()
+        svc = RevisionService(store, artifacts, env={})
+        rev = Revision(
+            revision_id="rev-cafef00d02",
+            agent_id="a1",
+            n=1,
+            repo=GITHUB_REPO,
+            base_sha=SHA_A,
+            head_sha=SHA_B,
+            created_at="t",
+            updated_at="t",
+        )
+        store.put_revision(rev)
+        review = svc.add_review(rev, reviewer_identity="key:k", verdict="approve")
+        current = svc.current_review(rev)
+        assert current is not None and current.review_id == review.review_id
+
+    def test_legacy_dict_backfills_agent_index_once(self) -> None:
+        """Dicts written before ``__agents__`` existed rebuild it once from
+        the ``reviews/`` per-agent index keys; the warm path stays indexed
+        (no repeated enumeration)."""
+        store, d = _modal_store()
+        review = _review("rvw-9", "rev-1", agent_id="a9")
+        d.put(f"review/{review.review_id}", review_to_dict(review))
+        d.put(f"reviews/{review.agent_id}", ["rvw-9"])
+
+        rows = store.list_reviews(revision_id="rev-1")
+        assert [r.review_id for r in rows] == ["rvw-9"]
+        assert d.get("__agents__") == ["a9"]
+        calls = d.keys_calls
+        assert store.list_reviews(revision_id="rev-1")[0].review_id == "rvw-9"
+        assert d.keys_calls == calls

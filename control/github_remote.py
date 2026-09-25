@@ -25,6 +25,7 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,7 @@ def push_payload(
     base_ref: str | None = None,
     env: Mapping[str, str] | None = None,
     git: str = "git",
+    commit_date: str | None = None,
 ) -> str:
     """Push a durable revision's payload to ``repo``'s ``branch``; host-side.
 
@@ -190,11 +192,25 @@ def push_payload(
     ``base_sha`` and commits it as the delivery bot — the pushed sha is the
     new commit, returned so the caller records what actually landed.
 
+    ``commit_date`` (ISO-8601, e.g. the revision's ``created_at``) pins
+    ``GIT_AUTHOR_DATE``/``GIT_COMMITTER_DATE`` on the patch commit so a
+    retried delivery of the same revision re-mints the identical sha —
+    the push then converges ("Everything up-to-date") instead of
+    non-fast-forward failing on its own previous commit.
+
     Fails closed at every step: an unfetchable base, a missing bundle head,
     an unapplying patch, or a remote head that disagrees after push is an
     explicit ``RemoteGitHubError`` — nothing is recorded on drift.
     """
-    shell_env = host_git_env(repo, env)
+    shell_env = dict(host_git_env(repo, env))
+    if commit_date:
+        try:
+            datetime.fromisoformat(commit_date.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            commit_date = None
+    if commit_date:
+        shell_env["GIT_AUTHOR_DATE"] = commit_date
+        shell_env["GIT_COMMITTER_DATE"] = commit_date
 
     def git_run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return _run_git(args, cwd=cwd, env=shell_env, git=git)
