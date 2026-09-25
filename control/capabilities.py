@@ -38,7 +38,6 @@ from runtime.runner.effort import (
     supported_efforts,
 )
 
-from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
 from control.onboarding import (
     ACCOUNT_ID_ENV,
     CREDENTIAL_ENV,
@@ -120,6 +119,8 @@ class DiscoveryResult:
 
 def fallback_models(provider: str, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
     """``SBX_<PROVIDER>_MODELS`` override, else the built-in defaults."""
+    from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
+
     env = os.environ if env is None else env
     raw = env.get(f"SBX_{provider.upper()}_MODELS")
     if raw:
@@ -131,6 +132,11 @@ def declared_model_ids(
     account: Account, env: Mapping[str, str] | None = None
 ) -> tuple[tuple[str, ...], str]:
     """Model ids to advertise before discovery runs, and their source."""
+    # Lazy: a top-level import would cycle ``capabilities`` →
+    # ``api_v1/__init__`` → ``routes`` → ``capabilities`` whenever this
+    # module is imported before ``control.api_v1``.
+    from control.api_v1.bootstrap import PROVIDER_DEFAULT_MODELS
+
     env = os.environ if env is None else env
     if account.models:
         return tuple(account.models), "declared"
