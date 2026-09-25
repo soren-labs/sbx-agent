@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 
 import pytest
+from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
+
 from sbx.config import BootstrapConfig, key_path, load
 from sbx.deploy import deploy, read_deploy_state
 from sbx.errors import BootstrapError
 from sbx.keys import fingerprint, read_key
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
 
 
 def _deploy(tmp_path, plane, *, env=None, config=None, **kwargs):
@@ -30,7 +31,7 @@ def _deploy(tmp_path, plane, *, env=None, config=None, **kwargs):
 def test_deploy_happy_path(tmp_path) -> None:
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    report, env, _ = _deploy(tmp_path, plane)
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
 
     token = read_key(key_path(env))
     assert token is not None
@@ -62,12 +63,12 @@ def test_deploy_is_idempotent(tmp_path) -> None:
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     env = make_env(tmp_path)
-    _deploy(tmp_path, plane, env=env)
+    _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=("codex",)))
     first_token = read_key(key_path(env))
     dicts_before = {k: dict(v) for k, v in plane.dicts.items()}
     plane.dicts["sbx-sessions"]["session/abc"] = {"id": "abc"}
 
-    report2, _, _ = _deploy(tmp_path, plane, env=env)
+    report2, _, _ = _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=("codex",)))
     assert read_key(key_path(env)) == first_token  # key not reminted
     assert plane.secrets["sbx-v1-bootstrap"]["SBX_V1_BOOTSTRAP_KEY"] == first_token
     assert plane.dicts["sbx-sessions"]["session/abc"] == {"id": "abc"}
@@ -83,7 +84,7 @@ def test_basic_secret_uses_env_names_control_reads(tmp_path) -> None:
 
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    _, env, _ = _deploy(tmp_path, plane)
+    _, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     secret_env = plane.secrets["sbx-basic-auth"]
     assert set(secret_env) == {"SBX_BASIC_USER", "SBX_BASIC_PASS"}
 
@@ -124,7 +125,7 @@ def test_legacy_basic_password_env_still_read() -> None:
 def test_deploy_missing_codex_secret_is_actionable(tmp_path) -> None:
     plane = FakePlane()
     with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane)
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert exc.value.code == "secret_missing"
     assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
 
@@ -134,7 +135,7 @@ def test_deploy_missing_codex_secret_guides_login_on_clean_home(tmp_path) -> Non
     official login, not a bare secret-create command (SOR-115)."""
     plane = FakePlane()
     with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane)
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert "codex login" in (exc.value.hint or "")
     assert "~/.codex/auth.json" in (exc.value.hint or "")
     assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
@@ -155,7 +156,7 @@ def test_deploy_non_codex_providers_skip_codex_secret(tmp_path) -> None:
 def test_deploy_missing_modal_auth_is_actionable(tmp_path) -> None:
     plane = FakePlane(workspace=None)
     with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane)
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert exc.value.code == "modal_auth_missing"
     assert "modal token new" in (exc.value.hint or "")
 
@@ -165,11 +166,11 @@ def test_failed_deploy_is_resumable(tmp_path) -> None:
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     plane.fail_on.add("ensure_image")
     with pytest.raises(BootstrapError):
-        _deploy(tmp_path, plane)
+        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     # partial progress is durable — secrets/dicts already exist
     assert "sbx-v1-bootstrap" in plane.secrets
     plane.fail_on.clear()
-    report, env, _ = _deploy(tmp_path, plane)
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert report.base_url
     names = [s.name for s in report.steps]
     assert "image:codex" in names
@@ -179,7 +180,7 @@ def test_stale_remote_secret_rotates_with_new_key(tmp_path) -> None:
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     plane.secrets["sbx-v1-bootstrap"] = {"SBX_V1_BOOTSTRAP_KEY": "sbx_oldtoken"}
-    report, env, _ = _deploy(tmp_path, plane)
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     token = read_key(key_path(env))
     assert plane.secrets["sbx-v1-bootstrap"]["SBX_V1_BOOTSTRAP_KEY"] == token
     assert report.key_rotated
@@ -241,17 +242,42 @@ def test_deploy_mixed_providers_still_require_codex_secret(tmp_path) -> None:
     assert plane.secret_create_calls == 0  # fail-before-write
 
 
-def test_deploy_empty_providers_fails_before_any_write(tmp_path) -> None:
+def test_deploy_empty_providers_platform_only(tmp_path) -> None:
+    """SOR-210: providers=() deploys the core platform only — no provider
+    images, no provider credential gates, no codex Secret — and the durable
+    core state stays idempotent."""
     plane = FakePlane()
     env = make_env(tmp_path)
-    with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=()))
-    assert exc.value.code == "invalid_providers"
-    assert "deploy.providers" in exc.value.message
-    assert plane.secret_create_calls == 0
-    assert plane.dict_create_calls == 0
-    assert plane.deploy_calls == 0
-    assert not key_path(env).exists()  # not even the local key was minted
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=()))
+
+    assert report.base_url
+    assert plane.image_calls == []  # zero provider images built
+    assert "sbx-codex-auth" not in plane.secrets  # no provider credential gate
+    assert plane.deploy_calls == 1
+    # durable core state still materialized
+    for name in (
+        "sbx-sessions",
+        "sbx-runs",
+        "sbx-accounts",
+        "sbx-workflows",
+        "sbx-artifacts",
+        "sbx-workspaces",
+    ):
+        assert name in plane.dicts
+    assert "sbx-v1-bootstrap" in plane.secrets and "sbx-basic-auth" in plane.secrets
+    # provider version resolution is skipped, not failed
+    assert report.cli_versions is None
+    assert read_deploy_state(env)["app_url"] == report.base_url
+    assert "cli_versions" not in read_deploy_state(env)
+
+    # idempotent re-run: same key, no extra images, dicts untouched
+    first_token = read_key(key_path(env))
+    plane.dicts["sbx-sessions"]["session/abc"] = {"id": "abc"}
+    report2, _, _ = _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=()))
+    assert read_key(key_path(env)) == first_token
+    assert plane.image_calls == []
+    assert plane.dicts["sbx-sessions"]["session/abc"] == {"id": "abc"}
+    assert not report2.key_created
 
 
 def test_deploy_github_bridge_secret_preflight(tmp_path) -> None:
@@ -264,13 +290,13 @@ def test_deploy_github_bridge_secret_preflight(tmp_path) -> None:
         {"SBX_GITHUB_EPHEMERAL": "1", "SBX_GITHUB_SECRET_NAME": "sbx-github"},
     )
     with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, env=env)
+        _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=("codex",)))
     assert exc.value.code == "secret_missing"
     assert "sbx-github" in str(exc.value)
     assert plane.secret_create_calls == 0  # fail-before-write
 
     plane.secrets["sbx-github"] = {"GH_TOKEN": "REDACTED_GITHUB"}
-    report, _, _ = _deploy(tmp_path, plane, env=env)
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=("codex",)))
     assert any(s.name == "secret:github" for s in report.steps)
 
 
@@ -302,7 +328,7 @@ def test_deploy_github_gate_alone_needs_no_secret(tmp_path) -> None:
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     env = make_env(tmp_path, {"SBX_GITHUB_EPHEMERAL": "1"})
-    report, _, _ = _deploy(tmp_path, plane, env=env)
+    report, _, _ = _deploy(tmp_path, plane, env=env, config=BootstrapConfig(providers=("codex",)))
     assert all(s.name != "secret:github" for s in report.steps)
 
 
@@ -346,7 +372,7 @@ def test_deploy_ignores_disabled_provider_account_secret(tmp_path) -> None:
             "secret_name": "sbx-acct-devin-1",
         },
     }
-    report, _, _ = _deploy(tmp_path, plane)  # providers=("codex",)
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert report.base_url
     assert "sbx-acct-devin-1" not in plane.secrets  # not materialized either
 
@@ -378,11 +404,12 @@ def test_deploy_freezes_cli_versions_and_passes_resolved_spec(tmp_path) -> None:
     state-dir lock, passes the concrete spec into every image build, and
     records the evidence in the deploy state."""
     from runtime.image import load_packages
+
     from sbx.config import state_dir
 
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    report, env, _ = _deploy(tmp_path, plane)
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
 
     step = next(s for s in report.steps if s.name == "versions")
     assert step.detail
@@ -411,7 +438,7 @@ def test_deploy_resolution_scoped_to_enabled_providers(tmp_path) -> None:
     """A codex-only deploy must never probe for agy/grok host binaries."""
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    report, env, _ = _deploy(tmp_path, plane)
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     state = read_deploy_state(env)
     assert set(state["cli_versions"]["providers"]) == {"codex"}
     assert report.cli_versions is not None and set(report.cli_versions) == {"codex"}
@@ -442,7 +469,9 @@ def test_deploy_versions_lock_replays_frozen_set(tmp_path) -> None:
     )
     lock_path = write_lock(old, tmp_path / "old-lock.json")
 
-    report, env, _ = _deploy(tmp_path, plane, versions_lock=str(lock_path))
+    report, env, _ = _deploy(
+        tmp_path, plane, config=BootstrapConfig(providers=("codex",)), versions_lock=str(lock_path)
+    )
     assert report.cli_versions == {"codex": "0.0.1-old"}
     assert plane.image_specs["codex"].codex_version == "0.0.1-old"
 

@@ -30,6 +30,7 @@ from sbx.config import (
     basic_auth_path,
     deploy_state_path,
     key_path,
+    load_file_values,
     save,
     state_dir,
     validate_providers,
@@ -105,8 +106,14 @@ def _read_basic_auth(env: Mapping[str, str]) -> dict[str, str] | None:
     return None
 
 
-def _require_modal_auth(plane: Plane) -> str:
+def _require_modal_auth(plane: Plane, *, login: Callable[[], str | None] | None = None) -> str:
+    """Prove Modal auth; when unauthenticated and ``login`` is provided, run
+    it once (interactive ``modal token new`` on the TTY) and re-probe so a
+    deploy resumes inside the same invocation (SOR-209). Non-interactive
+    callers (CI, MODAL_TOKEN_* env) never get a ``login`` callable."""
     workspace = plane.workspace()
+    if workspace is None and login is not None:
+        workspace = login()
     if workspace is None:
         raise BootstrapError(
             "not authenticated with Modal",
@@ -511,15 +518,28 @@ def deploy(
     versions_lock: str | None = None,
     fetch: Any = None,
     host_probe: Any = None,
+    modal_login: Callable[[], str | None] | None = None,
 ) -> DeployReport:
-    """Run the idempotent deploy pipeline; return a per-step report."""
+    """Run the idempotent deploy pipeline; return a per-step report.
+
+    ``modal_login`` is the interactive-auth seam (SOR-209): when the plane
+    reports no workspace, it is invoked once (``modal token new`` on the
+    TTY) and the workspace is re-probed, so a fresh-clone deploy completes
+    in one invocation. ``None`` keeps the non-interactive behavior.
+    """
     env = os.environ if env is None else env
     config = cfg.config
     steps: list[StepResult] = []
 
+    # SOR-209: `sbx deploy` on a fresh clone writes config.toml implicitly —
+    # the same file `sbx init` with no flags would produce.
+    if not cfg.file_exists:
+        save(load_file_values(cfg.path), cfg.path, env=env)
+        steps.append(StepResult("config", True, f"initialized {cfg.path.name}"))
+
     require([check_python(), check_modal_package()])
     validate_providers(config.providers)
-    workspace = _require_modal_auth(plane)
+    workspace = _require_modal_auth(plane, login=modal_login)
     steps.append(StepResult("modal-auth", False, f"workspace {workspace}"))
 
     # Preflight: everything that must exist before the first write, so a
@@ -542,10 +562,17 @@ def deploy(
 
     # SOR-175: resolve + freeze provider CLI versions once, before any write
     # — a ``latest``/host-probe failure aborts with zero resources touched.
-    versions_step, resolved_versions, versions_lock_path = _resolve_cli_versions(
-        config, env, versions_lock=versions_lock, fetch=fetch, host_probe=host_probe
-    )
-    steps.append(versions_step)
+    # SOR-210: a platform-only deploy (no providers, no explicit lock replay)
+    # skips resolution entirely — provider CLI versions are not a gate.
+    resolved_versions: Any = None
+    versions_lock_path: Path | None = None
+    if config.providers or versions_lock or env.get("SBX_VERSIONS_LOCK"):
+        versions_step, resolved_versions, versions_lock_path = _resolve_cli_versions(
+            config, env, versions_lock=versions_lock, fetch=fetch, host_probe=host_probe
+        )
+        steps.append(versions_step)
+    else:
+        steps.append(StepResult("versions", False, "skipped — platform-only deploy (no providers)"))
 
     step, key_created, key_rotated = _ensure_bootstrap_secret(config, plane, env)
     steps.append(step)
@@ -622,30 +649,29 @@ def deploy(
     if cfg.sources.get("api_base_url") != "env" and config.api_base_url != base_url:
         save(_replace_base_url(config, base_url), cfg.path, env=env)
     version = version or app_version()
-    _write_state(
-        env,
-        {
-            "version": version,
-            "deployed_at": _iso_now(),
-            "app": config.modal_app_name,
-            "app_url": base_url,
-            "key_fingerprint": fingerprint(token),
-            # SOR-175 version evidence: the frozen CLI set this deployment
-            # built, plus where its lock file lives for replay/rollback.
-            "cli_versions": resolved_versions.lock_payload(),
-            "versions_lock": str(versions_lock_path),
-            # SOR-212/SOR-215: per-provider runtime evidence written to the
-            # ``sbx-runtime`` Dict and consumed by ``/v1/providers``.
-            "runtime": runtime_records,
-        },
-    )
+    state: dict[str, Any] = {
+        "version": version,
+        "deployed_at": _iso_now(),
+        "app": config.modal_app_name,
+        "app_url": base_url,
+        "key_fingerprint": fingerprint(token),
+        # SOR-212/SOR-215: per-provider runtime evidence written to the
+        # ``sbx-runtime`` Dict and consumed by ``/v1/providers``.
+        "runtime": runtime_records,
+    }
+    if resolved_versions is not None:
+        # SOR-175 version evidence: the frozen CLI set this deployment
+        # built, plus where its lock file lives for replay/rollback.
+        state["cli_versions"] = resolved_versions.lock_payload()
+        state["versions_lock"] = str(versions_lock_path)
+    _write_state(env, state)
     return DeployReport(
         steps=tuple(steps),
         base_url=base_url,
         version=version,
         key_created=key_created,
         key_rotated=key_rotated,
-        cli_versions=resolved_versions.cli_versions(),
+        cli_versions=resolved_versions.cli_versions() if resolved_versions else None,
     )
 
 
@@ -688,6 +714,7 @@ def upgrade(
     versions_lock: str | None = None,
     fetch: Any = None,
     host_probe: Any = None,
+    modal_login: Callable[[], str | None] | None = None,
 ) -> UpgradeReport:
     """Redeploy while proving durable stores stay readable end to end.
 
@@ -710,6 +737,7 @@ def upgrade(
         versions_lock=versions_lock,
         fetch=fetch,
         host_probe=host_probe,
+        modal_login=modal_login,
     )
 
     after = snapshot_durable(cfg.config, plane)

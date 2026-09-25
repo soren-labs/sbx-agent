@@ -139,8 +139,9 @@ def test_runtime_unknown_without_evidence_is_backcompat(
 
 
 def test_runtime_record_for_deselected_provider_ignored(
-    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+    client: TestClient, v1_env: V1Env, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("SBX_PROVIDERS", "codex")
     v1_env.app.state.runtime_store = InMemoryRuntimeStore((_record("grok", STATUS_READY),))
     rows = _rows(client.get("/v1/providers", headers=auth).json())
     assert rows["grok"]["runtime"]["status"] == "disabled"

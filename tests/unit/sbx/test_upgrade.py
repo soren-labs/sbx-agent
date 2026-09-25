@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
+
 from sbx.deploy import read_deploy_state, snapshot_durable, upgrade
 from sbx.errors import BootstrapError
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
 
 
 def _deployed(tmp_path, plane, version="0.1.0"):

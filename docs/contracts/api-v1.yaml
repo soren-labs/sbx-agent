@@ -34,6 +34,7 @@ x-canonical:
     - unauthorized
     - forbidden
     - not_found
+    - grant_invalid
     - invalid_provider
     - turn_in_progress
     - session_not_runnable
@@ -132,6 +133,8 @@ x-canonical:
     - GET /v1/api-keys
     - POST /v1/api-keys
     - DELETE /v1/api-keys/{id}
+    - POST /v1/console/grant
+    - POST /v1/console/exchange
     - GET /v1/agents/{id}/workspace
     - POST /v1/agents/{id}/workspace/review
     - POST /v1/agents/{id}/handoff
@@ -158,6 +161,7 @@ tags:
   - name: artifacts
   - name: accounts
   - name: api-keys
+  - name: console
   - name: github
   - name: meta
 paths:
@@ -1081,6 +1085,63 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/console/grant:
+    post:
+      tags: [console]
+      summary: |
+        Mint a one-time, short-TTL Console handoff ticket (SOR-211). The
+        caller's admin key stays in the `Authorization` header — only the
+        opaque ticket enters the browser URL fragment, which is never sent
+        to the server, so the long-lived bootstrap key never appears in a
+        URL or access log.
+      operationId: createConsoleGrant
+      responses:
+        "201":
+          description: Grant ticket; redeem once via `/v1/console/exchange`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grant, expires_in, expires_at]
+                properties:
+                  grant:
+                    type: string
+                  expires_in:
+                    type: integer
+                  expires_at:
+                    type: number
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/console/exchange:
+    post:
+      tags: [console]
+      summary: |
+        Redeem a one-time grant ticket for a minted admin+agents API key
+        (SOR-211). Unauthenticated by design — the ticket itself is the
+        credential — but single-use and ~120s TTL: an invalid, expired, or
+        replayed ticket is a clean `401 grant_invalid`.
+      operationId: exchangeConsoleGrant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant]
+              properties:
+                grant:
+                  type: string
+      responses:
+        "201":
+          description: Minted key; `key` is the only plaintext response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /v1/github/app:
     get:
       tags: [github]

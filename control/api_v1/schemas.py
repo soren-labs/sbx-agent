@@ -231,6 +231,14 @@ class CreateApiKeyRequest(BaseModel):
     scopes: list[str] | None = None
 
 
+class ConsoleGrantExchangeRequest(BaseModel):
+    """SOR-211: the one-time ticket the Console redeems for a minted key
+    after the ``sbx open`` browser-admin handoff."""
+
+    model_config = ConfigDict(extra="forbid")
+    grant: str = Field(min_length=1)
+
+
 class GitHubAppAuthorizeCallbackRequest(BaseModel):
     """SOR-177: the browser-side install completion — ``state`` is the
     single-use capability issued by the authorize step (the redirect itself

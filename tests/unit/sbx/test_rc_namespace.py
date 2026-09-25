@@ -9,10 +9,11 @@ and teardown scopes its secret sweep to the configured prefix.
 
 from __future__ import annotations
 
+from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
+
 from sbx.config import BootstrapConfig
 from sbx.deploy import deploy
 from sbx.uninstall import uninstall
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
 
 RC_NAMES = {
     "modal_app_name": "sbx-control-release01-rc",
@@ -54,7 +55,7 @@ def _rc_config(**overrides) -> BootstrapConfig:
 
 
 def test_deploy_env_covers_every_namespace_name() -> None:
-    env = _rc_config().deploy_env()
+    env = _rc_config(providers=("codex",)).deploy_env()
     assert env == {
         "SBX_MODAL_APP_NAME": "sbx-control-release01-rc",
         "SBX_SESSIONS_DICT": "rc-sessions",

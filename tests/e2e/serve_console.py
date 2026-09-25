@@ -144,8 +144,8 @@ def prepare_env(state_dir: Path, api_key: str) -> dict[str, str]:
 def build_app(demo: dict[str, str]):
     from control.app import create_app
     from fastapi.responses import JSONResponse
-    from fastapi.staticfiles import StaticFiles
 
+    # ``create_app`` already mounts ``web/`` at "/" (SOR-211 same-origin).
     app = create_app()
 
     # Dev-only fixture info for tests and humans (never mounted in production).
@@ -153,7 +153,11 @@ def build_app(demo: dict[str, str]):
     def dev_info() -> JSONResponse:
         return JSONResponse({"demo_workspace": demo, "providers": list(PROVIDERS)})
 
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+    # The "/" console mount is a terminal catch-all, so the route appended
+    # above would be shadowed — hoist it ahead of the mount.
+    routes = app.router.routes
+    idx = next(i for i, r in enumerate(routes) if getattr(r, "path", "") == "/__dev/info")
+    routes.insert(0, routes.pop(idx))
     return app
 
 

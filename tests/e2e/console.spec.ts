@@ -31,6 +31,35 @@ test.describe("web console against a real local /v1 control plane", () => {
     await shot(page, "console_02_agents_empty.png");
   });
 
+  // SOR-211: `sbx open` mints a one-time grant the browser redeems.
+  test("grant handoff connects without typing a key", async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const scoped = await ctx.newPage();
+
+    // Admin-authed mint, exactly what `sbx open` does.
+    const mint = await scoped.request.post("/v1/console/grant", {
+      headers: { Authorization: `Bearer ${KEY}` },
+    });
+    expect(mint.status()).toBe(201);
+    const grant = (await mint.json()) as { grant: string; expires_in: number };
+    expect(grant.grant).toMatch(/^sbxg_/);
+    expect(grant.expires_in).toBeGreaterThan(0);
+
+    // Landing on the grant URL connects straight through — the ticket
+    // rides the fragment and is scrubbed before redemption.
+    await scoped.goto(`/#/connect?grant=${grant.grant}`);
+    await expect(scoped.getByTestId("app-ready")).toBeVisible();
+    expect(scoped.url()).not.toContain("grant=");
+
+    // The ticket is single-use: a second visit bounces to Connect.
+    const replay = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const replayed = await replay.newPage();
+    await replayed.goto(`/#/connect?grant=${grant.grant}`);
+    await expect(replayed.getByTestId("connect-error")).toBeVisible();
+    await replay.close();
+    await ctx.close();
+  });
+
   test("create an agent, stream run 1, follow up, cancel, reload", async ({ page }) => {
     await connect(page);
     await page.goto("/#/agents/new");

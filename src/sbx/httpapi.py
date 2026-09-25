@@ -69,6 +69,10 @@ class V1Client:
     def get(self, path: str) -> Any:
         return self._check(self._client.get(path))
 
+    def post(self, path: str, body: Any | None = None) -> Any:
+        kwargs = {} if body is None else {"json": body}
+        return self._check(self._client.post(path, **kwargs))
+
     def me(self) -> dict[str, Any]:
         return self.get("/v1/me")
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -240,6 +241,56 @@ class InMemoryApiKeyStore:
             return True
 
 
+CONSOLE_GRANT_TTL_S = 120
+
+
+class ConsoleGrantStore:
+    """One-time browser-admin handoff tickets (SOR-211).
+
+    ``sbx open`` mints a ticket via ``POST /v1/console/grant`` (admin scope)
+    and hands it to the browser inside the URL fragment — which is never
+    sent to the server, so the ticket never appears in access logs. The
+    Console redeems it once via ``POST /v1/console/exchange`` for a fresh
+    ``sbx_`` API key. Tickets are stored hashed (like API keys), expire in
+    ~2 minutes, and are single-use: ``consume`` pops unconditionally, so a
+    replayed or guessed ticket never yields a second key. The long-lived
+    bootstrap key is never placed in a URL.
+    """
+
+    def __init__(self) -> None:
+        self._grants: dict[str, float] = {}  # sha256(ticket) → epoch expiry
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _hash(ticket: str) -> str:
+        return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
+
+    def _prune(self, now: float) -> None:
+        for digest, expiry in list(self._grants.items()):
+            if expiry <= now:
+                del self._grants[digest]
+
+    def create(self, ttl_s: float = CONSOLE_GRANT_TTL_S) -> tuple[str, float]:
+        """Mint a ticket; return ``(ticket, expires_at_epoch)``."""
+        ticket = f"sbxg_{secrets.token_urlsafe(24)}"
+        now = time.time()
+        expires_at = now + max(float(ttl_s), 1.0)
+        with self._lock:
+            self._prune(now)
+            self._grants[self._hash(ticket)] = expires_at
+        return ticket, expires_at
+
+    def consume(self, ticket: str, *, now: float | None = None) -> bool:
+        """Redeem a ticket exactly once; True only when unexpired."""
+        if not ticket:
+            return False
+        now = time.time() if now is None else now
+        with self._lock:
+            self._prune(now)
+            expiry = self._grants.pop(self._hash(ticket), None)
+        return expiry is not None and now <= expiry
+
+
 @dataclass
 class AgentMeta:
     """Fields ``SessionRecord`` does not yet persist (added by P2-C)."""
@@ -267,6 +318,9 @@ class V1State:
     # SOR-84 C1 fallback workflow index; ``app.state.workflow_store`` wins
     # when a durable store is installed (same seam shape as run_states).
     workflows: WorkflowStore = field(default_factory=InMemoryWorkflowStore)
+    # SOR-211: one-time Console handoff tickets — inherently ephemeral, so
+    # they live on V1State even when durable stores replace the rest.
+    console_grants: ConsoleGrantStore = field(default_factory=ConsoleGrantStore)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:

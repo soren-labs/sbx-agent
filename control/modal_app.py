@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import modal
 
@@ -51,12 +52,19 @@ CONTROL_IMAGE = (
         "pyjwt[crypto]>=2.10.0",
     )
     .add_local_python_source("runtime")
+    # SOR-211: ship the Console with the control plane — the deployed app's
+    # URL serves it at "/" on the same origin as ``/v1``. Copied into the
+    # image (not mounted) so the deploy needs no runtime mount resolution.
+    .add_local_dir(Path(__file__).resolve().parents[1] / "web", remote_path="/root/web", copy=True)
 )
 
 # Deploy-time names/tunables the remote functions must see (dict/secret/image
 # names, account seeding). ``remote_env_overlay`` is an allowlist — credential
 # material only ever arrives through the Secret mounts above.
-_REMOTE_ENV = remote_env_overlay(app_name=_APP_NAME)
+_REMOTE_ENV = {
+    **remote_env_overlay(app_name=_APP_NAME),
+    "SBX_WEB_DIR": "/root/web",
+}
 
 # SOR-203: web-function autoscaler warmth, resolved at deploy time from
 # SBX_CONTROL_SCALEDOWN_WINDOW_S / SBX_CONTROL_MIN_CONTAINERS /

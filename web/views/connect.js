@@ -4,12 +4,23 @@ import { h } from "../lib/dom.js";
 import { explainApiError } from "../lib/domain.js";
 import { getLang, setLang, t } from "../lib/i18n.js";
 import { logo } from "../lib/icons.js";
+import { navigate } from "../lib/router.js";
 import { getTheme, setTheme } from "../lib/store.js";
 import { banner, button, field, rich, toggle } from "../lib/ui.js";
 import { docsUrl } from "./shell.js";
 
 export function renderConnect({ route, onConnected }) {
   const conn = getConnection();
+  // SOR-211: a `sbx open` handoff lands here with a one-time grant ticket
+  // in the URL fragment. Scrub it immediately — it must not sit in history
+  // — then redeem it for a minted key.
+  const grant = route.query.grant;
+  if (grant) {
+    navigate("/connect", route.query.next ? { next: route.query.next } : {}, {
+      replace: true,
+      silent: true,
+    });
+  }
   const state = {
     apiKey: "",
     baseUrl: conn.baseUrl || defaultBaseUrl(),
@@ -157,6 +168,36 @@ export function renderConnect({ route, onConnected }) {
       ),
     ),
   );
+  if (grant) {
+    // One-time `sbx open` ticket: redeem it server-side for a minted key,
+    // then connect through the same probe path the manual form uses.
+    state.busy = true;
+    submit.disabled = true;
+    errorSlot.replaceChildren(
+      banner({ tone: "info", title: t("Signing you in…"), body: t("Redeeming your one-time grant."), testid: "connect-grant" }),
+    );
+    void (async () => {
+      try {
+        const minted = await api.exchangeGrant(grant);
+        const me = await api.me(minted.key);
+        saveConnection({ baseUrl: conn.baseUrl, apiKey: minted.key, remember: true, identity: me });
+        onConnected(route.query.next);
+      } catch (err) {
+        const info = explainApiError(err);
+        errorSlot.replaceChildren(
+          banner({
+            tone: "danger",
+            title: t("This link has expired or was already used."),
+            body: h("span", { class: "muted" }, t("Run `sbx open` again for a fresh one."), info.detail ? ` (${info.detail})` : ""),
+            testid: "connect-error",
+          }),
+        );
+        state.busy = false;
+        submit.disabled = false;
+      }
+    })();
+  }
+
   queueMicrotask(() => keyInput.focus());
   return { el, title: t("Connect") };
 }

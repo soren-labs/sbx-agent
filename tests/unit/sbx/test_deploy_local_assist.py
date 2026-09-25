@@ -13,10 +13,11 @@ import json
 from pathlib import Path
 
 import pytest
+from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
+
 from sbx.config import BootstrapConfig, state_dir
 from sbx.deploy import deploy, read_deploy_state
 from sbx.errors import BootstrapError
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
 
 
 def _deploy(tmp_path, plane, *, env=None, config=None, **kwargs):
@@ -184,7 +185,7 @@ def test_runtime_dict_ensured_and_runtime_section_in_state(tmp_path) -> None:
     codex ready record."""
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
-    report, env, _ = _deploy(tmp_path, plane)
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert "sbx-runtime" in plane.dicts
     codex = plane.dicts["sbx-runtime"]["runtime/codex"]
     assert codex["status"] == "ready"

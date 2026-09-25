@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
 from sbx.config import BootstrapConfig, ResolvedConfig, load, save
 from sbx.errors import BootstrapError
 from sbx.plane import SandboxInfo
@@ -176,6 +177,11 @@ def make_v1(
                     if models is not None
                     else [{"provider": "codex", "model": "gpt-5.6-luna", "accounts_available": 1}]
                 },
+            )
+        if path == "/v1/console/grant" and request.method == "POST":
+            return httpx.Response(
+                201,
+                json={"grant": "sbxg_test_ticket", "expires_in": 120, "expires_at": 9e12},
             )
         if path == "/v1/agents" and request.method == "GET":
             all_agents = agents if agents is not None else list(state["agents"].values())

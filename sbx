@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# sbx — zero-bootstrap launcher for the sbx CLI.
+#
+# A fresh clone needs nothing but this file: it finds (or installs) uv,
+# then delegates to `uv run sbx`, which resolves a managed Python 3.12+,
+# creates .venv and syncs the locked dependencies on first run. Everything
+# after that is the regular CLI — `./sbx deploy` == `uv run sbx deploy`.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+find_uv() {
+    if [ -n "${UV:-}" ] && [ -x "${UV:-}" ]; then
+        printf '%s' "$UV"
+        return 0
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        command -v uv
+        return 0
+    fi
+    for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /usr/local/bin/uv; do
+        if [ -x "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+UV_BIN="$(find_uv || true)"
+if [ -z "$UV_BIN" ]; then
+    echo "sbx: uv is required (it provides Python 3.12 and the locked deps)." >&2
+    if command -v curl >/dev/null 2>&1; then
+        echo "sbx: installing uv via https://astral.sh/uv/install.sh ..." >&2
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        UV_BIN="$HOME/.local/bin/uv"
+    elif command -v wget >/dev/null 2>&1; then
+        echo "sbx: installing uv via https://astral.sh/uv/install.sh ..." >&2
+        wget -qO- https://astral.sh/uv/install.sh | sh
+        UV_BIN="$HOME/.local/bin/uv"
+    else
+        echo "sbx: install uv (https://docs.astral.sh/uv/) and rerun this command." >&2
+        exit 1
+    fi
+fi
+
+exec "$UV_BIN" run sbx "$@"

@@ -195,7 +195,11 @@ class BootstrapConfig:
     github_app_slug: str = ""
     github_app_secret_name: str = ""
     github_app_dict: str = GITHUB_APP_DICT_NAME
-    providers: tuple[str, ...] = ("codex",)
+    # Zero-provider is the fresh-clone default (SOR-210): `./sbx deploy`
+    # brings up the core platform (control plane + Console + durable state)
+    # with no provider credential or image build; providers opt in via
+    # `deploy.providers` / SBX_PROVIDERS / `sbx init --providers`.
+    providers: tuple[str, ...] = ()
     # Live-agent/sandbox cap forwarded to the deployed app as
     # ``SBX_MAX_CONCURRENT`` (per-key cap + scheduler global cap). ``None``
     # means "not configured" — the remote defaults apply — so it is never
@@ -299,8 +303,11 @@ class BootstrapConfig:
         }
         # ``control.modal_app`` reads this at deploy time to skip mounting
         # the shared Codex Secret and seeding accounts for providers the
-        # deployment does not serve (SOR-115/SOR-116).
-        out["SBX_PROVIDERS"] = ",".join(self.providers)
+        # deployment does not serve (SOR-115/SOR-116). An empty set stays
+        # unset — ``remote_env_overlay`` drops falsy values and the remote
+        # ``selected_providers`` default must see "no providers" (SOR-210).
+        if self.providers:
+            out["SBX_PROVIDERS"] = ",".join(self.providers)
         # SOR-133: replay the resolved GitHub bridge so a file-configured
         # deploy arms the remote control plane identically to env-armed
         # ones. The Secret *name* only — token material stays inside the
@@ -497,18 +504,11 @@ def load(
 
 
 def validate_providers(providers: tuple[str, ...]) -> None:
-    """Deploy precondition: ``providers`` must be a non-empty known set.
+    """Deploy precondition: every named provider must be a contract provider.
 
-    Every prerequisite check and remote resource derives from this list —
-    an empty or unknown entry can only produce a deployment that serves
-    nothing, so it fails fast with remediation instead.
+    An empty set is valid (SOR-210): it deploys the core platform only —
+    no provider images, no provider credential gates.
     """
-    if not providers:
-        raise BootstrapError(
-            "no providers configured (deploy.providers is empty)",
-            hint='set deploy.providers in the config or SBX_PROVIDERS, e.g. "codex,devin"',
-            code="invalid_providers",
-        )
     unknown = [p for p in providers if p not in KNOWN_PROVIDERS]
     if unknown:
         raise BootstrapError(

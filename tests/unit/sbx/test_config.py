@@ -9,6 +9,8 @@ from control.config import (
     RUNTIME_IMAGE_NAME,
     V1_BOOTSTRAP_SECRET_NAME,
 )
+from sbx_fakes import make_cfg, make_env
+
 from sbx.config import (
     BootstrapConfig,
     load,
@@ -17,7 +19,6 @@ from sbx.config import (
     validate_providers,
 )
 from sbx.errors import BootstrapError
-from sbx_fakes import make_cfg, make_env
 
 
 def test_defaults_come_from_control_config(tmp_path) -> None:
@@ -26,7 +27,7 @@ def test_defaults_come_from_control_config(tmp_path) -> None:
     assert cfg.config.accounts_dict == ACCOUNTS_DICT_NAME
     assert cfg.config.bootstrap_secret == V1_BOOTSTRAP_SECRET_NAME
     assert cfg.config.image_codex == RUNTIME_IMAGE_NAME
-    assert cfg.config.providers == ("codex",)
+    assert cfg.config.providers == ()  # SOR-210: default is platform-only
     assert all(source == "default" for source in cfg.sources.values())
     assert cfg.file_exists is False
 
@@ -360,17 +361,19 @@ def test_deploy_env_forwards_provider_set() -> None:
     env = BootstrapConfig(providers=("codex", "devin")).deploy_env()
     assert env["SBX_PROVIDERS"] == "codex,devin"
 
+    # SOR-210: the empty default omits SBX_PROVIDERS so the remote overlay
+    # never materializes an empty-string provider set.
+    assert "SBX_PROVIDERS" not in BootstrapConfig().deploy_env()
+
 
 def test_validate_providers_accepts_known_set() -> None:
     validate_providers(("codex",))
     validate_providers(("devin", "grok"))
 
 
-def test_validate_providers_rejects_empty() -> None:
-    with pytest.raises(BootstrapError) as exc:
-        validate_providers(())
-    assert exc.value.code == "invalid_providers"
-    assert "deploy.providers" in exc.value.message
+def test_validate_providers_accepts_empty() -> None:
+    """SOR-210: an empty set is a valid platform-only deploy."""
+    validate_providers(())
 
 
 def test_validate_providers_rejects_unknown() -> None:

@@ -17,6 +17,7 @@ import anyio
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette._utils import create_collapsing_task_group
 from starlette.types import Receive, Scope, Send
@@ -687,7 +688,20 @@ def create_app(
 
         threading.Thread(target=_warm_listing_indexes, daemon=True).start()
 
+    # SOR-211: the control plane serves the Console at "/" on the same
+    # origin as ``/v1`` — the deployed Modal URL opens the UI directly,
+    # and ``sbx open`` hands the browser a one-time grant into it.
+    # Skipped when the web assets are absent (a library-only install).
+    web_dir = Path(os.environ.get("SBX_WEB_DIR") or _default_web_dir())
+    if web_dir.is_dir():
+        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="console")
+
     return app
+
+
+def _default_web_dir() -> Path:
+    """The repo's ``web/`` directory — ``control/app.py`` → repo root."""
+    return Path(__file__).resolve().parents[1] / "web"
 
 
 # Local ``uvicorn control.app:app``. Tests should call ``create_app(...)``.

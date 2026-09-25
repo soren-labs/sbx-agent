@@ -218,6 +218,24 @@ class ModalPlane:
             return self._env_workspace_name(env) or _ENV_TOKEN_WORKSPACE_UNKNOWN
         return name
 
+    def interactive_login(self) -> str | None:
+        """Interactive-auth lane (SOR-209): run ``modal token new`` on the
+        real TTY (browser sign-in inherits stdio), then re-probe the
+        workspace so a deploy resumes in the same invocation.
+
+        Only called when stdin/stdout are TTYs and no env-token credentials
+        are set — ``sbx``'s CLI decides interactivity; this method just runs
+        the flow. Returns the workspace name after login, or ``None``.
+        """
+        print("sbx: not authenticated with Modal — starting `modal token new`", flush=True)
+        try:
+            proc = subprocess.run([sys.executable, "-m", "modal", "token", "new"], env=self._env())
+        except OSError:
+            return None
+        if proc.returncode != 0:
+            return None
+        return self.workspace()
+
     def list_secret_names(self) -> set[str]:
         try:
             return {s.name for s in self._modal_secret().list() if getattr(s, "name", None)}

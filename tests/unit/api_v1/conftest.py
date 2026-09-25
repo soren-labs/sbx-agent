@@ -49,7 +49,10 @@ class V1Env:
 
 
 @pytest.fixture
-def v1_env(stub_runner) -> Iterator[V1Env]:
+def v1_env(stub_runner, monkeypatch) -> Iterator[V1Env]:
+    # SOR-210: no SBX_PROVIDERS means a platform-only deployment — the v1
+    # test app exercises every provider's routes, so enable them all.
+    monkeypatch.setenv("SBX_PROVIDERS", "codex,antigravity,grok,opencode,devin")
     backend = LocalProcessBackend()
     store = InMemoryStore()
     app = create_app(

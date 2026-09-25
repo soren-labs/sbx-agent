@@ -220,9 +220,14 @@ def account_secret_prefix() -> str:
 
 
 def selected_providers(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    """Deploy-selected providers (``SBX_PROVIDERS``, comma-separated)."""
+    """Deploy-selected providers (``SBX_PROVIDERS``, comma-separated).
+
+    Defaults to none (SOR-210): a control plane with no ``SBX_PROVIDERS``
+    is a platform-only deployment — no provider Secret mounts or account
+    seeding, matching the ``deploy.providers = []`` default.
+    """
     env = os.environ if env is None else env
-    raw = env.get("SBX_PROVIDERS", "codex")
+    raw = env.get("SBX_PROVIDERS", "")
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 

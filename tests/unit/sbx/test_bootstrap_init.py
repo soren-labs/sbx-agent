@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sbx_fakes import FakePlane, make_cfg, make_env
+
 import sbx.init as init_mod
 import sbx.prereqs as prereqs
 from sbx.config import BootstrapConfig, load
-from sbx_fakes import FakePlane, make_cfg, make_env
 
 
 def test_init_writes_config_and_reports_checks(tmp_path) -> None:
@@ -61,7 +62,7 @@ def test_init_found_credential_reports_discovered(tmp_path) -> None:
     auth.write_text('{"tokens": {"access_token": "REDACTED"}}')
     auth.chmod(0o600)
     cfg = make_cfg(tmp_path, env=env, write=False)
-    report = init_mod.init(cfg, FakePlane(), env=env)
+    report = init_mod.init(cfg, FakePlane(), env=env, providers=("codex",))
     scan = next(s for s in report.credentials if s.provider == "codex")
     assert scan.status == "discovered"
     check = next(c for c in report.checks if c.name == "cred:codex")
@@ -77,14 +78,18 @@ def test_init_verify_uses_injected_auth_check(tmp_path) -> None:
         seen.append(provider)
         return "ok"
 
-    report = init_mod.init(cfg, FakePlane(), env=env, verify=True, auth_check=auth_check)
+    report = init_mod.init(
+        cfg, FakePlane(), env=env, providers=("codex",), verify=True, auth_check=auth_check
+    )
     assert seen == []  # nothing to verify without a discovered file
 
     auth = Path(env["HOME"]) / ".codex" / "auth.json"
     auth.parent.mkdir(parents=True, exist_ok=True)
     auth.write_text("{}")
     auth.chmod(0o600)
-    report = init_mod.init(cfg, FakePlane(), env=env, verify=True, auth_check=auth_check)
+    report = init_mod.init(
+        cfg, FakePlane(), env=env, providers=("codex",), verify=True, auth_check=auth_check
+    )
     assert seen == ["codex"]
     scan = report.credentials[0]
     assert scan.status == "verified"

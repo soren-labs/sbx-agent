@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import webbrowser
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -275,18 +276,38 @@ def _print_deploy(report: Any, env: Mapping[str, str]) -> None:
     print(f"  export SBX_API_KEY=$(cat {key_path(env)})")
 
 
+def _modal_login(args: argparse.Namespace, env: Mapping[str, str], plane: Plane) -> Any:
+    """The interactive `modal token new` lane for deploy/upgrade (SOR-209).
+
+    Only armed on a real TTY with no env-token credentials — CI and
+    non-interactive shells keep the fail-fast ``modal_auth_missing`` path.
+    ``args.modal_login`` is the test seam.
+    """
+    login = getattr(args, "modal_login", None)
+    if login is not None:
+        return login
+    if env.get("MODAL_TOKEN_ID") and env.get("MODAL_TOKEN_SECRET"):
+        return None
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    candidate = getattr(plane, "interactive_login", None)
+    return candidate if callable(candidate) else None
+
+
 def cmd_deploy(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from sbx.deploy import deploy
 
     cfg = _resolve(args, env)
+    plane = _plane(cfg, args)
     report = deploy(
         cfg,
-        _plane(cfg, args),
+        plane,
         env=env,
         transport=args.transport,
         sleep=args.sleep,
         probe_attempts=args.probe_attempts,
         versions_lock=args.versions_lock,
+        modal_login=_modal_login(args, env, plane),
     )
     if args.json:
         _emit_json(
@@ -383,15 +404,17 @@ def cmd_upgrade(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     from sbx.deploy import upgrade
 
     cfg = _resolve(args, env)
+    plane = _plane(cfg, args)
     report = upgrade(
         cfg,
-        _plane(cfg, args),
+        plane,
         env=env,
         transport=args.transport,
         sleep=args.sleep,
         probe_attempts=args.probe_attempts,
         version=args.version,
         versions_lock=args.versions_lock,
+        modal_login=_modal_login(args, env, plane),
     )
     if args.json:
         _emit_json(
@@ -408,6 +431,77 @@ def cmd_upgrade(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         for name, count in report.durable.items():
             print(f"  durable {name}: {count} key(s) preserved")
         _print_deploy(report.deploy, env)
+    return 0
+
+
+# --------------------------------------------------------------------- open
+
+
+def cmd_open(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    """Open the Console in a browser via a one-time grant handoff (SOR-211).
+
+    The long-lived ``sbx_`` bootstrap key never enters a URL or log: we
+    redeem it server-side for a single-use, short-TTL ticket
+    (``POST /v1/console/grant``), hand the browser the ticket in the URL
+    fragment — never sent to the server — and the Console exchanges it for
+    a fresh minted key (``POST /v1/console/exchange``).
+    """
+    from sbx.deploy import read_deploy_state
+    from sbx.httpapi import ApiError, V1Client
+    from sbx.keys import resolve_api_key
+
+    cfg = _resolve(args, env)
+    base_url = args.base_url or cfg.config.api_base_url
+    if not base_url:
+        base_url = str(read_deploy_state(env).get("app_url") or "")
+    if not base_url:
+        raise BootstrapError(
+            "no control-plane URL — nothing deployed (or configured) yet",
+            hint="run `sbx deploy` first, or pass --base-url / set SBX_BASE_URL",
+            code="no_deployment",
+        )
+    token = resolve_api_key(env)
+    if token is None:
+        raise BootstrapError(
+            "no sbx_ API key found",
+            hint="run `sbx deploy` (mints the bootstrap key) or export SBX_API_KEY",
+            code="api_key_missing",
+        )
+    try:
+        with V1Client(base_url, token, transport=args.transport, timeout=15.0) as client:
+            grant = client.post("/v1/console/grant")
+    except ApiError as exc:
+        raise BootstrapError(
+            f"cannot mint a console grant: {exc.message}",
+            hint="check `sbx doctor` — the deployment must serve /v1/console/grant",
+            code="grant_failed",
+        ) from exc
+    ticket = str(grant.get("grant") or "")
+    if not ticket:
+        raise BootstrapError(
+            "the control plane returned an empty console grant",
+            code="grant_failed",
+        )
+    url = f"{base_url.rstrip('/')}/#/connect?grant={ticket}"
+    if args.json:
+        _emit_json(
+            {
+                "ok": True,
+                "base_url": base_url,
+                "url": url,
+                "expires_in": grant.get("expires_in"),
+            }
+        )
+        return 0
+    if args.print:
+        print(url)
+        return 0
+    ttl = grant.get("expires_in")
+    if webbrowser.open(url):
+        print(f"opened the Console in your browser (one-time grant expires in {ttl}s)")
+    else:
+        print("no browser found — open this URL yourself:")
+        print(f"  {url}")
     return 0
 
 
@@ -585,6 +679,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_upgrade, probe_attempts=5)
 
     p = sub.add_parser(
+        "open",
+        parents=[sub_common],
+        help="open the Console in a browser via a one-time grant handoff",
+    )
+    p.add_argument(
+        "--base-url",
+        help="control-plane URL (default: config api_base_url, else the deployed app URL)",
+    )
+    p.add_argument(
+        "--print",
+        dest="print",
+        action="store_true",
+        help="print the one-time Console URL instead of opening a browser",
+    )
+    p.set_defaults(func=cmd_open)
+
+    p = sub.add_parser(
         "uninstall", parents=[sub_common], help="stop app and terminate sbx sandboxes"
     )
     p.add_argument("--purge-data", action="store_true", help="also delete durable Dicts")
@@ -605,6 +716,7 @@ def main(
     transport: httpx.BaseTransport | None = None,
     sleep: Any = None,
     auth_check: Any = None,
+    modal_login: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -618,6 +730,8 @@ def main(
         ("providers", None),
         ("github", None),
         ("github_secret", None),
+        ("base_url", None),
+        ("print", False),
     ):
         if not hasattr(args, name):
             setattr(args, name, default)
@@ -625,6 +739,7 @@ def main(
     args.plane = plane
     args.transport = transport
     args.auth_check = auth_check
+    args.modal_login = modal_login
     if sleep is not None:
         args.sleep = sleep
     elif not hasattr(args, "sleep"):

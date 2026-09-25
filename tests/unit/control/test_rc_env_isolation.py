@@ -147,9 +147,9 @@ def test_app_secret_names_gate_codex_on_selected_providers() -> None:
         "sbx-basic-auth",
         "sbx-v1-bootstrap",
     ]
-    # Default is codex-only (BootstrapConfig.providers default).
+    # SOR-210: the default is platform-only — no provider credential
+    # Secret mounts when SBX_PROVIDERS is unset.
     assert app_secret_names({}) == [
-        "sbx-codex-auth",
         "sbx-basic-auth",
         "sbx-v1-bootstrap",
     ]
@@ -164,7 +164,8 @@ def test_app_secret_names_gate_codex_on_selected_providers() -> None:
 
 
 def test_selected_providers_parses_csv() -> None:
-    assert selected_providers({}) == ("codex",)
+    # SOR-210: unset means platform-only (no providers), not codex.
+    assert selected_providers({}) == ()
     assert selected_providers({"SBX_PROVIDERS": " devin , grok "}) == ("devin", "grok")
 
 

@@ -117,19 +117,19 @@ def check_modal_auth(workspace: str | None, env: Mapping[str, str] | None = None
 
 
 def check_provider_config(providers: Sequence[str]) -> Check:
-    """``deploy.providers`` must name at least one contract provider.
+    """``deploy.providers`` names contract providers, or is empty.
 
-    Deploy preconditions derive from this list — an empty or unknown entry
-    means the deployment cannot serve any provider.
+    Deploy preconditions derive from this list. An empty set is the
+    zero-provider platform deploy (SOR-210): no provider images or
+    credential gates, the core platform still comes up.
     """
     enabled = [str(p) for p in providers]
     if not enabled:
         return Check(
             name="provider-config",
-            ok=False,
-            detail="no providers configured",
-            hint="set deploy.providers in the config or SBX_PROVIDERS, "
-            f'e.g. "{",".join(KNOWN_PROVIDERS[:2])}"',
+            ok=True,
+            detail="none — platform-only deploy (no provider images or credentials)",
+            hint="add providers later with `sbx init --providers` or deploy.providers",
         )
     unknown = [p for p in enabled if p not in KNOWN_PROVIDERS]
     if unknown:

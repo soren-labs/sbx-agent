@@ -76,7 +76,10 @@ def uninstall(
         preserved.extend(config.dict_names())
 
     if purge_credentials:
-        targets = set(config.secret_names())
+        # The codex Secret is deploy-owned regardless of the *current*
+        # provider set — an earlier codex-enabled deploy may have created
+        # it, and ``--purge-credentials`` must not orphan it (SOR-210).
+        targets = {config.codex_secret, *config.secret_names()}
         # Scope the account-secret sweep to this deployment's prefix so a
         # parallel deploy's ``sbx-acct-*`` Secrets are never swept.
         prefix = config.account_secret_prefix or ACCOUNT_SECRET_PREFIX
@@ -89,6 +92,7 @@ def uninstall(
         _remove(deploy_state_path(env), removed)
     else:
         preserved.extend(config.secret_names())
+        preserved.append(config.codex_secret)
         preserved.append(str(key_path(env)))
 
     return UninstallReport(
