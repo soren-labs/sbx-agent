@@ -78,6 +78,11 @@ def git_repo(tmp_path: Path) -> tuple[Path, str]:
     return repo, sha
 
 
+# Deploys select providers via ``SBX_PROVIDERS`` (empty = platform-only,
+# SOR-210); tests that exercise the enabled-provider path declare it.
+_ENABLED = {"SBX_PROVIDERS": "codex"}
+
+
 # ---------------------------------------------------------------------------
 # canonicalize_repo
 # ---------------------------------------------------------------------------
@@ -442,7 +447,7 @@ def test_resolve_execution_auto_lru(registry, scheduler) -> None:
     registry.put(_account("fresh", last_used_at="2026-01-01T00:00:00+00:00"))
     registry.put(_account("never"))
     res = tasks.resolve_execution(
-        None, registry=registry, scheduler=scheduler, capabilities=None, env={}
+        None, registry=registry, scheduler=scheduler, capabilities=None, env=_ENABLED
     )
     assert res.account_id == "never"  # never-used wins the LRU key
     assert res.evidence["account_id"]["source"] == "lru"
@@ -458,7 +463,7 @@ def test_resolve_execution_named_account(registry, scheduler) -> None:
         registry=registry,
         scheduler=scheduler,
         capabilities=None,
-        env={},
+        env=_ENABLED,
     )
     assert res.account_id == "a1"
     assert res.evidence["account_id"]["source"] == "requested"
@@ -470,7 +475,7 @@ def test_resolve_execution_named_account(registry, scheduler) -> None:
             registry=registry,
             scheduler=scheduler,
             capabilities=None,
-            env={},
+            env=_ENABLED,
         )
     assert err.value.code == "account_unavailable"
 
@@ -480,7 +485,7 @@ def test_resolve_execution_named_account(registry, scheduler) -> None:
             registry=registry,
             scheduler=scheduler,
             capabilities=None,
-            env={},
+            env=_ENABLED,
         )
     assert err2.value.code == "account_unavailable"
 
@@ -498,7 +503,7 @@ def test_resolve_execution_provider_validation(registry, scheduler) -> None:
     assert err.value.code == "invalid_provider" and err.value.status_code == 400
     with pytest.raises(tasks.TaskRefusal) as err2:
         tasks.resolve_execution(
-            {"provider": "grok"},  # canonical but not enabled (env default: codex)
+            {"provider": "grok"},  # canonical but not enabled (env has no providers)
             registry=registry,
             scheduler=scheduler,
             capabilities=None,
@@ -536,7 +541,7 @@ def test_resolve_execution_exhaustion_vs_unsupported(registry, scheduler) -> Non
             registry=registry,
             scheduler=scheduler,
             capabilities=caps,
-            env={},
+            env=_ENABLED,
         )
     assert err.value.code == "unsupported" and err.value.status_code == 400
 
@@ -550,7 +555,7 @@ def test_resolve_execution_exhaustion_vs_unsupported(registry, scheduler) -> Non
             registry=registry2,
             scheduler=InMemoryScheduler(registry2),
             capabilities=None,
-            env={},
+            env=_ENABLED,
         )
     assert err2.value.code == "provider_exhausted" and err2.value.status_code == 429
 
@@ -574,7 +579,7 @@ def test_resolve_task_full(git_repo, registry, scheduler) -> None:
         scheduler=scheduler,
         capabilities=None,
         resolver=tasks.GitLsRemoteResolver(),
-        env={},
+        env=_ENABLED,
     )
     assert res.source.base_sha == sha
     assert res.git["auto_create_pr"] is True

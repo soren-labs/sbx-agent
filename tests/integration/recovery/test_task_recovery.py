@@ -8,6 +8,15 @@ acceptance axis this suite holds ``/v1/agents`` to.
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Task resolution gates on the deploy-selected provider set
+    # (``SBX_PROVIDERS``); the suite's scrubbed env defaults to platform-only.
+    monkeypatch.setenv("SBX_PROVIDERS", "codex")
+
 
 def _credentialed(env) -> None:
     """The seeded codex account needs auth material to be eligible."""

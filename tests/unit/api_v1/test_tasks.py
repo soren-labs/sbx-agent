@@ -157,11 +157,14 @@ def test_preflight_github_permission_preflight(
     assert any(c["name"] == "github.read" and c["status"] == "fail" for c in body["checks"])
 
 
-def test_preflight_validation_errors(client: TestClient, auth: dict[str, str]) -> None:
-    # Unknown provider → invalid_provider refusal (still a 200 advisory).
+def test_preflight_validation_errors(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Canonical-but-disabled provider → invalid_provider refusal (200 advisory).
+    monkeypatch.setenv("SBX_PROVIDERS", "codex")
     resp = client.post(
         "/v1/tasks/preflight",
-        json=_task_body(execution={"provider": "grok"}),  # not enabled (SBX_PROVIDERS default)
+        json=_task_body(execution={"provider": "grok"}),
         headers=auth,
     )
     assert resp.status_code == 200
