@@ -103,6 +103,24 @@ def test_modal_app_deploy_source_closure_includes_runtime() -> None:
     assert 'add_local_python_source("runtime")' in src
 
 
+def test_modal_app_deferred_mounts_come_last() -> None:
+    """Deferred ``add_local_*`` mounts must terminate the CONTROL_IMAGE chain.
+
+    Modal refuses a build step (``copy=True`` local layer, pip, run_commands)
+    chained after a deferred mount: the deploy dies at image resolution with
+    ``InvalidError: build step after add_local_*``. The ``web`` Console copy
+    is a build layer and therefore precedes the ``runtime`` source mount.
+    """
+    src = MODAL_APP.read_text(encoding="utf-8")
+    start = src.index("CONTROL_IMAGE = (")
+    chain = src[start : src.index("\n)\n", start)]
+    assert chain.index(".add_local_dir(") < chain.index('.add_local_python_source("runtime")')
+    assert "copy=True" in chain
+    # A deploy-time context can contain dev-checkout artifacts; the Console
+    # layer must exclude them rather than bake them into the image.
+    assert "node_modules" in chain
+
+
 def test_control_app_import_does_not_load_modal(monkeypatch) -> None:
     for name in list(sys.modules):
         if name == "modal" or name.startswith("modal."):
