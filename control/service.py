@@ -1225,11 +1225,11 @@ class ControlPlane:
             return
         record = self.workspaces.get(session_id)
         git = (record.git or {}) if record is not None else {}
-        # SOR-224: every push-enabled delivery policy auto-publishes — a
-        # declared pull_request/auto_publish delivery is owed by the run,
-        # and its failure lands on the durable publish_error for the task
-        # aggregate to read. ``push`` alone stays explicit-only.
-        if record is None or not (git.get("auto_publish") or git.get("auto_create_pr")):
+        # SOR-224: ``auto_publish`` is the only automatic trigger —
+        # ``auto_create_pr``/``merge`` declare *steps* a publish performs,
+        # and stay explicit-only (POST /git/publish or the task delivery
+        # endpoint), per the SOR-128 policy contract.
+        if record is None or not git.get("auto_publish"):
             return
         try:
             self.workspaces.publish(handle, session_id)

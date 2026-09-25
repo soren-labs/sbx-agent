@@ -259,12 +259,20 @@ def test_required_delivery_failure_blocks_finished(
         delivery={"branch": "feat/x", "pull_request": {"title": "Add hello"}},
     )
     tid = task["id"]
-    # file:// push succeeds; the PR step fails closed (not a github remote)
-    # — the task must not read ``finished``.
+    # pull_request delivery is declared but never auto-attempted (the
+    # SOR-128 contract: auto_publish is the only automatic trigger).
+    task = _wait_task(client, auth, tid, {"delivering", "delivery_failed", "finished"})
+    assert task["status"] == "delivering"
+    detail = client.get(f"/v1/tasks/{tid}", headers=auth).json()["task"]
+    assert detail["delivery"]["required"] is True
+    assert detail["delivery"]["status"] == "pending"
+    # Manual delivery: file:// push succeeds; the PR step fails closed
+    # (not a github remote) — the task must not read ``finished``.
+    resp = client.post(f"/v1/tasks/{tid}/delivery", headers=auth)
+    assert resp.status_code == 409, resp.text
     task = _wait_task(client, auth, tid, {"delivery_failed", "finished"})
     assert task["status"] == "delivery_failed"
     detail = client.get(f"/v1/tasks/{tid}", headers=auth).json()["task"]
-    assert detail["delivery"]["required"] is True
     assert detail["delivery"]["status"] == "failed"
     assert detail["delivery"]["error"]
     retry = client.post(f"/v1/tasks/{tid}/retry", json={}, headers=auth)
