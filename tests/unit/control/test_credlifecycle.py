@@ -208,6 +208,10 @@ def test_note_credential_healthy_and_kind(registry: PersistentAccountRegistry) -
         "secret_managed",
         "refreshable",
         "refresh_due",
+        # SOR-216: the verified-evidence mark — the only signal that can
+        # promote an account out of "unverified".
+        "verified",
+        "verified_at",
     }
 
 

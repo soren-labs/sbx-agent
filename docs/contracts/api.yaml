@@ -590,7 +590,9 @@ components:
           description: active accounts with a free slot
     AccountStatus:
       type: string
-      enum: [active, cooling, invalid, disabled]
+      # SOR-216: `unverified` = imported/seeded but never proven by the
+      # cloud verify probe; only `active` is scheduler-eligible.
+      enum: [active, cooling, invalid, disabled, unverified]
     Account:
       type: object
       required: [id, provider, label, status, max_concurrent]

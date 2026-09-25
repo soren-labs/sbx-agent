@@ -551,7 +551,13 @@ class StaticCredentialProbe:
     Author-phase default. Real per-provider CLI probes (a minimal sandbox
     running ``runner init`` then destroyed) plug in behind the same seam via
     ``SandboxVerifyProbe`` or any ``CredentialProbe`` implementation.
+
+    ``authoritative=False``: a schema check never proves the grant itself,
+    so a passing static probe does NOT satisfy the verified-only
+    eligibility gate (SOR-216) — the account stays ``unverified``.
     """
+
+    authoritative = False
 
     def probe(self, account: Account, blob: dict[str, Any] | None) -> ProbeResult:
         if blob is None and not account.secret_name:
@@ -577,7 +583,13 @@ class SandboxVerifyProbe:
     result proves restore + runner setup only, NOT that the credential
     still authenticates. The authoritative provider check slots behind the
     ``_after_init`` hook — see :class:`SandboxAuthVerifyProbe`.
+
+    ``authoritative=True``: the credential was materialized into a real
+    sandbox and runner init accepted it — cloud-verify evidence for the
+    verified-only eligibility gate (SOR-216).
     """
+
+    authoritative = True
 
     def __init__(
         self,
@@ -835,7 +847,10 @@ class OnboardingService:
             id=account_id,
             provider=provider,
             label=label or account_id,
-            status="active",
+            # Verified-only lifecycle (SOR-216): an imported credential is
+            # never scheduler-eligible until the cloud verify probe proves
+            # it — ``verify``/``relink`` is what promotes to ``active``.
+            status="unverified",
             max_concurrent=slots,
             secret_name=f"{account_secret_prefix()}{account_id}",
             # Declared-seed models only — SOR-204's capability discovery
@@ -868,6 +883,11 @@ class OnboardingService:
             CredentialLifecycleService(self._registry).note_credential(account_id, blob)
         except Exception:
             pass
+        # Managed account Secret create (SOR-213): ``sbx-acct-<id>`` mirrors
+        # the blob when a writer is configured, so sandboxes can pick the
+        # credential up before the first verify. Never blocking, never
+        # overwriting an externally managed ``secret_name``.
+        self._materialize_secret(account, blob)
         return account
 
     def refresh(
@@ -899,7 +919,13 @@ class OnboardingService:
         try:
             from control.credlifecycle import CredentialLifecycleService
 
-            CredentialLifecycleService(self._registry).note_credential(account_id, blob)
+            lifecycle = CredentialLifecycleService(self._registry)
+            lifecycle.note_credential(account_id, blob)
+            if account.status == "active" and not lifecycle.verified(account_id):
+                # A changed grant cleared the verified mark — the account
+                # leaves the scheduler pool until verify re-proves it
+                # (verified-only lifecycle, SOR-216).
+                self._registry.mark_status(account_id, "unverified")
         except Exception:
             pass
         secret = self._materialize_secret(account, blob)
@@ -943,19 +969,35 @@ class OnboardingService:
         blob = self._registry.get_credential_blob(account_id)
         result = self._probe.probe(account, blob)
         status = result.status
+        # Only an authoritative probe (one that ran in a real sandbox)
+        # satisfies the verified-only eligibility gate (SOR-216). Custom
+        # probes without the flag default to authoritative for
+        # back-compatibility; StaticCredentialProbe is explicitly not.
+        authoritative = status == "ok" and getattr(self._probe, "authoritative", True)
         try:
             from control.credlifecycle import CredentialLifecycleService
 
             lifecycle = CredentialLifecycleService(self._registry)
             if status == "ok" and blob is not None:
                 lifecycle.note_credential(account_id, blob)
+            if authoritative:
+                lifecycle.note_verified(account_id, probe=type(self._probe).__name__)
             elif status == "auth_invalid":
                 lifecycle.on_auth_invalid(account_id, detail=status, mark_account=False)
         except Exception:
             pass
-        if status == "ok":
+        if authoritative:
             new_status = "disabled" if account.status == "disabled" else "active"
             updated = self._registry.mark_status(account_id, new_status, last_error=None)
+        elif status == "ok":
+            # Structural pass only — no verified evidence, so the
+            # verified-only gate stays closed: status is unchanged.
+            updated = self._registry.mark_status(
+                account_id,
+                account.status,
+                cooldown_until=account.cooldown_until,
+                last_error=None,
+            )
         elif status in ("auth_invalid", "no_credential", "invalid_blob", "init_failed"):
             updated = self._registry.mark_status(account_id, "invalid", last_error=status)
         else:  # provider_unavailable / probe_unavailable: record, don't demote
@@ -1016,7 +1058,21 @@ class OnboardingService:
         return self._set_status(account_id, "disabled")
 
     def enable(self, account_id: str) -> Account:
-        return self._set_status(account_id, "active")
+        """Re-enable a disabled/unverified account.
+
+        Verified-only lifecycle (SOR-216): eligibility is restored to
+        ``active`` only when the credential still carries cloud-verify
+        evidence; otherwise the account lands on ``unverified`` and needs
+        ``verify``/``relink`` before the scheduler can pick it.
+        """
+        self._get_account(account_id)
+        try:
+            from control.credlifecycle import CredentialLifecycleService
+
+            verified = CredentialLifecycleService(self._registry).verified(account_id)
+        except Exception:
+            verified = False
+        return self._set_status(account_id, "active" if verified else "unverified")
 
     def remove(self, account_id: str, *, confirm: bool = False) -> None:
         """Delete record + blob. Requires ``--yes``; refuses running accounts."""
@@ -1056,6 +1112,22 @@ def _default_probe(probe_kind: str, runner_cmd: str | None) -> CredentialProbe:
         cls = SandboxAuthVerifyProbe if probe_kind == "auth" else SandboxVerifyProbe
         return cls(LocalProcessBackend(), cmd, env={"PYTHONPATH": repo_root})
     return StaticCredentialProbe()
+
+
+def default_auth_probe(
+    runner_cmd: str | None = None,
+    *,
+    bin_env: Mapping[str, str] | None = None,
+) -> CredentialProbe:
+    """The authoritative cloud-auth probe: runner init + the provider CLI's
+    own auth check in a throwaway sandbox (SOR-213/SOR-216)."""
+    from control.backend import LocalProcessBackend
+
+    cmd = shlex.split(runner_cmd) if runner_cmd else [sys.executable, "-m", "runtime.runner"]
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    return SandboxAuthVerifyProbe(
+        LocalProcessBackend(), cmd, env={"PYTHONPATH": repo_root}, bin_env=bin_env
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

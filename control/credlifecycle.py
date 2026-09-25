@@ -320,6 +320,11 @@ class CredentialLifecycleService:
 
         A *changed* fingerprint clears terminal states (a new grant was
         imported); the same bundle over a revoked record keeps the flag.
+        A changed fingerprint also clears ``verified_at`` — the new grant
+        has never been proven by the cloud verify probe, so the account
+        must verify again before it is scheduler-eligible (SOR-216). The
+        rotation write-back path does not flow through here: CLI-rotated
+        commits land via ``finish_refresh`` and keep the verified mark.
         """
         with self.lock_for(account_id):
             rec = self._read(account_id) or {}
@@ -338,11 +343,47 @@ class CredentialLifecycleService:
             )
             if fp is not None and not same:
                 rec["generation"] = int(rec.get("generation") or 0) + 1
+                rec.pop("verified_at", None)
+                rec.pop("verified_probe", None)
             if not (same and rec.get("state") in TERMINAL_STATES):
                 rec["state"] = "access_expiring" if self._expiring(expires) else "healthy"
                 rec.pop("last_error", None)
             self._write(account_id, rec)
             return dict(rec)
+
+    def note_verified(self, account_id: str, *, probe: str = "") -> dict[str, Any]:
+        """Record a passing cloud verify probe for ``account_id`` (SOR-216).
+
+        ``verified_at`` is the single piece of evidence the
+        verified-only eligibility gate checks: an account may only be
+        ``active`` (scheduler-eligible) while this mark stands and the
+        credential is not in a terminal state.
+        """
+        with self.lock_for(account_id):
+            rec = self._read(account_id) or {"account_id": account_id}
+            rec["verified_at"] = int(self._now())
+            if probe:
+                rec["verified_probe"] = probe
+            self._write(account_id, rec)
+            return dict(rec)
+
+    def verified(self, account_id: str) -> bool:
+        """Whether ``account_id`` carries live cloud-verify evidence.
+
+        True only while ``verified_at`` stands and the credential is not in
+        a terminal lifecycle state — ``on_auth_invalid`` / a re-imported
+        grant clear the mark, so a ``reauth_required``/``revoked`` account
+        or a relinked-but-unprobed credential is never treated as verified.
+        """
+        rec = self._read(account_id) or {}
+        return bool(rec.get("verified_at")) and rec.get("state") not in TERMINAL_STATES
+
+    def note_logged_out(self, account_id: str) -> None:
+        """Clear all lifecycle state for ``account_id`` (credential removed)."""
+        with self.lock_for(account_id):
+            rec = self._read(account_id)
+            if rec is not None:
+                self._write(account_id, {"account_id": account_id})
 
     def begin_refresh(self, account_id: str) -> bool:
         """Claim the refresh slot: false when another refresh is in flight.
@@ -390,10 +431,16 @@ class CredentialLifecycleService:
                 rec["expires_at"] = credential_expiry_epoch(provider, blob)
                 rec["kind"] = credential_kind(provider, blob)
                 rec["last_refreshed_at"] = int(self._now())
+                # The committed bundle was produced by the provider CLI
+                # itself inside a sandbox — that is verified material, so
+                # the rotation keeps the account's verify evidence alive.
+                rec["verified_at"] = int(self._now())
                 rec.pop("last_error", None)
             elif outcome in ("auth_invalid", "revoked"):
                 rec["state"] = "revoked" if outcome == "revoked" else "reauth_required"
                 rec["last_error"] = outcome
+                rec.pop("verified_at", None)
+                rec.pop("verified_probe", None)
             elif outcome.startswith("error:"):
                 rec["last_error"] = outcome
                 if rec.get("state") == "refreshing" or not rec.get("state"):
@@ -422,6 +469,8 @@ class CredentialLifecycleService:
             rec["state"] = "revoked" if grant_revoked(detail) else "reauth_required"
             rec["last_error"] = "invalid_grant" if rec["state"] == "revoked" else "auth_invalid"
             rec["last_auth_invalid_at"] = int(self._now())
+            rec.pop("verified_at", None)
+            rec.pop("verified_probe", None)
             self._write(account_id, rec)
             out = dict(rec)
         if mark_account:
@@ -487,6 +536,8 @@ class CredentialLifecycleService:
             "imported_at": rec.get("imported_at"),
             "last_refresh_at": rec.get("last_refresh_at"),
             "last_refreshed_at": rec.get("last_refreshed_at"),
+            "verified_at": rec.get("verified_at"),
+            "verified": bool(rec.get("verified_at")) and state not in TERMINAL_STATES,
             "last_error": rec.get("last_error"),
             "secret_managed": bool(
                 getattr(account, "secret_name", None)

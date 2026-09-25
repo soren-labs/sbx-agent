@@ -2471,7 +2471,28 @@ components:
             enum: [agents, admin]
     AccountStatus:
       type: string
-      enum: [active, cooling, invalid, disabled]
+      # SOR-216 verified-only lifecycle: `unverified` = credential declared
+      # or imported but never proven by the cloud verify probe; an account
+      # is scheduler-eligible only while `active` (a passing verify with
+      # live evidence).
+      enum: [active, cooling, invalid, disabled, unverified]
+    AuthSessionState:
+      type: string
+      description: |
+        Canonical auth-session state (SOR-213). Metadata only, derived from
+        the account record + credential-lifecycle evidence: `verified` is
+        the only scheduler-eligible state.
+      enum:
+        [
+          unauthenticated,
+          authenticating,
+          authenticated,
+          materialized,
+          verified,
+          reauth_required,
+          unhealthy,
+          disabled,
+        ]
     Account:
       type: object
       required: [id, provider, label, status, max_concurrent]
@@ -2484,6 +2505,9 @@ components:
           type: string
         status:
           $ref: "#/components/schemas/AccountStatus"
+        auth_state:
+          $ref: "#/components/schemas/AuthSessionState"
+          nullable: true
         max_concurrent:
           type: integer
           minimum: 1

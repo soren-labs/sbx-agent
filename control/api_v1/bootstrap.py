@@ -98,7 +98,13 @@ def _seed_account(
     label: str,
     created_at: str,
 ) -> str:
-    """Seed one active account for ``provider``; return the account id.
+    """Seed one ``unverified`` account for ``provider``; return the id.
+
+    SOR-216 verified-only lifecycle: seeding no longer fabricates a
+    scheduler-eligible account — the record starts ``unverified`` and only
+    a passing cloud verify (``/v1/accounts/{id}/verify`` or
+    ``OnboardingService.verify`` with an authoritative probe) promotes it
+    to ``active``.
 
     ``SBX_<PROVIDER>_ACCOUNT_ID`` / ``SBX_<PROVIDER>_SECRET_NAME`` /
     ``SBX_<PROVIDER>_SLOTS`` override the defaults. ``default_secret_name`` of
@@ -122,7 +128,7 @@ def _seed_account(
             id=account_id,
             provider=provider,
             label=label,
-            status="active",
+            status="unverified",
             max_concurrent=slots,
             secret_name=secret_name,
             models=_models(provider),
@@ -194,7 +200,7 @@ def _seed_accounts(
             id=account_id,
             provider=provider,
             label=str(spec.get("label") or f"{label} {index}"),
-            status="active",
+            status="unverified",
             max_concurrent=int(slots) if slots is not None else default_slots,
             secret_name=secret_name,
             models=models,
@@ -202,6 +208,40 @@ def _seed_accounts(
         )
         seeded.append(_upsert_seeded(registry, account))
     return seeded
+
+
+def _migrate_verified_gate(registry: PersistentAccountRegistry) -> list[str]:
+    """Demote ``active`` accounts that carry no cloud-verify evidence.
+
+    SOR-216 migration: accounts seeded before the verified-only lifecycle
+    shipped were persisted as ``active`` without ever passing a verify
+    probe. On boot they must leave the scheduler pool — a nonconforming
+    id is left untouched (the store lanes already refuse it). Returns the
+    demoted ids; never touches cooling/invalid/disabled/unverified.
+    """
+    from control.credlifecycle import CredentialLifecycleService
+
+    lifecycle = CredentialLifecycleService(registry)
+    demoted: list[str] = []
+    for account in registry.list():
+        if account.status != "active":
+            continue
+        try:
+            if lifecycle.verified(account.id):
+                continue
+        except Exception:
+            pass  # no lifecycle lane → no evidence → demote
+        try:
+            registry.mark_status(
+                account.id,
+                "unverified",
+                cooldown_until=account.cooldown_until,
+                last_error=account.last_error,
+            )
+            demoted.append(account.id)
+        except (KeyError, ValueError):
+            pass
+    return demoted
 
 
 def configure_v1_bootstrap(app: Any) -> bool:
@@ -254,6 +294,7 @@ def configure_v1_bootstrap(app: Any) -> bool:
             created_at=created_at,
         )
 
+    _migrate_verified_gate(registry)
     app.state.account_registry = registry
     # Derive per-account running counts from the sessions store so slots stay
     # truthful across control-plane restarts (design v2 §3.3): in-process

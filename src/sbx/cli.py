@@ -341,36 +341,17 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
 # --------------------------------------------------------------------- auth
 
 
-def cmd_auth_verify(args: argparse.Namespace, env: Mapping[str, str]) -> int:
-    """Verify one provider account's stored credential (SOR-217).
+def _verify_remote_strict(client: Any, account_id: str) -> dict[str, Any]:
+    """One ``POST /v1/accounts/{id}/verify`` — SOR-217's strict contract.
 
-    ``POST /v1/accounts/{id}/verify`` probes the credential in a throwaway
-    sandbox server-side and marks the account ``active``/``invalid`` — the
-    one-account check behind ``smoke``'s verified-account precondition.
+    Probes the stored credential in a throwaway sandbox server-side and
+    returns ``{ok, account_id, provider, status, last_error}``. Transport
+    and verification failures raise ``account_verify_failed``.
     """
-    from sbx.deploy import read_deploy_state
-    from sbx.httpapi import ApiError, V1Client
-    from sbx.keys import resolve_api_key
+    from sbx.httpapi import ApiError
 
-    cfg = _resolve(args, env)
-    base_url = cfg.config.api_base_url or str(read_deploy_state(env).get("app_url") or "")
-    if not base_url:
-        raise BootstrapError(
-            "no control-plane URL — nothing deployed (or configured) yet",
-            hint="run `sbx deploy` first, or set api.base_url / SBX_BASE_URL",
-            code="no_deployment",
-        )
-    token = resolve_api_key(env)
-    if token is None:
-        raise BootstrapError(
-            "no sbx_ API key found",
-            hint="run `sbx deploy` (mints the bootstrap key) or export SBX_API_KEY",
-            code="api_key_missing",
-        )
-    account_id = str(args.account_id)
     try:
-        with V1Client(base_url, token, transport=args.transport, timeout=60.0) as client:
-            account = client.verify_account(account_id)
+        account = client.verify_account(account_id)
     except ApiError as exc:
         if exc.status == 404:
             hint = "no such account — list them with `sbx status` (accounts section)"
@@ -391,30 +372,21 @@ def cmd_auth_verify(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         ) from exc
     status = str(account.get("status") or "")
     last_error = account.get("last_error")
-    ok = status == "active"
-    if args.json:
-        _emit_json(
-            {
-                "ok": ok,
-                "account_id": account_id,
-                "provider": account.get("provider"),
-                "status": status,
-                "last_error": last_error,
-            }
-        )
-    elif ok:
-        print(
-            f"account {account_id}: verified — status active (provider {account.get('provider')})"
-        )
-    if not ok:
+    if status != "active":
         raise BootstrapError(
             f"account {account_id} verification failed — status {status or 'unknown'}"
             + (f" ({last_error})" if last_error else ""),
-            hint="re-import the credential (`python -m control.onboarding --modal "
-            "import`), then rerun `sbx auth verify`",
+            hint="re-import the credential (`sbx auth import-existing --provider "
+            "<provider>`), then rerun `sbx auth verify`",
             code="account_verify_failed",
         )
-    return 0
+    return {
+        "ok": True,
+        "account_id": account_id,
+        "provider": account.get("provider"),
+        "status": status,
+        "last_error": last_error,
+    }
 
 
 # -------------------------------------------------------------------- deploy
@@ -716,6 +688,143 @@ def cmd_uninstall(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     return 0
 
 
+# -------------------------------------------------------------------- auth
+
+
+def _models_arg(value: str | None) -> tuple[str, ...] | None:
+    if not value:
+        return None
+    return tuple(m.strip() for m in value.split(",") if m.strip())
+
+
+def cmd_auth(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    """``sbx auth`` dispatch — canonical auth surface (SOR-213/SOR-216)."""
+    from sbx import auth as auth_mod
+
+    cfg = _resolve(args, env)
+    action = args.auth_cmd
+    # The remote verify lane only applies to writes/probes when the shared
+    # cloud store is in use; ``--local`` always forces the sandbox probe.
+    client = (
+        None
+        if getattr(args, "local", False) or action == "status"
+        else auth_mod.remote_client(cfg, env, transport=args.transport)
+    )
+    service = auth_mod.make_auth_service(
+        env,
+        probe=args.probe,
+        secret_writer=args.secret_writer,
+        login_runner=args.login_runner,
+    )
+    try:
+        if action == "status":
+            payload = auth_mod.auth_status(service, env, provider=args.provider)
+        elif action == "login":
+            payload = auth_mod.auth_login(
+                service,
+                env,
+                provider=args.provider,
+                account_id=args.account_id,
+                label=args.label,
+                slots=args.slots,
+                models=_models_arg(args.models),
+                no_verify=args.no_verify,
+                experimental_ok=args.experimental,
+                allow_open_permissions=args.allow_open_permissions,
+                client=client,
+            )
+        elif action == "import-existing":
+            payload = auth_mod.auth_import_existing(
+                service,
+                env,
+                provider=args.provider,
+                source=args.source,
+                account_id=args.account_id,
+                label=args.label,
+                slots=args.slots,
+                models=_models_arg(args.models),
+                no_verify=args.no_verify,
+                experimental_ok=args.experimental,
+                allow_open_permissions=args.allow_open_permissions,
+                client=client,
+            )
+        elif action == "verify":
+            # Remote lane (SOR-217): a deployment is configured → probe the
+            # plane's own accounts server-side with the strict contract.
+            # No deployment (or --local) → the local sandbox probe.
+            dep = (
+                None
+                if getattr(args, "local", False)
+                else auth_mod.deployment_client(cfg, env, transport=args.transport)
+            )
+            if dep is not None:
+                results = [
+                    _verify_remote_strict(dep, aid) for aid in auth_mod.targets_for(service, args)
+                ]
+                payload = (
+                    results[0]
+                    if len(results) == 1
+                    else {"accounts": results, "verified": all(r["ok"] for r in results)}
+                )
+            else:
+                payload = auth_mod.auth_verify(service, env, args=args, client=None)
+        elif action == "relink":
+            payload = auth_mod.auth_relink(service, env, args=args, client=client)
+        elif action == "logout":
+            # The managed-Secret deleter only exists on the modal lane;
+            # a file-store logout never touches it. An injected plane
+            # (tests) wins either way.
+            plane = args.plane or (_plane(cfg, args) if env.get("SBX_BACKEND") == "modal" else None)
+            payload = auth_mod.auth_logout(service, env, args=args, plane=plane)
+        else:
+            raise BootstrapError(f"unknown auth action {action!r}", code="unknown_action")
+    except BootstrapError:
+        raise
+    if args.json:
+        _emit_json(payload)
+        return 0
+    _print_auth_payload(action, payload)
+    return 0
+
+
+def _print_auth_payload(action: str, payload: dict[str, Any]) -> None:
+    if action == "status":
+        for scan in payload["local"]:
+            print(
+                f"local\t{scan['provider']}\t{scan['status']}\t"
+                f"{scan['path'] or '-'}\t{scan['detail']}"
+            )
+        for s in payload["accounts"]:
+            print(
+                f"acct\t{s['account_id']}\t{s['provider']}\t"
+                f"status={s['status']}\tauth={s['auth_state']}\t"
+                f"running={s['running']}/{s['max_concurrent']}"
+            )
+        return
+    accounts = payload.get("accounts") or [payload]
+    for entry in accounts:
+        if "ok" in entry and "status" in entry and "session" not in entry:
+            # Remote verify lane (SOR-217 shape): {ok, account_id, provider,
+            # status, last_error} rather than an AuthSession dict.
+            print(
+                f"account {entry.get('account_id', '?')}: verified — "
+                f"status {entry.get('status') or '?'} "
+                f"(provider {entry.get('provider') or '?'})"
+            )
+            continue
+        session = entry.get("session") or {}
+        line = f"{entry.get('account_id', '?')}\tauth={session.get('auth_state', '?')}"
+        if "verified" in entry:
+            line += f"\tverified={bool(entry.get('verified'))}"
+        if entry.get("lane"):
+            line += f"\tlane={entry['lane']}"
+        if entry.get("probe"):
+            line += f"\tprobe={entry['probe']}"
+        if entry.get("removed"):
+            line += f"\tremoved={len(entry['removed'])}"
+        print(line)
+
+
 # --------------------------------------------------------------------- parser
 
 
@@ -850,21 +959,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_upgrade, probe_attempts=5)
 
     p = sub.add_parser(
-        "auth",
-        parents=[sub_common],
-        help="provider account operations (server-side credential checks)",
-    )
-    auth_sub = p.add_subparsers(dest="auth_command", required=True)
-    pv = auth_sub.add_parser(
-        "verify",
-        parents=[sub_common],
-        help="probe one account's stored credential on the control plane "
-        "(POST /v1/accounts/{id}/verify)",
-    )
-    pv.add_argument("account_id", help="account id to verify (e.g. acct-devin-...)")
-    pv.set_defaults(func=cmd_auth_verify)
-
-    p = sub.add_parser(
         "open",
         parents=[sub_common],
         help="open the Console in a browser via a one-time grant handoff",
@@ -892,7 +986,127 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_uninstall)
 
+    p = sub.add_parser(
+        "auth",
+        parents=[sub_common],
+        help="provider auth: login/status/verify/relink/logout/import-existing",
+    )
+    auth_sub = p.add_subparsers(dest="auth_cmd", required=True)
+
+    a = auth_sub.add_parser(
+        "status",
+        parents=[sub_common],
+        help="local credential scan + per-account auth-session states",
+    )
+    a.add_argument("--provider", help="limit to one provider")
+    a.set_defaults(func=cmd_auth)
+
+    a = auth_sub.add_parser(
+        "login",
+        parents=[sub_common],
+        help="run the provider's official CLI/OAuth login, then capture + verify",
+    )
+    _auth_write_args(a)
+    a.set_defaults(func=cmd_auth)
+
+    a = auth_sub.add_parser(
+        "import-existing",
+        parents=[sub_common],
+        help="capture credential files a vendor login already wrote (no token paste)",
+    )
+    _auth_write_args(a)
+    a.add_argument(
+        "--from",
+        dest="source",
+        default=None,
+        help="credential file/dir/blob to import (default: declared files under $HOME)",
+    )
+    a.set_defaults(func=cmd_auth)
+
+    a = auth_sub.add_parser(
+        "verify",
+        parents=[sub_common],
+        help="run the cloud auth probe; promotes the account on a pass "
+        "(remote /v1 probe when a deployment is configured, else local)",
+    )
+    a.add_argument(
+        "account_id_pos",
+        nargs="?",
+        metavar="account_id",
+        help="account id to verify (e.g. acct-devin-...)",
+    )
+    _auth_target_args(a)
+    a.add_argument(
+        "--local",
+        action="store_true",
+        help="force the local sandbox probe instead of the remote /v1 verify",
+    )
+    a.set_defaults(func=cmd_auth)
+
+    a = auth_sub.add_parser(
+        "relink",
+        parents=[sub_common],
+        help="re-capture → refresh → verify; restores scheduler eligibility",
+    )
+    _auth_target_args(a)
+    a.add_argument(
+        "--from",
+        dest="source",
+        default=None,
+        help="credential file/dir/blob to re-capture (default: $HOME)",
+    )
+    a.add_argument(
+        "--relogin",
+        action="store_true",
+        help="run the official login flow first (grant is dead locally)",
+    )
+    a.add_argument("--no-verify", action="store_true", help="skip the post-relink verify")
+    a.add_argument(
+        "--allow-open-permissions",
+        action="store_true",
+        help="accept credential files readable by group/other",
+    )
+    a.set_defaults(func=cmd_auth)
+
+    a = auth_sub.add_parser(
+        "logout",
+        parents=[sub_common],
+        help="sign out: drop credential material, flip to unverified",
+    )
+    _auth_target_args(a)
+    a.add_argument(
+        "--local",
+        action="store_true",
+        help="also delete the provider's credential files under $HOME",
+    )
+    a.add_argument(
+        "--keep-secret",
+        action="store_true",
+        help="preserve the managed sbx-acct-<id> Secret",
+    )
+    a.set_defaults(func=cmd_auth)
+
     return parser
+
+
+def _auth_target_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--account-id", default=None, help="act on one account")
+    p.add_argument("--provider", default=None, help="act on all accounts of a provider")
+
+
+def _auth_write_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--provider", required=True, help="provider to authenticate")
+    p.add_argument("--account-id", default=None, help="account id to create/relink")
+    p.add_argument("--label", default="", help="account label")
+    p.add_argument("--slots", type=int, default=1, help="max_concurrent")
+    p.add_argument("--models", default=None, help="comma-separated advertised models")
+    p.add_argument("--no-verify", action="store_true", help="skip the post-import verify")
+    p.add_argument("--experimental", action="store_true", help="allow experimental providers")
+    p.add_argument(
+        "--allow-open-permissions",
+        action="store_true",
+        help="accept credential files readable by group/other",
+    )
 
 
 def main(
@@ -903,6 +1117,9 @@ def main(
     sleep: Any = None,
     auth_check: Any = None,
     modal_login: Any = None,
+    login_runner: Any = None,
+    secret_writer: Any = None,
+    probe: Any = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -918,7 +1135,18 @@ def main(
         ("github_secret", None),
         ("base_url", None),
         ("print", False),
+        ("provider", None),
         ("account_id", None),
+        ("account_id_pos", None),
+        ("label", ""),
+        ("slots", 1),
+        ("models", None),
+        ("source", None),
+        ("no_verify", False),
+        ("experimental", False),
+        ("relogin", False),
+        ("local", False),
+        ("keep_secret", False),
     ):
         if not hasattr(args, name):
             setattr(args, name, default)
@@ -927,6 +1155,9 @@ def main(
     args.transport = transport
     args.auth_check = auth_check
     args.modal_login = modal_login
+    args.login_runner = login_runner
+    args.secret_writer = secret_writer
+    args.probe = probe
     if sleep is not None:
         args.sleep = sleep
     elif not hasattr(args, "sleep"):

@@ -14,6 +14,7 @@ from control.api_v1.bootstrap import configure_v1_bootstrap
 from control.api_v1.routes import list_models
 from control.app import create_app
 from control.backend import LocalProcessBackend
+from control.credlifecycle import CredentialLifecycleService
 from control.ports import Account, ApiKey
 from control.scheduler import AccountScheduler, ScheduleRefused
 from control.store import InMemoryStore, SessionRecord, empty_usage
@@ -21,6 +22,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 P2_CORE_PROVIDERS = ("codex", "devin", "antigravity", "grok", "opencode")
+
+
+def _verify_accounts(app: FastAPI, *account_ids: str) -> None:
+    """Simulate a passed cloud auth probe (SOR-216).
+
+    The lifecycle ``verified_at`` mark + ``active`` status are what promote
+    an account into the scheduler's eligible set; bootstrap itself only
+    ever lands accounts at ``unverified``.
+    """
+    registry = app.state.account_registry
+    lifecycle = CredentialLifecycleService(registry)
+    for account_id in account_ids:
+        lifecycle.note_verified(account_id, probe="test")
+        registry.mark_status(account_id, "active")
 
 
 @pytest.fixture(autouse=True)
@@ -91,9 +106,16 @@ def test_bootstrap_seeds_all_providers(monkeypatch) -> None:
         "openai/gpt-5.6-luna",
         "opencode/claude-sonnet-4-5",
     )
-    assert all(a.status == "active" for a in by_provider.values())
+    # SOR-216: seeds land unverified — credential materialization is not
+    # proof of a working grant, so none are scheduler-eligible yet.
+    assert all(a.status == "unverified" for a in by_provider.values())
     scheduler = app.state.scheduler
     assert isinstance(scheduler, AccountScheduler)
+    for provider in P2_CORE_PROVIDERS:
+        assert scheduler.decide(provider=provider).error == "provider_exhausted"
+
+    # A cloud verify promotes each member into the eligible set.
+    _verify_accounts(app, *[a.id for a in by_provider.values()])
     for provider in P2_CORE_PROVIDERS:
         assert scheduler.decide(provider=provider).account is not None
 
@@ -148,6 +170,7 @@ def test_scheduler_decides_each_provider(monkeypatch) -> None:
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "d" * 40)
     app = FastAPI()
     configure_v1_bootstrap(app)
+    _verify_accounts(app, *[f"{p}-1" for p in P2_CORE_PROVIDERS])
     scheduler = app.state.scheduler
 
     for provider in P2_CORE_PROVIDERS:
@@ -166,6 +189,7 @@ def test_scheduler_acquire_enforces_flat_slot_cap(monkeypatch) -> None:
     monkeypatch.setenv("SBX_GROK_SLOTS", "2")
     app = FastAPI()
     configure_v1_bootstrap(app)
+    _verify_accounts(app, "grok-1")
     scheduler = app.state.scheduler
 
     leases = [scheduler.acquire(provider="grok") for _ in range(2)]
@@ -183,6 +207,7 @@ def test_scheduler_unseeded_and_unknown_providers(monkeypatch) -> None:
     monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "f" * 40)
     app = FastAPI()
     configure_v1_bootstrap(app)
+    _verify_accounts(app, "opencode-1")
     scheduler = app.state.scheduler
 
     # SOR-96: opencode seeds like the other core providers — auto resolves
@@ -246,6 +271,7 @@ def test_v1_agents_schedule_all_providers(monkeypatch, stub_runner) -> None:
     auth = {"Authorization": f"Bearer {token}"}
     try:
         with TestClient(app) as client:
+            _verify_accounts(app, *[f"{p}-1" for p in P2_CORE_PROVIDERS])
             scheduler = app.state.scheduler
             for provider in P2_CORE_PROVIDERS:
                 resp = client.post(
@@ -304,6 +330,7 @@ def test_v1_named_account_and_slot_cap(monkeypatch, stub_runner) -> None:
     auth = {"Authorization": f"Bearer {token}"}
     try:
         with TestClient(app) as client:
+            _verify_accounts(app, "antigravity-1", "grok-1")
             body = {
                 "prompt": {"text": "ping"},
                 "agent": {"provider": "antigravity", "account_id": "antigravity-1"},
@@ -364,6 +391,7 @@ def test_bootstrap_multi_account_json_seeds_fleet(monkeypatch) -> None:
 
     scheduler = app.state.scheduler
     assert isinstance(scheduler, AccountScheduler)
+    _verify_accounts(app, "agy-a", "agy-b", "agy-c")
     # auto rotates across members as slots fill; exhaustion is structured.
     leases = [scheduler.acquire(provider="antigravity") for _ in range(3)]
     assert {lease.account.id for lease in leases} == {"agy-a", "agy-b", "agy-c"}
@@ -393,6 +421,7 @@ def test_bootstrap_scheduler_report_failure_routes_to_account(monkeypatch) -> No
     monkeypatch.setenv("SBX_GROK_ACCOUNTS", json.dumps([{"id": "grok-a"}, {"id": "grok-b"}]))
     app = FastAPI()
     configure_v1_bootstrap(app)
+    _verify_accounts(app, "grok-a", "grok-b")
     scheduler = app.state.scheduler
 
     account = scheduler.report_failure("grok-a", "rate_limited", retry_after=30.0)
@@ -426,6 +455,7 @@ def test_v1_multi_account_grok_gate(monkeypatch, stub_runner) -> None:
     auth = {"Authorization": f"Bearer {token}"}
     try:
         with TestClient(app) as client:
+            _verify_accounts(app, "grok-a", "grok-b")
             picked = set()
             agents = []
             for _ in range(2):
@@ -490,6 +520,9 @@ def test_reseed_preserves_account_runtime_state(monkeypatch, tmp_path) -> None:
     )
     registry.mark_status("devin-1", "invalid", last_error="auth_invalid")
     registry.touch("codex-1", "2026-09-15T08:00:00Z")
+    # A legacy record from before the verified gate: active with no
+    # verified evidence (SOR-216 migration path).
+    registry.mark_status("codex-1", "active")
 
     # Simulated reboot: a fresh app over the same persisted store.
     rebooted = FastAPI()
@@ -506,7 +539,9 @@ def test_reseed_preserves_account_runtime_state(monkeypatch, tmp_path) -> None:
     assert devin is not None and devin.status == "invalid"
     codex = registry2.get("codex-1")
     assert codex is not None
-    assert codex.status == "active"
+    # The migration sweep demoted the legacy active record — but its
+    # runtime fields (LRU timestamp) are preserved.
+    assert codex.status == "unverified"
     assert codex.last_used_at == "2026-09-15T08:00:00Z"
 
     # Env config still refreshes on re-seed while health stays put.
@@ -517,6 +552,52 @@ def test_reseed_preserves_account_runtime_state(monkeypatch, tmp_path) -> None:
     assert grok is not None
     assert grok.max_concurrent == 5
     assert grok.status == "disabled"
+
+
+def test_bootstrap_migrates_legacy_active_accounts(monkeypatch, tmp_path) -> None:
+    """SOR-216 migration: a registry written before the verified gate can
+    hold ``status=\"active\"`` accounts with no credential/verify evidence —
+    the boot sweep demotes every one of them to ``unverified``."""
+    monkeypatch.setenv("SBX_V1_BOOTSTRAP_KEY", "sbx_" + "9" * 40)
+    monkeypatch.setenv("SBX_ACCOUNT_STORE_DIR", str(tmp_path / "store"))
+    from control.accounts import select_store
+
+    registry = PersistentAccountRegistry(select_store())
+    registry.put(
+        Account(
+            id="legacy-active",
+            provider="grok",
+            label="legacy",
+            status="active",
+            max_concurrent=1,
+            models=("grok-4.6",),
+            created_at=datetime.now(UTC).isoformat(),
+        )
+    )
+    # A verified legacy account keeps its lane — evidence was recorded.
+    registry.put(
+        Account(
+            id="legacy-verified",
+            provider="grok",
+            label="verified",
+            status="active",
+            max_concurrent=1,
+            models=("grok-4.6",),
+            created_at=datetime.now(UTC).isoformat(),
+        )
+    )
+    CredentialLifecycleService(registry).note_verified("legacy-verified", probe="test")
+
+    app = FastAPI()
+    assert configure_v1_bootstrap(app) is True
+    migrated = app.state.account_registry
+    assert migrated.get("legacy-active").status == "unverified"  # type: ignore[union-attr]
+    assert migrated.get("legacy-verified").status == "active"  # type: ignore[union-attr]
+    scheduler = app.state.scheduler
+    assert scheduler.decide(provider="grok", account="legacy-active").error == (
+        "account_unavailable"
+    )
+    assert scheduler.decide(provider="grok", account="legacy-verified").account is not None
 
 
 def test_bootstrap_scheduler_counts_live_sessions(monkeypatch, tmp_path) -> None:
@@ -559,6 +640,7 @@ def test_bootstrap_scheduler_counts_live_sessions(monkeypatch, tmp_path) -> None
             last_activity_at=now,
         )
     )
+    _verify_accounts(app, "grok-1", "devin-1")
     scheduler = app.state.scheduler
     # The un-leased live session fills grok-1's only slot.
     with pytest.raises(ScheduleRefused) as excinfo:

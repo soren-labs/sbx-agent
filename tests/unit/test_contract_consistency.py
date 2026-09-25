@@ -209,6 +209,8 @@ def test_api_yaml_paths_and_status_codes() -> None:
         "cooling",
         "invalid",
         "disabled",
+        # SOR-216 verified-only lifecycle
+        "unverified",
     }
 
     usage_schema = api["components"]["schemas"]["Usage"]

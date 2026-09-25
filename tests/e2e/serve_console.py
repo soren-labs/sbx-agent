@@ -141,12 +141,36 @@ def prepare_env(state_dir: Path, api_key: str) -> dict[str, str]:
     return _make_demo_repo(state_dir)
 
 
+def _verify_seeded_accounts(app) -> None:
+    """Mark seeded accounts as cloud-verify-passed (SOR-216).
+
+    Bootstrap seeds ``unverified`` accounts under the verified-only
+    lifecycle — nothing schedules until a probe proves the credential.
+    This fixture's providers are fakes that always authenticate, so every
+    seeded account is treated as already verified: ``note_verified`` +
+    ``active``, the same state a passed ``/v1/accounts/{id}/verify``
+    produces.
+    """
+    from control.credlifecycle import CredentialLifecycleService
+
+    registry = getattr(app.state, "account_registry", None)
+    if registry is None:
+        return
+    lifecycle = CredentialLifecycleService(registry)
+    for account in registry.list():
+        if account.status != "unverified":
+            continue
+        lifecycle.note_verified(account.id, probe="e2e-console")
+        registry.mark_status(account.id, "active")
+
+
 def build_app(demo: dict[str, str]):
     from control.app import create_app
     from fastapi.responses import JSONResponse
 
     # ``create_app`` already mounts ``web/`` at "/" (SOR-211 same-origin).
     app = create_app()
+    _verify_seeded_accounts(app)
 
     # Dev-only fixture info for tests and humans (never mounted in production).
     @app.get("/__dev/info", include_in_schema=False)

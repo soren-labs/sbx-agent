@@ -44,7 +44,11 @@ from control.config import ACCOUNTS_DICT_NAME, account_secret_prefix, env_str
 from control.latency import observe
 from control.ports import Account
 
-ACCOUNT_STATUSES = ("active", "cooling", "invalid", "disabled")
+# ``unverified`` (SOR-213/SOR-216): credential declared/imported but never
+# proven by the cloud verify probe — the default for seeded and imported
+# accounts. The scheduler only auto-picks ``active``, so an unverified
+# account is ineligible until materialization + a passing verify.
+ACCOUNT_STATUSES = ("active", "cooling", "invalid", "disabled", "unverified")
 
 _BLOB_PROVIDER = "provider"
 _BLOB_FILES = "files"

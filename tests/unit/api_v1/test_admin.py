@@ -20,7 +20,10 @@ class TestAccounts:
         account = resp.json()
         assert account["provider"] == "grok"
         assert account["label"] == "grok acct"
-        assert account["status"] == "active"
+        # SOR-216: credential materialized but never cloud-verified → the
+        # account is not scheduler-eligible until /verify passes.
+        assert account["status"] == "unverified"
+        assert account["auth_state"] == "materialized"
         assert account["max_concurrent"] == 3
         assert account["models"] == ["grok-4.1"]
         assert account["running"] == 0
