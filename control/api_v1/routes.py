@@ -160,6 +160,31 @@ def _turn_n(turn_id: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _account_view(registry: AccountRegistry, account: Account) -> dict[str, Any]:
+    """``account_public`` + the canonical ``auth_state`` (SOR-213).
+
+    Derived from non-secret lanes only: the credential-lifecycle record
+    and blob presence — never credential material. Stores without the
+    optional lanes degrade to ``None``.
+    """
+    blob = None
+    rec = None
+    get_blob = getattr(registry, "get_credential_blob", None)
+    get_lifecycle = getattr(registry, "get_credential_lifecycle", None)
+    try:
+        if callable(get_blob):
+            blob = get_blob(account.id)
+        if callable(get_lifecycle):
+            rec = get_lifecycle(account.id)
+    except Exception:
+        blob = None
+        rec = None
+    from control.provider_auth import auth_state_for
+
+    auth_state = auth_state_for(account, rec, blob is not None)
+    return account_public(account, _running_or_zero(registry, account.id), auth_state)
+
+
 def _run_n(run_id: str) -> int | None:
     match = _RUN_ID_RE.match(run_id or "")
     return int(match.group(1)) if match else None
@@ -2459,12 +2484,7 @@ def list_accounts(
     key: ApiKey = Depends(admin_key),
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
-    return {
-        "accounts": [
-            account_public(account, _running_or_zero(registry, account.id))
-            for account in registry.list(provider)
-        ]
-    }
+    return {"accounts": [_account_view(registry, account) for account in registry.list(provider)]}
 
 
 @router.post("/accounts", status_code=201)
@@ -2477,6 +2497,9 @@ def create_account(
         id=f"acct-{body.provider}-{uuid.uuid4().hex[:8]}",
         provider=body.provider,
         label=body.label,
+        # Verified-only lifecycle (SOR-216): a created account is never
+        # scheduler-eligible until the verify probe proves it.
+        status="unverified",
         max_concurrent=body.max_concurrent,
         models=tuple(body.models),
         created_at=_iso_now(),
@@ -2488,8 +2511,8 @@ def create_account(
             not isinstance(files, dict)
             or any(not isinstance(k, str) or not isinstance(v, str) for k, v in files.items())
         ):
-            # Validate before any write: a refused create must not leave an
-            # active, credential-less account the scheduler can pick.
+            # Validate before any write: a refused create must not leave a
+            # credential-less account dangling.
             raise V1ApiError(400, "invalid_provider", "credential.files must be a string map")
     registry.put(account)
     if body.credential is not None:
@@ -2499,7 +2522,7 @@ def create_account(
             CredentialLifecycleService(registry).note_credential(account.id, blob)
         except Exception:
             pass
-    return account_public(account, _running_or_zero(registry, account.id))
+    return _account_view(registry, account)
 
 
 @router.get("/accounts/{account_id}")
@@ -2509,7 +2532,7 @@ def get_account(
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
     account = _registry_account(registry, account_id)
-    return account_public(account, _running_or_zero(registry, account.id))
+    return _account_view(registry, account)
 
 
 @router.delete("/accounts/{account_id}", status_code=204)
@@ -2536,18 +2559,24 @@ def verify_account(
     credential attached: the named Modal Secret when ``secret_name`` is set,
     else the local registry blob via ``SBX_ACCOUNT_CREDENTIAL`` /
     ``SBX_ACCOUNT_ID`` (restored under ``$SBX_WORK/home``). A non-zero init
-    marks the account ``invalid``. When the plane exposes no usable backend the
-    account is simply marked ``active`` (real per-provider CLI probes land with
-    the P2-B adapters).
+    marks the account ``invalid``. When the plane exposes no usable backend
+    the probe cannot run — the verified-only lifecycle (SOR-216) keeps the
+    current status and only records ``probe_unavailable``; the account is
+    never promoted without evidence.
     """
     account = _registry_account(registry, account_id)
     blob = registry.get_credential_blob(account_id)
     backend = getattr(plane, "backend", None)
     runner = getattr(plane, "runner", None)
     if backend is None or runner is None:
-        return account_public(
-            registry.mark_status(account_id, "active", last_error=None),
-            registry.running_count(account_id),
+        return _account_view(
+            registry,
+            registry.mark_status(
+                account_id,
+                account.status,
+                cooldown_until=account.cooldown_until,
+                last_error="probe_unavailable",
+            ),
         )
     handle = None
     try:
@@ -2603,8 +2632,12 @@ def verify_account(
                 pass
     try:
         lifecycle = CredentialLifecycleService(registry)
-        if code == 0 and blob:
-            lifecycle.note_credential(account_id, blob)
+        if code == 0:
+            if blob:
+                lifecycle.note_credential(account_id, blob)
+            # The sandbox probe accepted the materialized credential —
+            # record cloud-verify evidence for the eligibility gate.
+            lifecycle.note_verified(account_id, probe="v1:verify")
         elif code == 5:
             lifecycle.on_auth_invalid(account_id, detail="auth_invalid", mark_account=False)
     except Exception:
@@ -2617,7 +2650,7 @@ def verify_account(
         updated = registry.mark_status(account_id, "invalid", last_error="init_failed")
     else:
         updated = account
-    return account_public(updated, registry.running_count(account_id))
+    return _account_view(registry, updated)
 
 
 @router.get("/accounts/{account_id}/lifecycle")

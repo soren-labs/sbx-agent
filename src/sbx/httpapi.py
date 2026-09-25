@@ -77,8 +77,49 @@ class V1Client:
         """Raw GET — non-JSON probes (the same-origin Console at ``/``)."""
         return self._client.get(path)
 
+    def delete(self, path: str) -> Any:
+        return self._check(self._client.delete(path))
+
     def me(self) -> dict[str, Any]:
         return self.get("/v1/me")
+
+    # -- accounts (admin scope; SOR-213 auth surface) -----------------------
+
+    def list_accounts(self, *, provider: str | None = None) -> dict[str, Any]:
+        params = {} if provider is None else {"provider": provider}
+        return self._check(self._client.get("/v1/accounts", params=params))
+
+    def get_account(self, account_id: str) -> dict[str, Any]:
+        return self.get(f"/v1/accounts/{account_id}")
+
+    def create_account(
+        self,
+        *,
+        provider: str,
+        label: str,
+        max_concurrent: int = 1,
+        models: list[str] | None = None,
+        credential: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "provider": provider,
+            "label": label,
+            "max_concurrent": max_concurrent,
+            "models": models or [],
+        }
+        if credential is not None:
+            body["credential"] = credential
+        return self.post("/v1/accounts", body=body)
+
+    def verify_account(self, account_id: str) -> dict[str, Any]:
+        """POST the cloud auth probe — promotes to ``active`` on a pass."""
+        return self.post(f"/v1/accounts/{account_id}/verify")
+
+    def delete_account(self, account_id: str) -> Any:
+        return self.delete(f"/v1/accounts/{account_id}")
+
+    def account_lifecycle(self, account_id: str) -> dict[str, Any]:
+        return self.get(f"/v1/accounts/{account_id}/lifecycle")
 
     def models(self) -> dict[str, Any]:
         return self.get("/v1/models")
@@ -88,9 +129,6 @@ class V1Client:
 
     def accounts(self) -> dict[str, Any]:
         return self.get("/v1/accounts")
-
-    def verify_account(self, account_id: str) -> dict[str, Any]:
-        return self.post(f"/v1/accounts/{account_id}/verify")
 
     def create_agent(
         self, *, prompt: str, provider: str, name: str = "sbx-smoke"

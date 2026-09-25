@@ -303,13 +303,18 @@ def agent_public(
     }
 
 
-def account_public(account: Any, running: int) -> dict[str, Any]:
-    """``ports.Account`` -> ``api-v1.yaml`` Account (never credential material)."""
+def account_public(account: Any, running: int, auth_state: str | None = None) -> dict[str, Any]:
+    """``ports.Account`` -> ``api-v1.yaml`` Account (never credential material).
+
+    ``auth_state`` is the canonical auth-session state (SOR-213) computed
+    by the caller from non-secret store lanes — ``control.provider_auth``.
+    """
     return {
         "id": account.id,
         "provider": account.provider,
         "label": account.label,
         "status": account.status,
+        "auth_state": auth_state,
         "max_concurrent": account.max_concurrent,
         "running": running,
         "models": list(account.models),

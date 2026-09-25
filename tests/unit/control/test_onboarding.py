@@ -300,7 +300,10 @@ class TestVerify:
         account = self._account(svc, tmp_path)
         result, updated = svc.verify(account.id)
         assert result.status == "ok"
-        assert updated.status == "active"
+        # SOR-216: the static shape-check probe is not authoritative — an
+        # "ok" keeps the account unverified (not scheduler-eligible) until
+        # a sandbox/cloud probe passes.
+        assert updated.status == "unverified"
         assert updated.last_error is None
 
     def test_static_probe_invalid_blob(self, tmp_path: Path) -> None:
@@ -346,7 +349,9 @@ class TestVerify:
         account = self._account(svc, tmp_path)
         result, updated = svc.verify(account.id)
         assert result.status == "provider_unavailable"
-        assert updated.status == "active"
+        # Never verified -> stays unverified; the transient failure does not
+        # demote it to invalid.
+        assert updated.status == "unverified"
         assert updated.last_error == "provider_unavailable"
 
     def test_ok_probe_does_not_reenable_disabled(self, tmp_path: Path) -> None:
@@ -405,7 +410,7 @@ class TestSandboxVerifyProbe:
         account = svc.add("grok", src)
         result, updated = svc.verify(account.id)
         assert result.status == "provider_unavailable"
-        assert updated.status == "active"
+        assert updated.status == "unverified"
 
 
 class TestAuthCheckArgV:
@@ -599,8 +604,9 @@ class TestRefreshSecretMaterialization:
         blob_file = _write(tmp_path / "blob.json", json.dumps(new_blob))
         outcome = svc.refresh(account.id, blob_file)
         assert outcome["secret"] == "refreshed"
-        assert len(writer.calls) == 1
-        name, env = writer.calls[0]
+        # Two managed-Secret writes: create at add, recreate at refresh.
+        assert len(writer.calls) == 2
+        name, env = writer.calls[-1]
         assert name == account.secret_name
         assert json.loads(env["SBX_ACCOUNT_CREDENTIAL"]) == new_blob
 
@@ -623,6 +629,9 @@ class TestRefreshSecretMaterialization:
                 created_at=account.created_at,
             )
         )
+        # Discard the managed-Secret create at add — the assertion is
+        # about refresh never touching an external secret_name.
+        writer.calls.clear()
         new_blob = {"provider": "grok", "files": {GROK_AUTH_REL: '{"token": "new"}'}}
         blob_file = _write(tmp_path / "blob.json", json.dumps(new_blob))
         outcome = svc.refresh(account.id, blob_file)
@@ -679,6 +688,16 @@ class TestLifecycle:
         svc = _service()
         account = svc.add("grok", src)
         assert svc.disable(account.id).status == "disabled"
+        # Never cloud-verified -> enable restores the unverified lane, not
+        # an unproven "active".
+        assert svc.enable(account.id).status == "unverified"
+
+    def test_enable_restores_active_only_after_verification(self, tmp_path: Path) -> None:
+        src = _write(tmp_path / "auth.json", '{"token": "x"}')
+        svc = _service(probe=ScriptedProbe("ok"))
+        account = svc.add("grok", src)
+        svc.verify(account.id)  # authoritative ok -> verified + active
+        svc.disable(account.id)
         assert svc.enable(account.id).status == "active"
 
     def test_remove_requires_confirmation(self, tmp_path: Path) -> None:
