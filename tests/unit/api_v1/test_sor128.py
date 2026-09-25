@@ -174,7 +174,7 @@ class TestGitPolicyValidation:
         # extra="forbid" on the new models → request validation error,
         # which the v1 router maps to the canonical 400 body.
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_request"
 
 
 class TestCreateWithPolicy:

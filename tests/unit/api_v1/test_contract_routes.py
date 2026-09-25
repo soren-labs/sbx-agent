@@ -40,10 +40,18 @@ def _app_ops(app) -> set[tuple[str, str]]:
 
 def test_contract_routes_all_registered(v1_env) -> None:
     contract_ops = _contract_ops()
-    assert len(contract_ops) == 55  # 47 paths, some with two methods
+    assert len(contract_ops) == 70  # 60 paths, some with two methods
     app_ops = _app_ops(v1_env.app)
     missing = contract_ops - app_ops
     assert not missing, f"contract routes not implemented: {sorted(missing)}"
+
+
+def test_app_routes_all_in_contract(v1_env) -> None:
+    """SOR-226 reverse direction: every served /v1 op is in the contract."""
+    contract_ops = _contract_ops()
+    app_ops = _app_ops(v1_env.app)
+    extra = app_ops - contract_ops
+    assert not extra, f"served routes missing from api-v1.yaml: {sorted(extra)}"
 
 
 # Routes that are deliberately unauthenticated: the grant/pair ticket or
@@ -53,6 +61,8 @@ UNAUTHENTICATED_OPS = {
     ("get", "/v1/github/app/manifest/callback"),
     ("get", "/v1/auth/pair/{}"),
     ("post", "/v1/auth/pair/complete"),
+    # SOR-226: the public spec names shapes, not secrets.
+    ("get", "/v1/openapi.json"),
 }
 
 
@@ -69,9 +79,9 @@ def test_every_route_rejects_missing_auth(client: TestClient, method: str, path:
 
 
 def test_error_body_shape(v1_env) -> None:
-    """Canonical body {error:{code,message,retry_after?}} for /v1 errors."""
+    """Canonical body {error:{code,message,retryable,action,...}} (SOR-226)."""
     client = TestClient(v1_env.app)
     resp = client.get("/v1/agents")
     body = resp.json()
     assert set(body) == {"error"}
-    assert {"code", "message"} <= set(body["error"])
+    assert {"code", "message", "retryable", "action"} <= set(body["error"])

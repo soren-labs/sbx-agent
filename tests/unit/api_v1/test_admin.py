@@ -240,7 +240,7 @@ class TestApiKeys:
             headers=admin_auth,
         )
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_scope"
 
     def test_revoke_missing_is_404(self, client, admin_auth) -> None:
         resp = client.delete("/v1/api-keys/nope", headers=admin_auth)

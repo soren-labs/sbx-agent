@@ -101,7 +101,7 @@ class TestContractValidation:
         body = {"agent": {"provider": "codex"}, "output_contract": {"schema": "x"}}
         resp = client.post("/v1/agents", json=body, headers=auth)
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_request"
 
 
 class TestContractVerdict:

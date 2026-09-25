@@ -132,10 +132,10 @@ class TestComputeDeclaration:
     )
     def test_malformed_compute(self, client, auth, v1_env, spy, decl) -> None:
         # Shape-level malformed declarations fail at request validation,
-        # same as every other malformed /v1 body (invalid_provider).
+        # same as every other malformed /v1 body (invalid_request).
         resp = _post(client, auth, compute=decl)
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_request"
         assert spy.specs == []
 
 

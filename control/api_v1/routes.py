@@ -1480,7 +1480,7 @@ def list_agents(
         try:
             start = max(0, int(cursor))
         except ValueError:
-            raise V1ApiError(400, "invalid_provider", "malformed cursor") from None
+            raise V1ApiError(400, "invalid_request", "malformed cursor") from None
     # SOR-200: the independent store passes run concurrently — the
     # session listing, the workflow scope index (when filtered) and the
     # binding scan each cost a remote round-trip, so serializing them
@@ -1923,7 +1923,7 @@ def create_artifact(
     if run_id is not None:
         run_n = _run_n(run_id)
         if run_n is None:
-            raise V1ApiError(400, "invalid_provider", f"malformed run_id {run_id!r}")
+            raise V1ApiError(400, "invalid_request", f"malformed run_id {run_id!r}")
         if run_n not in _known_run_ns(rec, _ledger(plane)):
             raise not_found("run not found")
     elif rec.turns:
@@ -1968,7 +1968,7 @@ def list_artifacts(
     and ``next_cursor`` resumes it; omit both for the full listing.
     """
     if limit is not None and not 1 <= limit <= ARTIFACTS_PAGE_MAX:
-        raise V1ApiError(400, "invalid_provider", f"limit must be 1..{ARTIFACTS_PAGE_MAX}")
+        raise V1ApiError(400, "invalid_request", f"limit must be 1..{ARTIFACTS_PAGE_MAX}")
     list_page = getattr(artifacts, "list_page", None)
     try:
         with observe("v1.artifact.list", agent_id=agent_id):
@@ -1979,7 +1979,7 @@ def list_artifacts(
                 # over the full listing so the route contract still holds.
                 page = page_manifests(artifacts.list(agent_id=agent_id), cursor=cursor, limit=limit)
     except ArtifactError as exc:
-        raise V1ApiError(400, "invalid_provider", str(exc)) from exc
+        raise V1ApiError(400, "invalid_request", str(exc)) from exc
     return {
         "artifacts": [_artifact_public(m) for m in page.artifacts],
         "next_cursor": page.next_cursor,
@@ -2021,7 +2021,7 @@ def download_artifact(
     except ArtifactCorruptError as exc:
         raise V1ApiError(409, "artifact_invalid", str(exc)) from exc
     except ArtifactError as exc:
-        raise V1ApiError(400, "invalid_provider", str(exc)) from exc
+        raise V1ApiError(400, "invalid_request", str(exc)) from exc
     return Response(
         content=data,
         media_type="application/octet-stream",
@@ -2731,7 +2731,7 @@ def create_account(
         ):
             # Validate before any write: a refused create must not leave a
             # credential-less account dangling.
-            raise V1ApiError(400, "invalid_provider", "credential.files must be a string map")
+            raise V1ApiError(400, "invalid_request", "credential.files must be a string map")
     registry.put(account)
     if body.credential is not None:
         blob = {"provider": body.provider, "files": dict(files or {})}
@@ -2864,7 +2864,7 @@ def create_api_key(
     body = body or CreateApiKeyRequest()
     scopes = body.scopes if body.scopes is not None else ["agents"]
     if any(scope not in VALID_SCOPES for scope in scopes):
-        raise V1ApiError(400, "invalid_provider", f"unknown scope; allowed: {list(VALID_SCOPES)}")
+        raise V1ApiError(400, "invalid_scope", f"unknown scope; allowed: {list(VALID_SCOPES)}")
     record, token = store.create(label=body.label, scopes=scopes)
     return {**api_key_public(record), "key": token}
 
