@@ -121,7 +121,7 @@ class TestCreateAgent:
     def test_malformed_body_is_400(self, client, auth) -> None:
         resp = client.post("/v1/agents", json={"agent": {"provider": "codex"}}, headers=auth)
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_request"
 
     def test_named_account_busy_is_409(self, client, auth, v1_env) -> None:
         v1_env.registry.set_running("acct-codex-1", 1)  # max_concurrent == 1
@@ -308,4 +308,4 @@ class TestListAgents:
         assert resp.status_code == 200
         resp = client.get("/v1/agents?cursor=zzz", headers=auth)
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_request"

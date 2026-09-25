@@ -93,7 +93,7 @@ class TestListArtifactsPagination:
     def test_malformed_cursor_400(self, client: TestClient, auth, seeded) -> None:
         resp = client.get("/v1/artifacts?cursor=zzz!!!", headers=auth)
         assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_provider"
+        assert resp.json()["error"]["code"] == "invalid_request"
 
     @pytest.mark.parametrize("limit", [0, -1, 501])
     def test_bad_limit_400(self, client: TestClient, auth, seeded, limit) -> None:

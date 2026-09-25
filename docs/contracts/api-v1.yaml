@@ -8,15 +8,16 @@ info:
     是同一 agent 上的新 run。
     认证：`Authorization: Bearer sbx_<key>`（控制面只存 `sha256(key)`）。
     scopes：`agents`（默认）/ `admin`（accounts / api-keys / verify 需要）。
-    错误体统一 `{error:{code, message, retry_after?}}`；`code` 取 canonical
-    `error_subcodes`，HTTP 状态取 canonical `error_codes`。
+    错误体统一 `{error:{code, message, retryable, action, retry_after?,
+    details?}}`（SOR-226）；`code` 取 canonical `error_subcodes`，`action`
+    取 canonical `error_actions`，HTTP 状态取 canonical `error_codes`。
     Run 终态另带结构化 `error`（`RunError`：`code/source/message/retryable/
     retry_after?`），`code` 取 canonical `run_error_codes`，`source` 取
     `run_error_sources`；调用方无需解析 SSE 即可诊断失败主因。
     SSE 帧与 `/api/*` 相同：`id: <events.jsonl 行号>` / `event: <type>` /
     `data: <json>`，15 s `: keepalive`，支持 `Last-Event-ID` 续传。
 x-canonical:
-  error_codes: [400, 401, 403, 404, 409, 429]
+  error_codes: [400, 401, 403, 404, 409, 429, 500, 502, 503]
   run_error_codes:
     - auth_invalid
     - rate_limited
@@ -31,33 +32,66 @@ x-canonical:
     - contract_violation
   run_error_sources: [provider, runtime, control, telemetry]
   error_subcodes:
-    - unauthorized
-    - forbidden
-    - not_found
-    - grant_invalid
-    - invalid_provider
-    - turn_in_progress
-    - session_not_runnable
     - account_busy
+    - account_exists
+    - account_not_found
     - account_unavailable
-    - provider_exhausted
+    - artifact_invalid
+    - artifact_not_found
+    - artifact_secret
+    - base_sha_mismatch
+    - checkout_failed
+    - checksum_mismatch
     - concurrency_limit
+    - connect_failed
+    - delivery_failed
+    - delivery_not_found
+    - forbidden
+    - github_app_configured
+    - github_app_invalid
+    - github_app_state
+    - github_app_unconfigured
+    - github_app_upstream
+    - grant_invalid
+    - head_sha_mismatch
     - idempotency_conflict
     - idempotency_in_progress
+    - independence_violation
+    - internal
+    - invalid_account_id
+    - invalid_blob
+    - invalid_compute
+    - invalid_output_contract
+    - invalid_provider
+    - invalid_request
+    - invalid_resource
+    - invalid_scope
+    - invalid_source
+    - not_found
+    - pair_invalid
+    - provider_exhausted
+    - provider_mismatch
+    - repo_unavailable
+    - review_required
+    - review_stale
+    - revision_not_found
+    - revision_not_ready
+    - schema_mismatch
+    - session_active
+    - session_not_found
+    - session_not_runnable
+    - task_active
+    - task_not_retryable
+    - turn_in_progress
+    - unauthorized
+    - unavailable
+    - unknown_provider
+    - unsafe_path
+    - unsupported
     - workspace_invalid
     - workspace_not_found
-    - repo_unavailable
-    - checkout_failed
-    - base_sha_mismatch
-    - head_sha_mismatch
-    - checksum_mismatch
-    - artifact_not_found
-    - artifact_invalid
-    - artifact_secret
-    - review_required
-    - invalid_output_contract
-    - invalid_resource
-    - unsupported
+    - workspace_unavailable
+  error_actions: [authenticate, lookup, fix_request, wait, retry, configure]
   providers: [codex, antigravity, grok, opencode, devin]
   keepalives_s: 15
   sse:
@@ -163,6 +197,23 @@ x-canonical:
     - POST /v1/tasks
     - GET /v1/tasks
     - GET /v1/tasks/{taskId}
+    - GET /v1/tasks/{taskId}/runs
+    - POST /v1/tasks/{taskId}/runs
+    - POST /v1/tasks/{taskId}/cancel
+    - POST /v1/tasks/{taskId}/retry
+    - POST /v1/tasks/{taskId}/delivery
+    - POST /v1/tasks/{taskId}/deliver
+    - GET /v1/tasks/{taskId}/revisions
+    - GET /v1/tasks/{taskId}/revisions/{ref}
+    - GET /v1/tasks/{taskId}/reviews
+    - POST /v1/tasks/{taskId}/reviews
+    - POST /v1/tasks/{taskId}/merge
+    - GET /v1/agents/{id}/revisions
+    - GET /v1/agents/summary
+    - POST /v1/models/refresh
+    - GET /v1/accounts/{id}/lifecycle
+    - POST /v1/accounts/{id}/lifecycle/refresh
+    - GET /v1/openapi.json
 servers:
   - url: https://sbx.sorenforge.com
     description: Production (Cloudflare Worker → sbx-control)
@@ -532,6 +583,34 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/WorkspaceConflict"
+  /v1/agents/{id}/revisions:
+    get:
+      tags: [agents]
+      summary: List the agent's durable revisions (SOR-225)
+      operationId: listAgentRevisions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/AgentId"
+      responses:
+        "200":
+          description: Revision list (per-agent ``n`` order)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions]
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Revision"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/artifacts:
     get:
       tags: [artifacts]
@@ -931,6 +1010,380 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/tasks/{taskId}/runs:
+    get:
+      tags: [tasks]
+      summary: List the task's runs
+      operationId: listTaskRuns
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task + runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task, runs]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Run"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [tasks]
+      summary: Queue a follow-up run on the task's agent
+      operationId: createTaskRun
+      description: |
+        Durable ``QUEUED`` by default (``on_busy=queue``); ``on_busy=reject``
+        surfaces a 409 when a turn is still in flight. Honors
+        ``Idempotency-Key``.
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRunRequest"
+      responses:
+        "201":
+          description: Follow-up run queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task, run]
+                properties:
+                  task:
+                    $ref: "#/components/schemas/Task"
+                  run:
+                    $ref: "#/components/schemas/Run"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/{taskId}/cancel:
+    post:
+      tags: [tasks]
+      summary: Cancel the task's active run / queued work
+      operationId: cancelTask
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task detail after cancel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/{taskId}/retry:
+    post:
+      tags: [tasks]
+      summary: Retry a terminal task — delivery republish or a fresh run
+      operationId: retryTask
+      description: |
+        ``mode=None`` picks by task state: ``delivery_failed`` retries the
+        publish; a terminal run verdict re-runs the task's prompt (or the
+        ``prompt`` override). ``on_busy`` applies to run-mode.
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryTaskRequest"
+      responses:
+        "200":
+          description: Task detail after retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/{taskId}/delivery:
+    post:
+      tags: [tasks]
+      summary: Execute the task's delivery policy now (manual publish)
+      operationId: triggerTaskDelivery
+      description: |
+        Create-or-update idempotent: replaying an already-delivered task
+        returns its state; a missing delivery policy is a 409
+        ``task_not_retryable``.
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task detail after the publish attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/{taskId}/deliver:
+    post:
+      tags: [tasks]
+      summary: Materialize/deliver a revision — push payload + open/update the PR
+      operationId: deliverTask
+      description: |
+        SOR-225: operates on the durable revision (artifact payload +
+        recorded base/head) so it works after the author sandbox is gone.
+        A failure persists ``delivery.status="failed"`` on the revision and
+        surfaces as an explicit API error.
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliverRequest"
+      responses:
+        "200":
+          description: Delivered revision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision]
+                properties:
+                  revision:
+                    $ref: "#/components/schemas/Revision"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/{taskId}/revisions:
+    get:
+      tags: [tasks]
+      summary: List the task agent's durable revisions
+      operationId: listTaskRevisions
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Revision list (per-agent ``n`` order)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions]
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Revision"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/tasks/{taskId}/revisions/{ref}:
+    get:
+      tags: [tasks]
+      summary: Resolve one revision — ``latest``, a ``rev-…`` id, or an ``n``
+      operationId: getTaskRevision
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ref
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resolved revision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision]
+                properties:
+                  revision:
+                    $ref: "#/components/schemas/Revision"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/tasks/{taskId}/reviews:
+    get:
+      tags: [tasks]
+      summary: List the task's durable reviews
+      operationId: listTaskReviews
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: revision
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional revision ref filter (``latest`` | ``rev-…`` | ``n``).
+      responses:
+        "200":
+          description: Review list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reviews]
+                properties:
+                  reviews:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Review"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [tasks]
+      summary: Record a durable review on a revision
+      operationId: createTaskReview
+      description: |
+        ``reviewer.identity`` defaults to the calling API key. Independence
+        is computed at write time — a reviewer equal to the revision's own
+        agent or run never satisfies the merge gate. ``comment`` posts a
+        machine-readable comment on the delivered pull request.
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewRequest"
+      responses:
+        "201":
+          description: Recorded review
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [review]
+                properties:
+                  review:
+                    $ref: "#/components/schemas/Review"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/{taskId}/merge:
+    post:
+      tags: [tasks]
+      summary: Merge a delivered revision's pull request
+      operationId: mergeTask
+      description: |
+        SOR-225 merge gate: requires a delivered revision, an independent
+        approving review on the current head sha, and a mergeable PR —
+        failures surface as explicit 409s (``review_required`` /
+        ``independence_violation`` / ``review_stale`` …).
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MergeRequest"
+      responses:
+        "200":
+          description: Merged revision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision]
+                properties:
+                  revision:
+                    $ref: "#/components/schemas/Revision"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/models:
     get:
       tags: [meta]
@@ -1150,6 +1603,60 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/accounts/{id}/lifecycle:
+    get:
+      tags: [accounts]
+      summary: Non-secret credential lifecycle metadata (admin scope)
+      operationId: accountCredentialLifecycle
+      description: |
+        SOR-176: states ``healthy`` / ``access_expiring`` / ``refreshing`` /
+        ``healthy_refreshed`` / ``reauth_required`` / ``revoked``.
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: Lifecycle metadata (never token material)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [account_id, credential_lifecycle]
+                properties:
+                  account_id:
+                    type: string
+                  credential_lifecycle:
+                    type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/accounts/{id}/lifecycle/refresh:
+    post:
+      tags: [accounts]
+      summary: Synchronous credential refresh through the worker path (admin scope)
+      operationId: refreshAccountCredential
+      description: |
+        SOR-176: reuses the background refresher when present; returns the
+        refresh outcome plus resulting lifecycle metadata — never tokens.
+      parameters:
+        - $ref: "#/components/parameters/AccountId"
+      responses:
+        "200":
+          description: Refresh outcome + lifecycle metadata
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /v1/api-keys:
     get:
       tags: [api-keys]
@@ -1756,6 +2263,22 @@ paths:
           $ref: "#/components/responses/InvalidProvider"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /v1/openapi.json:
+    get:
+      tags: [meta]
+      summary: Public OpenAPI document — generated from the live routes
+      operationId: publicOpenapi
+      description: |
+        SOR-226: runtime-derived spec (FastAPI routes + Pydantic models +
+        canonical error contract) — never a hand-maintained copy that can
+        drift. Served unauthenticated: the spec names shapes, not secrets.
+      responses:
+        "200":
+          description: This document
+          content:
+            application/json:
+              schema:
+                type: object
 components:
   securitySchemes:
     bearerAuth:
@@ -3039,45 +3562,85 @@ components:
       properties:
         error:
           type: object
-          required: [code, message]
+          required: [code, message, retryable, action]
           properties:
             code:
               type: string
               enum:
-                - unauthorized
-                - forbidden
-                - not_found
-                - invalid_provider
-                - turn_in_progress
-                - session_not_runnable
                 - account_busy
+                - account_exists
+                - account_not_found
                 - account_unavailable
-                - provider_exhausted
-                - concurrency_limit
-                - idempotency_conflict
-                - idempotency_in_progress
-                - workspace_invalid
-                - workspace_not_found
-                - repo_unavailable
-                - checkout_failed
-                - base_sha_mismatch
-                - head_sha_mismatch
-                - checksum_mismatch
-                - artifact_not_found
                 - artifact_invalid
+                - artifact_not_found
                 - artifact_secret
-                - unsupported
-                - review_required
-                - invalid_output_contract
-                - github_app_unconfigured
+                - base_sha_mismatch
+                - checkout_failed
+                - checksum_mismatch
+                - concurrency_limit
+                - connect_failed
+                - delivery_failed
+                - delivery_not_found
+                - forbidden
+                - github_app_configured
                 - github_app_invalid
                 - github_app_state
+                - github_app_unconfigured
                 - github_app_upstream
+                - grant_invalid
+                - head_sha_mismatch
+                - idempotency_conflict
+                - idempotency_in_progress
+                - independence_violation
+                - internal
+                - invalid_account_id
+                - invalid_blob
+                - invalid_compute
+                - invalid_output_contract
+                - invalid_provider
+                - invalid_request
+                - invalid_resource
+                - invalid_scope
+                - invalid_source
+                - not_found
+                - pair_invalid
+                - provider_exhausted
+                - provider_mismatch
+                - repo_unavailable
+                - review_required
+                - review_stale
+                - revision_not_found
+                - revision_not_ready
+                - schema_mismatch
+                - session_active
+                - session_not_found
+                - session_not_runnable
+                - task_active
+                - task_not_retryable
+                - turn_in_progress
+                - unauthorized
+                - unavailable
+                - unknown_provider
+                - unsafe_path
+                - unsupported
+                - workspace_invalid
+                - workspace_not_found
+                - workspace_unavailable
             message:
               type: string
+            retryable:
+              type: boolean
+              description: "Whether the same request may be retried unchanged (honor `retry_after` when present)."
+            action:
+              type: string
+              enum: [authenticate, lookup, fix_request, wait, retry, configure]
+              description: "Client action hint: `authenticate` (fix credentials), `lookup` (verify the referenced id), `fix_request` (change the request), `wait` (retry after the busy object settles), `retry` (transient; resend), `configure` (operator setup required)."
             retry_after:
               type: number
-              description: Seconds; present on `provider_exhausted` / `concurrency_limit` when known
+              description: "Seconds; present on `provider_exhausted` / `concurrency_limit` / `task_active` when known."
+            details:
+              type: object
+              description: "Optional structured context — e.g. `loc` lists the request fields that failed validation."
     TaskSource:
       type: object
       required: [repo]
@@ -3325,6 +3888,168 @@ components:
           $ref: "#/components/schemas/Agent"
         run:
           type: object
+    CreateTaskRunRequest:
+      type: object
+      required: [prompt]
+      description: Follow-up turn on the task's agent.
+      properties:
+        prompt:
+          $ref: "#/components/schemas/Prompt"
+        on_busy:
+          type: string
+          enum: [queue, reject]
+          default: queue
+        metadata:
+          $ref: "#/components/schemas/WorkflowMetadata"
+        output_contract:
+          $ref: "#/components/schemas/OutputContract"
+    RetryTaskRequest:
+      type: object
+      description: |
+        ``mode=None`` picks by task state: ``delivery_failed`` retries the
+        publish; a terminal run verdict re-runs the task's prompt.
+      properties:
+        mode:
+          type: string
+          enum: [delivery, run]
+        prompt:
+          $ref: "#/components/schemas/Prompt"
+        on_busy:
+          type: string
+          enum: [queue, reject]
+          default: queue
+    DeliverRequest:
+      type: object
+      description: Deliver a revision — optional ref + delivery overrides.
+      properties:
+        revision:
+          type: string
+          description: "``latest`` | ``rev-…`` | ``n``"
+        branch:
+          type: string
+        pull_request:
+          $ref: "#/components/schemas/TaskPullRequest"
+    ReviewFinding:
+      type: object
+      required: [message]
+      properties:
+        severity:
+          type: string
+        path:
+          type: string
+        line:
+          type: integer
+        message:
+          type: string
+        code:
+          type: string
+    ReviewerRef:
+      type: object
+      description: Reviewer identity — the durable record of who reviewed.
+      properties:
+        identity:
+          type: string
+        agent_id:
+          type: string
+        run_id:
+          type: string
+    ReviewRequest:
+      type: object
+      required: [verdict]
+      properties:
+        revision:
+          type: string
+        verdict:
+          type: string
+          enum: [approve, request_changes, comment]
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewFinding"
+        reviewer:
+          $ref: "#/components/schemas/ReviewerRef"
+        comment:
+          type: string
+          description: Post a machine-readable comment on the delivered PR.
+    MergeRequest:
+      type: object
+      properties:
+        revision:
+          type: string
+          description: "``latest`` | ``rev-…`` | ``n``"
+    Revision:
+      type: object
+      required: [id, n, agent_id, status]
+      description: |
+        SOR-225: one durable run-result row. ``delivery`` is null until a
+        deliver attempt; then ``{status, branch, pushed_head_sha,
+        pull_request, error, delivered_at, merged, merge_commit_sha,
+        merged_at}``.
+      properties:
+        id:
+          type: string
+        n:
+          type: integer
+          minimum: 1
+          description: Per-agent sequence; ``latest`` resolves the highest n.
+        agent_id:
+          type: string
+        task_id:
+          type: string
+        run_id:
+          type: string
+        artifact_id:
+          type: string
+        repo:
+          type: string
+        base_sha:
+          type: string
+        head_sha:
+          type: string
+        status:
+          type: string
+          enum: [ready, materialization_failed]
+        error:
+          type: object
+        delivery:
+          type: object
+        created_at:
+          type: string
+        updated_at:
+          type: string
+    Review:
+      type: object
+      required: [id, revision_id, agent_id, verdict, independent]
+      description: |
+        SOR-225: one durable review row. ``independent`` is computed at
+        write time; ``stale`` flips when a newer revision materializes.
+      properties:
+        id:
+          type: string
+        revision_id:
+          type: string
+        agent_id:
+          type: string
+          description: The revision's author agent (denormalized).
+        reviewer:
+          $ref: "#/components/schemas/ReviewerRef"
+        verdict:
+          type: string
+          enum: [approve, request_changes, comment]
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewFinding"
+        reviewed_head_sha:
+          type: string
+        independent:
+          type: boolean
+        stale:
+          type: boolean
+        comment_url:
+          type: string
+        created_at:
+          type: string
   responses:
     Unauthorized:
       description: Missing or invalid Bearer key (401 unauthorized)
@@ -3407,6 +4132,14 @@ components:
       description: |
         409 github_app_configured — a GitHub App is already configured
         for this deployment (SOR-220 manifest registration refused).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Unavailable:
+      description: |
+        503 `unavailable` — a backend/dependency needed for the request is
+        down (e.g. no backend for credential refresh).
       content:
         application/json:
           schema:

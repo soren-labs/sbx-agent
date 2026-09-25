@@ -170,10 +170,11 @@ def test_preflight_validation_errors(
     )
     assert resp.status_code == 200
     assert resp.json()["error"]["code"] == "invalid_provider"
-    # Malformed body → the V1Route-shaped 400 (canonical fallback code).
+    # Malformed body → the V1Route-shaped 400 (SOR-226: generic malformed
+    # requests are invalid_request; invalid_provider is provider-field only).
     resp = client.post("/v1/tasks/preflight", json={"prompt": {}}, headers=auth)
     assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "invalid_provider"
+    assert resp.json()["error"]["code"] == "invalid_request"
 
 
 # ---------------------------------------------------------------------------
