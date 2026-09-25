@@ -73,11 +73,24 @@ class V1Client:
         kwargs = {} if body is None else {"json": body}
         return self._check(self._client.post(path, **kwargs))
 
+    def fetch(self, path: str) -> httpx.Response:
+        """Raw GET — non-JSON probes (the same-origin Console at ``/``)."""
+        return self._client.get(path)
+
     def me(self) -> dict[str, Any]:
         return self.get("/v1/me")
 
     def models(self) -> dict[str, Any]:
         return self.get("/v1/models")
+
+    def providers(self) -> dict[str, Any]:
+        return self.get("/v1/providers")
+
+    def accounts(self) -> dict[str, Any]:
+        return self.get("/v1/accounts")
+
+    def verify_account(self, account_id: str) -> dict[str, Any]:
+        return self.post(f"/v1/accounts/{account_id}/verify")
 
     def create_agent(
         self, *, prompt: str, provider: str, name: str = "sbx-smoke"

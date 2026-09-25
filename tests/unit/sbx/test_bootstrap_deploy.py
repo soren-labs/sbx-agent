@@ -122,23 +122,46 @@ def test_legacy_basic_password_env_still_read() -> None:
         os.environ.pop("SBX_BASIC_PASSWORD", None)
 
 
-def test_deploy_missing_codex_secret_is_actionable(tmp_path) -> None:
+def test_deploy_missing_codex_secret_degrades_not_fails(tmp_path) -> None:
+    """SOR-217: a missing provider credential Secret degrades codex — the
+    Platform deploy completes, the runtime record carries the reason, and
+    the remediation stays actionable in the step detail."""
     plane = FakePlane()
-    with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
-    assert exc.value.code == "secret_missing"
-    assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
+
+    assert report.base_url  # deploy succeeded — platform healthy
+    assert report.degraded_providers is not None and "codex" in report.degraded_providers
+    assert "sbx-codex-auth" in report.degraded_providers["codex"]
+    step = next(s for s in report.steps if s.name == "secret:codex")
+    assert "modal secret create sbx-codex-auth" in step.detail
+    record = plane.dicts["sbx-runtime"]["runtime/codex"]
+    assert record["status"] == "degraded"
+    assert "sbx-codex-auth" in record["detail"]
+    # The image still builds — only the app-level Secret mount is dropped.
+    assert plane.image_calls == ["codex"]
+    assert plane.deploy_env["SBX_DEGRADED_PROVIDERS"] == "codex"
+
+
+def test_deploy_degraded_codex_skips_app_secret_mount(tmp_path) -> None:
+    """The degraded set unmounts the absent codex Secret so ``modal deploy``
+    itself cannot fail on it (``control.config.app_secret_names``)."""
+    from control.config import app_secret_names
+
+    env = {"SBX_PROVIDERS": "codex", "SBX_DEGRADED_PROVIDERS": "codex"}
+    assert "sbx-codex-auth" not in app_secret_names(env)
+    # a non-degraded codex still requires the mount
+    assert "sbx-codex-auth" in app_secret_names({"SBX_PROVIDERS": "codex"})
 
 
 def test_deploy_missing_codex_secret_guides_login_on_clean_home(tmp_path) -> None:
     """When no local credential exists the remediation starts at the
     official login, not a bare secret-create command (SOR-115)."""
     plane = FakePlane()
-    with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
-    assert "codex login" in (exc.value.hint or "")
-    assert "~/.codex/auth.json" in (exc.value.hint or "")
-    assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
+    step = next(s for s in report.steps if s.name == "secret:codex")
+    assert "codex login" in step.detail
+    assert "~/.codex/auth.json" in step.detail
+    assert "modal secret create sbx-codex-auth" in step.detail
 
 
 def test_deploy_non_codex_providers_skip_codex_secret(tmp_path) -> None:
@@ -161,19 +184,26 @@ def test_deploy_missing_modal_auth_is_actionable(tmp_path) -> None:
     assert "modal token new" in (exc.value.hint or "")
 
 
-def test_failed_deploy_is_resumable(tmp_path) -> None:
+def test_degraded_image_build_recovers_on_redeploy(tmp_path) -> None:
+    """SOR-217: a provider image build failure degrades the provider — the
+    platform deploy completes — and the next deploy retries the build."""
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
     plane.fail_on.add("ensure_image")
-    with pytest.raises(BootstrapError):
-        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
-    # partial progress is durable — secrets/dicts already exist
-    assert "sbx-v1-bootstrap" in plane.secrets
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
+    assert report.base_url  # platform deployed despite the failed image
+    assert "codex" in (report.degraded_providers or {})
+    assert plane.dicts["sbx-runtime"]["runtime/codex"]["status"] == "degraded"
+    step = next(s for s in report.steps if s.name == "image:codex")
+    assert "not built" in step.detail
+
     plane.fail_on.clear()
     report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
     assert report.base_url
+    assert not report.degraded_providers
     names = [s.name for s in report.steps]
     assert "image:codex" in names
+    assert plane.dicts["sbx-runtime"]["runtime/codex"]["status"] == "ready"
 
 
 def test_stale_remote_secret_rotates_with_new_key(tmp_path) -> None:
@@ -233,13 +263,20 @@ def test_deploy_devin_only_does_not_require_codex_secret(tmp_path) -> None:
     assert plane.deploy_env["SBX_PROVIDERS"] == "devin"
 
 
-def test_deploy_mixed_providers_still_require_codex_secret(tmp_path) -> None:
+def test_deploy_mixed_providers_degrades_only_codex(tmp_path) -> None:
+    """SOR-217: missing codex credential degrades codex alone — devin still
+    builds ready and the platform deploy completes."""
     plane = FakePlane()
-    with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "devin")))
-    assert exc.value.code == "secret_missing"
-    assert "modal secret create sbx-codex-auth" in (exc.value.hint or "")
-    assert plane.secret_create_calls == 0  # fail-before-write
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex", "devin")))
+    assert report.base_url
+    assert set(report.degraded_providers or {}) == {"codex"}
+    assert (
+        "modal secret create sbx-codex-auth"
+        in next(s for s in report.steps if s.name == "secret:codex").detail
+    )
+    assert plane.dicts["sbx-runtime"]["runtime/codex"]["status"] == "degraded"
+    assert plane.dicts["sbx-runtime"]["runtime/devin"]["status"] == "ready"
+    assert plane.image_calls == ["codex", "devin"]  # image build unaffected
 
 
 def test_deploy_empty_providers_platform_only(tmp_path) -> None:
@@ -342,9 +379,9 @@ def test_deploy_unknown_provider_fails_before_any_write(tmp_path) -> None:
     assert plane.deploy_calls == 0
 
 
-def test_deploy_missing_enabled_account_secret_fails_before_write(tmp_path) -> None:
-    """An enabled provider's referenced-but-absent Secret is a real missing
-    prerequisite — it must abort before any resource is written."""
+def test_deploy_missing_enabled_account_secret_degrades(tmp_path) -> None:
+    """SOR-217: an enabled provider's referenced-but-absent Secret degrades
+    the provider — the deploy completes and the reason is recorded."""
     plane = FakePlane()
     plane.dicts["sbx-accounts"] = {
         "account/devin-1": {
@@ -354,11 +391,13 @@ def test_deploy_missing_enabled_account_secret_fails_before_write(tmp_path) -> N
         },
         # no credential blob → the materialize step cannot satisfy it
     }
-    with pytest.raises(BootstrapError) as exc:
-        _deploy(tmp_path, plane, config=BootstrapConfig(providers=("devin",)))
-    assert exc.value.code == "account_secret_missing"
-    assert "sbx-acct-devin-1" in exc.value.message
-    assert plane.secret_create_calls == 0
+    report, _, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("devin",)))
+    assert report.base_url
+    assert "devin" in (report.degraded_providers or {})
+    assert "sbx-acct-devin-1" in report.degraded_providers["devin"]
+    step = next(s for s in report.steps if s.name == "credentials:preflight")
+    assert "sbx-acct-devin-1" in step.detail
+    assert "control.onboarding" in step.detail
 
 
 def test_deploy_ignores_disabled_provider_account_secret(tmp_path) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sbx_fakes import make_cfg, make_env, make_v1
+from sbx_fakes import make_cfg, make_env, make_v1, provider_row
 
 from sbx.config import BootstrapConfig, key_path
 from sbx.errors import BootstrapError
@@ -206,3 +206,88 @@ def test_smoke_provider_exhausted_is_actionable(tmp_path) -> None:
         run_smoke(cfg, env=env, transport=transport)
     assert exc.value.code == "smoke_create_failed"
     assert "provider_exhausted" in (exc.value.hint or "")
+
+
+# --------------------------------------------------------------- SOR-217
+# A cataloged deployment (SOR-221) makes the verified-account precondition
+# explicit: smoke consumes provider quota, so it refuses to run when the
+# provider has no connected account.  Pre-catalog deployments (404 on
+# /v1/providers) skip the check — create_agent remains the authority.
+
+
+def test_smoke_requires_verified_provider_account(tmp_path) -> None:
+    token = "sbx_smoketoken"
+    cfg, env = _cfg(tmp_path, token=token)
+    transport, http = make_v1(
+        token=token,
+        providers=[
+            provider_row(
+                "codex",
+                connection_status="not_connected",
+                accounts_total=0,
+                accounts_available=0,
+            )
+        ],
+    )
+    with pytest.raises(BootstrapError) as exc:
+        run_smoke(cfg, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "provider_not_ready"
+    assert "not_connected" in exc.value.message
+    assert "sbx auth verify" in (exc.value.hint or "")
+    assert http["agents"] == {}  # never created an agent — no quota consumed
+
+
+def test_smoke_connected_provider_proceeds(tmp_path) -> None:
+    token = "sbx_smoketoken"
+    cfg, env = _cfg(tmp_path, token=token)
+    transport, _ = make_v1(
+        token=token,
+        run_statuses=["FINISHED"],
+        providers=[provider_row("codex")],
+    )
+    result = run_smoke(cfg, env=env, transport=transport, sleep=lambda s: None)
+    assert result.status == "FINISHED"
+    assert result.provider == "codex"
+
+
+def test_smoke_degraded_runtime_blocks_and_reports(tmp_path) -> None:
+    token = "sbx_smoketoken"
+    cfg, env = _cfg(tmp_path, token=token)
+    transport, _ = make_v1(
+        token=token,
+        providers=[
+            provider_row(
+                "codex",
+                runtime_status="degraded",
+                detail="no usable credential",
+                connection_status="degraded",
+                accounts_total=1,
+                accounts_available=0,
+            )
+        ],
+    )
+    with pytest.raises(BootstrapError) as exc:
+        run_smoke(cfg, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "provider_not_ready"
+    assert "degraded" in exc.value.message
+    assert "runtime degraded" in exc.value.message
+
+
+def test_smoke_provider_missing_from_catalog(tmp_path) -> None:
+    token = "sbx_smoketoken"
+    cfg, env = _cfg(tmp_path, token=token)
+    transport, _ = make_v1(token=token, providers=[provider_row("devin")])
+    with pytest.raises(BootstrapError) as exc:
+        run_smoke(cfg, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "provider_not_ready"
+    assert "not in the deployment catalog" in exc.value.message
+
+
+def test_smoke_precatalog_deployment_skips_check(tmp_path) -> None:
+    """A pre-SOR-221 deployment (404 on /v1/providers) keeps the old path —
+    the smoke run proceeds and create_agent remains the authority."""
+    token = "sbx_smoketoken"
+    cfg, env = _cfg(tmp_path, token=token)
+    transport, _ = make_v1(token=token, run_statuses=["FINISHED"])  # providers=None
+    result = run_smoke(cfg, env=env, transport=transport, sleep=lambda s: None)
+    assert result.status == "FINISHED"

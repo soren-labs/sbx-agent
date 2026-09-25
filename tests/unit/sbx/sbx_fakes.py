@@ -128,6 +128,36 @@ class FakePlane:
             self.sandboxes.pop(sandbox_id, None)
 
 
+def provider_row(
+    provider: str,
+    *,
+    runtime_status: str = "ready",
+    runtime_enabled: bool = True,
+    connection_status: str = "connected",
+    accounts_total: int = 1,
+    accounts_available: int = 1,
+    detail: str = "",
+) -> dict[str, Any]:
+    """A ``/v1/providers`` catalog row (SOR-212/SOR-221 shape)."""
+    return {
+        "provider": provider,
+        "status": "available",
+        "runtime": {
+            "enabled": runtime_enabled,
+            "image": f"sbx-runtime-{provider}",
+            "status": runtime_status,
+            "version": "1.0.0" if runtime_status == "ready" else None,
+            "detail": detail,
+            "updated_at": None,
+        },
+        "connection": {
+            "status": connection_status,
+            "accounts_total": accounts_total,
+            "accounts_available": accounts_available,
+        },
+    }
+
+
 def make_v1(
     *,
     token: str | None = None,
@@ -138,12 +168,20 @@ def make_v1(
     models: list[dict[str, Any]] | None = None,
     agents: list[dict[str, Any]] | None = None,
     agents_page_size: int = 100,
+    providers: list[dict[str, Any]] | None = None,
+    console: bool = True,
+    accounts: list[dict[str, Any]] | None = None,
+    verify_status: str = "active",
 ) -> tuple[httpx.MockTransport, dict[str, Any]]:
     """A ``/v1`` transport + observable state (agents, deletions, requests).
 
     ``token=None`` accepts any well-formed ``Bearer sbx_*`` credential —
     the right default for deploy/upgrade paths that mint their own key.
     Pass an explicit token to test rejection (401) paths.
+
+    ``providers=None`` models a pre-catalog (pre-SOR-221) deployment —
+    ``/v1/providers`` and ``/v1/accounts`` 404. ``console=False`` makes
+    ``GET /`` 404 as on a pre-SOR-211 deployment.
     """
     statuses = list(run_statuses or ["FINISHED"])
     state: dict[str, Any] = {"agents": {}, "deleted": [], "seq": 0}
@@ -161,6 +199,15 @@ def make_v1(
         if unreachable:
             raise httpx.ConnectError("no route to host", request=request)
         path = request.url.path
+        if path == "/":
+            # The same-origin Console shell (SOR-211) — unauthenticated.
+            if not console:
+                return err(404, "not_found", "no console")
+            return httpx.Response(
+                200,
+                text="<html><head><title>sbx-browser</title></head><body></body></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
         if path == "/v1/me":
             if not authed(request):
                 return err(401, "unauthorized", "missing or invalid bearer token")
@@ -183,6 +230,14 @@ def make_v1(
                 201,
                 json={"grant": "sbxg_test_ticket", "expires_in": 120, "expires_at": 9e12},
             )
+        if path == "/v1/providers" and request.method == "GET":
+            if providers is None:
+                return err(404, "not_found", "no provider catalog")
+            return httpx.Response(200, json={"providers": providers})
+        if path == "/v1/accounts" and request.method == "GET":
+            if accounts is None:
+                return err(404, "not_found", "no accounts surface")
+            return httpx.Response(200, json={"accounts": accounts})
         if path == "/v1/agents" and request.method == "GET":
             all_agents = agents if agents is not None else list(state["agents"].values())
             try:
@@ -212,6 +267,19 @@ def make_v1(
                 },
             )
         parts = path.strip("/").split("/")
+        if (
+            len(parts) == 4
+            and parts[:2] == ["v1", "accounts"]
+            and parts[3] == "verify"
+            and request.method == "POST"
+        ):
+            if accounts is None:
+                return err(404, "not_found", "no accounts surface")
+            account_id = parts[2]
+            for account in accounts:
+                if account.get("id") == account_id:
+                    return httpx.Response(200, json={**account, "status": verify_status})
+            return err(404, "not_found", "account not found")
         if len(parts) == 3 and parts[:2] == ["v1", "agents"] and request.method == "DELETE":
             agent_id = parts[2]
             state["deleted"].append(agent_id)

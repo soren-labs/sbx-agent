@@ -231,19 +231,35 @@ def selected_providers(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
+def degraded_providers(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Providers the deploy marked degraded (``SBX_DEGRADED_PROVIDERS``).
+
+    SOR-217: provider provisioning problems degrade provider *runtime*
+    health instead of failing the Platform deploy. Deploy records the set
+    here so the app's Secret mounts can skip a credential Secret it knows
+    is absent — a degraded provider's missing Secret must not fail
+    ``modal deploy``.
+    """
+    env = os.environ if env is None else env
+    raw = env.get("SBX_DEGRADED_PROVIDERS", "")
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
 def app_secret_names(env: Mapping[str, str] | None = None) -> list[str]:
     """Secrets the control app mounts at deploy time (``control/modal_app.py``).
 
     The shared Codex credential Secret is only required when ``codex`` is a
     selected provider (``SBX_PROVIDERS``) — an unselected provider's
-    credential must never block a deploy (SOR-115).
+    credential must never block a deploy (SOR-115) — and it is not mounted
+    when deploy marked codex degraded (SOR-217), since its credential is
+    the reason for the degrade.
     """
     env = os.environ if env is None else env
     names = [
         env.get("SBX_BASIC_SECRET_NAME") or BASIC_SECRET_NAME,
         env.get("SBX_V1_BOOTSTRAP_SECRET_NAME") or V1_BOOTSTRAP_SECRET_NAME,
     ]
-    if "codex" in selected_providers(env):
+    if "codex" in selected_providers(env) and "codex" not in degraded_providers(env):
         names.insert(0, env.get("SBX_CODEX_SECRET_NAME") or CODEX_SECRET_NAME)
     # SOR-117: the GitHub bridge is opt-in end to end. A named Modal Secret
     # holding GH_TOKEN/GITHUB_TOKEN mounts on the control app only when the
@@ -352,6 +368,9 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_CHECKPOINTS_DICT",
     # SOR-212/SOR-215: deploy-written runtime evidence Dict name.
     "SBX_RUNTIME_DICT",
+    # SOR-217: providers the deploy degraded — lets the app's Secret
+    # mounts skip a credential Secret that is knowingly absent.
+    "SBX_DEGRADED_PROVIDERS",
     *(
         f"SBX_{provider}_{suffix}"
         for provider in _PROVIDER_SEED_PROVIDERS

@@ -17,7 +17,6 @@ from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
 
 from sbx.config import BootstrapConfig, state_dir
 from sbx.deploy import deploy, read_deploy_state
-from sbx.errors import BootstrapError
 
 
 def _deploy(tmp_path, plane, *, env=None, config=None, **kwargs):
@@ -145,26 +144,35 @@ def test_wrong_version_host_cli_degrades_not_blocks(tmp_path) -> None:
     assert "pins 1.2.3" in agy_rec["detail"]
 
 
-def test_reproducible_provider_still_blocks_on_failure(tmp_path) -> None:
-    """The lane is local-assisted only: reproducible providers keep
-    hard-failing — a failed devin ``latest`` resolution aborts the deploy."""
+def test_reproducible_provider_resolution_failure_degrades(tmp_path) -> None:
+    """SOR-217: a failed ``latest`` resolution for any provider degrades it
+    instead of aborting the deploy — the lock records ``unresolved`` and the
+    runtime record carries the reason."""
     plane = FakePlane()
 
     def _fetch(url: str):
         from runtime.versions import VersionResolutionError
 
-        raise VersionResolutionError("devin", "upstream manifest unreachable")
+        if "manifest.json" in url:
+            raise VersionResolutionError("devin", "upstream manifest unreachable")
+        return {"version": "1.0.0"}  # npm dist-tag response for codex
 
     env = make_env(tmp_path, {"SBX_DEVIN_VERSION": "latest"})
-    with pytest.raises(BootstrapError) as excinfo:
-        _deploy(
-            tmp_path,
-            plane,
-            env=env,
-            config=BootstrapConfig(providers=("devin",)),
-            fetch=_fetch,
-        )
-    assert excinfo.value.code == "version_resolution_failed"
+    report, env, _ = _deploy(
+        tmp_path,
+        plane,
+        env=env,
+        config=BootstrapConfig(providers=("devin",)),
+        fetch=_fetch,
+    )
+    assert report.base_url
+    assert "devin" in (report.degraded_providers or {})
+    assert "upstream manifest unreachable" in report.degraded_providers["devin"]
+    assert plane.image_calls == []  # nothing buildable
+    rec = plane.dicts["sbx-runtime"]["runtime/devin"]
+    assert rec["status"] == "degraded"
+    state = read_deploy_state(env)
+    assert state["cli_versions"]["providers"]["devin"]["source"] == "unresolved"
 
 
 def test_runtime_evidence_write_failure_never_blocks(tmp_path) -> None:

@@ -81,6 +81,7 @@ class SmokeResult:
     run_id: str
     status: str
     elapsed_s: float
+    provider: str = ""
 
 
 def _resolve_base(cfg: ResolvedConfig) -> str:
@@ -127,6 +128,43 @@ def run_smoke(
     agent_id = run_id = ""
     try:
         with V1Client(base_url, token, transport=transport, timeout=30.0) as client:
+            # SOR-217: a smoke run occupies a real account slot and consumes
+            # provider quota — the provider catalog must show a schedulable
+            # (verified) account for the provider before creating anything.
+            # A pre-catalog deployment (no /v1/providers) falls through and
+            # lets ``create_agent``'s own errors decide.
+            try:
+                rows = client.providers().get("providers") or []
+            except ApiError:
+                rows = None
+            if rows is not None:
+                row = next(
+                    (r for r in rows if isinstance(r, Mapping) and r.get("provider") == provider),
+                    None,
+                )
+                conn = (row or {}).get("connection") or {}
+                runtime = (row or {}).get("runtime") or {}
+                if row is None or conn.get("status") != "connected":
+                    if row is None:
+                        detail = f"provider {provider!r} is not in the deployment catalog"
+                    else:
+                        detail = (
+                            f"provider {provider!r} connection is "
+                            f"{conn.get('status') or 'unknown'} "
+                            f"({conn.get('accounts_available', 0)}/"
+                            f"{conn.get('accounts_total', 0)} accounts schedulable)"
+                        )
+                        if runtime.get("status") in ("degraded", "disabled"):
+                            detail += f"; runtime {runtime['status']}" + (
+                                f" ({runtime['detail']})" if runtime.get("detail") else ""
+                            )
+                    raise BootstrapError(
+                        f"smoke needs a verified provider account — {detail}",
+                        hint="verify one with `sbx auth verify <account_id>` (or import "
+                        "a credential and rerun `sbx deploy`); `sbx status` lists "
+                        "account state. A smoke run consumes provider quota.",
+                        code="provider_not_ready",
+                    )
             try:
                 created = client.create_agent(prompt=prompt, provider=provider)
             except ApiError as exc:
@@ -206,4 +244,5 @@ def run_smoke(
         run_id=run_id,
         status=status,
         elapsed_s=round(timeout_s - max(0.0, deadline - monotonic()), 1),
+        provider=provider,
     )

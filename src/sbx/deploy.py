@@ -58,6 +58,9 @@ class DeployReport:
     key_created: bool
     key_rotated: bool = False
     cli_versions: dict[str, str] | None = None
+    # SOR-217: provider → why its runtime is degraded. The Platform deploy
+    # succeeded; these are provider-health gaps, never deploy failures.
+    degraded_providers: dict[str, str] | None = None
 
 
 def app_version() -> str:
@@ -170,16 +173,21 @@ def _ensure_basic_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, s
     return StepResult("secret:basic", True, f"{cfg.basic_secret} created (local copy saved)")
 
 
-def _require_codex_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, str]) -> StepResult:
-    """Preflight the shared Codex credential Secret.
+def _codex_secret_preflight(
+    cfg: BootstrapConfig, plane: Plane, env: Mapping[str, str]
+) -> tuple[StepResult, str | None]:
+    """Report the shared Codex credential Secret's presence.
 
-    Only runs when ``codex`` is a selected provider. When missing, the hint
-    reflects the local scan: no ``~/.codex/auth.json`` → ``codex login``
-    first; unusable file → its remediation; clean file → the create
-    command. Never exposes credential contents (SOR-115).
+    SOR-217: a missing provider credential degrades codex runtime health —
+    it is never a Platform deploy failure. Returns ``(step, reason)``;
+    ``reason`` is the degrade detail when the Secret is absent. The step
+    detail carries the remediation, which reflects the local scan: no
+    ``~/.codex/auth.json`` → ``codex login`` first; unusable file → its
+    remediation; clean file → the create command. Never exposes credential
+    contents (SOR-115).
     """
     if cfg.codex_secret in plane.list_secret_names():
-        return StepResult("secret:codex", False, f"{cfg.codex_secret} present")
+        return StepResult("secret:codex", False, f"{cfg.codex_secret} present"), None
     scan = scan_credentials(("codex",), env=env)[0]
     create = f'`modal secret create {cfg.codex_secret} CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"`'
     if scan.ok:
@@ -192,10 +200,9 @@ def _require_codex_secret(cfg: BootstrapConfig, plane: Plane, env: Mapping[str, 
             f"{scan.hint}; then create the Secret with {create}, or set "
             "SBX_CODEX_SECRET_NAME to an existing Secret"
         )
-    raise BootstrapError(
-        f"provider credential Secret {cfg.codex_secret!r} is missing ({scan.detail})",
-        hint=hint,
-        code="secret_missing",
+    return (
+        StepResult("secret:codex", False, f"{cfg.codex_secret} missing — {hint}"),
+        f"credential Secret {cfg.codex_secret!r} missing ({scan.detail})",
     )
 
 
@@ -249,17 +256,22 @@ def _require_github_app_secret(cfg: BootstrapConfig, existing: set[str]) -> Step
     )
 
 
-def _require_account_secrets(cfg: BootstrapConfig, plane: Plane, existing: set[str]) -> StepResult:
-    """Fail-before-write check for enabled providers' account Secrets.
+def _check_account_secrets(
+    cfg: BootstrapConfig, plane: Plane, existing: set[str]
+) -> tuple[StepResult, dict[str, str]]:
+    """Degrade-check enabled providers' account Secrets (SOR-217).
 
     Every enabled-provider account record that names a Secret needs it at
     sandbox create. Deployment-managed names (``<account_secret_prefix><id>``)
     are satisfied by a stored ``credential/<id>`` blob — the materialize step
     below recreates them — while anything else must already exist. Accounts
     of providers that are not enabled carry no prerequisite.
+
+    Missing Secrets degrade the affected provider — they never abort the
+    Platform deploy. Returns ``(step, {provider: reason})``.
     """
     if not plane.has_dict(cfg.accounts_dict):
-        return StepResult("credentials:preflight", False, "no account registry yet")
+        return StepResult("credentials:preflight", False, "no account registry yet"), {}
     try:
         items = plane.dict_items(cfg.accounts_dict)
     except Exception as exc:
@@ -274,12 +286,13 @@ def _require_account_secrets(cfg: BootstrapConfig, plane: Plane, existing: set[s
         for key, _ in items
         if isinstance(key, str) and key.startswith("credential/")
     }
-    missing: list[str] = []
+    missing_by_provider: dict[str, list[str]] = {}
     referenced = 0
     for key, value in items:
         if not (isinstance(key, str) and key.startswith("account/") and isinstance(value, dict)):
             continue
-        if str(value.get("provider") or "") not in cfg.providers:
+        provider = str(value.get("provider") or "")
+        if provider not in cfg.providers:
             continue  # provider not enabled — its credentials are not a prerequisite
         if str(value.get("status") or "active") == "disabled":
             continue  # never scheduled, so its Secret is never mounted
@@ -292,24 +305,37 @@ def _require_account_secrets(cfg: BootstrapConfig, plane: Plane, existing: set[s
         account_id = key[len("account/") :]
         if name == f"{cfg.account_secret_prefix}{account_id}" and account_id in blobs:
             continue  # materialized from the stored blob below
-        missing.append(f"{name} (account {account_id})")
-    if missing:
+        missing_by_provider.setdefault(provider, []).append(f"{name} (account {account_id})")
+    if missing_by_provider:
+        missing = [
+            f"{name} [{provider}]"
+            for provider, names in missing_by_provider.items()
+            for name in names
+        ]
         preview = ", ".join(sorted(missing)[:5])
         if len(missing) > 5:
             preview += f", +{len(missing) - 5} more"
-        raise BootstrapError(
-            f"missing account credential Secret(s): {preview}",
-            hint="import the credential with `python -m control.onboarding --modal import "
-            "--provider <provider> --from <file>`, or create the Secret with "
-            "`modal secret create`, or disable/remove the account — then rerun `sbx deploy`",
-            code="account_secret_missing",
+        reasons = {
+            provider: f"account credential Secret(s) missing: {', '.join(sorted(names))}"
+            for provider, names in missing_by_provider.items()
+        }
+        return (
+            StepResult(
+                "credentials:preflight",
+                False,
+                f"missing account credential Secret(s): {preview} — "
+                "import with `python -m control.onboarding --modal import "
+                "--provider <provider> --from <file>`, or create the Secret "
+                "with `modal secret create`, then rerun `sbx deploy`",
+            ),
+            reasons,
         )
     detail = (
         f"{referenced} referenced account Secret(s) satisfied"
         if referenced
         else "no account Secrets required"
     )
-    return StepResult("credentials:preflight", False, detail)
+    return StepResult("credentials:preflight", False, detail), {}
 
 
 def _resolve_cli_versions(
@@ -319,6 +345,8 @@ def _resolve_cli_versions(
     versions_lock: str | None,
     fetch: Any = None,
     host_probe: Any = None,
+    degraded: dict[str, list[str]] | None = None,
+    unbuildable: set[str] | None = None,
 ) -> tuple[StepResult, Any, Path]:
     """Resolve + freeze provider CLI versions for this deployment (SOR-175).
 
@@ -329,6 +357,11 @@ def _resolve_cli_versions(
     verbatim — the rollback lane. The outcome freezes to
     ``<state>/cli-versions.json`` as the deployment's version evidence and
     is passed to every image build so they all carry identical versions.
+
+    SOR-217: a provider that cannot resolve degrades rather than fails the
+    deploy — ``blocked`` entries are grafted into the frozen lock as
+    ``unresolved`` evidence, and the provider is recorded in ``degraded``
+    (+ ``unbuildable`` when given) so the caller skips its image build.
     """
     from runtime.image import load_packages
     from runtime.provider_runtime import spec_or_none
@@ -341,6 +374,8 @@ def _resolve_cli_versions(
         write_lock,
     )
 
+    degraded = degraded if degraded is not None else {}
+    unbuildable = unbuildable if unbuildable is not None else set()
     providers = set(config.providers) | {"codex"}
     # SOR-212/SOR-215: the local-assisted lane (host-binary providers, today
     # agy/grok) may not block a Platform deploy. A provider whose build-host
@@ -352,10 +387,13 @@ def _resolve_cli_versions(
         rspec = spec_or_none(provider)
         if rspec is not None and rspec.local_assisted and rspec.host_bin(env) is None:
             providers.discard(provider)
-            blocked[provider] = (
+            reason = (
                 f"{rspec.cli} CLI not found on the build host "
                 f"(set {rspec.host_bin_env} or install it)"
             )
+            blocked[provider] = reason
+            degraded.setdefault(provider, []).append(reason)
+            unbuildable.add(provider)
     while True:
         try:
             resolved = resolve_versions(
@@ -369,11 +407,10 @@ def _resolve_cli_versions(
             )
             break
         except VersionResolutionError as exc:
-            rspec = spec_or_none(exc.provider)
-            # A local-assisted provider that fails resolution (e.g. a host
-            # CLI whose ``--version`` probe fails) degrades rather than
-            # fails the deploy; reproducible lanes still hard-fail.
-            if rspec is None or not rspec.local_assisted or exc.provider not in providers:
+            # SOR-217: provider version resolution is provider health, not
+            # Platform health — any provider that cannot resolve degrades
+            # (the local-assisted lane degraded this way since SOR-215).
+            if exc.provider not in providers:
                 raise BootstrapError(
                     f"cannot resolve provider CLI versions: {exc}",
                     hint=exc.hint
@@ -384,6 +421,8 @@ def _resolve_cli_versions(
                 ) from exc
             providers.discard(exc.provider)
             blocked[exc.provider] = str(exc)
+            degraded.setdefault(exc.provider, []).append(str(exc))
+            unbuildable.add(exc.provider)
     if blocked:
         raw_spec = load_packages()
         entries = dict(resolved.entries)
@@ -542,17 +581,25 @@ def deploy(
     workspace = _require_modal_auth(plane, login=modal_login)
     steps.append(StepResult("modal-auth", False, f"workspace {workspace}"))
 
-    # Preflight: everything that must exist before the first write, so a
-    # missing prerequisite aborts with zero resources created. Credential
-    # requirements derive from the configured providers only (SOR-116): the
-    # shared Codex Secret is only required when codex is a selected provider
-    # (``control.config.app_secret_names``) — unselected providers never
-    # block onboarding (SOR-115) — and only enabled providers' referenced
-    # account Secrets are checked.
+    # Preflight (SOR-217): Platform prerequisites — Modal auth above and
+    # the opt-in GitHub bridge gates below — still fail before the first
+    # write. Provider credentials are provider health, not Platform
+    # health: a missing provider Secret degrades the provider (recorded in
+    # ``degraded`` → its ``runtime/<provider>`` record + the app-level
+    # Secret mount skipped via ``SBX_DEGRADED_PROVIDERS``) instead of
+    # aborting the deploy.
+    degraded: dict[str, list[str]] = {}
+    unbuildable: set[str] = set()  # providers whose image cannot be built
     existing_secrets = plane.list_secret_names()
     if "codex" in config.providers:
-        steps.append(_require_codex_secret(config, plane, env))
-    steps.append(_require_account_secrets(config, plane, existing_secrets))
+        step, reason = _codex_secret_preflight(config, plane, env)
+        steps.append(step)
+        if reason:
+            degraded.setdefault("codex", []).append(reason)
+    step, account_reasons = _check_account_secrets(config, plane, existing_secrets)
+    steps.append(step)
+    for provider, reason in account_reasons.items():
+        degraded.setdefault(provider, []).append(reason)
     github_step = _require_github_secret(config, existing_secrets)
     if github_step is not None:
         steps.append(github_step)
@@ -560,15 +607,22 @@ def deploy(
     if github_app_step is not None:
         steps.append(github_app_step)
 
-    # SOR-175: resolve + freeze provider CLI versions once, before any write
-    # — a ``latest``/host-probe failure aborts with zero resources touched.
-    # SOR-210: a platform-only deploy (no providers, no explicit lock replay)
-    # skips resolution entirely — provider CLI versions are not a gate.
+    # SOR-175: resolve + freeze provider CLI versions once, before any
+    # write. SOR-210: a platform-only deploy (no providers, no explicit
+    # lock replay) skips resolution entirely — provider CLI versions are
+    # not a gate. SOR-217: a provider that cannot resolve degrades — the
+    # deploy continues with the frozen evidence.
     resolved_versions: Any = None
     versions_lock_path: Path | None = None
     if config.providers or versions_lock or env.get("SBX_VERSIONS_LOCK"):
         versions_step, resolved_versions, versions_lock_path = _resolve_cli_versions(
-            config, env, versions_lock=versions_lock, fetch=fetch, host_probe=host_probe
+            config,
+            env,
+            versions_lock=versions_lock,
+            fetch=fetch,
+            host_probe=host_probe,
+            degraded=degraded,
+            unbuildable=unbuildable,
         )
         steps.append(versions_step)
     else:
@@ -612,18 +666,29 @@ def deploy(
             else None
         )
         if problem is not None:
+            degraded.setdefault(provider, []).append(problem)
+            unbuildable.add(provider)
+        if provider in unbuildable:
             steps.append(
                 StepResult(
                     f"image:{provider}",
                     False,
-                    f"{image_name} not built — {problem}",
+                    f"{image_name} not built — {'; '.join(degraded[provider])}",
                 )
             )
-            status, detail = "degraded", problem
         else:
-            plane.ensure_image(provider, image_name, spec=resolved_versions.spec)
-            steps.append(StepResult(f"image:{provider}", True, image_name))
-            status, detail = "ready", ""
+            try:
+                plane.ensure_image(provider, image_name, spec=resolved_versions.spec)
+                steps.append(StepResult(f"image:{provider}", True, image_name))
+            except BootstrapError as exc:
+                # SOR-217: a provider image build failure degrades the
+                # provider — the Platform deploy continues.
+                degraded.setdefault(provider, []).append(f"image build failed: {exc}")
+                steps.append(
+                    StepResult(f"image:{provider}", False, f"{image_name} not built — {exc}")
+                )
+        status = "degraded" if provider in degraded else "ready"
+        detail = "; ".join(degraded.get(provider, []))
         record = ProviderRuntimeRecord(
             provider=provider,
             status=status,
@@ -639,8 +704,21 @@ def deploy(
             except BootstrapError:
                 pass  # evidence writes never block the deploy
 
-    base_url = plane.deploy_app(config.modal_app_name, env=config.deploy_env())
-    steps.append(StepResult("app", True, f"{config.modal_app_name} → {base_url}"))
+    # SOR-217: degraded providers skip their app-level credential Secret
+    # mount (``control.config.app_secret_names``) — ``modal deploy`` must
+    # not fail on a Secret the deploy already knows is absent.
+    deploy_env = config.deploy_env()
+    if degraded:
+        deploy_env["SBX_DEGRADED_PROVIDERS"] = ",".join(sorted(degraded))
+    base_url = plane.deploy_app(config.modal_app_name, env=deploy_env)
+    steps.append(
+        StepResult(
+            "app",
+            True,
+            f"{config.modal_app_name} → {base_url}"
+            + (f" ({len(degraded)} provider(s) degraded)" if degraded else ""),
+        )
+    )
 
     token, _ = load_or_create_key(key_path(env))
     _probe_v1(base_url, token, transport=transport, attempts=probe_attempts, sleep=sleep)
@@ -672,6 +750,9 @@ def deploy(
         key_created=key_created,
         key_rotated=key_rotated,
         cli_versions=resolved_versions.cli_versions() if resolved_versions else None,
+        degraded_providers=(
+            {p: "; ".join(reasons) for p, reasons in sorted(degraded.items())} if degraded else None
+        ),
     )
 
 
