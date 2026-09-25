@@ -13,6 +13,8 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime, timedelta
 
+from control.api_v1.lifecycle import InMemoryRunStates, LedgerRunStates
+from control.run_store import InMemoryRunStore, RunLedger
 from control.store import SessionRecord
 from control.workflow_store import InMemoryWorkflowStore, WorkflowTaskRecord
 
@@ -225,3 +227,98 @@ class TestAllBindings:
         got = store.all_bindings()
         assert set(got) == {f"ag-{i}" for i in range(5)}
         assert got["ag-3"] == store.for_agent("ag-3")
+
+
+class CountingRunStore(InMemoryRunStore):
+    """Instrument the run-ledger reads a Modal Dict bills as round-trips."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gets = 0
+        self.lists = 0
+
+    def get(self, agent_id, n):
+        self.gets += 1
+        return super().get(agent_id, n)
+
+    def list(self, agent_id):
+        self.lists += 1
+        return super().list(agent_id)
+
+    def reset(self) -> None:
+        self.gets = 0
+        self.lists = 0
+
+
+class CountingRunStates(InMemoryRunStates):
+    """Same instrumentation for a separate ``RunStateStore`` seam."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gets = 0
+        self.lists = 0
+
+    def get(self, agent_id, n):
+        self.gets += 1
+        return super().get(agent_id, n)
+
+    def list(self, agent_id):
+        self.lists += 1
+        return super().list(agent_id)
+
+
+def _install_counting_ledger(v1_env) -> tuple[RunLedger, CountingRunStore]:
+    """Point the plane, the v1 ledger seam and run_states at one counter."""
+    store = CountingRunStore()
+    ledger = RunLedger(store)
+    v1_env.app.state.plane.run_ledger = ledger
+    v1_env.app.state.run_ledger = ledger
+    v1_env.app.state.run_states = LedgerRunStates(ledger)
+    return ledger, store
+
+
+class TestRunListingSinglePass:
+    """SOR-199 regression guard for the runs-listing N+1.
+
+    ``GET /v1/agents/{id}/runs`` must pay one store pass — on
+    ``modal.Dict`` each primitive ``get``/``list`` is a network
+    round-trip, and the serial per-run ``ledger.get`` made agent-detail
+    principal data miss the 2s gate at 7 runs.
+    """
+
+    def test_shared_ledger_one_store_pass(self, client, auth, v1_env) -> None:
+        ledger, store = _install_counting_ledger(v1_env)
+        agent_id = _seed_agent(v1_env, 0, owner=v1_env.agents_key_id)
+        for n in range(1, 8):
+            ledger.begin(agent_id=agent_id, n=n, status="RUNNING")
+            ledger.finish(agent_id, n, status="FINISHED", result_text=f"done {n}")
+
+        store.reset()
+        resp = client.get(f"/v1/agents/{agent_id}/runs", headers=auth)
+        assert resp.status_code == 200
+        runs = resp.json()["runs"]
+        assert [r["id"] for r in runs] == [f"run-{n}" for n in range(1, 8)]
+        assert all(r["status"] == "FINISHED" for r in runs)
+        # One listing pass; zero serial per-run reads.
+        assert store.lists == 1
+        assert store.gets == 0
+
+    def test_separate_run_states_lists_once(self, client, auth, v1_env) -> None:
+        ledger, store = _install_counting_ledger(v1_env)
+        states = CountingRunStates()
+        v1_env.app.state.run_states = states
+        agent_id = _seed_agent(v1_env, 1, owner=v1_env.agents_key_id)
+        for n in range(1, 4):
+            ledger.begin(agent_id=agent_id, n=n, status="RUNNING")
+            ledger.finish(agent_id, n, status="FINISHED", result_text=f"done {n}")
+        # A queued run the ledger has not seen (SOR-82 A2 window).
+        states.begin(agent_id, 4, status="CREATING")
+
+        store.reset()
+        runs = client.get(f"/v1/agents/{agent_id}/runs", headers=auth).json()["runs"]
+        assert [r["id"] for r in runs] == ["run-1", "run-2", "run-3", "run-4"]
+        assert runs[-1]["status"] == "CREATING"
+        assert store.lists == 1
+        assert store.gets == 0
+        assert states.lists == 1
+        assert states.gets == 0
