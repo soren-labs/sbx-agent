@@ -58,6 +58,7 @@ from control.api_v1.lifecycle import (
 )
 from control.api_v1.schemas import (
     VALID_SCOPES,
+    ConsoleGrantExchangeRequest,
     CreateAccountRequest,
     CreateAgentRequest,
     CreateApiKeyRequest,
@@ -73,7 +74,7 @@ from control.api_v1.schemas import (
     api_key_public,
     usage_public,
 )
-from control.api_v1.state import AgentMeta, V1State
+from control.api_v1.state import CONSOLE_GRANT_TTL_S, AgentMeta, V1State
 from control.api_v1.workflows import WorkflowService
 from control.artifact_ops import credential_forbidden_values, snapshot_workspace_artifact
 from control.artifacts import (
@@ -90,7 +91,7 @@ from control.capabilities import (
     declared_snapshot,
 )
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
-from control.config import TERMINAL_STATUSES, selected_providers
+from control.config import TERMINAL_STATUSES, env_int, selected_providers
 from control.credlifecycle import CredentialLifecycleService, CredentialRefresher
 from control.credsync import TAG_CRED_RUN_FP, CredentialSync
 from control.devin_pool import ScheduleRefused
@@ -2568,6 +2569,41 @@ def delete_api_key(
     if not store.revoke(key_id):
         raise not_found("api key not found")
     return Response(status_code=204)
+
+
+# -------------------------------------------------------------- console grants
+# SOR-211: the browser-admin handoff. `sbx open` mints a single-use, short-TTL
+# ticket with the caller's admin key; the ticket rides the URL fragment
+# (never sent to the server) and the Console redeems it for a fresh `sbx_`
+# key. The long-lived bootstrap key never appears in a URL.
+
+
+@router.post("/console/grant", status_code=201)
+def create_console_grant(
+    key: ApiKey = Depends(admin_key),
+    v1: V1State = Depends(get_v1_state),
+) -> dict[str, Any]:
+    ttl = env_int("SBX_CONSOLE_GRANT_TTL_S", CONSOLE_GRANT_TTL_S)
+    ticket, expires_at = v1.console_grants.create(ttl)
+    return {"grant": ticket, "expires_in": ttl, "expires_at": expires_at}
+
+
+@router.post("/console/exchange", status_code=201)
+def exchange_console_grant(
+    body: ConsoleGrantExchangeRequest,
+    v1: V1State = Depends(get_v1_state),
+    store: ApiKeyStore = Depends(get_key_store),
+) -> dict[str, Any]:
+    """Redeem a one-time grant ticket for a minted admin+agents key.
+
+    Deliberately unauthenticated — the ticket itself is the credential —
+    but single-use and short-lived, so an expired or replayed ticket is a
+    clean 401, not a leaked key.
+    """
+    if not v1.console_grants.consume(body.grant):
+        raise V1ApiError(401, "grant_invalid", "grant is invalid, expired, or already used")
+    record, token = store.create(label="console handoff", scopes=("agents", "admin"))
+    return {**api_key_public(record), "key": token}
 
 
 # ---------------------------------------------------------------------------

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 
-from sbx.cli import main
 from sbx_fakes import FakePlane, make_v1, write_state
+
+from sbx.cli import main
 
 
 def _args(tmp_path):
@@ -117,7 +118,10 @@ def test_smoke_via_cli(tmp_path, capsys) -> None:
     from sbx.config import BootstrapConfig, key_path, save
 
     save(
-        BootstrapConfig(api_base_url="https://ws--sbx-control-fastapi-app.modal.run"),
+        BootstrapConfig(
+            providers=("codex",),
+            api_base_url="https://ws--sbx-control-fastapi-app.modal.run",
+        ),
         tmp_path / "config.toml",
     )
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
@@ -189,3 +193,88 @@ def test_error_is_machine_readable(tmp_path, capsys) -> None:
 
 def test_python_m_entrypoint() -> None:
     import sbx.__main__  # noqa: F401 — `python -m sbx` resolves to cli.main
+
+
+def test_deploy_implicit_init_writes_config(tmp_path, capsys) -> None:
+    """SOR-209: `sbx deploy` on a fresh checkout writes config.toml itself."""
+    transport, _ = make_v1()
+    rc = main(
+        [*_args(tmp_path), "deploy", "--json"],
+        plane=FakePlane(),
+        transport=transport,
+        sleep=lambda s: None,
+    )
+    assert rc == 0
+    assert (tmp_path / "config.toml").is_file()
+    payload = json.loads(capsys.readouterr().out)
+    steps = {s["name"]: s for s in payload["steps"]}
+    assert steps["config"]["changed"]
+    assert payload["ok"]
+
+
+def test_deploy_modal_auth_resumes_via_login(tmp_path, capsys) -> None:
+    """SOR-209: an unauthenticated plane completes `modal token new` inside
+    the same `sbx deploy` invocation instead of aborting."""
+    plane = FakePlane(workspace=None)
+    called: list[int] = []
+
+    def login() -> str:
+        called.append(1)
+        return "ws-after-login"
+
+    rc = main(
+        [*_args(tmp_path), "deploy", "--json"],
+        plane=plane,
+        transport=make_v1()[0],
+        sleep=lambda s: None,
+        modal_login=login,
+    )
+    assert rc == 0
+    assert called == [1]
+
+
+def test_deploy_noninteractive_still_fails_fast_on_auth(tmp_path, capsys) -> None:
+    """CI/non-interactive mode: no tty, no login lane — the original
+    ``modal_auth_missing`` failure is preserved."""
+    rc = main(
+        [*_args(tmp_path), "deploy", "--json"],
+        plane=FakePlane(workspace=None),
+        transport=make_v1()[0],
+        sleep=lambda s: None,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    payload = json.loads(err.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "modal_auth_missing"
+
+
+def test_open_via_cli_prints_one_time_url(tmp_path, capsys) -> None:
+    """SOR-211: `sbx open` hands the browser a one-time grant — the
+    long-lived sbx_ key never appears in the URL."""
+    from sbx.config import BootstrapConfig, key_path, save
+
+    save(
+        BootstrapConfig(api_base_url="https://ws--sbx-control-fastapi-app.modal.run"),
+        tmp_path / "config.toml",
+    )
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    key_path({"SBX_STATE_DIR": str(tmp_path / "state")}).write_text("sbx_cli\n")
+    rc = main(
+        [*_args(tmp_path), "open", "--print"],
+        plane=FakePlane(),
+        transport=make_v1()[0],
+    )
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert out == "https://ws--sbx-control-fastapi-app.modal.run/#/connect?grant=sbxg_test_ticket"
+    assert "sbx_cli" not in out
+
+
+def test_open_no_deployment_is_actionable(tmp_path, capsys) -> None:
+    rc = main([*_args(tmp_path), "open", "--json", "--print"], plane=FakePlane())
+    assert rc == 1
+    err = capsys.readouterr().err
+    payload = json.loads(err.strip().splitlines()[-1])
+    assert payload["error"]["code"] == "no_deployment"
+    assert "sbx deploy" in payload["error"]["hint"]

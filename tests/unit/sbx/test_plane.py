@@ -10,6 +10,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+
 from sbx.errors import BootstrapError
 from sbx.plane import ModalPlane
 

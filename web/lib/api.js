@@ -148,6 +148,11 @@ export const api = {
   createKey: (body) => request("POST", "/v1/api-keys", { body }),
   revokeKey: (id) => request("DELETE", `/v1/api-keys/${enc(id)}`),
 
+  // SOR-211: redeem a one-time `sbx open` grant ticket for a minted key.
+  // Unauthenticated by design — key:"" suppresses any stored Bearer.
+  exchangeGrant: (grant) =>
+    request("POST", "/v1/console/exchange", { body: { grant }, key: "" }),
+
   githubStatus: () => request("GET", "/v1/github/app"),
   githubAuthorize: () => request("POST", "/v1/github/app/authorize"),
   githubCallback: (body) => request("POST", "/v1/github/app/authorize/callback", { body }),

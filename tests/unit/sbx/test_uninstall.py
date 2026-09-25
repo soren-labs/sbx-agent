@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from sbx_fakes import FakePlane, make_cfg, make_env, write_state
+
 from sbx.config import key_path
 from sbx.errors import BootstrapError
 from sbx.keys import load_or_create_key
 from sbx.plane import SandboxInfo
 from sbx.uninstall import uninstall
-from sbx_fakes import FakePlane, make_cfg, make_env, write_state
 
 
 def _deployed(tmp_path):

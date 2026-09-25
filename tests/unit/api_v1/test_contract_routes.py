@@ -40,15 +40,20 @@ def _app_ops(app) -> set[tuple[str, str]]:
 
 def test_contract_routes_all_registered(v1_env) -> None:
     contract_ops = _contract_ops()
-    assert len(contract_ops) == 38  # 31 paths, some with two methods
+    assert len(contract_ops) == 40  # 33 paths, some with two methods
     app_ops = _app_ops(v1_env.app)
     missing = contract_ops - app_ops
     assert not missing, f"contract routes not implemented: {sorted(missing)}"
 
 
+# Routes that are deliberately unauthenticated: the grant ticket itself
+# is the credential (SOR-211).
+UNAUTHENTICATED_OPS = {("post", "/v1/console/exchange")}
+
+
 @pytest.mark.parametrize(
     "method,path",
-    sorted(_contract_ops()),
+    sorted(op for op in _contract_ops() if op not in UNAUTHENTICATED_OPS),
 )
 def test_every_route_rejects_missing_auth(client: TestClient, method: str, path: str) -> None:
     concrete = re.sub(r"\{[^}]+\}", "missing", path)

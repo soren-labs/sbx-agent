@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from sbx_fakes import make_cfg, make_env, make_v1
+
 from sbx.config import BootstrapConfig, key_path
 from sbx.errors import BootstrapError
 from sbx.keys import load_or_create_key
 from sbx.smoke import run_smoke
-from sbx_fakes import make_cfg, make_env, make_v1
 
 
 def _cfg(tmp_path, token=None):
@@ -15,7 +16,10 @@ def _cfg(tmp_path, token=None):
     if token:
         load_or_create_key(key_path(env))  # creates the state dir + file
         key_path(env).write_text(token + "\n")
-    config = BootstrapConfig(api_base_url="https://ws--sbx-control-fastapi-app.modal.run")
+    config = BootstrapConfig(
+        providers=("codex",),
+        api_base_url="https://ws--sbx-control-fastapi-app.modal.run",
+    )
     cfg = make_cfg(tmp_path, env=env, config=config)
     return cfg, env
 

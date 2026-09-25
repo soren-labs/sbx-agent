@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
+
 from sbx.config import BootstrapConfig, key_path
 from sbx.deploy import deploy
 from sbx.doctor import failed, run_doctor
 from sbx.errors import BootstrapError
 from sbx.keys import generate_key, load_or_create_key
 from sbx.plane import SandboxInfo
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1, write_state
 
 
 def _healthy(tmp_path, token=None, providers=("codex",)):
@@ -306,12 +307,16 @@ def test_doctor_devin_only_never_requires_codex_secret(tmp_path) -> None:
     assert provider_check.ok and "devin" in provider_check.detail
 
 
-def test_doctor_empty_providers_fail_provider_config(tmp_path) -> None:
+def test_doctor_empty_providers_ok_platform_only(tmp_path) -> None:
+    """SOR-210: providers=() is a valid platform-only deployment — doctor
+    reports it plainly instead of failing provider-config."""
     cfg, plane, env, token = _healthy(tmp_path, providers=())
     transport, _ = make_v1(token=token)
     checks = run_doctor(cfg, plane, env=env, transport=transport)
     bad = failed(checks)
-    assert any(c.name == "provider-config" for c in bad)
+    assert not any(c.name == "provider-config" for c in bad)
+    provider_check = next(c for c in checks if c.name == "provider-config")
+    assert provider_check.ok and "platform-only" in provider_check.detail
 
 
 def test_doctor_ignores_disabled_provider_account_secret(tmp_path) -> None:
