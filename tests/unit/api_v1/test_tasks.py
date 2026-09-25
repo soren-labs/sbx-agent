@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -324,6 +325,35 @@ def test_task_auto_account_skips_ineligible(
     assert exe["account_id"] == "acct-codex-1"
     reasons = {c["account_id"]: c["reasons"] for c in exe["candidates"]}
     assert "at_capacity" in reasons["acct-codex-busy"]
+
+
+@needs_git
+def test_task_auto_applies_lru_pick_not_listing_order(
+    client: TestClient, auth: dict[str, str], credentialed: V1Env, git_repo
+) -> None:
+    """The recorded LRU pick is the account that actually runs.
+
+    Listing order (sorted account id) and LRU order disagree here:
+    ``acct-codex-1`` sorts first but was used most recently, so ``auto``
+    must create on the never-used account — and the durable ``resolved``
+    must agree with the agent that was created.
+    """
+    url, _ = git_repo
+    seed_account(
+        credentialed,
+        "acct-codex-2",
+        provider="codex",
+        models=("gpt-5.6-luna",),
+        secret_name="s",
+    )
+    credentialed.registry.touch("acct-codex-1", datetime.now(UTC).isoformat())
+    resp = client.post("/v1/tasks", json=_task_body(url), headers=auth)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    exe = body["task"]["resolved"]["execution"]
+    assert exe["account_id"] == "acct-codex-2"
+    assert exe["evidence"]["account_id"]["source"] == "lru"
+    assert body["agent"]["account_id"] == "acct-codex-2"
 
 
 @needs_git

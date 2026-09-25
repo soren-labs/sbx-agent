@@ -176,6 +176,33 @@ def _candidate_spec(candidate: taskmod.AccountCandidate) -> AgentSpec:
     )
 
 
+def _resolved_for(
+    resolution: taskmod.TaskResolution, candidate: taskmod.AccountCandidate
+) -> dict[str, Any]:
+    """Durable resolved evidence for the candidate that actually ran.
+
+    The recorded pick is attempted first, but a retryable scheduling
+    refusal can fail over to a later candidate — the persisted ``resolved``
+    must then describe the real account/model/effort, not the advisory one.
+    """
+    resolved = resolution.resolved_payload()
+    if candidate is resolution.execution.pick:
+        return resolved
+    exe = resolved["execution"]
+    exe["provider"] = candidate.provider
+    exe["account_id"] = candidate.account_id
+    exe["model"] = candidate.model
+    exe["reasoning_effort"] = candidate.effort
+    evidence = exe["evidence"]
+    evidence["provider"]["resolved"] = candidate.provider
+    evidence["account_id"]["resolved"] = candidate.account_id
+    evidence["model"]["resolved"] = candidate.model
+    evidence["model"]["source"] = candidate.model_source
+    evidence["reasoning_effort"]["resolved"] = candidate.effort
+    evidence["reasoning_effort"]["source"] = candidate.effort_source
+    return resolved
+
+
 def _agent_request(
     body: CreateTaskRequest,
     agent: AgentSpec,
@@ -460,9 +487,18 @@ def _create_task_once(
     if contract is not None and _routes._ledger(plane) is None:
         raise V1ApiError(409, "session_not_runnable", "output contracts require the run ledger")
 
-    candidates = [c for c in resolution.execution.candidates if c.eligible]
-    if not candidates:
+    eligible = [c for c in resolution.execution.candidates if c.eligible]
+    if not eligible:
         raise V1ApiError(409, "account_unavailable", "no eligible account")
+    # The recorded pick is authoritative: attempt it first, then fail over
+    # in the same least-recently-used order — never registry listing order —
+    # so the account that actually runs matches the durable resolved record.
+    pick = resolution.execution.pick
+    rest = sorted(
+        (c for c in eligible if c is not pick),
+        key=lambda c: (c.last_used_at or "", c.account_id),
+    )
+    candidates = ([pick] if pick is not None else []) + rest
     last_error: V1ApiError | None = None
     for candidate in candidates:
         agent = _candidate_spec(candidate)
@@ -504,7 +540,7 @@ def _create_task_once(
             owner=key.id,
             status="queued",
             request=_spec(body),
-            resolved=resolution.resolved_payload(),
+            resolved=_resolved_for(resolution, candidate),
             agent_id=result["agent"]["id"],
             run_id=result["run"]["id"],
             created_at=taskmod._iso_now(),
