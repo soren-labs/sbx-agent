@@ -199,6 +199,11 @@ class CreateRunRequest(BaseModel):
     # workflow metadata shape as agent create.
     metadata: WorkflowMetadata | None = None
     output_contract: OutputContract | None = None
+    # SOR-224: what a busy agent does with a follow-up. ``queue`` (default)
+    # parks the run durably as QUEUED and drains FIFO; ``reject`` keeps the
+    # pre-queue 409 ``turn_in_progress`` refusal for callers that prefer to
+    # schedule the retry themselves.
+    on_busy: Literal["queue", "reject"] = "queue"
 
 
 class CreateArtifactRequest(BaseModel):

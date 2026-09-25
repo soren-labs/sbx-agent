@@ -67,11 +67,14 @@ class TestRuns:
         agent = create_agent(client, auth)["agent"]
         resp = client.post(
             f"/v1/agents/{agent['id']}/runs",
-            json={"prompt": {"text": "concurrent"}},
+            # SOR-224: the default is durable QUEUED — ``reject`` keeps the
+            # pre-queue 409 refusal for callers that retry themselves.
+            json={"prompt": {"text": "concurrent"}, "on_busy": "reject"},
             headers=auth,
         )
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "turn_in_progress"
+        assert resp.json()["error"]["retry_after"] is not None
         # cleanup: cancel the in-flight run
         client.post(f"/v1/agents/{agent['id']}/runs/run-1/cancel", headers=auth)
 

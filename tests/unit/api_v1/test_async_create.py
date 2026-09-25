@@ -159,7 +159,9 @@ class TestAsyncCreate:
         assert entered.wait(timeout=5)
         resp = client.post(
             f"/v1/agents/{agent_id}/runs",
-            json={"prompt": {"text": "too early"}},
+            # SOR-224: the default is durable QUEUED — ``reject`` keeps the
+            # pre-queue 409 refusal this test asserts.
+            json={"prompt": {"text": "too early"}, "on_busy": "reject"},
             headers=auth,
         )
         assert resp.status_code == 409

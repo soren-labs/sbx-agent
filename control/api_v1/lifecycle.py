@@ -33,6 +33,7 @@ RUN_TERMINAL = TERMINAL_RUN_STATUSES
 # Monotonic run progression; terminal states are sticky and never rewritten.
 _RUN_ORDER = {
     "CREATING": 0,
+    "QUEUED": 0,
     "RUNNING": 1,
     "FINISHED": 2,
     "ERROR": 2,
@@ -434,6 +435,17 @@ def _prepare_workspace(
         workspaces.prepare(handle, session_id, spec, git=git)
 
 
+def _drain_queued_best_effort(plane: Any, session_id: str) -> None:
+    """SOR-224: every run-1 terminal path in the worker lets the durable
+    queue head dispatch — a failed run-1 must not strand queued follow-ups."""
+    drain = getattr(plane, "drain_queued", None)
+    if callable(drain):
+        try:
+            drain(session_id)
+        except Exception:
+            pass
+
+
 def _first_run_worker(
     plane: Any,
     v1: Any,
@@ -485,6 +497,7 @@ def _first_run_worker(
     except KeyError:
         _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
         _release_session_lease(v1, session_id)
+        _drain_queued_best_effort(plane, session_id)
         return
     except SessionConflict as exc:
         rec = plane.get(session_id)
@@ -493,6 +506,7 @@ def _first_run_worker(
         else:
             _persist_run1_terminal(run_states, session_id, "ERROR", _runtime_error(exc))
         _release_session_lease(v1, session_id)
+        _drain_queued_best_effort(plane, session_id)
         return
     except Exception as exc:
         _persist_run1_terminal(run_states, session_id, "ERROR", _runtime_error(exc))
@@ -505,6 +519,7 @@ def _first_run_worker(
             except Exception:
                 pass
         _release_session_lease(v1, session_id)
+        _drain_queued_best_effort(plane, session_id)
         return
     finally:
         if on_provisioned is not None:
@@ -522,6 +537,7 @@ def _first_run_worker(
             state = run_states.get(session_id, 1)
             if state is not None and state.status in RUN_TERMINAL:
                 plane.discard_queued_first_turn(session_id)
+                _drain_queued_best_effort(plane, session_id)
                 return
             _prepare_workspace(
                 plane,
@@ -546,6 +562,7 @@ def _first_run_worker(
             except Exception:
                 pass
             _release_session_lease(v1, session_id)
+            _drain_queued_best_effort(plane, session_id)
             return
         # SOR-127: cache fill — a successful cold prepare means this
         # workspace's environment can be snapshotted for reuse. Best-effort:
@@ -563,6 +580,7 @@ def _first_run_worker(
         state = run_states.get(session_id, 1)
         if state is not None and state.status in RUN_TERMINAL:
             plane.discard_queued_first_turn(session_id)
+            _drain_queued_best_effort(plane, session_id)
             return
         plane.post_queued_first_turn(session_id)
     except Exception as exc:
@@ -573,6 +591,7 @@ def _first_run_worker(
         else:
             _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
             _release_session_lease(v1, session_id)
+        _drain_queued_best_effort(plane, session_id)
         return
     dispatched = run_states.transition(session_id, 1, "RUNNING")
     if dispatched is not None and dispatched.status != "RUNNING":
@@ -582,3 +601,4 @@ def _first_run_worker(
             plane.stop(session_id)
         except Exception:
             pass
+    _drain_queued_best_effort(plane, session_id)

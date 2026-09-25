@@ -47,7 +47,10 @@ from control.run_errors import (
     run_error_from_turn,
 )
 
-OPEN_RUN_STATUSES = frozenset({"CREATING", "RUNNING"})
+# ``QUEUED`` is the durable pre-dispatch state for follow-up runs: the turn
+# is allocated, its user message and ledger record are persisted, and the
+# queue drains FIFO when the agent goes idle (SOR-224).
+OPEN_RUN_STATUSES = frozenset({"CREATING", "QUEUED", "RUNNING"})
 TERMINAL_RUN_STATUSES = frozenset({"FINISHED", "ERROR", "CANCELLED", "EXPIRED"})
 UNKNOWN_RUN_STATUS = "UNKNOWN"
 RUN_STATUSES = OPEN_RUN_STATUSES | TERMINAL_RUN_STATUSES | {UNKNOWN_RUN_STATUS}
@@ -305,6 +308,10 @@ class RunRecord:
     # Terminal verdict {enforcement, schema_digest, status, extraction,
     # violations}; None until a contracted run reaches a terminal state.
     contract_result: dict[str, Any] | None = None
+    # SOR-224: durable idempotency pin for run-creating mutations
+    # ({key_id, key, fingerprint}) — a replayed ``Idempotency-Key`` after a
+    # restart resolves to this run instead of spawning a duplicate turn.
+    idempotency: dict[str, Any] | None = None
 
     @property
     def id(self) -> str:
@@ -374,6 +381,10 @@ def record_from_dict(data: Any) -> RunRecord:
     if "structured_output" in data:
         # Any JSON value is legal (including null); only presence is checked.
         record.structured_output = data.get("structured_output")
+    idempotency = data.get("idempotency")
+    if idempotency is not None and not isinstance(idempotency, dict):
+        raise ValueError("run record field idempotency must be a dict")
+    record.idempotency = dict(idempotency) if idempotency is not None else None
     return record
 
 
@@ -762,6 +773,7 @@ class RunLedger:
         status: str = "RUNNING",
         artifact_refs: list[str] | None = None,
         output_contract: dict[str, Any] | None = None,
+        idempotency: dict[str, Any] | None = None,
     ) -> RunRecord:
         if status not in OPEN_RUN_STATUSES:
             raise ValueError(f"begin status must be open, got {status!r}")
@@ -785,9 +797,27 @@ class RunLedger:
                 if artifact_refs is not None
                 else default_artifact_refs(n),
                 output_contract=dict(output_contract) if output_contract is not None else None,
+                idempotency=dict(idempotency) if idempotency is not None else None,
             )
             self._store.put(record)
             return record
+
+    def find_by_idempotency(self, agent_id: str, key_id: str, key: str) -> RunRecord | None:
+        """The run durably pinned to ``(api key, Idempotency-Key)``, if any.
+
+        The durable bound survives restarts the same way the session/task
+        pins do: a replay resolves to the original run rather than
+        allocating a second turn (SOR-224).
+        """
+        for record in self.list(agent_id):
+            pin = record.idempotency or {}
+            if pin.get("key_id") == key_id and pin.get("key") == key:
+                return record
+        return None
+
+    def queued_ns(self, agent_id: str) -> list[int]:
+        """Run numbers still waiting in the durable ``QUEUED`` state, FIFO."""
+        return [record.n for record in self.list(agent_id) if record.status == "QUEUED"]
 
     def mark_running(self, agent_id: str, n: int) -> RunRecord | None:
         """``CREATING → RUNNING`` (async create lands with A2); terminal safe."""
