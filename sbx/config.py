@@ -34,6 +34,7 @@ from control.config import (
     MODAL_APP_NAME,
     OPENCODE_IMAGE_NAME,
     RUNS_DICT_NAME,
+    RUNTIME_DICT_NAME,
     RUNTIME_IMAGE_NAME,
     SESSIONS_DICT_NAME,
     V1_BOOTSTRAP_SECRET_NAME,
@@ -65,6 +66,11 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "workflows_dict": (("state", "workflows_dict"), ("SBX_WORKFLOWS_DICT",)),
     "artifacts_dict": (("state", "artifacts_dict"), ("SBX_ARTIFACTS_DICT",)),
     "workspaces_dict": (("state", "workspaces_dict"), ("SBX_WORKSPACES_DICT",)),
+    # SOR-212/SOR-215: deploy-written provider runtime evidence. Not in
+    # ``dict_names()`` — records are deploy-derived (recreated each deploy)
+    # rather than operator data an upgrade must preserve, and the Dict only
+    # exists after the first post-SOR-212 deploy.
+    "runtime_dict": (("state", "runtime_dict"), ("SBX_RUNTIME_DICT",)),
     "account_secret_prefix": (
         ("state", "account_secret_prefix"),
         ("SBX_ACCOUNT_SECRET_PREFIX",),
@@ -166,6 +172,7 @@ class BootstrapConfig:
     workflows_dict: str = WORKFLOWS_DICT_NAME
     artifacts_dict: str = ARTIFACTS_DICT_NAME
     workspaces_dict: str = WORKSPACES_DICT_NAME
+    runtime_dict: str = RUNTIME_DICT_NAME
     account_secret_prefix: str = ACCOUNT_SECRET_PREFIX
     codex_secret: str = CODEX_SECRET_NAME
     basic_secret: str = BASIC_SECRET_NAME
@@ -262,6 +269,7 @@ class BootstrapConfig:
             "workflows_dict",
             "artifacts_dict",
             "workspaces_dict",
+            "runtime_dict",
             "account_secret_prefix",
             "codex_secret",
             "basic_secret",

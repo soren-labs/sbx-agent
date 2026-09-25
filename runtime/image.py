@@ -729,6 +729,10 @@ def _provider_cli_meta(provider: str, spec: PackageSpec) -> dict[str, Any]:
             "kind": "host-binary",
             "env": env_var,
             "default": default,
+            # SOR-212/SOR-215: the CLI ships from the build host — the
+            # local-assisted lane. Deploy degrades the provider instead of
+            # failing when the host binary is absent or wrong-version.
+            "local_assisted": True,
         },
         "version": version,
         "expect": version,

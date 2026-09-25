@@ -200,6 +200,23 @@ def get_capabilities(request: Request) -> Any:
     return catalog
 
 
+def get_runtime_store(request: Request) -> Any:
+    """Deploy-written provider runtime evidence (SOR-212/SOR-215).
+
+    ``app.state.runtime_store`` when a test/deploy injects one; else the
+    env-configured default — the ``sbx-runtime`` Dict on Modal, an empty
+    in-memory store locally. A provider with no record reads ``unknown``;
+    the store never fabricates ``ready``.
+    """
+    store = getattr(request.app.state, "runtime_store", None)
+    if store is None:
+        from control.runtime_state import select_runtime_store
+
+        store = select_runtime_store()
+        request.app.state.runtime_store = store
+    return store
+
+
 def get_run_reporter(request: Request) -> RunFailureReporter:
     reporter = getattr(request.app.state, "run_failure_reporter", None)
     if reporter is None:

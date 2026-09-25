@@ -44,6 +44,7 @@ from control.api_v1.deps import (
     get_resources,
     get_run_reporter,
     get_run_states,
+    get_runtime_store,
     get_scheduler,
     get_v1_state,
     get_workflow_service,
@@ -90,7 +91,7 @@ from control.capabilities import (
     declared_snapshot,
 )
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
-from control.config import TERMINAL_STATUSES, selected_providers
+from control.config import TERMINAL_STATUSES, env_str, selected_providers
 from control.credlifecycle import CredentialLifecycleService, CredentialRefresher
 from control.credsync import TAG_CRED_RUN_FP, CredentialSync
 from control.devin_pool import ScheduleRefused
@@ -2280,6 +2281,142 @@ def list_models(
     CLI discovery per account with TTL + stale-last-good, falling back to
     declared/env/static models until the first probe lands."""
     return {"models": _capability_rows(registry, capabilities)}
+
+
+# ------------------------------------------------------------- providers
+
+
+def _runtime_record_for(runtime: Any, provider: str) -> dict[str, Any] | None:
+    """Deploy-written runtime record for ``provider``; tolerant of stores.
+
+    An absent/unreadable/evolving store must degrade a provider to
+    ``unknown`` readiness — never 500 the listing or fabricate ``ready``.
+    """
+    getter = getattr(runtime, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        record = getter(provider)
+    except Exception:
+        return None
+    if record is None:
+        return None
+    to_dict = getattr(record, "to_dict", None)
+    data = to_dict() if callable(to_dict) else record
+    return data if isinstance(data, dict) else None
+
+
+def _image_name_for(provider: str, default: str) -> str:
+    """Configured Modal image name for ``provider`` (``SBX_IMAGE_*``)."""
+    return env_str(f"SBX_IMAGE_{provider.upper()}", default)
+
+
+def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, Any]]:
+    """The three-way split (SOR-212/SOR-215): catalog / runtime / connection.
+
+    **Catalog** — every contract provider appears, selected or not, with
+    its ``ProviderRuntimeSpec`` truth (support tier, distribution lane,
+    in-image CLI path, credential relpaths, default models). Nothing here
+    infers ``connected`` from deployment config: a zero-account plane still
+    reports every supported provider ``available`` + ``not_connected``.
+
+    **Runtime** — deploy-written evidence: ``ready``/``degraded`` records
+    from ``sbx deploy``; ``unknown`` when the deployment predates the
+    record (or the store is unreadable); ``disabled`` when the provider is
+    not selected by this deployment's ``SBX_PROVIDERS``.
+
+    **Connection** — live account state only: ``not_connected`` when no
+    account exists, ``connected`` when at least one is schedulable,
+    ``degraded`` when accounts exist but none can take work.
+    """
+    from runtime.provider_runtime import provider_runtime_specs
+
+    enabled = frozenset(selected_providers())
+    accounts_by_provider: dict[str, list[Account]] = {}
+    for account in registry.list():
+        accounts_by_provider.setdefault(account.provider, []).append(account)
+    rows: list[dict[str, Any]] = []
+    for rspec in provider_runtime_specs():
+        accounts = accounts_by_provider.get(rspec.provider, [])
+        schedulable = sum(
+            1
+            for account in accounts
+            if account.status == "active"
+            and _running_or_zero(registry, account.id) < account.max_concurrent
+        )
+        if not accounts:
+            connection_status = "not_connected"
+        elif schedulable:
+            connection_status = "connected"
+        else:
+            connection_status = "degraded"
+        is_enabled = rspec.provider in enabled
+        record = _runtime_record_for(runtime, rspec.provider) if is_enabled else None
+        if not is_enabled:
+            runtime_status = "disabled"
+            runtime_detail = "not selected by this deployment (SBX_PROVIDERS)"
+            image = _image_name_for(rspec.provider, rspec.image_name)
+            version = None
+            updated_at = None
+        elif record is not None:
+            runtime_status = str(record.get("status") or "unknown")
+            runtime_detail = str(record.get("detail") or "")
+            image = str(record.get("image") or "") or _image_name_for(
+                rspec.provider, rspec.image_name
+            )
+            version = record.get("version")
+            updated_at = record.get("updated_at")
+        else:
+            runtime_status = "unknown"
+            runtime_detail = "enabled but no deploy evidence recorded yet"
+            image = _image_name_for(rspec.provider, rspec.image_name)
+            version = None
+            updated_at = None
+        rows.append(
+            {
+                "provider": rspec.provider,
+                "support": rspec.support,
+                "status": "available",
+                "distribution": {
+                    "kind": rspec.install_kind,
+                    "local_assisted": rspec.local_assisted,
+                },
+                "cli": rspec.cli,
+                "cli_path": rspec.cli_path,
+                "credential_files": list(rspec.credential_files),
+                "default_models": list(rspec.default_models),
+                "runtime": {
+                    "enabled": is_enabled,
+                    "image": image,
+                    "status": runtime_status,
+                    "version": version,
+                    "detail": runtime_detail,
+                    "updated_at": updated_at,
+                },
+                "connection": {
+                    "status": connection_status,
+                    "accounts_total": len(accounts),
+                    "accounts_available": schedulable,
+                },
+                "summary": rspec.summary,
+            }
+        )
+    return rows
+
+
+@router.get("/providers")
+def list_providers(
+    key: ApiKey = Depends(agents_key),
+    registry: AccountRegistry = Depends(get_registry),
+    runtime: Any = Depends(get_runtime_store),
+) -> dict[str, Any]:
+    """Provider catalog + runtime readiness + account connection (SOR-221).
+
+    Lists every supported provider regardless of deployment selection or
+    account presence — ``connected`` is never inferred from config, and
+    zero accounts still surfaces the full catalog as ``not_connected``.
+    """
+    return {"providers": _provider_rows(registry, runtime)}
 
 
 @router.post("/models/refresh")
