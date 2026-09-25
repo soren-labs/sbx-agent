@@ -88,12 +88,16 @@ class PullRequestRef(BaseModel):
 
 
 class HandoffRef(BaseModel):
-    """SOR-83/SOR-128 cross-agent handoff reference: exactly one of the
-    ref fields.
+    """SOR-83/SOR-128/SOR-225 cross-agent handoff reference: exactly one of
+    the ref fields.
 
     ``artifact_id`` consumes a durable artifact package; ``head_sha`` checks
     out an exact commit in the declared repo; ``pull_request`` fetches a
-    remote ref pinned to an exact head (SOR-128 reviewer start).
+    remote ref pinned to an exact head (SOR-128 reviewer start). SOR-225:
+    ``task_id`` hands off the task's durable revision (``revision`` selects
+    it — ``"latest"`` by default, else ``rev-…`` id or sequence ``n``), and
+    ``pr_url`` resolves a GitHub pull URL to its ref + head without a
+    caller-supplied ref/SHA.
     ``workspace`` is only used by ``POST /v1/agents/{id}/handoff`` when the
     agent has no recorded workspace yet.
     """
@@ -101,6 +105,9 @@ class HandoffRef(BaseModel):
     artifact_id: str | None = None
     head_sha: str | None = Field(default=None, pattern=_COMMIT_SHA)
     pull_request: PullRequestRef | None = None
+    task_id: str | None = None
+    revision: str | None = None
+    pr_url: str | None = None
     workspace: WorkspaceDecl | None = None
 
 

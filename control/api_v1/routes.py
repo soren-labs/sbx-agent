@@ -42,10 +42,12 @@ from control.api_v1.deps import (
     get_plane,
     get_registry,
     get_resources,
+    get_revisions,
     get_run_reporter,
     get_run_states,
     get_runtime_store,
     get_scheduler,
+    get_task_store,
     get_v1_state,
     get_workflow_service,
     get_workspaces,
@@ -100,6 +102,7 @@ from control.github_app import GitHubAppError
 from control.latency import observe
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.resources import ResourceError, resolve_resources, resource_refs
+from control.revisions import RevisionError
 from control.run_errors import run_error_for_run
 from control.run_store import (
     UNKNOWN_RUN_STATUS,
@@ -923,7 +926,12 @@ def _workspace_error(exc: WorkspaceError) -> V1ApiError:
 
 
 def _validate_workspace_decl(
-    body: CreateAgentRequest, artifacts: Any
+    body: CreateAgentRequest,
+    artifacts: Any,
+    *,
+    key: ApiKey | None = None,
+    task_store: Any = None,
+    revisions: Any = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     """Validate the SOR-83 ``workspace``/``handoff`` and SOR-128 ``git``
     declarations.
@@ -955,6 +963,41 @@ def _validate_workspace_decl(
             raise _workspace_error(exc) from exc
     if handoff is not None:
         handoff.pop("workspace", None)  # only meaningful on the handoff route
+        # SOR-225: resolve the caller-friendly refs server-side so the
+        # downstream lifecycle sees the canonical artifact_id / pull_request
+        # forms — no caller-supplied ref/SHA needed.
+        if handoff.get("task_id") is not None:
+            if handoff.get("revision") is not None and not isinstance(handoff["revision"], str):
+                raise V1ApiError(400, WORKSPACE_INVALID, "handoff 'revision' must be a string ref")
+            task = task_store.get(handoff["task_id"]) if task_store else None
+            if task is None or (key is not None and task.owner != key.id):
+                raise not_found("task not found")
+            if not task.agent_id:
+                raise V1ApiError(
+                    409,
+                    "revision_not_found",
+                    "task has no agent yet — no revisions exist",
+                )
+            try:
+                rev = revisions.resolve(task.agent_id, handoff.get("revision"))
+            except RevisionError as exc:
+                raise V1ApiError(exc.status_code, exc.code, exc.message) from exc
+            if not rev.artifact_id:
+                raise V1ApiError(
+                    409,
+                    "revision_not_ready",
+                    f"revision {rev.revision_id} has no artifact payload (status={rev.status!r})",
+                )
+            handoff["artifact_id"] = rev.artifact_id
+        if handoff.get("pr_url") is not None:
+            try:
+                ref, pr_sha = revisions.resolve_pr_url(handoff["pr_url"])
+            except RevisionError as exc:
+                raise V1ApiError(exc.status_code, exc.code, exc.message) from exc
+            handoff["pull_request"] = {"ref": ref, "head_sha": pr_sha}
+        handoff.pop("task_id", None)
+        handoff.pop("revision", None)
+        handoff.pop("pr_url", None)
         has_artifact = bool(handoff.get("artifact_id"))
         has_head = bool(handoff.get("head_sha"))
         has_pr = bool(handoff.get("pull_request"))
@@ -962,7 +1005,8 @@ def _validate_workspace_decl(
             raise V1ApiError(
                 400,
                 WORKSPACE_INVALID,
-                "handoff needs exactly one of artifact_id, head_sha or pull_request",
+                "handoff needs exactly one of artifact_id, head_sha, "
+                "pull_request, task_id or pr_url",
             )
         if workspace is None:
             raise V1ApiError(400, WORKSPACE_INVALID, "handoff requires a workspace declaration")
@@ -1092,6 +1136,8 @@ def create_agent(
     workflows: WorkflowService = Depends(get_workflow_service),
     resources_registry: Any = Depends(get_resources),
     capabilities: Any = Depends(get_capabilities),
+    task_store: Any = Depends(get_task_store),
+    revisions: Any = Depends(get_revisions),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Create an agent and queue its first run (SOR-82 A2).
@@ -1105,7 +1151,9 @@ def create_agent(
     SOR-83: ``workspace`` declares the checkout the run must start on;
     ``handoff`` makes run-1 start from a referenced artifact or commit.
     """
-    workspace, handoff, git = _validate_workspace_decl(body, artifacts)
+    workspace, handoff, git = _validate_workspace_decl(
+        body, artifacts, key=key, task_store=task_store, revisions=revisions
+    )
     contract = _normalize_contract(body.output_contract)
     compute = _validate_compute(body)
     effort = _validate_reasoning_effort(body)
@@ -1719,26 +1767,67 @@ def apply_handoff(
     plane: Any = Depends(get_plane),
     workspaces: Any = Depends(get_workspaces),
     handoffs: Any = Depends(get_handoffs),
+    task_store: Any = Depends(get_task_store),
+    revisions: Any = Depends(get_revisions),
 ) -> dict[str, Any]:
     """Apply a second-agent handoff into a live agent's workspace.
 
     ``artifact_id`` applies a durable artifact package; ``head_sha`` checks
     out an exact commit; ``pull_request`` fetches a remote ref pinned to an
-    exact head (SOR-128 — drift fails closed). All validate against the
-    workspace's recorded head before touching the workdir — a gap is an
-    explicit ``base_sha_mismatch`` / ``head_sha_mismatch``.
+    exact head (SOR-128 — drift fails closed). SOR-225 adds caller-friendly
+    forms: ``task_id`` + ``revision`` (default ``"latest"``) hands off the
+    task's durable revision artifact, and ``pr_url`` resolves a GitHub pull
+    URL to its ref + head server-side. All validate against the workspace's
+    recorded head before touching the workdir — a gap is an explicit
+    ``base_sha_mismatch`` / ``head_sha_mismatch``.
     """
     rec = _require_live_idle(plane, agent_id)
     handle = rec.handle()
     has_artifact = bool(body.artifact_id)
     has_head = bool(body.head_sha)
     has_pr = body.pull_request is not None
-    if sum((has_artifact, has_head, has_pr)) != 1:
+    has_task = bool(body.task_id)
+    has_pr_url = bool(body.pr_url)
+    if sum((has_artifact, has_head, has_pr, has_task, has_pr_url)) != 1:
         raise V1ApiError(
             400,
             WORKSPACE_INVALID,
-            "handoff needs exactly one of artifact_id, head_sha or pull_request",
+            "handoff needs exactly one of artifact_id, head_sha, pull_request, task_id or pr_url",
         )
+    if body.revision and not has_task:
+        raise V1ApiError(
+            400,
+            WORKSPACE_INVALID,
+            "handoff field 'revision' is only valid together with 'task_id'",
+        )
+    task_artifact_id = None
+    if has_task:
+        task = task_store.get(body.task_id)
+        if task is None or task.owner != key.id:
+            raise not_found("task not found")
+        if not task.agent_id:
+            raise V1ApiError(
+                409, "revision_not_found", "task has no agent yet — no revisions exist"
+            )
+        try:
+            revision = revisions.resolve(task.agent_id, body.revision)
+        except RevisionError as exc:
+            raise V1ApiError(exc.status_code, exc.code, exc.message) from exc
+        if not revision.artifact_id:
+            raise V1ApiError(
+                409,
+                "revision_not_ready",
+                f"revision {revision.revision_id} has no artifact payload "
+                f"(status={revision.status!r})",
+            )
+        task_artifact_id = revision.artifact_id
+    pr_ref = None
+    pr_head_sha = None
+    if has_pr_url:
+        try:
+            pr_ref, pr_head_sha = revisions.resolve_pr_url(body.pr_url)
+        except RevisionError as exc:
+            raise V1ApiError(exc.status_code, exc.code, exc.message) from exc
     spec = None
     if body.workspace is not None:
         try:
@@ -1751,9 +1840,17 @@ def apply_handoff(
             raise _workspace_error(exc) from exc
     try:
         with observe("v1.workspace.handoff", agent_id=agent_id):
-            if has_artifact:
+            if task_artifact_id is not None:
+                record = handoffs.prepare_from_artifact(
+                    handle, agent_id, task_artifact_id, spec=spec
+                )
+            elif has_artifact:
                 record = handoffs.prepare_from_artifact(
                     handle, agent_id, body.artifact_id, spec=spec
+                )
+            elif has_pr_url:
+                record = handoffs.prepare_from_pull_request(
+                    handle, agent_id, pr_ref, pr_head_sha, spec=spec
                 )
             elif has_pr:
                 record = handoffs.prepare_from_pull_request(

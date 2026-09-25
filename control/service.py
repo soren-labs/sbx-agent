@@ -132,6 +132,13 @@ class ControlPlane:
         # store while the sandbox is still readable. Best-effort: failures are
         # swallowed — a broken snapshot must never wedge teardown.
         self.snapshot_hook: Callable[[SessionRecord, SandboxHandle], None] | None = None
+        # SOR-225: the durable-revision service + the materialization hook
+        # fired on every FINISHED turn. ``revisions`` is set by the app
+        # layer; ``revision_hook`` wraps it with registry/store context the
+        # plane itself does not own. Best-effort like the snapshot hook: a
+        # failed materialization never rewrites the run verdict.
+        self.revisions: Any = None
+        self.revision_hook: Callable[[SessionRecord, SandboxHandle, int], None] | None = None
         # SOR-127 environment build/snapshot cache — optional, wired by the
         # app layer. ``snapshot_provider`` restores a sandbox from a build
         # record's snapshot ref; ``environments`` is the build-record
@@ -1023,6 +1030,10 @@ class ControlPlane:
         # failure as ``publish_error`` on the workspace record, so the
         # FINISHED verdict is never rewritten and never silent either.
         if status == "FINISHED":
+            # SOR-225: a successful code-changing run materializes a durable
+            # Revision before any publish — delivery then operates on the
+            # revision, not the sandbox.
+            self._materialize_revision(session_id, handle, n)
             self._auto_publish_git(session_id, handle)
 
         # SOR-147: harvest refreshed credential files after every turn — a
@@ -1046,6 +1057,35 @@ class ControlPlane:
             return
         try:
             self.workspaces.publish(handle, session_id)
+        except Exception:
+            pass
+        # SOR-225: mirror the publish outcome onto the durable revision —
+        # first-class delivery state, not only ``workspace.publish_error``.
+        if self.revisions is not None:
+            try:
+                revision = self.revisions.latest(session_id)
+                record = self.workspaces.get(session_id)
+                if revision is not None and record is not None:
+                    self.revisions.sync_delivery(revision, record)
+            except Exception:
+                pass
+
+    def _materialize_revision(self, session_id: str, handle: Any, n: int) -> None:
+        """Materialize the durable revision for a finished turn (SOR-225).
+
+        Best-effort like the snapshot hook: the hook itself records snapshot
+        failures as ``materialization_failed`` revisions; anything it cannot
+        record is swallowed rather than rewriting the run verdict.
+        """
+        hook = self.revision_hook
+        if hook is None or handle is None:
+            return
+        try:
+            with self._lock:
+                rec = self.store.get(session_id)
+            if rec is None:
+                return
+            hook(rec, handle, n)
         except Exception:
             pass
 
