@@ -291,4 +291,37 @@ test.describe("web console against a real local /v1 control plane", () => {
     await shot(page, "console_14_zh_light.png");
     await ctx.close();
   });
+
+  test("links built from API data only accept http(s) URLs", async ({ page }) => {
+    await page.goto("/");
+    const inputs = [
+      "https://github.com/o/r/pull/7",
+      "http://ghe.example/o/r/pull/1",
+      "javascript:alert(1)",
+      "JaVaScRiPt:alert(1)",
+      "java\tscript:alert(1)",
+      " javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "/relative/path",
+      "",
+      null,
+    ];
+    // A string expression reaches the browser untouched (the spec itself is
+    // compiled to CommonJS, which would rewrite a dynamic import()).
+    const results = await page.evaluate(
+      `import("/lib/dom.js").then(({ httpUrl }) => ${JSON.stringify(inputs)}.map((v) => httpUrl(v)))`,
+    );
+    expect(results).toEqual([
+      "https://github.com/o/r/pull/7",
+      "http://ghe.example/o/r/pull/1",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+  });
 });

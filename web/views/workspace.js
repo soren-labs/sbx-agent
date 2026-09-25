@@ -1,6 +1,6 @@
 /** Agent → Workspace tab: repo state, git pipeline and review/publish/merge. */
 import { api } from "../lib/api.js";
-import { h, mount } from "../lib/dom.js";
+import { h, httpUrl, mount } from "../lib/dom.js";
 import { isAgentLive } from "../lib/domain.js";
 import { fmtDateTime, fmtRelative, shortSha } from "../lib/format.js";
 import { t } from "../lib/i18n.js";
@@ -175,7 +175,9 @@ export function renderWorkspaceTab({ agentId, getAgent, onChanged }) {
                       ? h(
                           "span",
                           { class: "row", style: "gap:6px" },
-                          pr.url ? h("a", { href: pr.url, target: "_blank", rel: "noopener noreferrer" }, `#${pr.number}`) : `#${pr.number}`,
+                          httpUrl(pr.url)
+                            ? h("a", { href: httpUrl(pr.url), target: "_blank", rel: "noopener noreferrer" }, `#${pr.number}`)
+                            : `#${pr.number}`,
                           pr.state ? badge(pr.state, { tone: pr.state === "open" ? "green" : "neutral" }) : null,
                           pr.draft ? badge(t("draft")) : null,
                         )
