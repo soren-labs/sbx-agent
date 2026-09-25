@@ -23,6 +23,7 @@ RC_NAMES = {
     "workflows_dict": "rc-workflows",
     "artifacts_dict": "rc-artifacts",
     "workspaces_dict": "rc-workspaces",
+    "runtime_dict": "rc-runtime-state",
     "account_secret_prefix": "rc-acct-",
     "codex_secret": "rc-codex-auth",
     "basic_secret": "rc-basic-auth",
@@ -42,6 +43,7 @@ PRODUCTION_NAMES = {
     "sbx-workflows",
     "sbx-artifacts",
     "sbx-workspaces",
+    "sbx-runtime",
     "sbx-codex-auth",
     "sbx-basic-auth",
     "sbx-v1-bootstrap",
@@ -62,6 +64,7 @@ def test_deploy_env_covers_every_namespace_name() -> None:
         "SBX_WORKFLOWS_DICT": "rc-workflows",
         "SBX_ARTIFACTS_DICT": "rc-artifacts",
         "SBX_WORKSPACES_DICT": "rc-workspaces",
+        "SBX_RUNTIME_DICT": "rc-runtime-state",
         "SBX_ACCOUNT_SECRET_PREFIX": "rc-acct-",
         "SBX_CODEX_SECRET_NAME": "rc-codex-auth",
         "SBX_BASIC_SECRET_NAME": "rc-basic-auth",
@@ -94,6 +97,7 @@ def test_deploy_uses_only_rc_resources(tmp_path) -> None:
         "rc-workflows",
         "rc-artifacts",
         "rc-workspaces",
+        "rc-runtime-state",
     }
     assert {"rc-codex-auth", "rc-basic-auth", "rc-v1-bootstrap"} <= set(plane.secrets)
     assert plane.image_names == {"codex": "rc-runtime", "devin": "rc-runtime-devin"}

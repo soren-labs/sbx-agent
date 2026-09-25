@@ -89,6 +89,10 @@ class FakePlane:
             raise KeyError(name)
         return list(self.dicts[name].items())
 
+    def dict_put(self, name: str, key: str, value: object) -> None:
+        self._fail("dict_put")
+        self.dicts.setdefault(name, {})[key] = value
+
     def delete_dict(self, name: str) -> bool:
         self._fail("delete_dict")
         return self.dicts.pop(name, None) is not None

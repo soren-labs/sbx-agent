@@ -123,6 +123,7 @@ x-canonical:
     - GET /v1/workflows/{id}
     - DELETE /v1/workflows/{id}
     - GET /v1/models
+    - GET /v1/providers
     - GET /v1/me
     - GET /v1/accounts
     - POST /v1/accounts
@@ -873,6 +874,38 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /v1/providers:
+    get:
+      tags: [meta]
+      summary: Provider catalog + runtime readiness + account connection
+      operationId: listProviders
+      description: |
+        SOR-212/SOR-215: every contract provider is listed — whether or not
+        this deployment selects it and whether or not any account exists —
+        split into three honest surfaces. `status: available` describes the
+        supported-provider **catalog** only; it never infers `connected`
+        from deployment config. `runtime` carries deploy-written readiness
+        evidence (`ready`/`degraded`; `unknown` when the deployment predates
+        the record, `disabled` when the provider is not selected by
+        `SBX_PROVIDERS`). `connection` derives only from live account
+        records: `not_connected` with zero accounts, `connected` when at
+        least one account can take work, `degraded` when accounts exist but
+        none is schedulable.
+      responses:
+        "200":
+          description: Provider catalog rows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Provider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /v1/me:
     get:
       tags: [meta]
@@ -2150,6 +2183,93 @@ components:
           type: object
           additionalProperties:
             type: string
+    Provider:
+      type: object
+      description: |
+        SOR-212/SOR-215 — one supported provider: catalog truth plus the
+        deployment's runtime readiness and live account connection.
+      required: [provider, support, status, distribution, connection, runtime]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        support:
+          type: string
+          description: Release support tier (stable | experimental).
+        status:
+          type: string
+          enum: [available]
+          description: |
+            Catalog membership — always `available` for a supported
+            provider; connection state lives under `connection`.
+        distribution:
+          type: object
+          required: [kind, local_assisted]
+          properties:
+            kind:
+              type: string
+              enum: [npm, bundle, host-binary]
+              description: |
+                How the CLI reaches the image: `npm`/`bundle` are
+                reproducible remote artifacts; `host-binary` is the
+                local-assisted lane (build-host CLI, never blocks deploy).
+            local_assisted:
+              type: boolean
+        cli:
+          type: string
+        cli_path:
+          type: string
+          description: In-image CLI binary path.
+        credential_files:
+          type: array
+          items:
+            type: string
+          description: HOME-relative relpaths the credential blob restores.
+        default_models:
+          type: array
+          items:
+            type: string
+        runtime:
+          type: object
+          required: [enabled, image, status]
+          properties:
+            enabled:
+              type: boolean
+              description: Whether this deployment selects the provider.
+            image:
+              type: string
+              description: Published Modal image name.
+            status:
+              type: string
+              enum: [ready, degraded, unknown, disabled]
+              description: |
+                Deploy-written evidence: `ready`/`degraded` from the image
+                step; `unknown` when no record exists (pre-SOR-212
+                deployments); `disabled` when not selected.
+            version:
+              type: string
+              nullable: true
+              description: Frozen CLI version from the deploy's lock.
+            detail:
+              type: string
+            updated_at:
+              type: string
+              nullable: true
+        connection:
+          type: object
+          required: [status, accounts_total, accounts_available]
+          properties:
+            status:
+              type: string
+              enum: [not_connected, connected, degraded]
+            accounts_total:
+              type: integer
+              minimum: 0
+            accounts_available:
+              type: integer
+              minimum: 0
+              description: Active accounts with a free slot.
+        summary:
+          type: string
     Model:
       type: object
       required: [provider, model, accounts_available]

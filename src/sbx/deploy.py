@@ -330,32 +330,76 @@ def _resolve_cli_versions(
     ``<state>/cli-versions.json`` as the deployment's version evidence and
     is passed to every image build so they all carry identical versions.
     """
+    from runtime.image import load_packages
+    from runtime.provider_runtime import spec_or_none
     from runtime.versions import (
+        VERSION_ENVS,
+        VersionEntry,
         VersionResolutionError,
         lock_out_path_for,
         resolve_versions,
         write_lock,
     )
 
-    try:
-        resolved = resolve_versions(
-            env=env,
-            # ``codex`` always resolves: its CLI rides in the base recipe of
-            # every provider image, enabled or not.
-            providers=set(config.providers) | {"codex"},
-            fetch=fetch,
-            host_probe=host_probe,
-            lock=Path(versions_lock) if versions_lock else None,
-        )
-    except VersionResolutionError as exc:
-        raise BootstrapError(
-            f"cannot resolve provider CLI versions: {exc}",
-            hint=exc.hint
-            or "check runtime/packages.txt and SBX_*_VERSION "
-            "overrides, or replay a frozen set via --versions-lock / "
-            "SBX_VERSIONS_LOCK",
-            code="version_resolution_failed",
-        ) from exc
+    providers = set(config.providers) | {"codex"}
+    # SOR-212/SOR-215: the local-assisted lane (host-binary providers, today
+    # agy/grok) may not block a Platform deploy. A provider whose build-host
+    # CLI is absent is dropped from resolution — its entry is grafted below
+    # as ``unresolved`` so the frozen lock still carries the evidence — and
+    # the image step degrades it instead of failing.
+    blocked: dict[str, str] = {}
+    for provider in sorted(providers):
+        rspec = spec_or_none(provider)
+        if rspec is not None and rspec.local_assisted and rspec.host_bin(env) is None:
+            providers.discard(provider)
+            blocked[provider] = (
+                f"{rspec.cli} CLI not found on the build host "
+                f"(set {rspec.host_bin_env} or install it)"
+            )
+    while True:
+        try:
+            resolved = resolve_versions(
+                env=env,
+                # ``codex`` always resolves: its CLI rides in the base recipe of
+                # every provider image, enabled or not.
+                providers=providers,
+                fetch=fetch,
+                host_probe=host_probe,
+                lock=Path(versions_lock) if versions_lock else None,
+            )
+            break
+        except VersionResolutionError as exc:
+            rspec = spec_or_none(exc.provider)
+            # A local-assisted provider that fails resolution (e.g. a host
+            # CLI whose ``--version`` probe fails) degrades rather than
+            # fails the deploy; reproducible lanes still hard-fail.
+            if rspec is None or not rspec.local_assisted or exc.provider not in providers:
+                raise BootstrapError(
+                    f"cannot resolve provider CLI versions: {exc}",
+                    hint=exc.hint
+                    or "check runtime/packages.txt and SBX_*_VERSION "
+                    "overrides, or replay a frozen set via --versions-lock / "
+                    "SBX_VERSIONS_LOCK",
+                    code="version_resolution_failed",
+                ) from exc
+            providers.discard(exc.provider)
+            blocked[exc.provider] = str(exc)
+    if blocked:
+        raw_spec = load_packages()
+        entries = dict(resolved.entries)
+        for provider, reason in blocked.items():
+            rspec = spec_or_none(provider)
+            requested = env.get(VERSION_ENVS.get(provider, "")) or str(
+                getattr(raw_spec, rspec.spec_field)
+            )
+            entries[provider] = VersionEntry(
+                provider=provider,
+                requested=requested,
+                version=None,
+                source="unresolved",
+                evidence={"detail": reason},
+            )
+        resolved = replace(resolved, entries=entries)
     lock_path = write_lock(
         resolved,
         lock_out_path_for(env)
@@ -545,10 +589,55 @@ def deploy(
     )
     steps.append(_materialize_account_secrets(config, plane))
 
+    # SOR-212/SOR-215: the runtime evidence Dict — deploy writes one
+    # ``runtime/<provider>`` record per enabled provider (``ready`` /
+    # ``degraded``) for ``/v1/providers`` to expose as runtime readiness.
+    # Best-effort: evidence writes never block the deploy.
+    from control.runtime_state import RUNTIME_KEY_PREFIX, ProviderRuntimeRecord
+    from runtime.provider_runtime import spec_or_none as _provider_spec
+
+    try:
+        plane.ensure_dict(config.runtime_dict)
+        runtime_dict_ok = True
+    except BootstrapError:
+        runtime_dict_ok = False
+
+    runtime_records: dict[str, dict[str, Any]] = {}
     for provider in config.providers:
-        spec = resolved_versions.spec if resolved_versions is not None else None
-        plane.ensure_image(provider, config.image_name(provider), spec=spec)
-        steps.append(StepResult(f"image:{provider}", True, config.image_name(provider)))
+        image_name = config.image_name(provider)
+        rspec = _provider_spec(provider)
+        problem = (
+            rspec.host_assist_problem(resolved_versions.spec, env=env)
+            if rspec is not None and rspec.local_assisted
+            else None
+        )
+        if problem is not None:
+            steps.append(
+                StepResult(
+                    f"image:{provider}",
+                    False,
+                    f"{image_name} not built — {problem}",
+                )
+            )
+            status, detail = "degraded", problem
+        else:
+            plane.ensure_image(provider, image_name, spec=resolved_versions.spec)
+            steps.append(StepResult(f"image:{provider}", True, image_name))
+            status, detail = "ready", ""
+        record = ProviderRuntimeRecord(
+            provider=provider,
+            status=status,
+            image=image_name,
+            version=resolved_versions.cli_versions().get(provider),
+            detail=detail,
+            updated_at=_iso_now(),
+        ).to_dict()
+        runtime_records[provider] = record
+        if runtime_dict_ok:
+            try:
+                plane.dict_put(config.runtime_dict, f"{RUNTIME_KEY_PREFIX}{provider}", record)
+            except BootstrapError:
+                pass  # evidence writes never block the deploy
 
     base_url = plane.deploy_app(config.modal_app_name, env=config.deploy_env())
     steps.append(StepResult("app", True, f"{config.modal_app_name} → {base_url}"))
@@ -566,6 +655,9 @@ def deploy(
         "app": config.modal_app_name,
         "app_url": base_url,
         "key_fingerprint": fingerprint(token),
+        # SOR-212/SOR-215: per-provider runtime evidence written to the
+        # ``sbx-runtime`` Dict and consumed by ``/v1/providers``.
+        "runtime": runtime_records,
     }
     if resolved_versions is not None:
         # SOR-175 version evidence: the frozen CLI set this deployment

@@ -60,6 +60,9 @@ class Plane(Protocol):
     def dict_items(self, name: str) -> list[tuple[object, object]]:
         """Snapshot all key/value pairs from durable Dict ``name``."""
 
+    def dict_put(self, name: str, key: str, value: object) -> None:
+        """Write one key into durable Dict ``name`` (created if absent)."""
+
     def delete_dict(self, name: str) -> bool:
         """Delete Dict ``name``; True when it existed.
 
@@ -283,6 +286,16 @@ class ModalPlane:
 
     def dict_items(self, name: str) -> list[tuple[object, object]]:
         return list(self._modal().Dict.from_name(name).items())
+
+    def dict_put(self, name: str, key: str, value: object) -> None:
+        try:
+            self._modal().Dict.from_name(name, create_if_missing=True).put(key, value)
+        except Exception as exc:
+            raise BootstrapError(
+                f"cannot write Modal Dict {name!r} key {key!r}: {exc}",
+                hint="check Modal auth and workspace permissions, then retry",
+                code="modal_dict_failed",
+            ) from exc
 
     def delete_dict(self, name: str) -> bool:
         if not self.has_dict(name):
