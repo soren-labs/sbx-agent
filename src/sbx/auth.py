@@ -79,11 +79,7 @@ def make_auth_service(
     )
 
 
-def remote_client(cfg: Any, env: Mapping[str, str], *, transport: Any = None) -> Any | None:
-    """A ``V1Client`` for the deployed gate — only when the shared cloud
-    store is in use (``SBX_BACKEND=modal``) and a base URL + key resolve."""
-    if _backend_name(env) != "modal":
-        return None
+def _v1_client(cfg: Any, env: Mapping[str, str], *, transport: Any = None) -> Any | None:
     from sbx.deploy import read_deploy_state
     from sbx.httpapi import V1Client
     from sbx.keys import resolve_api_key
@@ -93,6 +89,21 @@ def remote_client(cfg: Any, env: Mapping[str, str], *, transport: Any = None) ->
     if not base_url or not token:
         return None
     return V1Client(base_url, token, transport=transport, timeout=30.0)
+
+
+def remote_client(cfg: Any, env: Mapping[str, str], *, transport: Any = None) -> Any | None:
+    """A ``V1Client`` for the deployed gate — only when the shared cloud
+    store is in use (``SBX_BACKEND=modal``) and a base URL + key resolve."""
+    if _backend_name(env) != "modal":
+        return None
+    return _v1_client(cfg, env, transport=transport)
+
+
+def deployment_client(cfg: Any, env: Mapping[str, str], *, transport: Any = None) -> Any | None:
+    """A ``V1Client`` for the deployed gate regardless of the local backend
+    — ``sbx auth verify`` probes the deployment's own accounts server-side
+    (SOR-217). ``None`` when nothing is deployed or configured."""
+    return _v1_client(cfg, env, transport=transport)
 
 
 def _verify_remote(client: Any, account_id: str) -> dict[str, Any] | None:
@@ -128,9 +139,10 @@ def verify_account(
     return outcome
 
 
-def _targets(service: AuthService, args: Any) -> list[str]:
-    """``--account-id`` or ``--provider`` → the account ids to act on."""
-    account_id = getattr(args, "account_id", None)
+def targets_for(service: AuthService, args: Any) -> list[str]:
+    """An account id (positional or ``--account-id``) or ``--provider`` →
+    the account ids to act on."""
+    account_id = getattr(args, "account_id", None) or getattr(args, "account_id_pos", None)
     provider = getattr(args, "provider", None)
     if account_id:
         return [account_id]
@@ -142,7 +154,7 @@ def _targets(service: AuthService, args: Any) -> list[str]:
             f"no {provider} accounts — run `sbx auth import-existing` first",
             code="no_accounts",
         )
-    raise BootstrapError("pass --account-id or --provider", code="missing_target")
+    raise BootstrapError("pass an account id, --account-id or --provider", code="missing_target")
 
 
 def auth_status(
@@ -253,7 +265,7 @@ def auth_verify(
 ) -> dict[str, Any]:
     """Verify one or more accounts (remote probe first when configured)."""
     results = []
-    for account_id in _targets(service, args):
+    for account_id in targets_for(service, args):
         try:
             results.append(verify_account(service, account_id, client=client))
         except OnboardingError as exc:
@@ -275,7 +287,7 @@ def auth_relink(
     no_verify = bool(getattr(args, "no_verify", False))
     allow_open = bool(getattr(args, "allow_open_permissions", False))
     results = []
-    for account_id in _targets(service, args):
+    for account_id in targets_for(service, args):
         try:
             outcome = service.relink(
                 account_id,
@@ -310,7 +322,7 @@ def auth_logout(
     keep_secret = bool(getattr(args, "keep_secret", False))
     deleter = getattr(plane, "delete_secret", None) if plane is not None else None
     results = []
-    for account_id in _targets(service, args):
+    for account_id in targets_for(service, args):
         try:
             results.append(
                 service.logout(
@@ -332,7 +344,9 @@ __all__ = [
     "auth_relink",
     "auth_status",
     "auth_verify",
+    "deployment_client",
     "make_auth_service",
     "make_registry",
     "remote_client",
+    "targets_for",
 ]
