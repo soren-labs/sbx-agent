@@ -40,6 +40,37 @@ class TestAccounts:
         assert got.status_code == 200
         assert got.json()["id"] == account["id"]
 
+    def test_create_with_credential_claims_managed_secret_name(
+        self, client, admin_auth, v1_env
+    ) -> None:
+        """SOR-219 acceptance: an account created with a credential must
+        carry the managed ``<prefix><id>`` secret_name — that name is the
+        lane mounting the blob into agent sandboxes. Without it every turn
+        runs credential-less even though /verify passes."""
+        from control.config import account_secret_prefix
+
+        resp = client.post(
+            "/v1/accounts",
+            json={
+                "provider": "grok",
+                "label": "x",
+                "credential": {"files": {".grok/creds.json": "SECRET-CONTENT"}},
+            },
+            headers=admin_auth,
+        )
+        assert resp.status_code == 201, resp.text
+        account = v1_env.registry.get(resp.json()["id"])
+        assert account.secret_name == f"{account_secret_prefix()}{account.id}"
+
+        # Credential-less creates stay unmanaged — nothing to mount.
+        resp = client.post(
+            "/v1/accounts",
+            json={"provider": "grok", "label": "y"},
+            headers=admin_auth,
+        )
+        assert resp.status_code == 201, resp.text
+        assert v1_env.registry.get(resp.json()["id"]).secret_name == ""
+
     def test_credential_blob_is_stored_not_echoed(self, client, admin_auth, v1_env) -> None:
         resp = client.post(
             "/v1/accounts",

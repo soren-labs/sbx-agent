@@ -99,7 +99,13 @@ from control.capabilities import (
     declared_snapshot,
 )
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
-from control.config import TERMINAL_STATUSES, env_int, env_str, selected_providers
+from control.config import (
+    TERMINAL_STATUSES,
+    account_secret_prefix,
+    env_int,
+    env_str,
+    selected_providers,
+)
 from control.connect import (
     CONNECT_STATES,
     ConnectError,
@@ -2705,14 +2711,36 @@ def list_accounts(
     return {"accounts": [_account_view(registry, account) for account in registry.list(provider)]}
 
 
+def _materialize_account_secret(account: Account, blob: dict[str, Any]) -> None:
+    """Mirror the stored credential blob into the managed Modal Secret.
+
+    ``<account_secret_prefix><id>`` is the mount lane agent sandboxes read;
+    without it a verified account's credential never reaches its turns.
+    Best-effort like the onboarding/relink path — the registry blob stays
+    authoritative and a missed refresh is retried by write-back.
+    """
+    if env_str("SBX_BACKEND", "local") != "modal" or not account.secret_name:
+        return
+    try:
+        from control.credsync import CREDENTIAL_ENV, ModalCredentialSecretWriter
+
+        ModalCredentialSecretWriter().refresh(
+            account.secret_name,
+            {CREDENTIAL_ENV: json.dumps(blob, ensure_ascii=False, separators=(",", ":"))},
+        )
+    except Exception:
+        pass
+
+
 @router.post("/accounts", status_code=201)
 def create_account(
     body: CreateAccountRequest,
     key: ApiKey = Depends(admin_key),
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
+    account_id = f"acct-{body.provider}-{uuid.uuid4().hex[:8]}"
     account = Account(
-        id=f"acct-{body.provider}-{uuid.uuid4().hex[:8]}",
+        id=account_id,
         provider=body.provider,
         label=body.label,
         # Verified-only lifecycle (SOR-216): a created account is never
@@ -2720,6 +2748,12 @@ def create_account(
         status="unverified",
         max_concurrent=body.max_concurrent,
         models=tuple(body.models),
+        # Managed credential lane (SOR-213): an account carrying a
+        # credential claims the conventional ``<prefix><id>`` Secret name
+        # up front — that name is what mounts the blob into sandboxes.
+        secret_name=(
+            f"{account_secret_prefix()}{account_id}" if body.credential is not None else ""
+        ),
         created_at=_iso_now(),
     )
     files: Any = None
@@ -2740,6 +2774,7 @@ def create_account(
             CredentialLifecycleService(registry).note_credential(account.id, blob)
         except Exception:
             pass
+        _materialize_account_secret(account, blob)
     return _account_view(registry, account)
 
 

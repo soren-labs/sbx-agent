@@ -939,7 +939,12 @@ def evaluate_account(
                 reasons.append("effort_unsupported")
     else:
         row = _effort_row(account.provider, model, snapshot)
-        if row is not None and row.default_effort:
+        # Adopt the row's default effort only when the model advertises a
+        # real surface for it — a tier baked into the model id
+        # (``swe-2-high`` on effort-less devin) leaves ``default_effort``
+        # set but must not become a ``reasoning_effort`` the provider's
+        # CLI then refuses.
+        if row is not None and row.default_effort and row.default_effort in row.reasoning_efforts:
             effort = row.default_effort
             effort_source = "default"
 

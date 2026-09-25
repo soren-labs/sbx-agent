@@ -437,6 +437,40 @@ def test_evaluate_model_and_effort_capability(registry) -> None:
     assert "effort_no_surface" in no_surface.reasons
 
 
+def test_evaluate_baked_tier_does_not_emit_effort(registry) -> None:
+    """SOR-221 acceptance: ``swe-2-high`` encodes its tier in the model id
+    and devin has no effort flag — the id-derived ``default_effort`` must
+    not become a ``reasoning_effort`` the CLI then refuses."""
+    row = ModelCapability(
+        model="swe-2-high",
+        display_name="SWE-2 High",
+        family="swe-2",
+        aliases=("swe-2",),
+        reasoning_efforts=(),
+        effort_native={},
+        default_effort="high",  # informational: baked into the id
+    )
+    snap = CapabilitySnapshot(
+        provider="devin",
+        account_id="d1",
+        models=(row,),
+        source="discovered",
+        refreshed_at=_iso(),
+        stale=False,
+        default_model="swe-2-high",
+    )
+    caps = type("Caps", (), {"get": lambda self, account, ensure=False: snap})()
+    c = _eval(
+        _account("d1", provider="devin", models=("swe-2-high",)),
+        registry,
+        capabilities=caps,
+        enabled=("devin",),
+    )
+    assert c.eligible, c.reasons
+    assert c.model == "swe-2-high"
+    assert c.effort is None
+
+
 # ---------------------------------------------------------------------------
 # resolve_execution — auto provider/model/effort/account + evidence
 # ---------------------------------------------------------------------------
