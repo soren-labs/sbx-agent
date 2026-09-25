@@ -845,6 +845,14 @@ class ControlPlane:
                         ),
                     )
                     continue
+                claimed = self.run_ledger.mark_running(session_id, n)
+                if claimed is None or claimed.status != "RUNNING":
+                    # A cancel/close landed between the queue snapshot and
+                    # the claim: the record is already terminal (the claim
+                    # is atomic under the ledger lock, so the durable
+                    # verdict wins) — the turn must never dispatch. Skip to
+                    # the next queued entry.
+                    continue
                 now = self.clock()
                 rec.status = "running"
                 rec.current_turn_id = turn_id
@@ -853,7 +861,6 @@ class ControlPlane:
                 if self.credential_sync is not None:
                     self.credential_sync.mark_run_credential(rec.sandbox_tags)
                 self.store.put(rec)
-                self.run_ledger.mark_running(session_id, n)
             try:
                 return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=False)
             except Exception as exc:
@@ -990,8 +997,22 @@ class ControlPlane:
         except Exception:
             self._rollback_turn(session_id, turn_id, handle, drop_message=drop_message)
             raise
+        dead_on_arrival = False
         with self._lock:
             self._live[session_id] = LiveTurn(turn_id=turn_id, n=n, proc=proc)
+            record = self.run_ledger.get(session_id, n) if self.run_ledger is not None else None
+            if record is not None and record.terminal:
+                # A cancel won the claim→dispatch gap: the durable verdict
+                # already holds — the just-spawned proc is killed instead
+                # of running billed work under a terminal record.
+                self._live.pop(session_id, None)
+                dead_on_arrival = True
+        if dead_on_arrival:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return turn_id
         thread = threading.Thread(
             target=self._watch_turn,
             args=(session_id, turn_id, n, proc),
@@ -1169,11 +1190,12 @@ class ControlPlane:
                 rec.updated_at = now
                 rec.last_activity_at = now
                 self.store.put(rec)
+            ledger_record = None
             if self.run_ledger is not None:
                 # Persist the terminal outcome now, while turns/<n>.json may
                 # still be readable; after teardown this record is the only
                 # evidence.
-                self.run_ledger.finish(
+                ledger_record = self.run_ledger.finish(
                     session_id,
                     n,
                     status=status,
@@ -1191,7 +1213,13 @@ class ControlPlane:
         # like the credential write-back below: publish() persists any
         # failure as ``publish_error`` on the workspace record, so the
         # FINISHED verdict is never rewritten and never silent either.
-        if status == "FINISHED":
+        # Auto-delivery only when the durable verdict is FINISHED too:
+        # finish() is monotonic, so a cancel that won the finish race keeps
+        # the record terminal — cancelled work must never reach a
+        # revision/branch/PR.
+        if status == "FINISHED" and (
+            ledger_record is None or ledger_record.status == "FINISHED"
+        ):
             # SOR-225: a successful code-changing run materializes a durable
             # Revision before any publish — delivery then operates on the
             # revision, not the sandbox.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,58 @@ def test_cancel_queued_run_is_durable_and_skipped(
     time.sleep(0.5)
     run2 = client.get(f"/v1/agents/{agent['id']}/runs/run-2", headers=auth).json()
     assert run2["status"] == "CANCELLED"
+
+
+def test_cancel_landing_mid_drain_never_dispatches(
+    client: TestClient, auth: dict, v1_env: V1Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel in the drain's snapshot→claim window wins over dispatch.
+
+    The drain parks inside ``_queued_ns`` holding a stale ``[run-2]``
+    snapshot; the cancel lands there and must prevent the claim —
+    ``mark_running`` returning the terminal record means skip, never a
+    dispatched turn under a durable CANCELLED verdict.
+    """
+    _slow_turn(monkeypatch, "30")
+    agent = create_agent(client, auth)["agent"]
+    agent_id = agent["id"]
+    queued = client.post(
+        f"/v1/agents/{agent_id}/runs",
+        json={"prompt": {"text": "cancelled mid-drain"}},
+        headers=auth,
+    )
+    assert queued.json()["status"] == "QUEUED"
+    plane = v1_env.app.state.plane
+    entered = threading.Event()
+    gate = threading.Event()
+    orig_queued_ns = plane._queued_ns
+
+    def parked(session_id: str) -> list[int]:
+        ns = orig_queued_ns(session_id)
+        if ns and not gate.is_set():
+            entered.set()
+            gate.wait(10)
+        return ns
+
+    monkeypatch.setattr(plane, "_queued_ns", parked)
+    # stop() frees the agent and ends in a drain — it parks inside
+    # _queued_ns holding its snapshot of run-2.
+    stopper = threading.Thread(target=plane.stop, args=(agent_id,), daemon=True)
+    stopper.start()
+    assert entered.wait(10), "drain never parked on the queued head"
+    cancel = client.post(f"/v1/agents/{agent_id}/runs/run-2/cancel", headers=auth)
+    assert cancel.status_code == 200, cancel.text
+    gate.set()
+    stopper.join(timeout=10)
+    # The cancelled head was never claimed: no live turn-2, no turn-2 turn
+    # allocated on the session, and the durable CANCELLED verdict holds.
+    live = plane._live.get(agent_id)
+    assert live is None or live.n != 2
+    run2 = client.get(f"/v1/agents/{agent_id}/runs/run-2", headers=auth).json()
+    assert run2["status"] == "CANCELLED"
+    rec = v1_env.store.get(agent_id)
+    assert rec.current_turn_id != "turn-2"
+    assert all(m.get("turn_id") != "turn-2" or m.get("role") != "assistant" for m in rec.messages)
 
 
 def test_run_create_idempotency_replay_and_conflict(

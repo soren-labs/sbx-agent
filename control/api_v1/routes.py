@@ -2204,6 +2204,16 @@ def cancel_run(
         # as audit and the drain skips terminal records.
         run_states.transition(agent_id, n, "CANCELLED")
         v1.mark_cancelled(agent_id, n)
+        rec = _require_agent(plane, agent_id)
+        if rec.current_turn_n == n and rec.status == "running":
+            # The drain claimed the run between our status read and the
+            # transition — stop the turn so a cancelled run runs no
+            # billed work.
+            try:
+                plane.stop(agent_id)
+            except Exception:
+                pass
+            rec = _require_agent(plane, agent_id)
     elif state is not None and state.status == "CREATING":
         # Pre-dispatch run-1 (SOR-82 A2): drop the queued turn so the worker
         # skips it, and persist CANCELLED — terminal, never resurrected.
