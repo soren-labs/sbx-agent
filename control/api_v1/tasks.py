@@ -896,9 +896,7 @@ def _publish_delivery(plane: Any, agent_id: str) -> None:
         raise V1ApiError(409, "workspace_unavailable", "workspace service unavailable")
     try:
         record = workspaces.publish(handle, agent_id)
-        if (record.git or {}).get("merge") and not (
-            record.merge or {}
-        ).get("merged"):
+        if (record.git or {}).get("merge") and not (record.merge or {}).get("merged"):
             workspaces.merge(handle, agent_id)
     except Exception as exc:
         raise _routes._workspace_error(exc) from exc
