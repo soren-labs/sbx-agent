@@ -354,3 +354,101 @@ test.describe("web console against a real local /v1 control plane", () => {
     ]);
   });
 });
+
+test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
+  test("provider connect: hosted lane surfaces the device URL and verifies (SOR-214)", async ({
+    page,
+  }) => {
+    await connect(page);
+    await page.getByTestId("nav-accounts").click();
+    await page.getByTestId("connect-provider").first().click();
+    await page.getByTestId("connect-provider-select").selectOption("codex");
+    await page.getByTestId("connect-label").fill("e2e connected seat");
+    await page.getByTestId("connect-submit").click();
+
+    // The fake `codex login` prints a browser URL and a code; the connect
+    // session scrapes them and the dialog shows them while it polls.
+    await expect(page.getByTestId("connect-state")).toContainText(
+      /authenticating|materialized|verified/,
+    );
+    await expect(page.getByTestId("connect-state")).toContainText(/verified|materialized/, {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("connect-url")).toContainText("https://");
+    await expect(page.getByTestId("connect-code")).toBeVisible();
+
+    await page.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByTestId("accounts-table")).toContainText("e2e connected seat");
+  });
+
+  test("provider connect: local pairing fallback when hosted lane is unavailable (SOR-214)", async ({
+    page,
+  }) => {
+    await connect(page);
+    await page.getByTestId("nav-accounts").click();
+    await page.getByTestId("connect-provider").first().click();
+    await page.getByTestId("connect-provider-select").selectOption("grok");
+    await page.getByTestId("connect-label").fill("e2e pair seat");
+    await page.getByTestId("connect-submit").click();
+
+    const state = page.getByTestId("connect-state");
+    await expect(state).toContainText(/authenticating|verified|materialized|failed/);
+
+    // Hosted lane may or may not be reachable for grok in the e2e plane;
+    // if the session degrades to a pair-capable state the pair command is
+    // the contract seam being exercised.
+    if (await page.getByTestId("connect-pair").isVisible()) {
+      await expect(page.getByTestId("connect-pair")).toContainText("sbx auth pair sbxp_");
+      const ticket = (
+        (await page.getByTestId("connect-pair").innerText()).match(/sbxp_\S+/) || []
+      )[0];
+      expect(ticket).toBeTruthy();
+
+      // Drive the pairing end-to-end like `sbx auth pair <ticket>` would:
+      // fetch pair info, run the local login (fake), post the capture blob.
+      const info = await page.request.get(`/v1/auth/pair/${ticket}`);
+      expect(info.ok()).toBeTruthy();
+      const pairInfo = (await info.json()) as { provider: string };
+      expect(pairInfo.provider).toBe("grok");
+
+      const done = await page.request.post("/v1/auth/pair/complete", {
+        data: {
+          ticket,
+          credential: {
+            provider: "grok",
+            files: { ".grok/auth.json": '{"token": "REDACTED"}' },
+          },
+        },
+      });
+      expect(done.ok()).toBeTruthy();
+      await expect(state).toContainText(/verified|materialized/, { timeout: 30_000 });
+      // Ticket is single-use.
+      const replay = await page.request.get(`/v1/auth/pair/${ticket}`);
+      expect(replay.status()).toBe(401);
+    }
+    await page.getByRole("button", { name: "Close" }).click();
+  });
+
+  test("github zero-config: manifest flow registers the app into install state (SOR-220)", async ({
+    page,
+  }) => {
+    await connect(page);
+    await page.getByTestId("nav-github").click();
+    await expect(page.getByTestId("github-status")).toContainText("not configured");
+    await page.getByTestId("github-create-app").click();
+
+    // The console POSTs the manifest to the (fake) GitHub apps/new page,
+    // which redirects back through the callback with code+state — the
+    // whole dance runs in-browser, no manual copy of app credentials.
+    await expect(page.getByTestId("manifest-connected")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("github-status")).toContainText("configured", {
+      timeout: 15_000,
+    });
+
+    // The fake GitHub reports one org installation — the install/repo
+    // selection surface is immediately usable, no redeploy or env export.
+    await expect(page.getByTestId("github-installations")).toContainText("e2e-org", {
+      timeout: 15_000,
+    });
+  });
+});

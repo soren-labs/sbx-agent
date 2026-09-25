@@ -219,7 +219,8 @@ def record_from_dict(data: Any) -> InstallationRecord | None:
 
 
 class GitHubAppStore(Protocol):
-    """Installations keyed by id, plus single-use pending authorize states."""
+    """Installations keyed by id, single-use pending authorize/manifest
+    states, and the deployment-registered App config (SOR-220)."""
 
     def list(self) -> list[InstallationRecord]: ...
     def get(self, installation_id: int) -> InstallationRecord | None: ...
@@ -230,11 +231,19 @@ class GitHubAppStore(Protocol):
         """Consume a pending state; returns its expiry epoch, or None."""
         ...
 
+    def get_app_config(self) -> dict[str, Any] | None:
+        """The manifest-registered App config (SOR-220), or None."""
+        ...
+
+    def put_app_config(self, config: dict[str, Any]) -> None: ...
+    def delete_app_config(self) -> None: ...
+
 
 class InMemoryGitHubAppStore:
     def __init__(self) -> None:
         self._items: dict[int, dict[str, Any]] = {}
         self._states: dict[str, float] = {}
+        self._app_config: dict[str, Any] | None = None
         self._lock = threading.Lock()
 
     def list(self) -> list[InstallationRecord]:
@@ -264,6 +273,18 @@ class InMemoryGitHubAppStore:
         with self._lock:
             return self._states.pop(state, None)
 
+    def get_app_config(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._app_config) if self._app_config is not None else None
+
+    def put_app_config(self, config: dict[str, Any]) -> None:
+        with self._lock:
+            self._app_config = dict(config)
+
+    def delete_app_config(self) -> None:
+        with self._lock:
+            self._app_config = None
+
 
 class FileGitHubAppStore:
     """JSON-per-installation store for the local (non-Modal) control plane.
@@ -282,6 +303,9 @@ class FileGitHubAppStore:
 
     def _states_path(self) -> Path:
         return self._root / "authorize-states.json"
+
+    def _app_config_path(self) -> Path:
+        return self._root / "app-config.json"
 
     def list(self) -> list[InstallationRecord]:
         out: list[InstallationRecord] = []
@@ -351,6 +375,26 @@ class FileGitHubAppStore:
         tmp.write_text(json.dumps(states), encoding="utf-8")
         tmp.replace(path)
 
+    def get_app_config(self) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self._app_config_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def put_app_config(self, config: dict[str, Any]) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._app_config_path()
+        tmp = path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(config))
+        tmp.replace(path)
+
+    def delete_app_config(self) -> None:
+        self._app_config_path().unlink(missing_ok=True)
+
 
 class ModalDictGitHubAppStore:
     """Production store backed by ``modal.Dict`` — lazy-imports modal."""
@@ -398,6 +442,19 @@ class ModalDictGitHubAppStore:
             return None
         return float(expiry)
 
+    def get_app_config(self) -> dict[str, Any] | None:
+        raw = self._d().get("app:config")
+        return raw if isinstance(raw, dict) else None
+
+    def put_app_config(self, config: dict[str, Any]) -> None:
+        self._d()["app:config"] = dict(config)
+
+    def delete_app_config(self) -> None:
+        try:
+            self._d().pop("app:config")
+        except KeyError:
+            pass
+
 
 # --------------------------------------------------------------------------
 # GitHub API client — app JWT + installation access tokens
@@ -420,8 +477,10 @@ class GitHubAppClient:
         transport: httpx.BaseTransport | None = None,
         timeout_s: float = 15.0,
         clock: Callable[[], float] = time.time,
+        config_resolver: Callable[[], GitHubAppConfig] | None = None,
     ) -> None:
         self._config = config
+        self._config_resolver = config_resolver
         self._api_url = api_url.rstrip("/")
         self._timeout_s = timeout_s
         self._clock = clock
@@ -431,36 +490,53 @@ class GitHubAppClient:
     def config(self) -> GitHubAppConfig:
         return self._config
 
+    def _resolved_config(self) -> GitHubAppConfig:
+        """Config in effect *now* — the SOR-220 dynamic resolver picks up a
+        manifest-registered app without a service rebuild or redeploy."""
+        if self._config_resolver is not None:
+            try:
+                resolved = self._config_resolver()
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                return resolved
+        return self._config
+
     def _jwt(self) -> str:
         """Sign an App JWT (iss=app_id, 10 min bound, 60 s clock-skew backdate)."""
         import jwt  # PyJWT[crypto] — RS256 needs the cryptography extra
 
+        cfg = self._resolved_config()
         now = int(self._clock())
-        payload = {"iat": now - 60, "exp": now + 600, "iss": self._config.app_id}
-        return jwt.encode(payload, self._config.private_key, algorithm="RS256")
+        payload = {"iat": now - 60, "exp": now + 600, "iss": cfg.app_id}
+        return jwt.encode(payload, cfg.private_key, algorithm="RS256")
 
     def _request(
         self,
         method: str,
         path: str,
         *,
-        authorization: str,
+        authorization: str | None,
         json_body: dict[str, Any] | None = None,
         expected: tuple[int, ...] = (200,),
         what: str,
     ) -> Any:
         """One GitHub API call; failures raise ``GitHubAppError`` with a
         clipped, secret-free message (response bodies may echo request
-        fragments — never let more than 200 chars through)."""
+        fragments — never let more than 200 chars through). ``None``
+        authorization issues the request unauthenticated (the manifest
+        conversion endpoint is anonymous by design)."""
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        }
+        if authorization is not None:
+            headers["Authorization"] = authorization
         try:
             resp = self._client.request(
                 method,
                 f"{self._api_url}{path}",
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": authorization,
-                    "X-GitHub-Api-Version": GITHUB_API_VERSION,
-                },
+                headers=headers,
                 json=json_body,
             )
         except httpx.HTTPError as exc:
@@ -470,7 +546,7 @@ class GitHubAppClient:
                 status_code=502,
             ) from exc
         if resp.status_code not in expected:
-            detail = resp.text[:200].replace(self._config.app_id or " ", "<app-id>")
+            detail = resp.text[:200].replace(self._resolved_config().app_id or " ", "<app-id>")
             raise GitHubAppError(
                 "github_app_upstream",
                 f"GitHub API {what} returned {resp.status_code}"
@@ -575,6 +651,30 @@ class GitHubAppClient:
         except GitHubAppError:
             return False
 
+    def exchange_manifest_code(self, code: str) -> dict[str, Any]:
+        """``POST /app-manifests/{code}/conversions`` — SOR-220 registration.
+
+        This endpoint is *unauthenticated* by design: the one-time ``code``
+        the browser redirect carries is the credential. Returns the created
+        app's full record (``id``/``slug``/``client_id``/``client_secret``/
+        ``pem``/``webhook_secret``) — callers must persist it immediately
+        and never surface the private fields on the API.
+        """
+        data = self._request(
+            "POST",
+            f"/app-manifests/{code}/conversions",
+            authorization=None,
+            expected=(201,),
+            what="exchange manifest code",
+        )
+        if not isinstance(data, dict) or not data.get("id") or not data.get("pem"):
+            raise GitHubAppError(
+                "github_app_upstream",
+                "GitHub API exchange manifest code returned no app",
+                status_code=502,
+            )
+        return data
+
 
 def _parse_github_time(value: Any) -> float:
     """GitHub ``expires_at`` (``2024-01-01T00:00:00Z``) → epoch seconds."""
@@ -598,6 +698,12 @@ class GitHubAppService:
     repo context is given) and returns a cached-or-fresh installation token.
     Everything here is fail-closed — an unconfigured app or a repo outside
     every installation's selection yields ``None``, not a wider token.
+
+    SOR-220 zero-config: when the env config is absent, a manifest-
+    registered App config stored in the durable registry lane takes over —
+    ``_resolve_config`` re-reads it on every call so registration is usable
+    immediately, with no redeploy. ``secret_writer`` mirrors the private
+    material into the deployment-managed Secret (Modal).
     """
 
     def __init__(
@@ -606,27 +712,71 @@ class GitHubAppService:
         store: GitHubAppStore,
         client: GitHubAppClient | None = None,
         *,
+        api_url: str = DEFAULT_API_URL,
         clock: Callable[[], float] = time.time,
         records_ttl_s: float = 60.0,
+        secret_writer: Any = None,
+        secret_name: str | None = None,
     ) -> None:
-        self._config = config
+        self._env_config = config
         self._store = store
-        self._client = client or GitHubAppClient(config)
+        self._api_url = api_url.rstrip("/")
+        self._secret_writer = secret_writer
+        self._secret_name = secret_name
+        self._client = client or GitHubAppClient(
+            config, api_url=self._api_url, config_resolver=self._resolve_config
+        )
         self._clock = clock
         self._records_ttl_s = records_ttl_s
         self._tokens: dict[tuple[int, str], tuple[str, float]] = {}
         self._records_cache: tuple[float, list[InstallationRecord]] | None = None
         self._lock = threading.Lock()
 
+    # -- config resolution (env → registry) --------------------------------
+
+    def _stored_app_record(self) -> dict[str, Any] | None:
+        """The manifest-registered config record in the durable store."""
+        get = getattr(self._store, "get_app_config", None)
+        if not callable(get):
+            return None
+        try:
+            raw = get()
+        except Exception:
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    def _resolve_config(self) -> GitHubAppConfig:
+        """The config in effect *now*: env config wins (SOR-177 backcompat),
+        else the manifest-registered registry config."""
+        if self._env_config.configured:
+            return self._env_config
+        raw = self._stored_app_record()
+        if raw is not None:
+            cfg = GitHubAppConfig(
+                app_id=str(raw.get("app_id") or ""),
+                slug=str(raw.get("slug") or "").lower(),
+                private_key=str(raw.get("private_key") or ""),
+            )
+            if cfg.configured:
+                return cfg
+        return self._env_config
+
+    def _config_source(self) -> str | None:
+        if self._env_config.configured:
+            return "env"
+        if self._stored_app_record() is not None:
+            return "registry"
+        return None
+
     # -- posture -----------------------------------------------------------
 
     @property
     def config(self) -> GitHubAppConfig:
-        return self._config
+        return self._resolve_config()
 
     @property
     def configured(self) -> bool:
-        return self._config.configured
+        return self._resolve_config().configured
 
     def _records(self) -> list[InstallationRecord]:
         """Recorded installations, bounded-refresh cached (60 s default)."""
@@ -648,27 +798,166 @@ class GitHubAppService:
         """Public posture: config + installation metadata, never secrets.
 
         ``bridge_token`` reports whether the PAT/env compatibility fallback
-        (GH_TOKEN/GITHUB_TOKEN) can still supply tokens.
+        (GH_TOKEN/GITHUB_TOKEN) can still supply tokens. ``source`` names
+        where the effective config lives — ``env`` (SOR-177 envs) or
+        ``registry`` (SOR-220 manifest registration).
         """
+        cfg = self._resolve_config()
+        stored = self._stored_app_record() or {}
         return {
-            "configured": self._config.configured,
-            "installable": self._config.installable,
-            "app_id": self._config.app_id or None,
-            "app_slug": self._config.slug or None,
+            "configured": cfg.configured,
+            "installable": cfg.installable,
+            "app_id": cfg.app_id or None,
+            "app_slug": cfg.slug or None,
+            "source": self._config_source(),
+            "app_url": str(stored.get("html_url") or "") or None,
             "installations": [r.public() for r in self._records()],
             "bridge_token": any(os.environ.get(name) for name in TOKEN_ENVS),
         }
+
+    # -- zero-config registration (SOR-220 App Manifest flow) ---------------
+
+    def begin_manifest(
+        self,
+        *,
+        redirect_url: str,
+        name: str | None = None,
+        org: str | None = None,
+        homepage_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Step 1: return the App manifest + the ``settings/apps/new`` URL.
+
+        The browser POSTs ``manifest`` to ``manifest_url`` (a
+        ``application/x-www-form-urlencoded`` form post — GitHub's
+        supported registration flow); GitHub then redirects the browser to
+        ``redirect_url`` with ``?code=&state=``. The pending ``state`` is
+        the single-use capability that proves the callback belongs to this
+        registration.
+        """
+        if self._resolve_config().configured:
+            raise GitHubAppError(
+                "github_app_configured",
+                "a GitHub App is already configured for this deployment",
+                status_code=409,
+            )
+        base = _origin_of(redirect_url)
+        if base is None:
+            raise GitHubAppError("github_app_invalid", "redirect_url must be an http(s) URL")
+        state = _secrets.token_urlsafe(24)
+        expires_at = self._clock() + AUTHORIZE_STATE_TTL_S
+        self._store.put_state(f"manifest:{state}", expires_at)
+        manifest: dict[str, Any] = {
+            "name": name or f"sbx-{_secrets.token_hex(3)}",
+            "url": homepage_url or base,
+            "hook_attributes": {
+                "url": f"{base}/v1/github/app/webhook",
+                "active": False,
+            },
+            "redirect_url": redirect_url,
+            "description": f"sbx control plane GitHub integration ({base})",
+            "public": False,
+            # Least privilege for the sandbox seam: clone/push + PRs.
+            "default_permissions": {"contents": "write", "pull_requests": "write"},
+        }
+        web = github_web_url(self._api_url)
+        path = f"{web}/organizations/{org}/settings/apps/new" if org else f"{web}/settings/apps/new"
+        return {
+            "manifest": manifest,
+            "manifest_url": f"{path}?state={state}",
+            "state": state,
+            "expires_at": _iso_from_epoch(expires_at),
+        }
+
+    def complete_manifest(self, code: str, state: str | None) -> dict[str, Any]:
+        """Step 2: exchange the conversion ``code``, register the App config.
+
+        ``state`` (single-use, from ``begin_manifest``) is the credential —
+        the browser redirect cannot carry a Bearer key. The returned app
+        material is persisted to the durable store and mirrored into the
+        managed Secret (best-effort); the response surfaces metadata only.
+        """
+        if not code:
+            raise GitHubAppError("github_app_invalid", "manifest completion requires a code")
+        if not state:
+            raise GitHubAppError(
+                "github_app_state",
+                "manifest completion requires the pending state",
+                status_code=403,
+            )
+        expiry = self._store.pop_state(f"manifest:{state}")
+        if expiry is None or expiry < self._clock():
+            raise GitHubAppError(
+                "github_app_state", "unknown or expired manifest state", status_code=403
+            )
+        data = self._client.exchange_manifest_code(code)
+        record = {
+            "app_id": str(data.get("id")),
+            "slug": str(data.get("slug") or "").lower(),
+            # Private material — stored in the registry lane / managed
+            # Secret only, never returned by any API response.
+            "private_key": str(data.get("pem") or ""),
+            "client_id": str(data.get("client_id") or ""),
+            "client_secret": str(data.get("client_secret") or ""),
+            "webhook_secret": str(data.get("webhook_secret") or ""),
+            "name": str(data.get("name") or ""),
+            "html_url": str(data.get("html_url") or ""),
+            "registered_at": _iso_from_epoch(self._clock()),
+        }
+        self._store.put_app_config(record)
+        with self._lock:
+            # A new App invalidates every cached token/record view.
+            self._tokens = {}
+            self._records_cache = None
+        secret = self._write_manifest_secret(record)
+        # Land straight into a usable install surface: re-read installations
+        # GitHub already reports (best-effort — a sync miss never undoes the
+        # registration; POST /v1/github/app/sync retries it).
+        synced = True
+        try:
+            self.sync()
+        except Exception:
+            synced = False
+        return {
+            "app_id": record["app_id"],
+            "slug": record["slug"],
+            "name": record["name"],
+            "html_url": record["html_url"],
+            "source": "registry",
+            "secret": secret,
+            "installations_synced": synced,
+        }
+
+    def _write_manifest_secret(self, record: dict[str, Any]) -> str:
+        """Best-effort mirror into the managed Modal Secret — the private
+        key lands where a redeploy's env config would read it, but the
+        registry copy is authoritative. ``skipped``|``refreshed``|``failed``;
+        a Secret failure never undoes the registry commit."""
+        if self._secret_writer is None or not self._secret_name:
+            return "skipped"
+        try:
+            self._secret_writer.refresh(
+                self._secret_name,
+                {
+                    APP_ID_ENV: record["app_id"],
+                    APP_SLUG_ENV: record["slug"],
+                    APP_KEY_ENV: record["private_key"],
+                },
+            )
+        except Exception:
+            return "failed"
+        return "refreshed"
 
     # -- one-click authorization ------------------------------------------
 
     def begin_authorization(self) -> dict[str, Any]:
         """Create a pending ``state`` and the one-click install URL."""
-        if not self._config.installable:
+        cfg = self._resolve_config()
+        if not cfg.installable:
             _raise_unconfigured()
         state = _secrets.token_urlsafe(24)
         expires_at = self._clock() + AUTHORIZE_STATE_TTL_S
         self._store.put_state(state, expires_at)
-        url = f"https://github.com/apps/{self._config.slug}/installations/new?state={state}"
+        url = f"{github_web_url(self._api_url)}/apps/{cfg.slug}/installations/new?state={state}"
         return {
             "authorize_url": url,
             "state": state,
@@ -682,7 +971,7 @@ class GitHubAppService:
         Bearer key. Unknown/expired/reused states are refused; the recorded
         metadata comes from GitHub's API, never from callback params alone.
         """
-        if not self._config.configured:
+        if not self._resolve_config().configured:
             _raise_unconfigured()
         try:
             iid = int(installation_id)
@@ -750,7 +1039,7 @@ class GitHubAppService:
 
     def sync(self) -> list[InstallationRecord]:
         """Re-read all installations from GitHub; drop ones GitHub forgot."""
-        if not self._config.configured:
+        if not self._resolve_config().configured:
             _raise_unconfigured()
         seen: set[int] = set()
         out: list[InstallationRecord] = []
@@ -783,7 +1072,7 @@ class GitHubAppService:
                 )
         remote_deleted = True
         for record in records:
-            if self._config.configured and not self._client.delete_installation(
+            if self._resolve_config().configured and not self._client.delete_installation(
                 record.installation_id
             ):
                 remote_deleted = False
@@ -811,7 +1100,7 @@ class GitHubAppService:
         """Cheap no-network gate for ``github.injection_enabled``: a
         configured app with at least one recorded (repo-authorizing)
         installation."""
-        if not self._config.configured:
+        if not self._resolve_config().configured:
             return False
         try:
             records = self._records()
@@ -833,7 +1122,7 @@ class GitHubAppService:
         installation's token covers its whole authorized selection.
         ``None`` = no authorized source (fail closed).
         """
-        if not self._config.configured:
+        if not self._resolve_config().configured:
             return None
         slug = _normalize_slug(repo) if repo else None
         if repo and slug is None:
@@ -865,6 +1154,29 @@ def _iso_from_epoch(epoch: float) -> str:
     from datetime import UTC, datetime
 
     return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
+def _origin_of(url: str) -> str | None:
+    """``scheme://host`` of an http(s) URL, else ``None``."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def github_web_url(api_url: str) -> str:
+    """Map a GitHub API base onto its web origin (GHE ``/api/v3`` aware)."""
+    host = api_url.rstrip("/")
+    if host == "https://api.github.com":
+        return "https://github.com"
+    if host.endswith("/api/v3"):
+        return host[: -len("/api/v3")]
+    return host
 
 
 # --------------------------------------------------------------------------
@@ -905,11 +1217,24 @@ def default_service(env: Mapping[str, str] | None = None) -> GitHubAppService:
     with _default_lock:
         if _default_service is not None and _default_key == key:
             return _default_service
-        client = GitHubAppClient(
+        api_url = env.get(APP_API_URL_ENV) or DEFAULT_API_URL
+        # SOR-220: on Modal the manifest-registered key material is also
+        # mirrored into the deployment-managed Secret (best effort) so a
+        # redeploy keeps the app without a manual `modal secret create`.
+        secret_writer = None
+        secret_name = None
+        if env.get("SBX_BACKEND") == "modal":
+            from control.credsync import ModalCredentialSecretWriter
+
+            secret_writer = ModalCredentialSecretWriter()
+            secret_name = env.get(APP_SECRET_NAME_ENV) or DEFAULT_DICT_NAME
+        _default_service = GitHubAppService(
             config,
-            api_url=env.get(APP_API_URL_ENV) or DEFAULT_API_URL,
+            _default_store(env),
+            api_url=api_url,
+            secret_writer=secret_writer,
+            secret_name=secret_name,
         )
-        _default_service = GitHubAppService(config, _default_store(env), client)
         _default_key = key
         return _default_service
 

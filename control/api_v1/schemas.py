@@ -256,6 +256,55 @@ class GitHubAppAuthorizeCallbackRequest(BaseModel):
     state: str = Field(min_length=1)
 
 
+class GitHubAppManifestRequest(BaseModel):
+    """SOR-220 zero-config: begin the GitHub App Manifest registration.
+
+    ``name``/``org`` are optional: the manifest names the per-deployment
+    app ``sbx-<rand>`` by default and registers it under the signed-in
+    GitHub account (``org`` pins it to an org instead).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=34)
+    org: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class GitHubAppManifestCompleteRequest(BaseModel):
+    """SOR-220: exchange the manifest conversion ``code`` + the pending
+    ``state`` (single-use capability — the browser redirect carries no
+    Bearer key)."""
+
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+
+
+class AuthConnectRequest(BaseModel):
+    """SOR-214: begin a provider-connect auth session.
+
+    ``account_id`` set → relink an existing account in place; omitted →
+    create a new account from the captured credential.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    provider: ProviderId
+    label: str = ""
+    account_id: str | None = None
+    max_concurrent: int = Field(default=1, ge=1)
+    models: list[str] = Field(default_factory=list)
+
+
+class PairCompleteRequest(BaseModel):
+    """SOR-214: the local-pair completion — the one-time ``ticket`` is the
+    credential (same threat model as the console grant exchange); the
+    ``credential`` blob is validated against the provider's declared file
+    schema before the ticket is consumed."""
+
+    model_config = ConfigDict(extra="forbid")
+    ticket: str = Field(min_length=1)
+    credential: dict[str, Any]
+
+
 def usage_public(usage: dict[str, Any] | None) -> dict[str, int] | None:
     """Usage with the three required fields defaulted to 0.
 

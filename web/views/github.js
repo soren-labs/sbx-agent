@@ -25,6 +25,22 @@ import { docsUrl } from "./shell.js";
 const CALLBACK_KEY = "sbx.console.github_callback";
 const PENDING_KEY = "sbx.console.github_pending";
 
+// SOR-220: the Console auto-posts {manifest} to GitHub's settings/apps/new
+// — the official App Manifest registration flow — and GitHub bounces the
+// browser back through /v1/github/app/manifest/callback, which 303s here
+// with `?manifest=connected` or `?manifest_error=<code>`.
+function postManifest(res) {
+  const url = httpUrl(res.manifest_url);
+  if (!url) throw new Error("manifest_url is not an http(s) URL");
+  const form = h(
+    "form",
+    { method: "POST", action: url, hidden: true, "data-testid": "manifest-form" },
+    h("input", { name: "manifest", value: JSON.stringify(res.manifest) }),
+  );
+  document.body.append(form);
+  form.submit();
+}
+
 export function renderGithub() {
   const gate = adminGate(t("GitHub"), t("Let agents clone, push and open pull requests on private repositories."));
   if (gate) return gate;
@@ -69,6 +85,34 @@ export function renderGithub() {
     );
   }
 
+  function manifestNotice() {
+    const q = new URLSearchParams((location.hash.split("?")[1] || ""));
+    if (q.get("manifest") === "connected") {
+      mount(
+        noticeEl,
+        banner({
+          tone: "success",
+          title: t("GitHub App registered"),
+          body: t("This deployment now has its own app — connect it below."),
+          testid: "manifest-connected",
+        }),
+      );
+    } else if (q.get("manifest_error")) {
+      mount(
+        noticeEl,
+        banner({
+          tone: "danger",
+          title: t("GitHub App registration failed"),
+          body: t("GitHub returned `{code}` — start the registration again.", { code: q.get("manifest_error") }),
+          testid: "manifest-error",
+        }),
+      );
+    }
+    if (q.get("manifest") || q.get("manifest_error")) {
+      history.replaceState(null, "", `${location.pathname}${location.hash.split("?")[0]}`);
+    }
+  }
+
   async function load() {
     let st;
     try {
@@ -77,6 +121,7 @@ export function renderGithub() {
       mount(body, errorBanner(err, { retry: load }));
       return;
     }
+    manifestNotice();
     const posture = card({
       title: t("Authorization"),
       iconName: "github",
@@ -111,7 +156,8 @@ export function renderGithub() {
         { class: "stack" },
         kv([
           [t("GitHub App"), st.configured ? badge(t("configured"), { tone: "green" }) : badge(t("not configured"), { tone: "neutral" })],
-          [t("App"), st.app_slug ? h("a", { href: `https://github.com/apps/${st.app_slug}`, target: "_blank", rel: "noopener noreferrer" }, st.app_slug) : null],
+          st.source ? [t("Config source"), badge(st.source === "registry" ? t("registered") : st.source, { mono: true, testid: "github-source" })] : null,
+          [t("App"), st.app_slug ? h("a", { href: st.app_url || `https://github.com/apps/${st.app_slug}`, target: "_blank", rel: "noopener noreferrer" }, st.app_slug) : null],
           [t("App id"), st.app_id ? h("code", null, st.app_id) : null],
           [t("Token fallback"), st.bridge_token ? badge(t("GH_TOKEN available"), { tone: "amber" }) : badge(t("none"), { tone: "neutral" })],
         ]),
@@ -119,10 +165,27 @@ export function renderGithub() {
           ? h(
               "div",
               { class: "stack", style: "gap:10px" },
-              h("p", { class: "muted" }, t("Configure a GitHub App on the control plane to authorize repositories with one click — no personal tokens. Set these in the control plane environment (or its Modal Secret), then redeploy:")),
-              codeBlock("SBX_GITHUB_APP_ID=123456\nSBX_GITHUB_APP_SLUG=my-sbx-app\nSBX_GITHUB_APP_PRIVATE_KEY=<PEM, from a Modal Secret>\nSBX_GITHUB_EPHEMERAL=1"),
-              h("p", { class: "field-hint" }, t("Set the App's Setup URL to this console's address so GitHub returns here after installation.")),
-              h("a", { href: docsUrl("guides/github"), target: "_blank", rel: "noopener noreferrer" }, t("GitHub integration guide →")),
+              h("p", { class: "muted" }, t("Authorize repositories with one click — no personal tokens. Register a GitHub App for this deployment right now; the control plane stores the private material itself.")),
+              h(
+                "div",
+                null,
+                actionButton(t("Create GitHub App"), async () => {
+                  try {
+                    postManifest(await api.githubManifest({}));
+                  } catch (err) {
+                    toastError(err, t("Could not start GitHub App registration"));
+                  }
+                }, { variant: "primary", iconName: "github", testid: "github-create-app" }),
+              ),
+              h(
+                "details",
+                { class: "muted" },
+                h("summary", null, t("Manual: configure the App env vars instead (requires a redeploy)")),
+                h("p", null, t("Set these in the control plane environment (or its Modal Secret), then redeploy:")),
+                codeBlock("SBX_GITHUB_APP_ID=123456\nSBX_GITHUB_APP_SLUG=my-sbx-app\nSBX_GITHUB_APP_PRIVATE_KEY=<PEM, from a Modal Secret>\nSBX_GITHUB_EPHEMERAL=1"),
+                h("p", { class: "field-hint" }, t("Set the App's Setup URL to this console's address so GitHub returns here after installation.")),
+                h("a", { href: docsUrl("guides/github"), target: "_blank", rel: "noopener noreferrer" }, t("GitHub integration guide →")),
+              ),
             )
           : null,
         st.installable && sessionStorage.getItem(PENDING_KEY)

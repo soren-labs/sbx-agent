@@ -73,6 +73,28 @@ def _credential_ok() -> bool:
         return False
 
 
+def _login() -> None:
+    """``codex login`` — the provider's interactive sign-in (SOR-214).
+
+    Prints a device-style URL + user code (what the hosted-lane scraper
+    surfaces), writes a schema-valid ``auth.json`` (mode 0600) under
+    ``$CODEX_HOME`` (else ``$HOME/.codex``), and exits 0.
+    """
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    auth = home / "auth.json"
+    if _credential_ok():
+        print("Already logged in")
+        sys.exit(0)
+    print("Open https://sbx.invalid/device in your browser")
+    print("Enter code FAKE-1234")
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(auth, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"token": "REDACTED"}) + "\n")
+    print("Logged in")
+    sys.exit(0)
+
+
 def _auth_status() -> None:
     """``codex login status`` — the provider CLI's own auth check.
 
@@ -109,6 +131,8 @@ def parse_argv(argv: list[str]) -> dict:
         tokens = tokens[1:]
     if tokens[:2] == ["login", "status"]:
         _auth_status()
+    if tokens == ["login"]:
+        _login()
     if tokens[:2] == ["debug", "models"]:
         _models_listing()
     if not tokens or tokens[0] != "exec":

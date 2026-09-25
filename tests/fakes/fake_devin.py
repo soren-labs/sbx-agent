@@ -20,6 +20,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    login_flow,
     models_listing,
     rewrite_json,
     run_scenario,
@@ -66,6 +67,7 @@ def main() -> None:
         DEFAULT_MODELS_JSON if argv[2:4] == ["--format", "json"] else DEFAULT_MODELS,
         banner=False,
     )
+    login_flow(sys.argv[1:], (), credential, 'token = "REDACTED"\n')
     auth_check(sys.argv[1:], ("auth", "status"), credential)
     positionals, values, _seen = scan_argv(
         sys.argv[1:], bool_flags=_BOOL_FLAGS, value_flags=_VALUE_FLAGS

@@ -133,6 +133,36 @@ def _credential_ok(credential: Path) -> bool:
         return False
 
 
+def login_flow(
+    argv: list[str],
+    subcommand: tuple[str, ...],
+    credential: Path,
+    content: str,
+) -> None:
+    """Dispatch the provider's interactive login; no-op for other argv.
+
+    The canonical login argv (``PROVIDER_LOGIN_ARGV``) for every non-Codex
+    provider is a bare invocation or a fixed ``auth login`` pair — match
+    argv exactly (not a prefix), print a device-style URL + user code for
+    the hosted-lane output scraper, write the declared credential file
+    with mode 0600 and schema-valid fake content, and exit 0. SOR-214
+    drives this from Provider Connect / ``sbx auth pair``.
+    """
+    if tuple(argv) != tuple(subcommand):
+        return
+    if _credential_ok(credential):
+        print("Already logged in")
+        sys.exit(0)
+    print("Open https://sbx.invalid/device in your browser")
+    print("Enter code FAKE-1234")
+    credential.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    print("Logged in")
+    sys.exit(0)
+
+
 def auth_check(argv: list[str], subcommand: tuple[str, ...], credential: Path) -> None:
     """Dispatch the provider's auth-check subcommand; no-op for other argv.
 

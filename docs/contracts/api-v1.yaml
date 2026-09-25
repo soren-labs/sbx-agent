@@ -149,6 +149,16 @@ x-canonical:
     - POST /v1/github/app/authorize/callback
     - POST /v1/github/app/sync
     - DELETE /v1/github/app/installations/{installationId}
+    - POST /v1/github/app/manifest
+    - GET /v1/github/app/manifest/callback
+    - POST /v1/github/app/manifest/complete
+    - GET /v1/auth
+    - POST /v1/auth/connect
+    - GET /v1/auth/connect/{sessionId}
+    - POST /v1/auth/connect/{sessionId}/cancel
+    - POST /v1/auth/connect/{sessionId}/retry
+    - GET /v1/auth/pair/{ticket}
+    - POST /v1/auth/pair/complete
     - POST /v1/tasks/preflight
     - POST /v1/tasks
     - GET /v1/tasks
@@ -168,6 +178,7 @@ tags:
   - name: api-keys
   - name: console
   - name: github
+  - name: auth
   - name: meta
 paths:
   /v1/agents:
@@ -1398,6 +1409,353 @@ paths:
           $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/GitHubAppUnconfigured"
+  /v1/github/app/manifest:
+    post:
+      tags: [github]
+      summary: |
+        Zero-config registration, step 1 (SOR-220): returns the GitHub
+        App manifest plus the `settings/apps/new` URL the browser POSTs
+        it to, and a single-use `state` (600s TTL) binding the callback
+        to this registration. Only for deployments with no App
+        configured yet — 409 otherwise.
+      operationId: beginGitHubAppManifest
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                org:
+                  type: string
+      responses:
+        "201":
+          description: Manifest + URL issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [manifest, manifest_url, state]
+                properties:
+                  manifest:
+                    type: object
+                  manifest_url:
+                    type: string
+                  state:
+                    type: string
+                  expires_at:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/GitHubAppConfigured"
+  /v1/github/app/manifest/callback:
+    get:
+      tags: [github]
+      summary: |
+        Zero-config registration, step 2 (SOR-220): the unauthenticated
+        browser redirect target GitHub sends the user to after the App is
+        created. `code` + `state` come as query params; `state` is the
+        single-use credential. Always answers 303 back to the Console
+        GitHub view (`manifest=connected` or `manifest_error=<code>`).
+      operationId: gitHubAppManifestCallback
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+      responses:
+        "303":
+          description: Redirect back to the Console
+  /v1/github/app/manifest/complete:
+    post:
+      tags: [github]
+      summary: |
+        Programmatic manifest completion (SOR-220) for API clients that
+        collect the redirect themselves: `{"code", "state"}` — registers
+        the App config into the integration registry (private material
+        also mirrored to the deployment-managed Secret, best-effort) and
+        returns metadata only.
+      operationId: completeGitHubAppManifest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code:
+                  type: string
+                state:
+                  type: string
+      responses:
+        "200":
+          description: App registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [app_id, slug, name, source, secret]
+                properties:
+                  app_id:
+                    type: string
+                  slug:
+                    type: string
+                  name:
+                    type: string
+                  html_url:
+                    type: string
+                  source:
+                    type: string
+                    enum: [registry]
+                  secret:
+                    type: string
+                    enum: [skipped, refreshed, failed]
+        "400":
+          $ref: "#/components/responses/GitHubAppInvalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubAppState"
+  /v1/auth:
+    get:
+      tags: [auth]
+      summary: |
+        Provider Connect index (SOR-214): the canonical auth-session
+        state vocabulary plus session-only terminals, and the live
+        connect sessions.
+      operationId: listAuthSessions
+      responses:
+        "200":
+          description: State vocabulary + sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [auth_states, connect_states, sessions]
+                properties:
+                  auth_states:
+                    type: array
+                    items:
+                      type: string
+                  connect_states:
+                    type: array
+                    items:
+                      type: string
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/auth/connect:
+    post:
+      tags: [auth]
+      summary: |
+        Begin a provider connect session (SOR-214). Hosted lane (the
+        control plane can exec the provider login) surfaces
+        `browser_url`/`user_code` live; the pair lane mints a single-use
+        `pair_ticket` redeemed by `sbx auth pair <ticket>` on a machine
+        that can run the vendor login. `account_id` relinks an existing
+        account.
+      operationId: beginAuthConnect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider:
+                  $ref: "#/components/schemas/ProviderId"
+                label:
+                  type: string
+                account_id:
+                  type: string
+                max_concurrent:
+                  type: integer
+                models:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "201":
+          description: Connect session opened
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/auth/connect/{sessionId}:
+    get:
+      tags: [auth]
+      summary: Connect session detail — state, URLs, error (SOR-214).
+      operationId: getAuthConnectSession
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session detail
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/auth/connect/{sessionId}/cancel:
+    post:
+      tags: [auth]
+      summary: Cancel an in-flight connect session; idempotent (SOR-214).
+      operationId: cancelAuthConnect
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session after cancel
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/auth/connect/{sessionId}/retry:
+    post:
+      tags: [auth]
+      summary: Re-open a terminal session as a fresh one (SOR-214).
+      operationId: retryAuthConnect
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Fresh session opened
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/auth/pair/{ticket}:
+    get:
+      tags: [auth]
+      summary: |
+        Unauthenticated pair-ticket lookup (SOR-214): the local CLI's
+        `sbx auth pair` learns which provider to log in. The single-use,
+        short-TTL ticket itself is the credential — no Bearer key.
+      operationId: getAuthPairInfo
+      parameters:
+        - name: ticket
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pair ticket info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, session_id]
+                properties:
+                  provider:
+                    $ref: "#/components/schemas/ProviderId"
+                  account_id:
+                    type: string
+                  relink:
+                    type: boolean
+                  session_id:
+                    type: string
+                  expires_at:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/auth/pair/complete:
+    post:
+      tags: [auth]
+      summary: |
+        Consume a pair ticket and materialize the captured credential
+        blob (SOR-214) — unauthenticated by design (the ticket is the
+        credential). The blob is schema-validated before the ticket is
+        consumed, so a bad blob is a retryable 400.
+      operationId: completeAuthPair
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket, credential]
+              properties:
+                ticket:
+                  type: string
+                credential:
+                  type: object
+      responses:
+        "200":
+          description: Account materialized (+ cloud-verify verdict)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [account_id, verified, connect]
+                properties:
+                  account_id:
+                    type: string
+                  verified:
+                    type: boolean
+                  connect:
+                    type: object
+                  session:
+                    type: object
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 components:
   securitySchemes:
     bearerAuth:
@@ -3041,6 +3399,20 @@ components:
       description: |
         403 github_app_state — the authorize `state` is absent, unknown,
         expired, or already consumed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    GitHubAppConfigured:
+      description: |
+        409 github_app_configured — a GitHub App is already configured
+        for this deployment (SOR-220 manifest registration refused).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Conflict:
+      description: Generic 409 domain conflict.
       content:
         application/json:
           schema:

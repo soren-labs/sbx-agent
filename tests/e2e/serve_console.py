@@ -28,6 +28,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import parse_qs
+
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "web"
@@ -164,9 +168,42 @@ def _verify_seeded_accounts(app) -> None:
         registry.mark_status(account.id, "active")
 
 
-def build_app(demo: dict[str, str]):
+def _fake_rsa_pem() -> str:
+    """A throwaway RSA private key for the fake GitHub API — never a real
+    credential; generated per serve so nothing secret lands in the repo."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("utf-8")
+
+
+_FAKE_GH_INSTALLATION = {
+    "id": 88,
+    "account": {"login": "e2e-org", "type": "Organization"},
+    "repository_selection": "selected",
+}
+_FAKE_GH_REPOS = {
+    "repository_selection": "selected",
+    "total_count": 1,
+    "repositories": [{"full_name": "e2e-org/hello"}],
+}
+
+
+def build_app(demo: dict[str, str], base: str):
     from control.app import create_app
-    from fastapi.responses import JSONResponse
+
+    # SOR-220 e2e seam: a local fake of the GitHub API endpoints the App
+    # flow exercises — manifest conversion, installations, installation
+    # tokens. ``SBX_GITHUB_APP_API_URL`` points the control plane's client
+    # at it; nothing here validates JWTs (the service signs a real one
+    # from the registered PEM).
+    os.environ["SBX_GITHUB_APP_API_URL"] = f"{base}/__fake_gh"
+    pem = _fake_rsa_pem()
 
     # ``create_app`` already mounts ``web/`` at "/" (SOR-211 same-origin).
     app = create_app()
@@ -177,11 +214,74 @@ def build_app(demo: dict[str, str]):
     def dev_info() -> JSONResponse:
         return JSONResponse({"demo_workspace": demo, "providers": list(PROVIDERS)})
 
-    # The "/" console mount is a terminal catch-all, so the route appended
-    # above would be shadowed — hoist it ahead of the mount.
+    @app.post("/__fake_gh/settings/apps/new", include_in_schema=False)
+    async def fake_apps_new(request: Request, state: str = "") -> Response:
+        """Simulate GitHub's App-manifest landing page: the console POSTs
+        the manifest form here; GitHub would create the App then redirect
+        the browser to ``redirect_url`` with ``?code=&state=``."""
+        redirect = ""
+        try:
+            manifest = json.loads(
+                parse_qs((await request.body()).decode()).get("manifest", ["{}"])[0]
+            )
+            redirect = str(manifest.get("redirect_url") or "")
+        except (ValueError, TypeError, IndexError):
+            pass
+        if not redirect:
+            return JSONResponse({"error": "bad manifest"}, status_code=400)
+        sep = "&" if "?" in redirect else "?"
+        return RedirectResponse(f"{redirect}{sep}code=e2e-conv-code&state={state}", status_code=303)
+
+    @app.post("/__fake_gh/app-manifests/{code}/conversions", include_in_schema=False)
+    def fake_manifest_conversion(code: str) -> JSONResponse:
+        return JSONResponse(
+            {
+                "id": 7770001,
+                "slug": "sbx-e2e-app",
+                "client_id": "Iv1.e2efake",
+                "client_secret": "e2e-fake-client-secret",
+                "pem": pem,
+                "webhook_secret": "e2e-fake-webhook-secret",
+                "name": "sbx-e2e-app",
+                "html_url": f"{base}/apps/sbx-e2e-app",
+            },
+            status_code=201,
+        )
+
+    @app.get("/__fake_gh/app/installations", include_in_schema=False)
+    def fake_installations() -> JSONResponse:
+        return JSONResponse([dict(_FAKE_GH_INSTALLATION)])
+
+    @app.get("/__fake_gh/installation/repositories", include_in_schema=False)
+    def fake_installation_repos() -> JSONResponse:
+        return JSONResponse(dict(_FAKE_GH_REPOS))
+
+    @app.post(
+        "/__fake_gh/app/installations/{installation_id}/access_tokens", include_in_schema=False
+    )
+    def fake_access_token(installation_id: int) -> JSONResponse:
+        from datetime import UTC, datetime, timedelta
+
+        return JSONResponse(
+            {
+                "token": "ghs_e2e_fake_token",
+                "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            },
+            status_code=201,
+        )
+
+    @app.delete("/__fake_gh/app/installations/{installation_id}", include_in_schema=False)
+    def fake_delete_installation(installation_id: int) -> Response:
+        return Response(status_code=204)
+
+    # The "/" console mount is a terminal catch-all, so dev/fake routes
+    # appended above would be shadowed — hoist them ahead of the mount.
     routes = app.router.routes
-    idx = next(i for i, r in enumerate(routes) if getattr(r, "path", "") == "/__dev/info")
-    routes.insert(0, routes.pop(idx))
+    ours = [r for r in routes if getattr(r, "path", "").startswith(("/__dev/", "/__fake_gh/"))]
+    for route in ours:
+        routes.remove(route)
+    for route in reversed(ours):
+        routes.insert(0, route)
     return app
 
 
@@ -222,7 +322,12 @@ def main() -> None:
     import uvicorn
 
     try:
-        uvicorn.run(build_app(demo), host=args.host, port=args.port, log_level="warning")
+        uvicorn.run(
+            build_app(demo, f"http://{args.host}:{args.port}"),
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+        )
     finally:
         if temp is not None:
             shutil.rmtree(temp, ignore_errors=True)

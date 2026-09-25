@@ -22,13 +22,19 @@ Auth model:
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from control.accounts import PersistentAccountRegistry, select_store
 from control.onboarding import OnboardingError, OnboardingService, default_auth_probe
-from control.provider_auth import AUTH_SESSION_STATES, AuthService, supported_auth_providers
+from control.provider_auth import (
+    AUTH_SESSION_STATES,
+    AuthService,
+    host_cli_env,
+    supported_auth_providers,
+)
 
 from sbx.errors import BootstrapError
 
@@ -305,6 +311,76 @@ def auth_relink(
     return {"accounts": results, "verified": all(r.get("verified") for r in results)}
 
 
+def auth_pair(
+    service: AuthService,
+    env: Mapping[str, str],
+    *,
+    ticket: str,
+    base_url: str | None = None,
+    transport: Any = None,
+    login_runner: Callable[..., int] | None = None,
+) -> dict[str, Any]:
+    """Local-pair completion (SOR-214) — the hosted lane's fallback.
+
+    The Console minted a single-use pair ticket for a cloud deployment
+    that cannot exec the provider's interactive login itself. This runs
+    that login on *this* host (the vendor CLI writes its credential under
+    ``$HOME``), captures the blob with the canonical adapter, and POSTs
+    it to ``/v1/auth/pair/complete`` — the ticket itself is the
+    credential, so no API key is needed here.
+    """
+    from sbx.deploy import read_deploy_state
+    from sbx.httpapi import ApiError, V1Client
+
+    base = base_url or read_deploy_state(env).get("app_url") or ""
+    if not base:
+        raise BootstrapError(
+            "no deployment URL — pass --base-url or deploy first",
+            code="no_deployment",
+        )
+    client = V1Client(base, None, transport=transport, timeout=30.0)
+    try:
+        info = client.get(f"/v1/auth/pair/{ticket}")
+    except ApiError as exc:
+        raise BootstrapError(exc.message, code=exc.code) from exc
+    provider = str(info.get("provider") or "")
+    adapter = service.adapter(provider)
+    argv = adapter.login_argv(env=env)
+    if argv is None:
+        raise BootstrapError(f"{provider} has no supported login flow", code="no_login_flow")
+    run = login_runner or _interactive_login_default
+    try:
+        rc = run(argv, host_cli_env(provider, service.home, env))
+    except OnboardingError as exc:
+        raise BootstrapError(str(exc), code=exc.code) from exc
+    if rc != 0:
+        raise BootstrapError(f"{provider} login exited {rc}", code="login_failed")
+    try:
+        blob = service.capture(provider)
+    except OnboardingError as exc:
+        raise BootstrapError(str(exc), code=exc.code) from exc
+    try:
+        outcome = client.post("/v1/auth/pair/complete", {"ticket": ticket, "credential": blob})
+    except ApiError as exc:
+        raise BootstrapError(exc.message, code=exc.code) from exc
+    outcome.setdefault("provider", provider)
+    return outcome
+
+
+def _interactive_login_default(argv: list[str], env: Mapping[str, str]) -> int:
+    """Run the vendor CLI login interactively (inherits stdio)."""
+    try:
+        proc = subprocess.run(list(argv), env=dict(env), check=False)
+    except FileNotFoundError as exc:
+        raise OnboardingError(
+            "cli_missing",
+            f"provider CLI {argv[0]!r} not found on PATH — install it, then retry",
+        ) from exc
+    except OSError as exc:
+        raise OnboardingError("cli_missing", f"cannot run {argv[0]!r}: {exc}") from exc
+    return int(proc.returncode)
+
+
 def auth_logout(
     service: AuthService,
     env: Mapping[str, str],
@@ -341,6 +417,7 @@ __all__ = [
     "auth_import_existing",
     "auth_login",
     "auth_logout",
+    "auth_pair",
     "auth_relink",
     "auth_status",
     "auth_verify",
