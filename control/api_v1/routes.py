@@ -2043,6 +2043,7 @@ def create_run(
     scheduler: Scheduler = Depends(get_scheduler),
     reporter: RunFailureReporter = Depends(get_run_reporter),
     workflows: WorkflowService = Depends(get_workflow_service),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     _require_agent(plane, agent_id)
     contract = _normalize_contract(body.output_contract)
@@ -2050,22 +2051,104 @@ def create_run(
         # Contracted runs need the durable ledger for both dispatch and the
         # persisted verdict — refuse rather than run uncontracted.
         raise V1ApiError(409, "session_not_runnable", "output contracts require the run ledger")
+    # SOR-224: run create is a side-effect mutation — it dedups on
+    # ``Idempotency-Key`` exactly like agent/task create: same key + same
+    # body replays the original run; same key + different body conflicts.
+    # The durable pin lives on the run's own ledger record so a replay
+    # after a control-plane restart still resolves.
+    pin_key = f"run:{agent_id}:{idempotency_key}" if idempotency_key else None
+    fingerprint = request_fingerprint(body)
+    owned = None
+    pin = None
+    if idempotency_key:
+        outcome, entry = v1.idempotency.claim(key.id, pin_key or "", fingerprint)
+        if outcome == "hit":
+            return entry.body
+        if outcome == "conflict":
+            raise V1ApiError(
+                409,
+                "idempotency_conflict",
+                "Idempotency-Key was already used with a different request body",
+            )
+        if outcome == "timeout":
+            raise V1ApiError(
+                409,
+                "idempotency_in_progress",
+                "a create with this Idempotency-Key is still in progress",
+            )
+        ledger = _ledger(plane)
+        if ledger is not None:
+            prior = ledger.find_by_idempotency(agent_id, key.id, pin_key or "")
+            if prior is not None:
+                prior_fp = (prior.idempotency or {}).get("fingerprint")
+                if prior_fp not in (None, fingerprint):
+                    v1.idempotency.abandon(key.id, pin_key or "", entry)
+                    raise V1ApiError(
+                        409,
+                        "idempotency_conflict",
+                        "Idempotency-Key was already used with a different request body",
+                    )
+                rec = _require_agent(plane, agent_id)
+                replay = _run_public(
+                    plane,
+                    plane.public(rec),
+                    rec,
+                    prior.n,
+                    v1.cancelled(agent_id),
+                    _meta_for(v1, rec),
+                    run_states,
+                    scheduler=scheduler,
+                    reporter=reporter,
+                )
+                v1.idempotency.complete(
+                    key.id, pin_key or "", entry, agent_id=agent_id, body=replay
+                )
+                v1.idempotency.settle(key.id, pin_key or "", entry)
+                return replay
+        owned = entry
+        pin = {"key_id": key.id, "key": pin_key, "fingerprint": fingerprint}
     try:
-        turn_id = plane.post_message(agent_id, body.prompt.text, output_contract=contract)
+        turn_id = plane.post_message(
+            agent_id,
+            body.prompt.text,
+            output_contract=contract,
+            queue=body.on_busy == "queue",
+            idempotency=pin,
+        )
     except KeyError:
+        if owned is not None:
+            v1.idempotency.abandon(key.id, pin_key or "", owned)
         raise not_found("agent not found") from None
     except SessionConflict as exc:
-        raise V1ApiError(exc.code, exc.error, exc.error) from exc
+        if owned is not None:
+            v1.idempotency.abandon(key.id, pin_key or "", owned)
+        raise V1ApiError(
+            exc.code,
+            exc.error,
+            exc.error,
+            # ``turn_in_progress`` under ``on_busy=reject`` carries the turn
+            # bound as a retry hint — the running turn ends within it.
+            retry_after=(plane.turn_max_seconds if exc.error == "turn_in_progress" else None),
+        ) from exc
     if body.metadata is not None:
         # SOR-84: a follow-up may re-bind the agent's workflow task; the
         # run is already queued, so a refused message never re-binds.
         workflows.attach(owner=key.id, agent_id=agent_id, metadata=body.metadata)
     n = _turn_n(turn_id) or 0
-    # Dispatched at once, so the run is born RUNNING (SOR-82 A2 seam).
-    run_states.begin(agent_id, n, prompt=body.prompt.text, status="RUNNING")
+    # The ledger already holds the record (RUNNING when dispatched at once,
+    # QUEUED when the agent is busy); begin() mirrors its status so a
+    # ledger-less run-state seam reports the same truth.
+    ledger = _ledger(plane)
+    born = ledger.get(agent_id, n) if ledger is not None else None
+    run_states.begin(
+        agent_id,
+        n,
+        prompt=body.prompt.text,
+        status=born.status if born is not None and born.status != "UNKNOWN" else "RUNNING",
+    )
     rec = _require_agent(plane, agent_id)
     pub = plane.public(rec)
-    return _run_public(
+    result = _run_public(
         plane,
         pub,
         rec,
@@ -2076,6 +2159,10 @@ def create_run(
         scheduler=scheduler,
         reporter=reporter,
     )
+    if owned is not None:
+        v1.idempotency.complete(key.id, pin_key or "", owned, agent_id=agent_id, body=result)
+        v1.idempotency.settle(key.id, pin_key or "", owned)
+    return result
 
 
 @router.get("/agents/{agent_id}/runs")
@@ -2123,7 +2210,23 @@ def cancel_run(
     if n is None or n not in _known_run_ns(rec, _ledger(plane), run_states):
         raise not_found("run not found")
     state = run_states.get(agent_id, n)
-    if state is not None and state.status == "CREATING":
+    if state is not None and state.status == "QUEUED":
+        # SOR-224: a queued run was never dispatched — cancelling it just
+        # parks the terminal verdict; the session record keeps the message
+        # as audit and the drain skips terminal records.
+        run_states.transition(agent_id, n, "CANCELLED")
+        v1.mark_cancelled(agent_id, n)
+        rec = _require_agent(plane, agent_id)
+        if rec.current_turn_n == n and rec.status == "running":
+            # The drain claimed the run between our status read and the
+            # transition — stop the turn so a cancelled run runs no
+            # billed work.
+            try:
+                plane.stop(agent_id)
+            except Exception:
+                pass
+            rec = _require_agent(plane, agent_id)
+    elif state is not None and state.status == "CREATING":
         # Pre-dispatch run-1 (SOR-82 A2): drop the queued turn so the worker
         # skips it, and persist CANCELLED — terminal, never resurrected.
         plane.discard_queued_first_turn(agent_id)
@@ -2147,6 +2250,12 @@ def cancel_run(
         v1.mark_cancelled(agent_id, n)
         run_states.transition(agent_id, n, "CANCELLED")
         rec = _require_agent(plane, agent_id)
+    try:
+        # SOR-224: freeing the slot (or cancelling the queue head) may let
+        # the next durable QUEUED run dispatch.
+        plane.drain_queued(agent_id)
+    except Exception:
+        pass
     return _require_run(plane, rec, run_id, v1, run_states, scheduler=scheduler, reporter=reporter)
 
 

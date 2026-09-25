@@ -1357,6 +1357,11 @@ class TaskRecord:
     updated_at: str
     response: dict[str, Any] | None = None
     idempotency: dict[str, Any] | None = None
+    # SOR-224: durable status-transition log — ``{status, reason, at}`` per
+    # observed change. Task status derives live from the run ledger + the
+    # workspace delivery record, and each new derived value is appended so
+    # an orchestrator can read the machine-readable history post-restart.
+    transitions: list[dict[str, Any]] = field(default_factory=list)
 
     def public(self) -> dict[str, Any]:
         return {
@@ -1366,6 +1371,7 @@ class TaskRecord:
             "resolved": self.resolved,
             "agent_id": self.agent_id,
             "run_id": self.run_id,
+            "transitions": list(self.transitions),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -1388,6 +1394,7 @@ def record_to_dict(record: TaskRecord) -> dict[str, Any]:
         "updated_at": record.updated_at,
         "response": record.response,
         "idempotency": record.idempotency,
+        "transitions": list(record.transitions),
     }
 
 
@@ -1408,6 +1415,7 @@ def record_from_dict(data: Mapping[str, Any]) -> TaskRecord:
         updated_at=str(data.get("updated_at") or ""),
         response=data.get("response"),
         idempotency=data.get("idempotency"),
+        transitions=[dict(t) for t in (data.get("transitions") or []) if isinstance(t, dict)],
     )
 
 

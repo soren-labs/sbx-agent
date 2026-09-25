@@ -645,7 +645,19 @@ class ControlPlane:
         text: str,
         *,
         output_contract: dict[str, Any] | None = None,
+        queue: bool = False,
+        idempotency: dict[str, Any] | None = None,
     ) -> str:
+        """Post a user message; ``queue=True`` parks it durably when busy.
+
+        SOR-224: a follow-up landing while a turn is in progress (or while
+        earlier queued turns are still pending) becomes a durable ``QUEUED``
+        run — message + ledger record persisted — instead of the 409
+        ``turn_in_progress`` the default ``queue=False`` path keeps. The
+        queue drains FIFO via ``drain_queued`` as turns finish; without a
+        run ledger there is nowhere durable to park the turn, so the busy
+        refusal stays.
+        """
         # A ``running`` record with no in-process watcher is a stranded turn
         # (control-plane cutover); reconcile it from evidence first so a
         # finished provider run frees the agent instead of 409ing forever.
@@ -654,39 +666,37 @@ class ControlPlane:
         # its checkpoint before the runnable checks so a follow-up lands on
         # the same Agent id / filesystem / native provider session.
         self.recover_session(session_id)
+        enqueued = False
         with self._lock:
             rec = self.store.get(session_id)
             if rec is None:
                 raise KeyError(session_id)
             if rec.status in TERMINAL_STATUSES:
                 raise SessionConflict("session_not_runnable")
-            if session_id in self._first_turn_pending:
-                # The queued first run owns turn-1 until its worker dispatches.
+            busy = (
+                session_id in self._first_turn_pending
+                or rec.status == "running"
+                or rec.current_turn_id is not None
+            )
+            if busy and not queue:
                 raise SessionConflict("turn_in_progress")
-            if rec.status == "running" or rec.current_turn_id is not None:
-                raise SessionConflict("turn_in_progress")
-            if rec.status != "idle":
-                # ``creating`` (or anything else non-idle) is not runnable.
-                raise SessionConflict("session_not_runnable")
-            handle = rec.handle()
-            if handle is None:
-                raise SessionConflict("session_not_runnable")
-            n = self._next_turn_n(rec)
-            turn_id = f"turn-{n}"
-            now = self.clock()
-            rec.status = "running"
-            rec.current_turn_id = turn_id
-            rec.current_turn_n = n
-            rec.updated_at = now
-            rec.messages.append({"role": "user", "text": text, "turn_id": turn_id, "ts": iso(now)})
-            if self.credential_sync is not None:
-                # SOR-147: bind the run to the credential fingerprint it is
-                # dispatched with — the /v1 failure reporter compares it to
-                # the stored blob so an auth_invalid verdict computed against
-                # a since-rotated credential is recognized as stale.
-                self.credential_sync.mark_run_credential(rec.sandbox_tags)
-            self.store.put(rec)
-            if self.run_ledger is not None:
+            queued_backlog = bool(self._queued_ns(session_id)) if queue else False
+            if (busy or queued_backlog) and queue:
+                if self.run_ledger is None:
+                    # A queued follow-up is only durable when the ledger is
+                    # attached; without it the old refusal is the honest answer.
+                    raise SessionConflict("turn_in_progress")
+                # Non-idle states (``creating`` pre-dispatch, suspended-then-
+                # recovered) cannot dispatch now — the turn simply parks in
+                # the queue until ``drain_queued`` finds the agent idle.
+                n = self._next_turn_n(rec)
+                turn_id = f"turn-{n}"
+                now = self.clock()
+                rec.messages.append(
+                    {"role": "user", "text": text, "turn_id": turn_id, "ts": iso(now)}
+                )
+                rec.updated_at = now
+                self.store.put(rec)
                 meta = self._run_meta.get(session_id, {})
                 self.run_ledger.begin(
                     agent_id=session_id,
@@ -697,8 +707,56 @@ class ControlPlane:
                     or "auto",
                     model=meta.get("model") or rec.model,
                     reasoning_effort=meta.get("reasoning_effort") or rec.reasoning_effort,
+                    status="QUEUED",
                     output_contract=output_contract,
+                    idempotency=idempotency,
                 )
+                enqueued = True
+            else:
+                if rec.status != "idle":
+                    # ``creating`` (or anything else non-idle) is not runnable.
+                    raise SessionConflict("session_not_runnable")
+                handle = rec.handle()
+                if handle is None:
+                    raise SessionConflict("session_not_runnable")
+                n = self._next_turn_n(rec)
+                turn_id = f"turn-{n}"
+                now = self.clock()
+                rec.status = "running"
+                rec.current_turn_id = turn_id
+                rec.current_turn_n = n
+                rec.updated_at = now
+                rec.messages.append(
+                    {"role": "user", "text": text, "turn_id": turn_id, "ts": iso(now)}
+                )
+                if self.credential_sync is not None:
+                    # SOR-147: bind the run to the credential fingerprint it is
+                    # dispatched with — the /v1 failure reporter compares it to
+                    # the stored blob so an auth_invalid verdict computed against
+                    # a since-rotated credential is recognized as stale.
+                    self.credential_sync.mark_run_credential(rec.sandbox_tags)
+                self.store.put(rec)
+                if self.run_ledger is not None:
+                    meta = self._run_meta.get(session_id, {})
+                    self.run_ledger.begin(
+                        agent_id=session_id,
+                        n=n,
+                        provider=meta.get("provider")
+                        or rec.sandbox_tags.get("provider")
+                        or "codex",
+                        account_id=meta.get("account_id")
+                        or rec.sandbox_tags.get("account_id")
+                        or "auto",
+                        model=meta.get("model") or rec.model,
+                        reasoning_effort=meta.get("reasoning_effort") or rec.reasoning_effort,
+                        output_contract=output_contract,
+                        idempotency=idempotency,
+                    )
+        if enqueued:
+            # Idle agents with a backlog start the head of the queue now;
+            # a busy agent drains when its turn finishes.
+            self.drain_queued(session_id)
+            return turn_id
         try:
             return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
         except Exception:
@@ -710,6 +768,117 @@ class ControlPlane:
             if rec is not None and rec.status in TERMINAL_STATUSES:
                 raise SessionConflict("session_not_runnable") from None
             raise
+
+    def _queued_ns(self, session_id: str) -> list[int]:
+        """Persisted QUEUED run numbers for the session, FIFO order."""
+        ledger = self.run_ledger
+        if ledger is None:
+            return []
+        try:
+            return ledger.queued_ns(session_id)
+        except Exception:
+            return []
+
+    def drain_queued(self, session_id: str) -> str | None:
+        """Dispatch the head of the durable queue when the agent is idle.
+
+        Called wherever the agent may have just become runnable: turn
+        finish, stop/cancel, follow-up enqueue, and the reconcile sweep
+        (which is how queued turns recover after a control-plane restart —
+        the QUEUED records and their messages are durable). Loops past
+        per-turn dispatch failures: a turn that cannot even start is
+        persisted ``ERROR`` and the next queued turn gets its chance —
+        one bad turn must not wedge the queue.
+
+        Returns the dispatched turn id, or None when nothing could run.
+        """
+        if self.run_ledger is None:
+            return None
+        while True:
+            ns = self._queued_ns(session_id)
+            if not ns:
+                return None
+            # A suspended agent is the public equivalent of idle — restore
+            # it from its checkpoint so the queued turn can dispatch.
+            # ``recover_session`` no-ops for non-suspended records.
+            try:
+                self.recover_session(session_id)
+            except Exception:
+                return None
+            n = ns[0]
+            turn_id = f"turn-{n}"
+            with self._lock:
+                rec = self.store.get(session_id)
+                if (
+                    rec is None
+                    or rec.status != "idle"
+                    or rec.current_turn_id is not None
+                    or session_id in self._first_turn_pending
+                ):
+                    return None
+                handle = rec.handle()
+                if handle is None:
+                    # Suspended/dead-but-unreaped agent: the queue stays
+                    # parked until a follow-up restores it.
+                    return None
+                text = next(
+                    (
+                        str(m.get("text") or "")
+                        for m in rec.messages
+                        if m.get("turn_id") == turn_id and m.get("role") == "user"
+                    ),
+                    None,
+                )
+                if text is None:
+                    # A queued run whose message is gone can never execute —
+                    # close it out as an explicit error rather than letting a
+                    # phantom QUEUED record park the queue forever.
+                    self.run_ledger.finish(
+                        session_id,
+                        n,
+                        status="ERROR",
+                        error=run_error(
+                            "runtime_error",
+                            "queued run lost its prompt message",
+                            source="control",
+                            retryable=True,
+                        ),
+                    )
+                    continue
+                claimed = self.run_ledger.mark_running(session_id, n)
+                if claimed is None or claimed.status != "RUNNING":
+                    # A cancel/close landed between the queue snapshot and
+                    # the claim: the record is already terminal (the claim
+                    # is atomic under the ledger lock, so the durable
+                    # verdict wins) — the turn must never dispatch. Skip to
+                    # the next queued entry.
+                    continue
+                now = self.clock()
+                rec.status = "running"
+                rec.current_turn_id = turn_id
+                rec.current_turn_n = n
+                rec.updated_at = now
+                if self.credential_sync is not None:
+                    self.credential_sync.mark_run_credential(rec.sandbox_tags)
+                self.store.put(rec)
+            try:
+                return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=False)
+            except Exception as exc:
+                # The rollback inside _dispatch_turn already reset the
+                # session; persist the transport failure on the run record —
+                # a QUEUED→ERROR transition, never a silent drop.
+                self.run_ledger.finish(
+                    session_id,
+                    n,
+                    status="ERROR",
+                    error=run_error(
+                        "runtime_error",
+                        f"queued turn failed to dispatch: {type(exc).__name__}",
+                        source="control",
+                        retryable=True,
+                    ),
+                )
+                continue
 
     def post_queued_first_turn(self, session_id: str) -> str:
         """Dispatch the run-1 queued by ``open_session(first_prompt=...)``.
@@ -828,8 +997,22 @@ class ControlPlane:
         except Exception:
             self._rollback_turn(session_id, turn_id, handle, drop_message=drop_message)
             raise
+        dead_on_arrival = False
         with self._lock:
             self._live[session_id] = LiveTurn(turn_id=turn_id, n=n, proc=proc)
+            record = self.run_ledger.get(session_id, n) if self.run_ledger is not None else None
+            if record is not None and record.terminal:
+                # A cancel won the claim→dispatch gap: the durable verdict
+                # already holds — the just-spawned proc is killed instead
+                # of running billed work under a terminal record.
+                self._live.pop(session_id, None)
+                dead_on_arrival = True
+        if dead_on_arrival:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return turn_id
         thread = threading.Thread(
             target=self._watch_turn,
             args=(session_id, turn_id, n, proc),
@@ -1007,11 +1190,12 @@ class ControlPlane:
                 rec.updated_at = now
                 rec.last_activity_at = now
                 self.store.put(rec)
+            ledger_record = None
             if self.run_ledger is not None:
                 # Persist the terminal outcome now, while turns/<n>.json may
                 # still be readable; after teardown this record is the only
                 # evidence.
-                self.run_ledger.finish(
+                ledger_record = self.run_ledger.finish(
                     session_id,
                     n,
                     status=status,
@@ -1029,7 +1213,11 @@ class ControlPlane:
         # like the credential write-back below: publish() persists any
         # failure as ``publish_error`` on the workspace record, so the
         # FINISHED verdict is never rewritten and never silent either.
-        if status == "FINISHED":
+        # Auto-delivery only when the durable verdict is FINISHED too:
+        # finish() is monotonic, so a cancel that won the finish race keeps
+        # the record terminal — cancelled work must never reach a
+        # revision/branch/PR.
+        if status == "FINISHED" and (ledger_record is None or ledger_record.status == "FINISHED"):
             # SOR-225: a successful code-changing run materializes a durable
             # Revision before any publish — delivery then operates on the
             # revision, not the sandbox.
@@ -1042,6 +1230,15 @@ class ControlPlane:
         # store, CAS-guarded by this session's base fingerprint.
         self._writeback_credentials(rec, handle)
 
+        # SOR-224: the turn ended — the agent is idle again, so the head of
+        # the durable queue (if any) dispatches next. Best-effort: a queue
+        # failure must not wedge the watcher that already persisted the
+        # terminal verdict.
+        try:
+            self.drain_queued(session_id)
+        except Exception:
+            pass
+
     def _auto_publish_git(self, session_id: str, handle: Any) -> None:
         """Best-effort automatic publish on run success; swallows failure.
 
@@ -1053,7 +1250,12 @@ class ControlPlane:
         if self.workspaces is None or handle is None:
             return
         record = self.workspaces.get(session_id)
-        if record is None or not (record.git or {}).get("auto_publish"):
+        git = (record.git or {}) if record is not None else {}
+        # SOR-224: ``auto_publish`` is the only automatic trigger —
+        # ``auto_create_pr``/``merge`` declare *steps* a publish performs,
+        # and stay explicit-only (POST /git/publish or the task delivery
+        # endpoint), per the SOR-128 policy contract.
+        if record is None or not git.get("auto_publish"):
             return
         try:
             self.workspaces.publish(handle, session_id)
@@ -1175,6 +1377,14 @@ class ControlPlane:
         for rec in self.store.list_all():
             if rec.status == "running" and self.reconcile_turn(rec.id):
                 settled.append(rec.id)
+            elif rec.status == "idle":
+                # SOR-224: queued turns outlive a control-plane restart
+                # (ledger + session messages are durable); an idle agent
+                # with parked work dispatches its queue head here.
+                try:
+                    self.drain_queued(rec.id)
+                except Exception:
+                    pass
         return settled
 
     def settle_orphaned_runs(self, session_id: str, *, session_status: str) -> list[int]:
@@ -1244,7 +1454,16 @@ class ControlPlane:
                 # Already released for checkpoint recovery — the public
                 # equivalent of an idle, runnable agent.
                 return "idle"
-            return rec.status if rec else "closed"
+            final = rec.status if rec else "closed"
+        # SOR-224: a cancelled run frees the agent — the next queued turn
+        # (if any) dispatches now. Durable queue entries already cancelled
+        # are skipped by the drain.
+        if final == "idle":
+            try:
+                self.drain_queued(session_id)
+            except Exception:
+                pass
+        return final
 
     def close(self, session_id: str) -> SessionRecord:
         # Reconcile before cancelling open runs: a provider success must land
