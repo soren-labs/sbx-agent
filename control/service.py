@@ -1217,9 +1217,7 @@ class ControlPlane:
         # finish() is monotonic, so a cancel that won the finish race keeps
         # the record terminal — cancelled work must never reach a
         # revision/branch/PR.
-        if status == "FINISHED" and (
-            ledger_record is None or ledger_record.status == "FINISHED"
-        ):
+        if status == "FINISHED" and (ledger_record is None or ledger_record.status == "FINISHED"):
             # SOR-225: a successful code-changing run materializes a durable
             # Revision before any publish — delivery then operates on the
             # revision, not the sandbox.
