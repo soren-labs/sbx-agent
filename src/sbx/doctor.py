@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -145,6 +146,30 @@ def _api_checks(
         return checks
     checks.append(Check(name="api-url", ok=True, detail=config_base_url))
 
+    # SOR-211/SOR-217: the same-origin Console is part of the Platform
+    # surface — an unauthenticated GET / must serve the app shell.
+    try:
+        with V1Client(config_base_url, transport=transport, timeout=10.0) as client:
+            resp = client.fetch("/")
+        if resp.status_code == 200 and (
+            "html" in (resp.headers.get("content-type") or "").lower()
+            or "<html" in resp.text[:500].lower()
+        ):
+            checks.append(Check(name="console", ok=True, detail="Console served at /"))
+        else:
+            checks.append(
+                Check(
+                    name="console",
+                    ok=False,
+                    detail=f"/ answered HTTP {resp.status_code} — no Console page",
+                    hint="the deployment predates the same-origin Console — "
+                    "rerun `sbx deploy` to upgrade (SOR-211)",
+                )
+            )
+    except httpx.HTTPError:
+        # api-reachable below reports the connectivity failure.
+        pass
+
     try:
         with V1Client(config_base_url, transport=transport, timeout=10.0) as client:
             client.me()
@@ -228,6 +253,51 @@ def _api_checks(
             detail="provider/account view: " + (", ".join(provider_lines) or "none"),
         )
     )
+
+    # SOR-217/SOR-221: the provider catalog is a Platform surface — every
+    # contract provider must appear with its runtime + connection split.
+    # Connection state is provider health and NEVER gates the verdict:
+    # zero connected providers still means a healthy platform.
+    try:
+        with V1Client(config_base_url, token, transport=transport, timeout=10.0) as client:
+            rows = client.providers().get("providers") or []
+    except ApiError as exc:
+        checks.append(
+            Check(
+                name="provider-catalog",
+                ok=False,
+                detail=f"/v1/providers answered {exc.status} ({exc.code})",
+                hint="the deployment predates the provider catalog — "
+                "rerun `sbx deploy` to upgrade (SOR-221)",
+            )
+        )
+    else:
+        names = [str(r.get("provider")) for r in rows if isinstance(r, Mapping)]
+        checks.append(
+            Check(
+                name="provider-catalog",
+                ok=True,
+                detail=f"catalog lists {_plural(len(names), 'provider')}"
+                + (f" ({', '.join(sorted(names))})" if names else ""),
+            )
+        )
+        conn_bits = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            conn = row.get("connection") or {}
+            runtime = row.get("runtime") or {}
+            conn_bits.append(
+                f"{row.get('provider', '?')}: "
+                f"{conn.get('status', '?')}/runtime:{runtime.get('status', '?')}"
+            )
+        checks.append(
+            Check(
+                name="provider-connection",
+                ok=True,
+                detail=", ".join(conn_bits) or "no provider accounts connected",
+            )
+        )
     checks.append(live_check)
     return checks
 
@@ -264,9 +334,12 @@ def _account_secret_check(config, plane: Plane, secret_names: set[str]) -> Check
         preview = ", ".join(missing[:5])
         if len(missing) > 5:
             preview += f", +{len(missing) - 5} more"
+        # SOR-217: provider credential gaps are provider health — warn,
+        # never a Platform failure.
         return Check(
             name="account-secrets",
             ok=False,
+            warn=True,
             detail=f"missing {len(missing)} referenced account Secret(s): {preview}",
             hint="rerun `sbx deploy` to materialize imported account credentials",
         )
@@ -333,7 +406,12 @@ def run_doctor(
             # unselected provider must not block onboarding (SOR-115).
             if name == config.codex_secret and "codex" not in config.providers:
                 continue
-            checks.append(check_secret_present(name in secret_names, name))
+            check = check_secret_present(name in secret_names, name)
+            if name == config.codex_secret:
+                # SOR-217: a provider credential is provider health — warn
+                # so the Platform verdict stays independent.
+                check = replace(check, warn=True)
+            checks.append(check)
         # SOR-133: the armed GitHub bridge's named Secret is a deploy
         # prerequisite (``sbx deploy`` fails on it) — report its presence
         # here too. Operator-managed, so it is not in ``secret_names()``.

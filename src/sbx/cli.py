@@ -188,9 +188,18 @@ def cmd_config(args: argparse.Namespace, env: Mapping[str, str]) -> int:
 
 
 def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    """Platform + Runtime + Account summary (SOR-217).
+
+    ``platform`` is independent of provider health: it is ``healthy`` when
+    the control plane answers ``/v1/me`` with the local key — zero
+    connected providers still reports a healthy platform. ``runtime``
+    (per-provider deploy evidence) and ``accounts`` (connection state)
+    come from ``/v1/providers``; a pre-catalog deployment leaves them
+    ``None`` rather than failing.
+    """
     from sbx.deploy import read_deploy_state
     from sbx.doctor import live_agent_count, provider_summaries
-    from sbx.httpapi import V1Client
+    from sbx.httpapi import ApiError, V1Client
     from sbx.keys import fingerprint, resolve_api_key
 
     cfg = _resolve(args, env)
@@ -199,15 +208,55 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     base_url = cfg.config.api_base_url or state.get("app_url") or ""
     providers: Any = "unknown"
     live_agents: int | None = None
-    if base_url and token:
+    runtime: dict[str, Any] | None = None
+    accounts: dict[str, Any] | None = None
+    if not base_url:
+        platform_status = "not_deployed"
+    elif token is None:
+        platform_status = "unverified"  # reachable or not — no key to prove auth
+    else:
+        platform_status = "unreachable"
         try:
             with V1Client(base_url, token, transport=args.transport, timeout=10.0) as client:
+                try:
+                    client.me()
+                    platform_status = "healthy"
+                except ApiError as exc:
+                    platform_status = (
+                        "auth_failed" if exc.status in (401, 403) else f"error:{exc.status}"
+                    )
+                    raise
                 models = client.models().get("models", [])
                 providers = provider_summaries(models)
+                try:
+                    rows = client.providers().get("providers") or []
+                    runtime = {
+                        str(r.get("provider")): r.get("runtime")
+                        for r in rows
+                        if isinstance(r, Mapping)
+                    }
+                    accounts = {
+                        "connected": sorted(
+                            str(r.get("provider"))
+                            for r in rows
+                            if isinstance(r, Mapping)
+                            and isinstance(r.get("connection"), Mapping)
+                            and r["connection"].get("status") == "connected"
+                        ),
+                        "providers": {
+                            str(r.get("provider")): r.get("connection")
+                            for r in rows
+                            if isinstance(r, Mapping)
+                        },
+                    }
+                except ApiError:
+                    pass  # pre-catalog deployment — runtime/accounts stay None
                 try:
                     live_agents = live_agent_count(client)
                 except Exception:
                     live_agents = None
+        except ApiError:
+            providers = "auth-failed" if platform_status == "auth_failed" else "error"
         except Exception:
             providers = "unreachable"
     cap = cfg.config.max_concurrent
@@ -220,6 +269,16 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         "deployed_version": state.get("version"),
         "deployed_at": state.get("deployed_at"),
         "key_fingerprint": fingerprint(token) if token else None,
+        # SOR-217 sections — platform health is independent of provider
+        # health; runtime/accounts are None on a pre-catalog deployment.
+        "platform": {
+            "status": platform_status,
+            "base_url": base_url or None,
+            "deployed_version": state.get("version"),
+            "deployed_at": state.get("deployed_at"),
+        },
+        "runtime": runtime,
+        "accounts": accounts,
         "providers": providers,
         "live_agents": live_agents,
         "concurrency_cap": cap,
@@ -231,11 +290,33 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     if args.json:
         _emit_json(payload)
         return 0
+    print(f"platform:  {platform_status}" + (f" — {base_url}" if base_url else ""))
     print(f"config:    {payload['config_path']} ({'file' if cfg.file_exists else 'defaults'})")
     print(f"app:       {payload['app']}")
     print(f"base:      {base_url or '-'}")
     print(f"deploy:    {state.get('version') or 'never'} at {state.get('deployed_at') or '-'}")
     print(f"key:       {payload['key_fingerprint'] or 'none (run `sbx deploy`)'}")
+    if runtime is not None:
+        rt_line = "; ".join(
+            f"{name} {info.get('status', '?')}"
+            + (f" ({info['version']})" if info.get("version") else "")
+            + (
+                f" — {info['detail']}"
+                if info.get("status") == "degraded" and info.get("detail")
+                else ""
+            )
+            for name, info in sorted(runtime.items())
+            if isinstance(info, Mapping)
+        )
+        print(f"runtime:   {rt_line or '-'}")
+    if accounts is not None:
+        acct_line = "; ".join(
+            f"{name} {conn.get('status', '?')} "
+            f"({conn.get('accounts_available', 0)}/{conn.get('accounts_total', 0)} accounts)"
+            for name, conn in sorted(accounts["providers"].items())
+            if isinstance(conn, Mapping)
+        )
+        print(f"accounts:  {acct_line or 'none connected'}")
     rendered = ", ".join(providers) if isinstance(providers, list) else providers
     print(f"providers: {rendered or '-'}")
     if cfg.config.github_ephemeral:
@@ -257,6 +338,85 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     return 0
 
 
+# --------------------------------------------------------------------- auth
+
+
+def cmd_auth_verify(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    """Verify one provider account's stored credential (SOR-217).
+
+    ``POST /v1/accounts/{id}/verify`` probes the credential in a throwaway
+    sandbox server-side and marks the account ``active``/``invalid`` — the
+    one-account check behind ``smoke``'s verified-account precondition.
+    """
+    from sbx.deploy import read_deploy_state
+    from sbx.httpapi import ApiError, V1Client
+    from sbx.keys import resolve_api_key
+
+    cfg = _resolve(args, env)
+    base_url = cfg.config.api_base_url or str(read_deploy_state(env).get("app_url") or "")
+    if not base_url:
+        raise BootstrapError(
+            "no control-plane URL — nothing deployed (or configured) yet",
+            hint="run `sbx deploy` first, or set api.base_url / SBX_BASE_URL",
+            code="no_deployment",
+        )
+    token = resolve_api_key(env)
+    if token is None:
+        raise BootstrapError(
+            "no sbx_ API key found",
+            hint="run `sbx deploy` (mints the bootstrap key) or export SBX_API_KEY",
+            code="api_key_missing",
+        )
+    account_id = str(args.account_id)
+    try:
+        with V1Client(base_url, token, transport=args.transport, timeout=60.0) as client:
+            account = client.verify_account(account_id)
+    except ApiError as exc:
+        if exc.status == 404:
+            hint = "no such account — list them with `sbx status` (accounts section)"
+        elif exc.status in (401, 403):
+            hint = "account verification needs the admin scope — use the bootstrap key"
+        else:
+            hint = "check `sbx doctor` — the deployment must serve /v1/accounts/{id}/verify"
+        raise BootstrapError(
+            f"cannot verify account {account_id}: {exc.message}",
+            hint=hint,
+            code="account_verify_failed",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise BootstrapError(
+            f"cannot reach the control plane: {exc}",
+            hint="check api.base_url and that `sbx deploy` finished; `sbx doctor` diagnoses",
+            code="account_verify_failed",
+        ) from exc
+    status = str(account.get("status") or "")
+    last_error = account.get("last_error")
+    ok = status == "active"
+    if args.json:
+        _emit_json(
+            {
+                "ok": ok,
+                "account_id": account_id,
+                "provider": account.get("provider"),
+                "status": status,
+                "last_error": last_error,
+            }
+        )
+    elif ok:
+        print(
+            f"account {account_id}: verified — status active (provider {account.get('provider')})"
+        )
+    if not ok:
+        raise BootstrapError(
+            f"account {account_id} verification failed — status {status or 'unknown'}"
+            + (f" ({last_error})" if last_error else ""),
+            hint="re-import the credential (`python -m control.onboarding --modal "
+            "import`), then rerun `sbx auth verify`",
+            code="account_verify_failed",
+        )
+    return 0
+
+
 # -------------------------------------------------------------------- deploy
 
 
@@ -267,6 +427,10 @@ def _print_deploy(report: Any, env: Mapping[str, str]) -> None:
         mark = "*" if step.changed else "="
         print(f"{mark} {step.name}: {step.detail}")
     print(f"deployed {report.version} → {report.base_url}")
+    if report.degraded_providers:
+        print("providers degraded (platform healthy — provider health is separate):")
+        for name, why in report.degraded_providers.items():
+            print(f"  {name}: {why}")
     if report.key_created:
         print(f"bootstrap key minted — saved to {key_path(env)} (mode 0600)")
     if report.key_rotated:
@@ -316,6 +480,8 @@ def cmd_deploy(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                 "base_url": report.base_url,
                 "version": report.version,
                 "cli_versions": report.cli_versions or {},
+                # SOR-217: provider-health gaps are reported, not fatal.
+                "degraded_providers": report.degraded_providers or {},
                 "steps": [
                     {"name": s.name, "changed": s.changed, "detail": s.detail} for s in report.steps
                 ],
@@ -347,6 +513,10 @@ def cmd_doctor(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         _emit_json(
             {
                 "ok": not bad,
+                # SOR-217: the Platform verdict is independent of provider
+                # health — warn-level checks (missing provider credentials,
+                # unconnected providers) never flip it.
+                "platform": {"status": "healthy" if not bad else "unhealthy"},
                 "checks": [
                     {"name": c.name, "status": c.status, "detail": c.detail, "hint": c.hint}
                     for c in checks
@@ -388,6 +558,7 @@ def cmd_smoke(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                 "ok": True,
                 "agent_id": result.agent_id,
                 "run_id": result.run_id,
+                "provider": result.provider,
                 "status": result.status,
                 "elapsed_s": result.elapsed_s,
             }
@@ -679,6 +850,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_upgrade, probe_attempts=5)
 
     p = sub.add_parser(
+        "auth",
+        parents=[sub_common],
+        help="provider account operations (server-side credential checks)",
+    )
+    auth_sub = p.add_subparsers(dest="auth_command", required=True)
+    pv = auth_sub.add_parser(
+        "verify",
+        parents=[sub_common],
+        help="probe one account's stored credential on the control plane "
+        "(POST /v1/accounts/{id}/verify)",
+    )
+    pv.add_argument("account_id", help="account id to verify (e.g. acct-devin-...)")
+    pv.set_defaults(func=cmd_auth_verify)
+
+    p = sub.add_parser(
         "open",
         parents=[sub_common],
         help="open the Console in a browser via a one-time grant handoff",
@@ -732,6 +918,7 @@ def main(
         ("github_secret", None),
         ("base_url", None),
         ("print", False),
+        ("account_id", None),
     ):
         if not hasattr(args, name):
             setattr(args, name, default)
