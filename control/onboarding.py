@@ -181,10 +181,13 @@ PROVIDER_AUTH_CHECKS: dict[str, tuple[str, ...]] = {
 # Real-CLI verified (cap-e2e acceptance): ``devin models`` alone is a usage
 # error (the listing lives under ``models list``) and ``codex models`` is
 # parsed as a prompt that spawns the TUI — the machine catalog is
-# ``codex debug models``.
+# ``codex debug models``. ``devin models list`` defaults to a text layout
+# whose family headers (``SWE-2 (swe-2)``) parse as phantom model rows —
+# ``--format json`` returns the exact ``families -> variants -> model_uid``
+# catalog instead.
 PROVIDER_MODEL_CHECKS: dict[str, tuple[str, ...]] = {
     "codex": ("debug", "models"),
-    "devin": ("models", "list"),
+    "devin": ("models", "list", "--format", "json"),
     "antigravity": ("models",),
     "grok": ("models",),
     "opencode": ("models",),
