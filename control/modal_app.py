@@ -54,11 +54,22 @@ CONTROL_IMAGE = (
         # extra for RS256 — same constraint as pyproject.toml.
         "pyjwt[crypto]>=2.10.0",
     )
-    .add_local_python_source("runtime")
     # SOR-211: ship the Console with the control plane — the deployed app's
     # URL serves it at "/" on the same origin as ``/v1``. Copied into the
     # image (not mounted) so the deploy needs no runtime mount resolution.
-    .add_local_dir(Path(__file__).resolve().parents[1] / "web", remote_path="/root/web", copy=True)
+    # Build steps must precede deferred ``add_local_*`` mounts — a
+    # ``copy=True`` layer after ``add_local_python_source`` raises
+    # InvalidError at deploy time (SOR-219 acceptance). Dev checkouts carry
+    # node_modules / playwright output under web/ — never bake them in.
+    .add_local_dir(
+        Path(__file__).resolve().parents[1] / "web",
+        remote_path="/root/web",
+        copy=True,
+        ignore=lambda p: (
+            "node_modules" in p.parts or "test-results" in p.parts or "playwright-report" in p.parts
+        ),
+    )
+    .add_local_python_source("runtime")
 )
 
 # Deploy-time names/tunables the remote functions must see (dict/secret/image
