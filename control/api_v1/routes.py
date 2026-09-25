@@ -196,7 +196,14 @@ def _meta_for(v1: V1State, rec: Any) -> AgentMeta:
     )
 
 
-def _known_run_ns(rec: Any, ledger: Any = None, run_states: Any = None) -> set[int]:
+def _known_run_ns(
+    rec: Any,
+    ledger: Any = None,
+    run_states: Any = None,
+    *,
+    records: dict[int, Any] | None = None,
+    states: dict[int, Any] | None = None,
+) -> set[int]:
     ns = set(range(1, int(rec.turns) + 1))
     for message in rec.messages:
         n = _turn_n(message.get("turn_id"))
@@ -208,7 +215,10 @@ def _known_run_ns(rec: Any, ledger: Any = None, run_states: Any = None) -> set[i
         # The ledger is authoritative: a run persisted there is known even
         # when the session record lost the matching messages/turn count.
         try:
-            ns.update(record.n for record in ledger.list(rec.id))
+            if records is None:
+                ns.update(record.n for record in ledger.list(rec.id))
+            else:
+                ns.update(records)
         except Exception:
             pass
     rs_ledger = getattr(run_states, "_ledger", None)
@@ -220,7 +230,10 @@ def _known_run_ns(rec: Any, ledger: Any = None, run_states: Any = None) -> set[i
         # ledger branch just ran, and on a ``modal.Dict`` backend that
         # second serialized enumeration costs seconds.
         try:
-            ns.update(s.n for s in run_states.list(rec.id))
+            if states is None:
+                ns.update(s.n for s in run_states.list(rec.id))
+            else:
+                ns.update(states)
         except Exception:
             pass
     return ns
@@ -333,6 +346,14 @@ def _run_error_public(
     return err.public() if err is not None else None
 
 
+# Sentinel: the list route's single store pass supplies per-run ledger
+# records / run-state rows explicitly (``None`` = known absent); the
+# sentinel means "not prefetched — resolve serially" so single-run callers
+# keep their shape (SOR-199: the serial per-run ``ledger.get`` made
+# ``GET /v1/agents/{id}/runs`` an N+1 on Dict backends).
+_RUN_FETCH_UNRESOLVED = object()
+
+
 def _run_public(
     plane: Any,
     pub: dict[str, Any],
@@ -344,6 +365,8 @@ def _run_public(
     *,
     scheduler: Any = None,
     reporter: Any = None,
+    record: Any = _RUN_FETCH_UNRESOLVED,
+    state: Any = _RUN_FETCH_UNRESOLVED,
 ) -> dict[str, Any]:
     """Render the run, then feed terminal provider errors to the scheduler.
 
@@ -352,7 +375,7 @@ def _run_public(
     the run's account via ``RunFailureReporter``, deduped per run. Both
     knobs default off so every existing call site keeps its shape.
     """
-    run = _render_run(plane, pub, rec, n, cancelled, meta, run_states)
+    run = _render_run(plane, pub, rec, n, cancelled, meta, run_states, record=record, state=state)
     if reporter is not None and scheduler is not None:
         reporter.report(
             scheduler=scheduler,
@@ -374,6 +397,9 @@ def _render_run(
     cancelled: set[int],
     meta: Any = None,
     run_states: RunStateStore | None = None,
+    *,
+    record: Any = _RUN_FETCH_UNRESOLVED,
+    state: Any = _RUN_FETCH_UNRESOLVED,
 ) -> dict[str, Any]:
     """Cursor-shaped Run; the durable ledger is authoritative once written.
 
@@ -386,9 +412,14 @@ def _render_run(
     authoritative — the derived view cannot see the queued-run window
     (SOR-82 A2). A separate ``RunStateStore`` (when the ledger is absent or a
     test injects one) overlays the derived view the same way.
+
+    ``record``/``state`` are the prefetched row for ``n`` (``None`` =
+    known absent) when the list route already paid the store pass;
+    the sentinel falls back to a serial point read.
     """
     ledger = _ledger(plane)
-    record = ledger.get(rec.id, n) if ledger is not None else None
+    if record is _RUN_FETCH_UNRESOLVED:
+        record = ledger.get(rec.id, n) if ledger is not None else None
     live = rec.current_turn_n == n and rec.status not in TERMINAL_STATUSES
     if record is not None:
         if record.terminal or live:
@@ -500,7 +531,8 @@ def _render_run(
         status = "ERROR"
 
     if run_states is not None:
-        state = run_states.get(rec.id, n)
+        if state is _RUN_FETCH_UNRESOLVED:
+            state = run_states.get(rec.id, n)
         if state is not None:
             if state.status in RUN_TERMINAL:
                 status = state.status
@@ -560,6 +592,45 @@ def _render_run(
     return run
 
 
+def _ledger_record_map(ledger: Any, agent_id: str) -> dict[int, Any] | None:
+    """Every run record in one store pass; ``None`` → caller reads serially.
+
+    ``ModalDictRunStore.list`` fetches the per-agent index doc then the
+    records through a bounded pool, so the map costs ~2 round-trips total
+    instead of one ``ledger.get`` per run (SOR-199 N+1).
+    """
+    if ledger is None:
+        return None
+    try:
+        return {r.n: r for r in ledger.list(agent_id)}
+    except Exception:
+        return None
+
+
+def _run_state_map(
+    run_states: Any,
+    ledger: Any,
+    agent_id: str,
+    records: dict[int, Any] | None,
+) -> dict[int, Any] | None:
+    """Run-state rows for the listing's single store pass.
+
+    ``LedgerRunStates`` over the same ledger shares the record pass — its
+    ``get``/``list`` are the identical reads and a second one is pure N+1.
+    A separate ``RunStateStore`` lists its own rows once. ``None`` → the
+    renderer resolves serially.
+    """
+    if run_states is None:
+        return None
+    rs_ledger = getattr(run_states, "_ledger", None)
+    if rs_ledger is not None and rs_ledger is ledger:
+        return records
+    try:
+        return {s.n: s for s in run_states.list(agent_id)}
+    except Exception:
+        return None
+
+
 def _runs(
     plane: Any,
     rec: Any,
@@ -572,6 +643,10 @@ def _runs(
     pub = plane.public(rec)
     cancelled = v1.cancelled(rec.id)
     meta = _meta_for(v1, rec)
+    ledger = _ledger(plane)
+    records = _ledger_record_map(ledger, rec.id)
+    states = _run_state_map(run_states, ledger, rec.id, records)
+    ns = sorted(_known_run_ns(rec, ledger, run_states, records=records, states=states))
     return [
         _run_public(
             plane,
@@ -583,8 +658,10 @@ def _runs(
             run_states,
             scheduler=scheduler,
             reporter=reporter,
+            record=records.get(n) if records is not None else _RUN_FETCH_UNRESOLVED,
+            state=states.get(n) if states is not None else _RUN_FETCH_UNRESOLVED,
         )
-        for n in sorted(_known_run_ns(rec, _ledger(plane), run_states))
+        for n in ns
     ]
 
 
