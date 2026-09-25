@@ -14,3 +14,4 @@ from control.api_v1.errors import V1Route
 router = APIRouter(prefix="/v1", route_class=V1Route)
 
 from control.api_v1 import routes as _routes  # noqa: E402,F401
+from control.api_v1 import tasks as _tasks  # noqa: E402,F401

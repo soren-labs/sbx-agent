@@ -149,6 +149,10 @@ x-canonical:
     - POST /v1/github/app/authorize/callback
     - POST /v1/github/app/sync
     - DELETE /v1/github/app/installations/{installationId}
+    - POST /v1/tasks/preflight
+    - POST /v1/tasks
+    - GET /v1/tasks
+    - GET /v1/tasks/{taskId}
 servers:
   - url: https://sbx.sorenforge.com
     description: Production (Cloudflare Worker → sbx-control)
@@ -156,6 +160,7 @@ security:
   - bearerAuth: []
 tags:
   - name: agents
+  - name: tasks
   - name: runs
   - name: workspaces
   - name: artifacts
@@ -803,6 +808,114 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowCleanupResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/tasks/preflight:
+    post:
+      tags: [tasks]
+      summary: Advisory task resolution — no reservation, no side effects
+      operationId: taskPreflight
+      description: |
+        SOR-222/SOR-223: resolves a task declaration (``prompt`` /
+        ``source`` / ``execution`` / ``delivery``) without creating
+        anything: canonicalizes the repo, resolves the default ref and
+        exact base SHA, runs the GitHub authorization/permission
+        preflight, and evaluates every account through the
+        provider/model/effort/runtime/auth/health/capacity/capability
+        filter before LRU ordering. Advisory only — ``POST /v1/tasks``
+        revalidates and reserves authoritatively. Always 200 on a
+        well-formed declaration; blockers surface as ``fail`` checks with
+        the refusal code in ``error``.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "200":
+          description: Resolution outcome (``ok:false`` when blocked)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreflightResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/tasks:
+    post:
+      tags: [tasks]
+      summary: Create a task — validate, reserve a slot, queue the first run
+      operationId: createTask
+      description: |
+        SOR-222/SOR-223: the caller-facing resource. The request never
+        carries ``base_sha``, ``account_id`` pins, or git booleans — the
+        control plane resolves source (canonical repo, default ref, exact
+        base SHA) and execution (provider/model/effort/account through the
+        capability-aware eligibility filter), persists "requested vs
+        resolved" on the task record, and runs through the exact ``/v1``
+        agent machinery. ``Idempotency-Key`` replays durably.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTaskResponse"
+        "400":
+          $ref: "#/components/responses/InvalidProvider"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/AccountUnavailable"
+        "429":
+          $ref: "#/components/responses/Exhausted"
+    get:
+      tags: [tasks]
+      summary: List the caller's tasks
+      operationId: listTasks
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/tasks/{taskId}:
+    get:
+      tags: [tasks]
+      summary: Task detail — requested vs resolved + live agent/run state
+      operationId: getTask
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2571,6 +2684,7 @@ components:
                 - artifact_not_found
                 - artifact_invalid
                 - artifact_secret
+                - unsupported
                 - review_required
                 - invalid_output_contract
                 - github_app_unconfigured
@@ -2582,6 +2696,253 @@ components:
             retry_after:
               type: number
               description: Seconds; present on `provider_exhausted` / `concurrency_limit` when known
+    TaskSource:
+      type: object
+      required: [repo]
+      properties:
+        repo:
+          type: string
+          description: |
+            Git URL — ``https://github.com/<owner>/<repo>`` (incl. scp-style
+            ``git@github.com:owner/repo``) is canonicalized; other hosts and
+            ``file://``/local paths are accepted as-is.
+        ref:
+          type: string
+          description: |
+            ``auto``/``HEAD``/absent → the repo's default branch; a 40-hex
+            sha pins an exact commit; any other git ref resolves to its sha.
+    TaskExecution:
+      type: object
+      properties:
+        provider:
+          type: string
+          description: |
+            A canonical provider id or ``auto`` (default) — auto selects
+            among eligible accounts of all enabled providers.
+        account_id:
+          type: string
+          description: "``auto``/absent resolves through eligibility + LRU."
+        model:
+          type: string
+          description: "``auto``/absent resolves via the capability surface."
+        reasoning_effort:
+          type: string
+          description: |
+            A canonical effort tier (none/minimal/low/medium/high/xhigh/max)
+            or ``auto``/absent → the model's default effort.
+    TaskPullRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+        draft:
+          type: boolean
+          default: false
+        target:
+          type: string
+          description: PR base branch; defaults to the resolved base ref.
+    TaskDelivery:
+      type: object
+      properties:
+        branch:
+          type: string
+          description: Work branch name; defaults to a derived ``sbx/…`` name.
+        pull_request:
+          $ref: "#/components/schemas/TaskPullRequest"
+        auto_publish:
+          type: boolean
+          default: false
+          description: Publish the work branch upstream on run completion.
+    CreateTaskRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          $ref: "#/components/schemas/Prompt"
+        name:
+          type: string
+        source:
+          $ref: "#/components/schemas/TaskSource"
+        execution:
+          $ref: "#/components/schemas/TaskExecution"
+        delivery:
+          $ref: "#/components/schemas/TaskDelivery"
+        metadata:
+          $ref: "#/components/schemas/WorkflowMetadata"
+        output_contract:
+          $ref: "#/components/schemas/OutputContract"
+        resources:
+          $ref: "#/components/schemas/SessionResources"
+        compute:
+          $ref: "#/components/schemas/SessionCompute"
+        idle_timeout_s:
+          type: integer
+          minimum: 1
+    TaskCheck:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail]
+        detail:
+          type: string
+    TaskCandidate:
+      type: object
+      description: |
+        One evaluated account: eligibility plus the reason codes
+        (``runtime_unavailable`` / ``no_credential`` / ``status_cooling`` /
+        ``at_capacity`` / ``model_unresolvable`` / ``effort_unsupported`` …)
+        that excluded it.
+      properties:
+        account_id:
+          type: string
+        provider:
+          $ref: "#/components/schemas/ProviderId"
+        eligible:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+        model:
+          type: string
+        effort:
+          type: string
+        running:
+          type: integer
+        max_concurrent:
+          type: integer
+        status:
+          type: string
+    TaskResolutionField:
+      type: object
+      description: Resolved evidence for one execution field.
+      properties:
+        requested:
+          type: string
+        resolved:
+          type: string
+        source:
+          type: string
+          enum: [requested, account, lru, discovered, declared, default]
+    TaskResolved:
+      type: object
+      description: |
+        The resolved execution: repo canonicalization, base ref, exact base
+        SHA, git policy, and per-field evidence (requested vs resolved and
+        how it was chosen). Persisted on the task record.
+      properties:
+        source:
+          type: object
+          properties:
+            repo:
+              type: string
+            canonical:
+              type: string
+            kind:
+              type: string
+              enum: [github, remote, local]
+            slug:
+              type: string
+            base_ref:
+              type: string
+            base_sha:
+              type: string
+        git:
+          type: object
+        execution:
+          type: object
+          properties:
+            provider:
+              $ref: "#/components/schemas/TaskResolutionField"
+            account:
+              $ref: "#/components/schemas/TaskResolutionField"
+            model:
+              $ref: "#/components/schemas/TaskResolutionField"
+            reasoning_effort:
+              $ref: "#/components/schemas/TaskResolutionField"
+            candidates:
+              type: array
+              items:
+                $ref: "#/components/schemas/TaskCandidate"
+    Task:
+      type: object
+      required: [id, status, request]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, finished, error, cancelled, expired]
+        request:
+          type: object
+          description: The caller's declaration, verbatim.
+        resolved:
+          $ref: "#/components/schemas/TaskResolved"
+        agent_id:
+          type: string
+        run_id:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+    PreflightResponse:
+      type: object
+      required: [ok, checks]
+      properties:
+        ok:
+          type: boolean
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskCheck"
+        warnings:
+          type: array
+          items:
+            type: string
+        resolved:
+          $ref: "#/components/schemas/TaskResolved"
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    CreateTaskResponse:
+      type: object
+      required: [task, agent, run]
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        agent:
+          $ref: "#/components/schemas/Agent"
+        run:
+          type: object
+    TaskList:
+      type: object
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+    TaskDetail:
+      type: object
+      required: [task]
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        agent:
+          $ref: "#/components/schemas/Agent"
+        run:
+          type: object
   responses:
     Unauthorized:
       description: Missing or invalid Bearer key (401 unauthorized)

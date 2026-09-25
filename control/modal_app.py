@@ -40,6 +40,9 @@ _secrets = [modal.Secret.from_name(name) for name in app_secret_names()]
 # source mount for a fresh deploy to start without a detached fixup.
 CONTROL_IMAGE = (
     modal.Image.debian_slim(python_version="3.12")
+    # SOR-223: the Task API's repo probe falls back to ``git ls-remote`` for
+    # non-github.com remotes (github.com goes through the REST API).
+    .apt_install("git")
     .pip_install(
         "fastapi",
         "httpx",

@@ -29,6 +29,7 @@ from control.handoff import HandoffService
 from control.ports import AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.resources import ResourceRegistry
 from control.scheduler import AccountScheduler, session_running_source
+from control.tasks import InMemoryTaskStore
 from control.workflow_store import WorkflowStore
 from control.workspace import InMemoryWorkspaceStore, WorkspaceService
 
@@ -297,6 +298,30 @@ def get_resources(request: Request) -> ResourceRegistry:
     if registry is None:
         registry = ResourceRegistry.from_env()
     return registry
+
+
+def get_task_store(request: Request) -> Any:
+    """SOR-222/223 durable Task store: ``app.state.task_store`` when a
+    durable backend is installed (``create_app`` selects file/Modal), else
+    an in-memory default — same seam shape as :func:`get_workspace_store`."""
+    store = getattr(request.app.state, "task_store", None)
+    if store is None:
+        store = InMemoryTaskStore()
+        request.app.state.task_store = store
+    return store
+
+
+def get_repo_resolver(request: Request) -> Any:
+    """SOR-222/223 repo probe: ``app.state.repo_resolver`` when a test or
+    deploy injects one (fake probes keep unit tests offline); else the
+    GitHub-API → ``git ls-remote`` chain over the process env."""
+    resolver = getattr(request.app.state, "repo_resolver", None)
+    if resolver is None:
+        from control.tasks import default_repo_resolver
+
+        resolver = default_repo_resolver()
+        request.app.state.repo_resolver = resolver
+    return resolver
 
 
 def get_workflow_service(
