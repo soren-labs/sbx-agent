@@ -270,6 +270,28 @@ def _select_task_store() -> Any:
     return FileTaskStore(override or _xdg_state_dir("tasks"))
 
 
+def _select_revision_store() -> Any:
+    """SOR-225: durable Revision/Review store.
+
+    Production keeps revision + review records in a ``modal.Dict``
+    (``sbx-revisions``) so delivery/review survive sandbox teardown and
+    control-plane restarts; locally they live under
+    ``$SBX_REVISION_STORE_DIR`` (or ``$XDG_STATE_HOME/sbx-browser/revisions``).
+    """
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.revisions import (
+            REVISIONS_DICT_ENV,
+            REVISIONS_DICT_NAME,
+            ModalDictRevisionStore,
+        )
+
+        return ModalDictRevisionStore(env_str(REVISIONS_DICT_ENV, REVISIONS_DICT_NAME))
+    from control.revisions import REVISION_STORE_DIR_ENV, FileRevisionStore
+
+    override = os.environ.get(REVISION_STORE_DIR_ENV)
+    return FileRevisionStore(override or _xdg_state_dir("revisions"))
+
+
 def create_app(
     *,
     backend: SandboxBackend | None = None,
@@ -279,6 +301,7 @@ def create_app(
     workspace_store: Any | None = None,
     workflow_store: WorkflowStore | None = None,
     task_store: Any | None = None,
+    revision_store: Any | None = None,
     runner_cmd: list[str] | None = None,
     basic_user: str | None = None,
     basic_password: str | None = None,
@@ -297,6 +320,7 @@ def create_app(
     workspace_store = workspace_store or _select_workspace_store()
     workflow_store = workflow_store or _select_workflow_store()
     task_store = task_store or _select_task_store()
+    revision_store = revision_store or _select_revision_store()
     runner_cmd = runner_cmd or default_runner_cmd(backend_kind=backend_kind)
     user_default, pass_default = basic_credentials()
     basic_user = basic_user if basic_user is not None else user_default
@@ -376,6 +400,50 @@ def create_app(
         )
 
     plane.snapshot_hook = _snapshot_on_close
+
+    # SOR-225: every successful code-changing run materializes a durable
+    # Revision while its sandbox is still readable — the revision (artifact
+    # + repo/base/head + delivery) is the object delivery/review/merge then
+    # operate on after teardown.
+    from control.revisions import RevisionService
+
+    revisions = RevisionService(revision_store, artifact_store, workspaces=workspaces)
+    app.state.revision_store = revision_store
+    app.state.revisions = revisions
+    plane.revisions = revisions
+
+    def _revision_on_finish(rec: Any, handle: Any, n: int) -> None:
+        """Materialize the revision for a finished run; task_id resolved
+        from the durable task store; credential blobs feed the same
+        forbidden-value secret scan as artifact snapshots."""
+        from control.artifact_ops import credential_forbidden_values
+
+        account_id = (rec.sandbox_tags or {}).get("account_id")
+        registry = getattr(app.state, "account_registry", None)
+        get_blob = getattr(registry, "get_credential_blob", None)
+        blob = None
+        if callable(get_blob) and account_id and account_id != "auto":
+            try:
+                blob = get_blob(account_id)
+            except Exception:
+                pass
+        task = None
+        try:
+            task = task_store.find_by_agent(rec.id)
+        except Exception:
+            pass
+        revisions.materialize(
+            backend,
+            handle,
+            rec.id,
+            run_id=f"run-{n}",
+            run_n=n,
+            task_id=task.id if task is not None else None,
+            forbidden_values=credential_forbidden_values(blob),
+            ledger=plane.run_ledger,
+        )
+
+    plane.revision_hook = _revision_on_finish
 
     # SOR-180: same-agent checkpoint / suspend / recovery — always armed
     # (not opt-in): an idle agent past its retention is checkpointed +

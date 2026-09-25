@@ -311,6 +311,35 @@ def get_task_store(request: Request) -> Any:
     return store
 
 
+def get_revision_store(request: Request) -> Any:
+    """SOR-225 durable Revision/Review store: ``app.state.revision_store``
+    when a durable backend is installed, else an in-memory default."""
+    store = getattr(request.app.state, "revision_store", None)
+    if store is None:
+        from control.revisions import InMemoryRevisionStore
+
+        store = InMemoryRevisionStore()
+        request.app.state.revision_store = store
+    return store
+
+
+def get_revisions(request: Request) -> Any:
+    """SOR-225 RevisionService bound to the durable artifact + workspace
+    seams: ``app.state.revisions`` when the app wired one, else built over
+    the same stores a test injected."""
+    service = getattr(request.app.state, "revisions", None)
+    if service is None:
+        from control.revisions import RevisionService
+
+        service = RevisionService(
+            get_revision_store(request),
+            get_artifact_store(request),
+            workspaces=get_workspaces(request),
+        )
+        request.app.state.revisions = service
+    return service
+
+
 def get_repo_resolver(request: Request) -> Any:
     """SOR-222/223 repo probe: ``app.state.repo_resolver`` when a test or
     deploy injects one (fake probes keep unit tests offline); else the

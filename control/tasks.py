@@ -1423,6 +1423,8 @@ class TaskStore(Protocol):
 
     def find_by_idempotency(self, owner: str, key: str) -> TaskRecord | None: ...
 
+    def find_by_agent(self, agent_id: str) -> TaskRecord | None: ...
+
 
 class InMemoryTaskStore:
     """Thread-safe dict store (tests, ephemeral deployments)."""
@@ -1458,6 +1460,12 @@ class InMemoryTaskStore:
         for rec in self.list(owner):
             meta = rec.idempotency or {}
             if meta.get("key") == key:
+                return rec
+        return None
+
+    def find_by_agent(self, agent_id: str) -> TaskRecord | None:
+        for rec in self.list():
+            if rec.agent_id == agent_id:
                 return rec
         return None
 
@@ -1515,6 +1523,12 @@ class FileTaskStore:
         for rec in self.list(owner):
             meta = rec.idempotency or {}
             if meta.get("key") == key:
+                return rec
+        return None
+
+    def find_by_agent(self, agent_id: str) -> TaskRecord | None:
+        for rec in self.list():
+            if rec.agent_id == agent_id:
                 return rec
         return None
 
