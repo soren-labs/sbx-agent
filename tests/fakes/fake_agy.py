@@ -15,6 +15,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    login_flow,
     models_listing,
     rewrite_json,
     run_scenario,
@@ -43,6 +44,7 @@ def main() -> None:
     install_term_handler()
     credential = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
     models_listing(sys.argv[1:], ("models",), credential, "FAKE_AGY_MODELS", DEFAULT_MODELS)
+    login_flow(sys.argv[1:], (), credential, '{"token": "REDACTED"}\n')
     auth_check(sys.argv[1:], ("models",), credential)
     positionals, values, _seen = scan_argv(
         sys.argv[1:], bool_flags=_BOOL_FLAGS, value_flags=_VALUE_FLAGS

@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Depends, Header, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from runtime.runner.contract import STATUS_SKIPPED, ContractError, normalize_contract
 from runtime.runner.effort import effort_error, normalize_effort
 
@@ -40,6 +40,7 @@ from control.api_v1.deps import (
     get_handoffs,
     get_key_store,
     get_plane,
+    get_provider_connect,
     get_registry,
     get_resources,
     get_run_reporter,
@@ -59,6 +60,7 @@ from control.api_v1.lifecycle import (
 )
 from control.api_v1.schemas import (
     VALID_SCOPES,
+    AuthConnectRequest,
     ConsoleGrantExchangeRequest,
     CreateAccountRequest,
     CreateAgentRequest,
@@ -66,8 +68,11 @@ from control.api_v1.schemas import (
     CreateArtifactRequest,
     CreateRunRequest,
     GitHubAppAuthorizeCallbackRequest,
+    GitHubAppManifestCompleteRequest,
+    GitHubAppManifestRequest,
     HandoffRef,
     OutputContract,
+    PairCompleteRequest,
     ProviderId,
     ReviewWorkspaceRequest,
     account_public,
@@ -93,12 +98,20 @@ from control.capabilities import (
 )
 from control.compute import ComputeError, ComputeSpec, compute_for_record, resolve_compute
 from control.config import TERMINAL_STATUSES, env_int, env_str, selected_providers
+from control.connect import (
+    CONNECT_STATES,
+    ConnectError,
+    plane_verify,
+    probe_account_credential,
+)
 from control.credlifecycle import CredentialLifecycleService, CredentialRefresher
 from control.credsync import TAG_CRED_RUN_FP, CredentialSync
 from control.devin_pool import ScheduleRefused
 from control.github_app import GitHubAppError
 from control.latency import observe
+from control.onboarding import OnboardingError
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
+from control.provider_auth import AUTH_SESSION_STATES
 from control.resources import ResourceError, resolve_resources, resource_refs
 from control.run_errors import run_error_for_run
 from control.run_store import (
@@ -126,7 +139,6 @@ AGENTS_PAGE_SIZE = 100
 ARTIFACTS_PAGE_MAX = 500  # SOR-201: cap per-page manifest fetches
 _TURN_ID_RE = re.compile(r"^turn-(\d+)$")
 _RUN_ID_RE = re.compile(r"^run-(\d+)$")
-_VERIFY_TAG = "account-verify"
 
 
 def _iso_now() -> str:
@@ -2565,91 +2577,12 @@ def verify_account(
     never promoted without evidence.
     """
     account = _registry_account(registry, account_id)
-    blob = registry.get_credential_blob(account_id)
-    backend = getattr(plane, "backend", None)
-    runner = getattr(plane, "runner", None)
-    if backend is None or runner is None:
-        return _account_view(
-            registry,
-            registry.mark_status(
-                account_id,
-                account.status,
-                cooldown_until=account.cooldown_until,
-                last_error="probe_unavailable",
-            ),
-        )
-    handle = None
-    try:
-        from control.backend import SandboxSpec
-
-        # Secret-only accounts carry their credential in the named Modal
-        # Secret; a local registry blob travels via SBX_ACCOUNT_CREDENTIAL.
-        secrets = [account.secret_name] if account.secret_name else []
-        handle = backend.create(
-            SandboxSpec(
-                tags={
-                    "purpose": _VERIFY_TAG,
-                    "provider": account.provider,
-                    "account_id": account_id,
-                },
-                secrets=secrets,
-            )
-        )
-        verify_env: dict[str, str] = {"SBX_ACCOUNT_ID": account_id}
-        if blob:
-            verify_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(blob)
-        env = sandbox_env(handle, verify_env)
-        if not blob:
-            # An empty or unrelated blob would shadow the named Secret.
-            env.pop("SBX_ACCOUNT_CREDENTIAL", None)
-        model = (
-            _default_model(account.provider, account)
-            or getattr(plane, "default_model", None)
-            or "gpt-5.6-luna"
-        )
-        argv = runner(
-            "init",
-            "--auth",
-            "auth_json",
-            "--model",
-            model,
-            "--provider",
-            account.provider,
-            "--account-id",
-            account_id,
-        )
-        proc = backend.exec(handle, argv, env=env)
-        for _ in proc.stdout:
-            pass
-        code = proc.wait()
-    except Exception:
-        code = -1
-    finally:
-        if handle is not None:
-            try:
-                backend.terminate(handle)
-            except Exception:
-                pass
-    try:
-        lifecycle = CredentialLifecycleService(registry)
-        if code == 0:
-            if blob:
-                lifecycle.note_credential(account_id, blob)
-            # The sandbox probe accepted the materialized credential —
-            # record cloud-verify evidence for the eligibility gate.
-            lifecycle.note_verified(account_id, probe="v1:verify")
-        elif code == 5:
-            lifecycle.on_auth_invalid(account_id, detail="auth_invalid", mark_account=False)
-    except Exception:
-        pass
-    if code == 0:
-        updated = registry.mark_status(account_id, "active", last_error=None)
-    elif code == 5:
-        updated = registry.mark_status(account_id, "invalid", last_error="auth_invalid")
-    elif code > 0:
-        updated = registry.mark_status(account_id, "invalid", last_error="init_failed")
-    else:
-        updated = account
+    model = (
+        _default_model(account.provider, account)
+        or getattr(plane, "default_model", None)
+        or "gpt-5.6-luna"
+    )
+    updated = probe_account_credential(plane, registry, account, model=model)
     return _account_view(registry, updated)
 
 
@@ -2853,3 +2786,193 @@ def github_app_revoke(
 
 def _github_app_error(exc: GitHubAppError) -> V1ApiError:
     return V1ApiError(exc.status_code, exc.code, exc.message)
+
+
+@router.post("/github/app/manifest", status_code=201)
+def github_app_begin_manifest(
+    request: Request,
+    body: GitHubAppManifestRequest,
+    key: ApiKey = Depends(admin_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """SOR-220 zero-config, step 1: the App manifest + the URL to POST it.
+
+    The Console auto-submits ``manifest`` to ``manifest_url`` as a form
+    post — GitHub's supported App Manifest registration flow — and GitHub
+    redirects the browser back to ``/v1/github/app/manifest/callback``
+    with the conversion ``code``. The pending ``state`` is the
+    single-use capability binding the two steps.
+    """
+    try:
+        redirect = str(request.url_for("github_app_manifest_callback"))
+        return app.begin_manifest(redirect_url=redirect, name=body.name, org=body.org)
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+@router.get("/github/app/manifest/callback", name="github_app_manifest_callback")
+def github_app_manifest_callback(
+    code: str = "",
+    state: str = "",
+    app: Any = Depends(get_github_app),
+) -> Response:
+    """SOR-220, step 2 (browser redirect target): exchange ``code`` and
+    register the deployment-scoped App, then bounce the browser back to
+    the Console GitHub view — unauthenticated by design (the one-time
+    ``state`` issued by step 1 is the credential)."""
+    try:
+        app.complete_manifest(code, state)
+    except GitHubAppError as exc:
+        return RedirectResponse(f"/#/admin/github?manifest_error={exc.code}", status_code=303)
+    return RedirectResponse("/#/admin/github?manifest=connected", status_code=303)
+
+
+@router.post("/github/app/manifest/complete")
+def github_app_manifest_complete(
+    body: GitHubAppManifestCompleteRequest,
+    key: ApiKey = Depends(admin_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """Programmatic completion of the manifest flow (``{"code", "state"}``)
+    for API clients that collect the redirect themselves."""
+    try:
+        return app.complete_manifest(body.code, body.state)
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# Provider Connect (SOR-214) — canonical auth sessions over provider logins
+
+
+def _connect_error(exc: ConnectError) -> V1ApiError:
+    return V1ApiError(exc.status_code, exc.code, exc.message)
+
+
+def _plane_verify_fn(plane: Any, registry: Any) -> Any:
+    """A ``verify(account_id) -> bool`` closure over the /v1 probe — the
+    same ``runner init`` sandbox check ``POST /accounts/{id}/verify`` runs."""
+
+    def _model_for(account: Any) -> str | None:
+        return _default_model(account.provider, account)
+
+    return plane_verify(plane, registry, model_for=_model_for)
+
+
+@router.get("/auth")
+def auth_sessions(
+    key: ApiKey = Depends(admin_key),
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Connect sessions + the canonical auth-session state vocabulary."""
+    return {
+        "auth_states": list(AUTH_SESSION_STATES),
+        "connect_states": list(CONNECT_STATES),
+        "sessions": connect.list(),
+    }
+
+
+@router.post("/auth/connect", status_code=201)
+def auth_connect(
+    body: AuthConnectRequest,
+    key: ApiKey = Depends(admin_key),
+    plane: Any = Depends(get_plane),
+    registry: AccountRegistry = Depends(get_registry),
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Begin a connect session for ``provider`` — hosted lane when the
+    control plane can exec the provider's login itself (the session's
+    ``browser_url``/``user_code`` surface device-flow details live), or
+    the pair lane (``pair_command`` / ``pair_ticket``) on cloud deploys
+    where it cannot. ``account_id`` relinks an existing account."""
+    try:
+        return connect.begin(
+            body.provider,
+            label=body.label,
+            slots=body.max_concurrent,
+            models=body.models,
+            account_id=body.account_id,
+            verify=_plane_verify_fn(plane, registry),
+        )
+    except ConnectError as exc:
+        raise _connect_error(exc) from exc
+    except OnboardingError as exc:
+        raise V1ApiError(400, exc.code, str(exc)) from exc
+
+
+@router.get("/auth/connect/{session_id}")
+def auth_connect_session(
+    session_id: str,
+    key: ApiKey = Depends(admin_key),
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Connect session detail — state, browser/device URLs, error."""
+    try:
+        return connect.get(session_id)
+    except ConnectError as exc:
+        raise _connect_error(exc) from exc
+
+
+@router.post("/auth/connect/{session_id}/cancel")
+def auth_connect_cancel(
+    session_id: str,
+    key: ApiKey = Depends(admin_key),
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Cancel an in-flight session (terminates the hosted login, voids the
+    pair ticket); idempotent for terminal sessions."""
+    try:
+        return connect.cancel(session_id)
+    except ConnectError as exc:
+        raise _connect_error(exc) from exc
+
+
+@router.post("/auth/connect/{session_id}/retry", status_code=201)
+def auth_connect_retry(
+    session_id: str,
+    key: ApiKey = Depends(admin_key),
+    plane: Any = Depends(get_plane),
+    registry: AccountRegistry = Depends(get_registry),
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Re-open a terminal session as a fresh one (same provider/label/
+    account target); 409 while the session is still running."""
+    try:
+        return connect.retry(session_id, verify=_plane_verify_fn(plane, registry))
+    except ConnectError as exc:
+        raise _connect_error(exc) from exc
+    except OnboardingError as exc:
+        raise V1ApiError(400, exc.code, str(exc)) from exc
+
+
+@router.get("/auth/pair/{ticket}")
+def auth_pair_info(
+    ticket: str,
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Unauthenticated pair-ticket lookup — the local CLI's ``sbx auth
+    pair <ticket>`` learns which provider to log in. The ticket itself
+    (single-use, short-TTL) is the credential — no Bearer key here by
+    design."""
+    try:
+        return connect.pair_info(ticket)
+    except ConnectError as exc:
+        raise _connect_error(exc) from exc
+
+
+@router.post("/auth/pair/complete")
+def auth_pair_complete(
+    body: PairCompleteRequest,
+    plane: Any = Depends(get_plane),
+    registry: AccountRegistry = Depends(get_registry),
+    connect: Any = Depends(get_provider_connect),
+) -> dict[str, Any]:
+    """Consume the pair ticket and materialize the captured credential
+    blob — the local-pair counterpart of the hosted lane's capture. The
+    blob is schema-validated before the ticket is consumed."""
+    try:
+        return connect.complete_pair(
+            body.ticket, body.credential, verify=_plane_verify_fn(plane, registry)
+        )
+    except ConnectError as exc:
+        raise _connect_error(exc) from exc

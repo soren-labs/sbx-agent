@@ -770,6 +770,17 @@ def cmd_auth(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                 payload = auth_mod.auth_verify(service, env, args=args, client=None)
         elif action == "relink":
             payload = auth_mod.auth_relink(service, env, args=args, client=client)
+        elif action == "pair":
+            # SOR-214 local-pair lane: unauthenticated — the ticket minted
+            # by POST /v1/auth/connect is the credential, never an API key.
+            payload = auth_mod.auth_pair(
+                service,
+                env,
+                ticket=args.ticket,
+                base_url=args.base_url or cfg.config.api_base_url,
+                transport=args.transport,
+                login_runner=args.login_runner,
+            )
         elif action == "logout":
             # The managed-Secret deleter only exists on the modal lane;
             # a file-store logout never touches it. An injected plane
@@ -1065,6 +1076,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-open-permissions",
         action="store_true",
         help="accept credential files readable by group/other",
+    )
+    a.set_defaults(func=cmd_auth)
+
+    a = auth_sub.add_parser(
+        "pair",
+        parents=[sub_common],
+        help="pair this host's provider login with a cloud connect session "
+        "(SOR-214): run the vendor login, post the captured blob",
+    )
+    a.add_argument(
+        "ticket",
+        metavar="ticket",
+        help="single-use pair ticket from the Console connect session",
+    )
+    a.add_argument(
+        "--base-url",
+        default=None,
+        help="deployment base URL (default: configured / deployed app URL)",
     )
     a.set_defaults(func=cmd_auth)
 

@@ -289,6 +289,19 @@ def get_github_app(request: Request) -> Any:
     return service
 
 
+def get_provider_connect(request: Request) -> Any:
+    """Provider Connect service (SOR-214): ``app.state.provider_connect``
+    when a test/deploy injects one, else the env-configured default —
+    env/store lane shared with ``sbx auth`` materialization."""
+    service = getattr(request.app.state, "provider_connect", None)
+    if service is None:
+        from control.connect import default_connect_service
+
+        service = default_connect_service(get_registry(request))
+        request.app.state.provider_connect = service
+    return service
+
+
 def get_resources(request: Request) -> ResourceRegistry:
     """Session-resource registry (SOR-129): ``app.state.resource_registry``
     when a test/deploy injects one, else the env-configured allowlist.

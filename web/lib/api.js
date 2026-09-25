@@ -159,6 +159,18 @@ export const api = {
   githubSync: () => request("POST", "/v1/github/app/sync"),
   githubRevoke: (installationId) =>
     request("DELETE", `/v1/github/app/installations/${enc(installationId)}`),
+  // SOR-220: per-deployment App registration via GitHub's manifest flow —
+  // the returned {manifest, manifest_url} is form-posted by the Console.
+  githubManifest: (body) => request("POST", "/v1/github/app/manifest", { body }),
+  githubManifestComplete: (body) =>
+    request("POST", "/v1/github/app/manifest/complete", { body }),
+
+  // SOR-214: provider connect sessions over the canonical auth engine.
+  authSessions: () => request("GET", "/v1/auth"),
+  authConnect: (body) => request("POST", "/v1/auth/connect", { body }),
+  connectSession: (id) => request("GET", `/v1/auth/connect/${enc(id)}`),
+  connectCancel: (id) => request("POST", `/v1/auth/connect/${enc(id)}/cancel`),
+  connectRetry: (id) => request("POST", `/v1/auth/connect/${enc(id)}/retry`),
 };
 
 /** Unwrap `{artifact}` (create) vs bare manifest (get) responses. */

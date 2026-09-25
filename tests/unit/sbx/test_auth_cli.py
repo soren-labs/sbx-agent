@@ -279,3 +279,113 @@ def test_no_credential_capture_is_structured_error(
     )
     assert rc == 1
     assert "error[missing_credential_file]" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# ``sbx auth pair`` — SOR-214 local-pair completion
+
+
+def _pair_transport(state: dict[str, Any]) -> Any:
+    """A transport faking the unauthenticated pair endpoints."""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/auth/pair/sbxp_tok" and request.method == "GET":
+            state["info_calls"] += 1
+            return httpx.Response(
+                200,
+                json={"provider": "grok", "session_id": "conn-1", "relink": False},
+            )
+        if path == "/v1/auth/pair/complete" and request.method == "POST":
+            state["complete_calls"] += 1
+            state["blob"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "account_id": "acct-pair-1",
+                    "verified": True,
+                    "connect": {"id": "conn-1", "state": "verified"},
+                },
+            )
+        return httpx.Response(404, json={"error": {"code": "not_found", "message": "nope"}})
+
+    return httpx.MockTransport(handler)
+
+
+def test_auth_pair_runs_login_and_posts_blob(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state: dict[str, Any] = {"info_calls": 0, "complete_calls": 0}
+
+    def login_runner(argv: list[str], env: dict[str, str]) -> int:
+        # The vendor CLI writes its credential under the (paired) HOME.
+        _creds(Path(env["HOME"]), token=SECRET)
+        return 0
+
+    rc = main(
+        [
+            *_args(tmp_path),
+            "auth",
+            "pair",
+            "sbxp_tok",
+            "--base-url",
+            "https://sbx.example.io",
+            "--json",
+        ],
+        transport=_pair_transport(state),
+        login_runner=login_runner,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["provider"] == "grok"
+    assert payload["verified"] is True
+    assert state["info_calls"] == 1 and state["complete_calls"] == 1
+    # The captured blob carries the declared credential file.
+    assert state["blob"]["ticket"] == "sbxp_tok"
+    assert GROK_AUTH_REL in state["blob"]["credential"]["files"]
+    # The credential material never reaches stdout.
+    assert SECRET not in json.dumps(payload)
+
+
+def test_auth_pair_login_failure_is_structured_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state: dict[str, Any] = {"info_calls": 0, "complete_calls": 0}
+    rc = main(
+        [
+            *_args(tmp_path),
+            "auth",
+            "pair",
+            "sbxp_tok",
+            "--base-url",
+            "https://sbx.example.io",
+        ],
+        transport=_pair_transport(state),
+        login_runner=lambda argv, env: 5,
+    )
+    assert rc == 1
+    assert "error[login_failed]" in capsys.readouterr().err
+    assert state["complete_calls"] == 0
+
+
+def test_auth_pair_missing_capture_is_structured_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state: dict[str, Any] = {"info_calls": 0, "complete_calls": 0}
+    # Login "succeeds" but writes no credential → capture fails cleanly.
+    rc = main(
+        [
+            *_args(tmp_path),
+            "auth",
+            "pair",
+            "sbxp_tok",
+            "--base-url",
+            "https://sbx.example.io",
+        ],
+        transport=_pair_transport(state),
+        login_runner=lambda argv, env: 0,
+    )
+    assert rc == 1
+    assert "error[" in capsys.readouterr().err
+    assert state["complete_calls"] == 0

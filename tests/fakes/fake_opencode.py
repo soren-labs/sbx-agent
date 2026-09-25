@@ -16,6 +16,7 @@ from pathlib import Path
 from _fake_native import (
     auth_check,
     install_term_handler,
+    login_flow,
     models_listing,
     rewrite_json,
     run_scenario,
@@ -55,6 +56,7 @@ def main() -> None:
         "FAKE_OPENCODE_MODELS",
         DEFAULT_MODELS,
     )
+    login_flow(sys.argv[1:], ("auth", "login"), credential, '{"token": "REDACTED"}\n')
     auth_check(sys.argv[1:], ("auth", "list"), credential)
     positionals, values, seen = scan_argv(
         sys.argv[1:],
