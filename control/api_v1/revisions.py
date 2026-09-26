@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import Depends
+from fastapi import Depends, Header
 from pydantic import BaseModel, ConfigDict, Field
 
 from control.api_v1 import router
@@ -22,8 +22,11 @@ from control.api_v1.deps import (
     get_plane,
     get_revisions,
     get_task_store,
+    get_v1_state,
 )
 from control.api_v1.errors import V1ApiError, not_found
+from control.api_v1.lifecycle import request_fingerprint
+from control.api_v1.state import V1State
 from control.ports import ApiKey
 from control.revisions import Revision, RevisionError, RevisionService
 from control.tasks import TaskStore
@@ -229,6 +232,8 @@ def create_task_review(
     plane: Any = Depends(get_plane),
     task_store: TaskStore = Depends(get_task_store),
     revisions: RevisionService = Depends(get_revisions),
+    v1: V1State = Depends(get_v1_state),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Record a durable review on a revision.
 
@@ -237,6 +242,11 @@ def create_task_review(
     computed — a reviewer equal to the revision's own agent or run can
     never satisfy the merge gate. ``comment`` additionally posts a
     machine-readable comment on the delivered pull request.
+
+    ``Idempotency-Key`` replays durably like task/run create: the same key
+    + same body returns the original review (and does not re-post
+    ``comment``); a different body under a used key is a 409
+    ``idempotency_conflict``.
     """
     record = _require_task(task_id, key, task_store)
     agent_id = _task_agent_id(record)
@@ -248,6 +258,47 @@ def create_task_review(
     identity = reviewer.identity or (
         f"agent:{reviewer_agent_id}" if reviewer_agent_id else f"key:{key.id}"
     )
+    owned = None
+    fingerprint = request_fingerprint(body)
+    pin_key = f"review:{agent_id}:{idempotency_key}" if idempotency_key else None
+    if idempotency_key:
+        outcome, entry = v1.idempotency.claim(key.id, pin_key or "", fingerprint)
+        if outcome == "hit":
+            return entry.body
+        if outcome == "conflict":
+            raise V1ApiError(
+                409,
+                "idempotency_conflict",
+                "Idempotency-Key was already used with a different request body",
+            )
+        if outcome == "timeout":
+            raise V1ApiError(
+                409,
+                "idempotency_in_progress",
+                "a create with this Idempotency-Key is still in progress",
+            )
+        # The review record pins (api key, key) durably, so a replay that
+        # lands after a control-plane restart still resolves to the
+        # original review instead of writing a duplicate.
+        prior = revisions.find_review_by_idempotency(agent_id, key.id, pin_key or "")
+        if prior is not None:
+            if (prior.idempotency or {}).get("fingerprint") not in (None, fingerprint):
+                v1.idempotency.abandon(key.id, pin_key or "", entry)
+                raise V1ApiError(
+                    409,
+                    "idempotency_conflict",
+                    "Idempotency-Key was already used with a different request body",
+                )
+            result = {"review": prior.public()}
+            v1.idempotency.complete(key.id, pin_key or "", entry, agent_id=agent_id, body=result)
+            v1.idempotency.settle(key.id, pin_key or "", entry)
+            return result
+        owned = entry
+    pin = (
+        {"key_id": key.id, "key": pin_key, "fingerprint": fingerprint}
+        if owned is not None
+        else None
+    )
     try:
         review = revisions.add_review(
             revision,
@@ -256,6 +307,7 @@ def create_task_review(
             reviewer_run_id=reviewer.run_id,
             verdict=body.verdict,
             findings=[f.model_dump(exclude_none=True) for f in (body.findings or [])],
+            idempotency=pin,
         )
         if body.comment:
             url = revisions.post_review_comment(
@@ -263,9 +315,23 @@ def create_task_review(
             )
             if url:
                 review.comment_url = url
+                # Persist the resolved comment URL so an idempotent replay
+                # returns the identical recorded review.
+                revisions.save_review(review)
     except RevisionError as exc:
+        if owned is not None:
+            v1.idempotency.abandon(key.id, pin_key or "", owned)
         raise _rev_error(exc) from exc
-    return {"review": review.public()}
+    except Exception:
+        if owned is not None:
+            # Failed creates don't pin the key — a retry may proceed.
+            v1.idempotency.abandon(key.id, pin_key or "", owned)
+        raise
+    result = {"review": review.public()}
+    if owned is not None:
+        v1.idempotency.complete(key.id, pin_key or "", owned, agent_id=agent_id, body=result)
+        v1.idempotency.settle(key.id, pin_key or "", owned)
+    return result
 
 
 @router.post("/tasks/{task_id}/merge")

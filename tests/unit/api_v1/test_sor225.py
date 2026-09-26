@@ -226,6 +226,48 @@ class TestDeliverReviewMerge:
         listed = client.get(f"/v1/tasks/{task['id']}/reviews", headers=auth)
         assert [r["id"] for r in listed.json()["reviews"]] == [row["id"]]
 
+    def test_review_idempotency_key_replays(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        body = _make_task(client, auth, origin)
+        task, agent = body["task"], body["agent"]
+        wait_idle(credentialed, agent["id"])
+        commit_in_agent(credentialed, agent["id"], "b.txt", "two\n")
+        _run_again(client, auth, agent["id"])
+
+        payload = {"verdict": "approve", "reviewer": {"identity": "key:reviewer"}}
+        hdr = {**auth, "Idempotency-Key": "rvw-replay-1"}
+        first = client.post(f"/v1/tasks/{task['id']}/reviews", json=payload, headers=hdr)
+        assert first.status_code == 201, first.text
+        first_id = first.json()["review"]["id"]
+
+        # Same key + same body replays the recorded review — no duplicate row.
+        replay = client.post(f"/v1/tasks/{task['id']}/reviews", json=payload, headers=hdr)
+        assert replay.status_code == 201, replay.text
+        assert replay.json()["review"]["id"] == first_id
+        listed = client.get(f"/v1/tasks/{task['id']}/reviews", headers=auth).json()
+        assert [r["id"] for r in listed["reviews"]] == [first_id]
+
+        # Same key + different body is a 409 idempotency_conflict.
+        conflict = client.post(
+            f"/v1/tasks/{task['id']}/reviews",
+            json={**payload, "verdict": "comment"},
+            headers=hdr,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "idempotency_conflict"
+
+        # A different key writes a second review as usual.
+        second = client.post(
+            f"/v1/tasks/{task['id']}/reviews",
+            json=payload,
+            headers={**auth, "Idempotency-Key": "rvw-replay-2"},
+        )
+        assert second.status_code == 201, second.text
+        assert second.json()["review"]["id"] != first_id
+        listed = client.get(f"/v1/tasks/{task['id']}/reviews", headers=auth).json()
+        assert len(listed["reviews"]) == 2
+
     def test_new_revision_stales_prior_review(
         self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
     ) -> None:

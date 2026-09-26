@@ -1312,10 +1312,16 @@ paths:
         is computed at write time — a reviewer equal to the revision's own
         agent or run never satisfies the merge gate. ``comment`` posts a
         machine-readable comment on the delivered pull request.
+        ``Idempotency-Key`` replays durably like task/run create.
       parameters:
         - name: taskId
           in: path
           required: true
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: false
           schema:
             type: string
       requestBody:

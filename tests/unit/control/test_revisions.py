@@ -486,6 +486,24 @@ class TestReviewAndMerge:
         assert review.stale is False
         assert review.findings[0]["message"] == "leaks a token"
 
+    def test_review_idempotency_pin_roundtrips(
+        self, revisions, revision_store, monkeypatch, artifacts
+    ) -> None:
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        pin = {"key_id": "key-1", "key": "review:a1:idem-1", "fingerprint": "fp"}
+        review = revisions.add_review(
+            rev, reviewer_identity="key:k", verdict="approve", idempotency=pin
+        )
+        assert review.idempotency == pin
+        # The pin survives the durable serialization round-trip, so a replay
+        # landing after a control-plane restart still resolves the review.
+        reloaded = revision_store.get_review(review.review_id)
+        assert reloaded is not None and reloaded.idempotency == pin
+        found = revisions.find_review_by_idempotency("a1", "key-1", "review:a1:idem-1")
+        assert found is not None and found.review_id == review.review_id
+        assert revisions.find_review_by_idempotency("a1", "key-1", "review:a1:other") is None
+        assert revisions.find_review_by_idempotency("a1", "key-2", "review:a1:idem-1") is None
+
     def test_self_review_is_not_independent(
         self, revisions, revision_store, monkeypatch, artifacts
     ) -> None:
