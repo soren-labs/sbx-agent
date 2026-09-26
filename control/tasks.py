@@ -383,9 +383,12 @@ class GitHubApiResolver:
             return "unknown"
         client = self._http()
         try:
+            # git smart-HTTP accepts only Basic credentialing on
+            # github.com — ``Bearer`` is answered 401 even for a
+            # push-capable token (verified against live GitHub).
             resp = client.get(
                 f"{repo.canonical}.git/info/refs?service=git-receive-pack",
-                headers={"Authorization": f"Bearer {token}"},
+                auth=("x-access-token", token),
                 follow_redirects=True,
             )
         except Exception:

@@ -292,9 +292,11 @@ class _FakeHttpClient:
     def __init__(self, routes: dict[str, tuple[int, object]]) -> None:
         self._routes = routes
         self.calls: list[str] = []
+        self.kwargs: list[dict] = []
 
-    def get(self, path: str, headers: dict | None = None, **_kwargs: object) -> _FakeHttpResponse:
+    def get(self, path: str, headers: dict | None = None, **kwargs: object) -> _FakeHttpResponse:
         self.calls.append(path)
+        self.kwargs.append(kwargs)
         for prefix, (status, body) in self._routes.items():
             if path.startswith(prefix):
                 return _FakeHttpResponse(status, body)
@@ -335,7 +337,10 @@ def test_github_api_access_installation_token_push_yes() -> None:
     access = resolver.access(_GITHUB_REPO)
     assert access["read"] == "yes"
     assert access["push"] == "yes"
-    assert _GITHUB_RECEIVE_PACK in client.calls
+    probe_idx = client.calls.index(_GITHUB_RECEIVE_PACK)
+    # github.com git smart-HTTP only accepts Basic credentialing — a
+    # Bearer header is answered 401 even for a push-capable token.
+    assert client.kwargs[probe_idx].get("auth") == ("x-access-token", "ghs_installtoken")
 
 
 def test_github_api_access_installation_token_push_no() -> None:
