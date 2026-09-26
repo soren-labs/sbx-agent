@@ -40,7 +40,7 @@ def _app_ops(app) -> set[tuple[str, str]]:
 
 def test_contract_routes_all_registered(v1_env) -> None:
     contract_ops = _contract_ops()
-    assert len(contract_ops) == 70  # 60 paths, some with two methods
+    assert len(contract_ops) == 72  # 62 paths, some with two methods
     app_ops = _app_ops(v1_env.app)
     missing = contract_ops - app_ops
     assert not missing, f"contract routes not implemented: {sorted(missing)}"
@@ -59,6 +59,8 @@ def test_app_routes_all_in_contract(v1_env) -> None:
 UNAUTHENTICATED_OPS = {
     ("post", "/v1/console/exchange"),
     ("get", "/v1/github/app/manifest/callback"),
+    # SOR-220: the one-time broker `code` is the credential.
+    ("get", "/v1/github/install/callback"),
     ("get", "/v1/auth/pair/{}"),
     ("post", "/v1/auth/pair/complete"),
     # SOR-226: the public spec names shapes, not secrets.

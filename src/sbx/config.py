@@ -90,6 +90,11 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
         ("SBX_GITHUB_APP_SECRET_NAME",),
     ),
     "github_app_dict": (("github_app", "dict"), ("SBX_GITHUB_APP_DICT",)),
+    # SOR-220 default Connect GitHub: the hosted Sorenforge integration
+    # broker URL. Empty = the public default; "off"/"disabled" turns the
+    # brokered lane off (manifest/env-App/PAT paths still work). The App
+    # private key never lives here — only the broker reference.
+    "github_broker_url": (("github", "broker_url"), ("SBX_GITHUB_BROKER_URL",)),
     "image_codex": (("images", "codex"), ("SBX_IMAGE_CODEX",)),
     "image_devin": (("images", "devin"), ("SBX_IMAGE_DEVIN",)),
     "image_antigravity": (("images", "antigravity"), ("SBX_IMAGE_ANTIGRAVITY",)),
@@ -195,6 +200,9 @@ class BootstrapConfig:
     github_app_slug: str = ""
     github_app_secret_name: str = ""
     github_app_dict: str = GITHUB_APP_DICT_NAME
+    # SOR-220 broker lane override (see _FIELD_MAP note). ``""`` = hosted
+    # default; only a non-empty value is replayed into the deploy env.
+    github_broker_url: str = ""
     # Zero-provider is the fresh-clone default (SOR-210): `./sbx deploy`
     # brings up the core platform (control plane + Console + durable state)
     # with no provider credential or image build; providers opt in via
@@ -327,6 +335,10 @@ class BootstrapConfig:
             out["SBX_GITHUB_APP_SLUG"] = self.github_app_slug
         if self.github_app_secret_name:
             out["SBX_GITHUB_APP_SECRET_NAME"] = self.github_app_secret_name
+        # SOR-220: replay only an explicit override — an absent value lets
+        # the remote default broker URL apply, and "off" disables the lane.
+        if self.github_broker_url:
+            out["SBX_GITHUB_BROKER_URL"] = self.github_broker_url
         return out
 
 

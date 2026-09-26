@@ -31,7 +31,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "web"
@@ -205,14 +205,49 @@ def build_app(demo: dict[str, str], base: str):
     os.environ["SBX_GITHUB_APP_API_URL"] = f"{base}/__fake_gh"
     pem = _fake_rsa_pem()
 
+    # Default-connect e2e seam: run the REAL broker in-process against the
+    # same fake GitHub edge, mounted at /__broker, and point the control
+    # plane's broker client at it. The broker holds the throwaway App PEM;
+    # the deployment only ever sees metadata + short-lived tokens.
+    from broker.app import create_app as create_broker_app
+    from broker.service import BrokerConfig, GitHubBrokerService, InMemoryBrokerStore
+    from control.github_app import GitHubAppClient, GitHubAppConfig
+
+    broker_github = GitHubAppClient(
+        GitHubAppConfig(app_id="77001", slug="sbx-e2e", private_key=pem),
+        api_url=f"{base}/__fake_gh",
+    )
+    broker_service = GitHubBrokerService(
+        BrokerConfig(app_id="77001", slug="sbx-e2e", private_key=pem),
+        InMemoryBrokerStore(),
+        broker_github,
+        api_url=f"{base}/__fake_gh",
+    )
+    os.environ["SBX_GITHUB_BROKER_URL"] = f"{base}/__broker"
+
     # ``create_app`` already mounts ``web/`` at "/" (SOR-211 same-origin).
     app = create_app()
+    app.mount("/__broker", create_broker_app(service=broker_service))
     _verify_seeded_accounts(app)
 
     # Dev-only fixture info for tests and humans (never mounted in production).
     @app.get("/__dev/info", include_in_schema=False)
     def dev_info() -> JSONResponse:
         return JSONResponse({"demo_workspace": demo, "providers": list(PROVIDERS)})
+
+    @app.post("/__dev/github/reset", include_in_schema=False)
+    def dev_github_reset() -> JSONResponse:
+        """Clear GitHub integration state between e2e scenarios — the two
+        connect flows share one control-plane process, so each test starts
+        from "not configured" again."""
+        service = getattr(app.state, "github_app", None)
+        if service is not None:
+            store = service._store
+            for record in store.list():
+                store.delete(record.installation_id)
+                store.delete_broker_binding(record.installation_id)
+            store.delete_app_config()
+        return JSONResponse({"ok": True})
 
     @app.post("/__fake_gh/settings/apps/new", include_in_schema=False)
     async def fake_apps_new(request: Request, state: str = "") -> Response:
@@ -231,6 +266,20 @@ def build_app(demo: dict[str, str], base: str):
             return JSONResponse({"error": "bad manifest"}, status_code=400)
         sep = "&" if "?" in redirect else "?"
         return RedirectResponse(f"{redirect}{sep}code=e2e-conv-code&state={state}", status_code=303)
+
+    @app.get("/__fake_gh/apps/{slug}/installations/new", include_in_schema=False)
+    def fake_install_page(slug: str, state: str = "") -> HTMLResponse:
+        """Simulate GitHub's App INSTALL page: the first page the default
+        Connect flow lands on (acceptance: never settings/apps/new). The
+        one-click "Install" link plays GitHub's post-install redirect to
+        the App's setup URL — the broker's install callback."""
+        return HTMLResponse(
+            "<html><body>"
+            f"<h1>Install {slug} on an account?</h1>"
+            f'<a data-testid="gh-install" href="{base}/__broker/v1/github/install/callback'
+            f'?installation_id=88&state={state}">Install</a>'
+            "</body></html>"
+        )
 
     @app.post("/__fake_gh/app-manifests/{code}/conversions", include_in_schema=False)
     def fake_manifest_conversion(code: str) -> JSONResponse:
@@ -277,7 +326,11 @@ def build_app(demo: dict[str, str], base: str):
     # The "/" console mount is a terminal catch-all, so dev/fake routes
     # appended above would be shadowed — hoist them ahead of the mount.
     routes = app.router.routes
-    ours = [r for r in routes if getattr(r, "path", "").startswith(("/__dev/", "/__fake_gh/"))]
+    ours = [
+        r
+        for r in routes
+        if getattr(r, "path", "").startswith(("/__dev/", "/__fake_gh/", "/__broker"))
+    ]
     for route in ours:
         routes.remove(route)
     for route in reversed(ours):

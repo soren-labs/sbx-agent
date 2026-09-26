@@ -648,6 +648,76 @@ def cmd_open(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ github
+
+
+def cmd_github(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    """``sbx github connect`` — SOR-220 default Connect GitHub for UI+CLI.
+
+    Posts ``/v1/github/install`` on the control plane and opens (or prints)
+    the returned URL. Broker mode (the default) resolves to the official
+    ``github.com/apps/<public SBX App>/installations/new?state=...`` page —
+    one click installs the pre-registered public App and the broker bounces
+    the browser back to this deployment, which binds the installation. No
+    App registration page, no PAT/PEM/env var, no redeploy.
+    """
+    from sbx.deploy import read_deploy_state
+    from sbx.httpapi import ApiError, V1Client
+    from sbx.keys import resolve_api_key
+
+    cfg = _resolve(args, env)
+    base_url = args.base_url or cfg.config.api_base_url
+    if not base_url:
+        base_url = str(read_deploy_state(env).get("app_url") or "")
+    if not base_url:
+        raise BootstrapError(
+            "no control-plane URL — nothing deployed (or configured) yet",
+            hint="run `sbx deploy` first, or pass --base-url / set SBX_BASE_URL",
+            code="no_deployment",
+        )
+    token = resolve_api_key(env)
+    if token is None:
+        raise BootstrapError(
+            "no sbx_ API key found",
+            hint="run `sbx deploy` (mints the bootstrap key) or export SBX_API_KEY",
+            code="api_key_missing",
+        )
+    try:
+        with V1Client(base_url, token, transport=args.transport, timeout=15.0) as client:
+            res = client.post("/v1/github/install")
+    except ApiError as exc:
+        raise BootstrapError(
+            f"cannot start Connect GitHub: {exc.message}",
+            hint="check `sbx doctor` — the deployment must serve /v1/github/install",
+            code="connect_failed",
+        ) from exc
+    url = str(res.get("authorize_url") or "")
+    if not url.startswith(("https://", "http://")):
+        raise BootstrapError(
+            "the control plane returned an unusable install URL",
+            code="connect_failed",
+        )
+    if args.json:
+        _emit_json(
+            {
+                "ok": True,
+                "mode": res.get("mode"),
+                "authorize_url": url,
+                "expires_at": res.get("expires_at"),
+            }
+        )
+        return 0
+    if args.print:
+        print(url)
+        return 0
+    if webbrowser.open(url):
+        print("opened the GitHub App installation page — pick the account/repos and click Install")
+    else:
+        print("no browser found — open this URL yourself:")
+        print(f"  {url}")
+    return 0
+
+
 # ----------------------------------------------------------------- uninstall
 
 
@@ -985,6 +1055,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the one-time Console URL instead of opening a browser",
     )
     p.set_defaults(func=cmd_open)
+
+    p = sub.add_parser(
+        "github",
+        parents=[sub_common],
+        help="GitHub integration: connect (SOR-220 default one-click install)",
+    )
+    github_sub = p.add_subparsers(dest="github_cmd", required=True)
+
+    g = github_sub.add_parser(
+        "connect",
+        parents=[sub_common],
+        help="open the official GitHub App installation page (one click, default)",
+    )
+    g.add_argument(
+        "--base-url",
+        help="control-plane URL (default: config api_base_url, else the deployed app URL)",
+    )
+    g.add_argument(
+        "--print",
+        dest="print",
+        action="store_true",
+        help="print the GitHub install URL instead of opening a browser",
+    )
+    g.set_defaults(func=cmd_github)
 
     p = sub.add_parser(
         "uninstall", parents=[sub_common], help="stop app and terminate sbx sandboxes"

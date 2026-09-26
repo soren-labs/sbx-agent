@@ -349,6 +349,9 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_GITHUB_APP_SECRET_NAME",
     "SBX_GITHUB_APP_DICT",
     "SBX_GITHUB_APP_API_URL",
+    # SOR-220: broker base URL for the default Connect path — a deploy
+    # tunable, never credential material.
+    "SBX_GITHUB_BROKER_URL",
     "SBX_LINEAR_MCP_EPHEMERAL",
     # SOR-147: credential write-back kill-switch (tunable, not a secret).
     "SBX_CRED_WRITEBACK",

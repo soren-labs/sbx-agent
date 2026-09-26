@@ -3029,6 +3029,51 @@ def _github_app_error(exc: GitHubAppError) -> V1ApiError:
     return V1ApiError(exc.status_code, exc.code, exc.message)
 
 
+# ---------------------------------------------------------------------------
+# SOR-220 default connect — brokered public GitHub App installation
+# ---------------------------------------------------------------------------
+
+
+@router.post("/github/install", status_code=201)
+def github_install_begin(
+    request: Request,
+    key: ApiKey = Depends(agents_key),
+    app: Any = Depends(get_github_app),
+) -> dict[str, Any]:
+    """Default Connect GitHub, step 1 — for UI and CLI alike.
+
+    Returns ``{authorize_url, mode, ...}``. Broker mode (the default when no
+    deployment-local App exists) resolves to the official
+    ``github.com/apps/<public-sbx-app>/installations/new`` page via the
+    hosted Sorenforge broker — the signed state binds the flow to this
+    deployment's own ``/v1/github/install/callback``. ``app`` mode (local
+    App configured) keeps the SOR-177 authorize flow. The first GitHub page
+    the user sees is always the App *installation* page — never
+    ``settings/apps/new``.
+    """
+    try:
+        redirect = str(request.url_for("github_install_callback"))
+        return app.begin_install(redirect_uri=redirect)
+    except GitHubAppError as exc:
+        raise _github_app_error(exc) from exc
+
+
+@router.get("/github/install/callback", name="github_install_callback")
+def github_install_callback(
+    code: str = "",
+    app: Any = Depends(get_github_app),
+) -> Response:
+    """Broker-mode step 2: the browser redirect target the broker 302s to
+    after the GitHub install. Unauthenticated by design — the one-time
+    ``code`` is the credential (single-use, short TTL, fail closed). Exits
+    303 to the Console GitHub view with ``broker=connected|broker_error``."""
+    try:
+        app.complete_broker(code)
+    except GitHubAppError as exc:
+        return RedirectResponse(f"/#/admin/github?broker_error={exc.code}", status_code=303)
+    return RedirectResponse("/#/admin/github?broker=connected", status_code=303)
+
+
 @router.post("/github/app/manifest", status_code=201)
 def github_app_begin_manifest(
     request: Request,
