@@ -2095,10 +2095,17 @@ kbd {
     width: 260px;
     box-shadow: var(--shadow-lg);
     transform: translateX(-105%);
-    transition: transform 0.18s ease-out;
+    visibility: hidden;
+    transition:
+      transform 0.18s ease-out,
+      visibility 0s 0.18s;
   }
   .shell.nav-open .sidebar {
     transform: none;
+    visibility: visible;
+    transition:
+      transform 0.18s ease-out,
+      visibility 0s 0s;
   }
   .mobile-bar {
     display: flex;
@@ -2554,5 +2561,92 @@ pre.diff {
   }
   .rev-head {
     row-gap: 4px;
+  }
+
+  /* Segmented controls scroll sideways instead of wrapping mid-word. */
+  .segmented {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Tables stack into labelled cards: each row is a card, each cell a
+     label/value pair stamped by labelize() in web/lib/ui.js. */
+  .table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+  .table-wrap .table,
+  .table-wrap .table tbody,
+  .table-wrap .table tbody tr {
+    display: block;
+  }
+  .table-wrap .table thead {
+    display: none;
+  }
+  .table-wrap .table tbody {
+    display: grid;
+    gap: 10px;
+  }
+  .table-wrap .table tbody tr {
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .table-wrap .table tbody tr:hover td {
+    background: transparent;
+  }
+  .table-wrap .table td {
+    display: grid;
+    grid-template-columns: minmax(96px, 34%) minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    padding: 7px 14px;
+    border-bottom: 0;
+    text-align: left;
+  }
+  .table-wrap .table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .table-wrap .table td .cell-title strong {
+    max-width: none;
+  }
+  .table-wrap .table td .nowrap,
+  .table-wrap .table td.nowrap {
+    white-space: normal;
+  }
+  /* First cell (the row's identity) is the card header — no label. */
+  .table-wrap .table td:first-child {
+    display: block;
+    padding-top: 11px;
+  }
+  .table-wrap .table td:first-child::before {
+    content: none;
+  }
+  /* Action cells (empty header) form a trailing action row. */
+  .table-wrap .table td[data-label=""] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+    padding-bottom: 11px;
+  }
+  .table-wrap .table td[data-label=""]::before {
+    content: none;
+  }
+  /* Cells labelize skipped (colspan fillers, odd row shapes). */
+  .table-wrap .table td:not([data-label]) {
+    display: block;
+  }
+  .table-wrap .table td:not([data-label])::before {
+    content: none;
   }
 }

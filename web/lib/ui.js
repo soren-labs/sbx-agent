@@ -338,6 +338,23 @@ export function tabs(items, active, { onSelect, testid = "tabs" } = {}) {
   );
 }
 
+/**
+ * Stamp every body cell with its column header as `data-label` so the
+ * narrow-viewport card layout (styles.css) can keep values labelled once
+ * the table stacks. Rows whose cell count differs from the header count
+ * (e.g. colspan fillers) are left untouched.
+ */
+export function labelize(table) {
+  const heads = [...table.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+  if (!heads.length) return table;
+  table.querySelectorAll("tbody tr").forEach((tr) => {
+    const cells = [...tr.children].filter((el) => el.tagName === "TD");
+    if (cells.length !== heads.length || cells.some((td) => td.colSpan > 1)) return;
+    cells.forEach((td, i) => td.setAttribute("data-label", heads[i]));
+  });
+  return table;
+}
+
 export function segmented(options, value, onChange, { testid, size } = {}) {
   const root = h("div", { class: ["segmented", size && `segmented-${size}`], role: "radiogroup", "data-testid": testid });
   const render = (current) =>

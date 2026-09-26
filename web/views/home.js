@@ -5,12 +5,17 @@ import { fmtDateTime, fmtRelative } from "../lib/format.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
 import { href, navigate } from "../lib/router.js";
-import { emptyState, errorBanner, linkButton, pageHeader, poller, skeleton, statusBadge } from "../lib/ui.js";
+import { emptyState, errorBanner, labelize, linkButton, pageHeader, poller, skeleton, statusBadge } from "../lib/ui.js";
 
 /** Task row shared by Home and Tasks: title + status + ai + repo + updated. */
 export function taskRow(task, { compact } = {}) {
   const ex = task.resolved?.execution || task.request?.execution || {};
   const repo = task.resolved?.source?.repo || task.request?.source?.repo || "";
+  // The subtitle is context for a named task; for unnamed tasks the title is
+  // already the prompt's first line, so repeating it adds noise.
+  const name = task.request?.name?.trim();
+  const promptLine = String(task.prompt?.text || "").split("\n")[0].slice(0, 90);
+  const sub = name && promptLine && promptLine !== name ? promptLine : null;
   return h(
     "tr",
     {
@@ -29,7 +34,7 @@ export function taskRow(task, { compact } = {}) {
         "div",
         { class: "cell-title" },
         h("a", { href: href(`/tasks/${encodeURIComponent(task.id)}`), class: "agent-link" }, h("strong", null, taskTitle(task))),
-        h("span", { class: "cell-sub" }, String(task.prompt?.text || "").split("\n")[0].slice(0, 90)),
+        sub ? h("span", { class: "cell-sub" }, sub) : null,
       ),
     ),
     h("td", null, statusBadge("task", task.status)),
@@ -102,11 +107,13 @@ export function renderHome() {
       h(
         "div",
         { class: "table-wrap" },
-        h(
-          "table",
-          { class: "table", "data-testid": "home-tasks" },
-          h("thead", null, h("tr", null, [t("Task"), t("Status"), t("AI"), t("Repository"), t("Updated")].map((c) => h("th", null, c)))),
-          h("tbody", null, recent.map((task) => taskRow(task))),
+        labelize(
+          h(
+            "table",
+            { class: "table", "data-testid": "home-tasks" },
+            h("thead", null, h("tr", null, [t("Task"), t("Status"), t("AI"), t("Repository"), t("Updated")].map((c) => h("th", null, c)))),
+            h("tbody", null, recent.map((task) => taskRow(task))),
+          ),
         ),
       ),
     );
