@@ -1110,9 +1110,18 @@ class RevisionService:
                 commit_date=revision.created_at or None,
             )
             pr_data: dict[str, Any] | None = dict((record.pull_request if record else None) or {})
+            if pr_data.get("state") in ("merged", "closed"):
+                # A terminal pull request is never carried onto a new
+                # delivery — merge() itself leaves record.pull_request
+                # merged, so the next revision must re-anchor instead.
+                pr_data = None
             if policy.get("auto_create_pr"):
                 existing = record.pull_request if record else None
-                if existing and existing.get("state") not in ("merged", "closed"):
+                if existing and existing.get("state") in ("merged", "closed"):
+                    # Recorded-terminal PRs are never reused: drop it so
+                    # the find-or-create leg below re-anchors.
+                    existing = None
+                if existing:
                     # The locally-recorded state may lag upstream — refresh
                     # it when a remote resolves so a merged/closed PR is
                     # never carried forward as if still open.

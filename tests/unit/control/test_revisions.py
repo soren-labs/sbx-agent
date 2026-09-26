@@ -819,7 +819,7 @@ class TestDeliverPullRequestBranch:
     ``head_sha_mismatch`` on a mis-linked PR #28).
     """
 
-    def _ws_with_pr(self, workspaces: WorkspaceService) -> None:
+    def _ws_with_pr(self, workspaces: WorkspaceService, pr_state: str = "open") -> None:
         workspaces.save(
             WorkspaceRecord(
                 agent_id="a1",
@@ -831,7 +831,7 @@ class TestDeliverPullRequestBranch:
                 pull_request={
                     "number": 28,
                     "url": "https://github.com/acme/widgets/pull/28",
-                    "state": "open",
+                    "state": pr_state,
                     "ref": "refs/pull/28/head",
                     "head_sha": "0" * 40,
                     "head_branch": "sbx/a1",
@@ -898,6 +898,55 @@ class TestDeliverPullRequestBranch:
         record = workspaces.get("a1")
         assert record.pull_request["number"] == 7
         assert record.branch == "sbx/alt"
+
+    @pytest.mark.parametrize("terminal_state", ["merged", "closed"])
+    def test_deliver_new_revision_reanchors_terminal_workspace_pr(
+        self, terminal_state, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        """SOR-221 recovery: ``merge`` leaves ``record.pull_request`` in a
+        terminal state, so the NEXT revision's deliver must never reuse it —
+        the find-or-create leg re-anchors a current PR and head."""
+        self._ws_with_pr(workspaces, pr_state=terminal_state)
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        rev.n = 2
+        out = revisions.deliver(rev, overrides={"pull_request": {"title": "t"}})
+        pr = out.delivery["pull_request"]
+        assert pr["number"] == 7  # fresh PR — terminal #28 was not reused
+        assert pr["state"] == "open"
+        assert pr["head_sha"] == SHA_B  # the current push, not the stale recorded head
+        assert pr["head_branch"] == "sbx/a1"
+        # Find-or-create ran for the pushed branch; #28 was never patched.
+        assert remote.find_calls == [("acme/widgets", "sbx/a1")]
+        assert remote.create_calls == [
+            {"head": "sbx/a1", "base": "main", "title": "t", "body": "", "draft": False}
+        ]
+        assert remote.update_calls == []
+        # The durable delivery and the workspace record track the fresh PR.
+        stored = revision_store.get_revision(out.revision_id)
+        assert stored.delivery["pull_request"]["number"] == 7
+        assert workspaces.get("a1").pull_request["number"] == 7
+
+    def test_deliver_new_revision_reanchors_pr_terminal_upstream(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        """The recorded state can lag upstream: a recorded-open PR that is
+        closed live is likewise dropped and re-anchored, not reused."""
+        self._ws_with_pr(workspaces, pr_state="open")
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1", state="closed")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        rev.n = 2
+        out = revisions.deliver(rev, overrides={"pull_request": {"title": "t"}})
+        pr = out.delivery["pull_request"]
+        assert pr["number"] == 7  # live-terminal #28 was not reused
+        assert pr["state"] == "open"
+        assert pr["head_sha"] == SHA_B
+        assert remote.create_calls == [
+            {"head": "sbx/a1", "base": "main", "title": "t", "body": "", "draft": False}
+        ]
+        assert remote.update_calls == []
 
     def test_deliver_replay_honors_new_pull_request_override(
         self, revisions, revision_store, monkeypatch, artifacts, workspaces
