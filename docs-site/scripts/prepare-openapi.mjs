@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { slug } from 'github-slugger';
 import yaml from 'js-yaml';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -140,9 +141,47 @@ mkdirSync(dirname(target), { recursive: true });
 writeFileSync(target, yaml.dump(doc, { lineWidth: 100, noRefs: true }));
 console.log(`prepare-openapi: wrote ${target}`);
 
+// starlight-openapi generates reference pages only for the default locale,
+// but localized sidebar/content links are prefixed (e.g. /zh-cn/reference/api/…).
+// Emit the full redirect map astro.config.mjs installs so those paths resolve
+// to the English pages. Operation slugs mirror the plugin: github-slugger on
+// the operationId, with `/{method}` appended when an id is shared.
+const API_BASE = '/reference/api';
+const zhApiRedirects = { [`/zh-cn${API_BASE}`]: API_BASE };
+{
+	const opIds = [];
+	for (const pathItem of Object.values(doc.paths ?? {})) {
+		for (const [method, op] of Object.entries(pathItem ?? {})) {
+			if (op?.operationId && ['get', 'put', 'post', 'delete', 'patch', 'head', 'options', 'trace'].includes(method)) {
+				opIds.push(slug(op.operationId));
+			}
+		}
+	}
+	const seen = new Map();
+	for (const id of opIds) seen.set(id, (seen.get(id) ?? 0) + 1);
+	for (const pathItem of Object.values(doc.paths ?? {})) {
+		for (const [method, op] of Object.entries(pathItem ?? {})) {
+			if (!op?.operationId) continue;
+			if (!['get', 'put', 'post', 'delete', 'patch', 'head', 'options', 'trace'].includes(method)) continue;
+			const id = slug(op.operationId);
+			const rel = `${API_BASE}/operations/${id}${seen.get(id) > 1 ? `/${slug(method)}` : ''}`;
+			zhApiRedirects[`/zh-cn${rel}`] = rel;
+		}
+	}
+}
+const redirectsTarget = resolve(siteRoot, '.generated/api-redirects.json');
+writeFileSync(redirectsTarget, JSON.stringify(zhApiRedirects, null, 2) + '\n');
+console.log(`prepare-openapi: wrote ${redirectsTarget} (${Object.keys(zhApiRedirects).length} zh-cn redirects)`);
+
 // Stable machine-readable entry point at /openapi.json on the built site.
 // Same content the control plane serves at /v1/openapi.json (parity is
 // enforced by tests/unit/api_v1/test_openapi_parity.py).
-const jsonTarget = resolve(siteRoot, 'public/openapi.json');
-writeFileSync(jsonTarget, JSON.stringify(doc, null, 2) + '\n');
-console.log(`prepare-openapi: wrote ${jsonTarget}`);
+const jsonBody = JSON.stringify(doc, null, 2) + '\n';
+// Starlight prefixes sidebar links with the locale, so the zh-cn nav points at
+// /zh-cn/openapi.json; serve an identical copy there (assets do not fall back).
+for (const rel of ['public/openapi.json', 'public/zh-cn/openapi.json']) {
+	const jsonTarget = resolve(siteRoot, rel);
+	mkdirSync(dirname(jsonTarget), { recursive: true });
+	writeFileSync(jsonTarget, jsonBody);
+	console.log(`prepare-openapi: wrote ${jsonTarget}`);
+}

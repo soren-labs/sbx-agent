@@ -1,0 +1,50 @@
+# sbx-browser
+
+> Self-hosted orchestration for cloud coding agents: run official provider CLIs (Codex, Devin, Antigravity, Grok, OpenCode) in isolated Modal Sandboxes behind one REST API.
+
+Self-hosted under your own Modal workspace and your own provider subscriptions; not a hosted service.
+
+## Getting started
+
+- [Introduction](/getting-started/introduction/): what sbx-browser is and when to use it
+- [Quick start](/getting-started/quick-start/): clone, init, deploy, first agent in ~10 minutes
+
+## Guides
+
+- [Console](/guides/console/): web console for tasks, agents, and review
+- [Agents and runs](/guides/agents-and-runs/): lifecycle, follow-up turns, cancel/close
+- [Streaming](/guides/streaming/): SSE events, Last-Event-ID resume
+- [Repositories](/guides/repositories/): workspace contract, git delivery, PRs
+- [Workflows](/guides/workflows/): gated pipelines and recovery
+- [Accounts](/guides/accounts/): provider accounts, slots, failover
+
+## Concepts
+
+- [Concepts](/concepts/): agent, run, provider, account, workflow, artifact
+
+## Reference
+
+- [REST API](/reference/api/): interactive per-operation reference for /v1
+- [Errors](/reference/errors/): HTTP and run error codes
+- [Events](/reference/events/): canonical event types
+- [Python client](/reference/python-client/): sbx.sdk usage
+- [CLI](/reference/cli/): sbx command reference
+- [Limits](/reference/limits/): quotas and bounds
+
+## Integrations
+
+- [Providers](/integrations/providers/): support matrix and evidence
+- [GitHub](/integrations/github/): GitHub App or PAT for private repos and PRs
+
+## Self-hosting
+
+- [Deploy](/self-hosting/deploy/): sbx deploy, verify, scale
+- [Configuration](/self-hosting/configuration/): environment and knobs
+- [Edge](/self-hosting/edge/): Cloudflare/edge fronting
+- [Security](/self-hosting/security/): keys, scopes, secrets handling
+- [Troubleshooting](/troubleshooting/): common problems and fixes
+
+## Machine-readable
+
+- [openapi.json](/openapi.json): the public /v1 OpenAPI 3.1 spec (also served live at /v1/openapi.json on a running control plane)
+- [For agents and LLMs](/agents/): entry points for machine consumers

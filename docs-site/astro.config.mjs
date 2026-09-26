@@ -1,10 +1,24 @@
 // @ts-check
+import { readFileSync } from 'node:fs';
 import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
 import starlightOpenAPI, { openAPISidebarGroups } from 'starlight-openapi';
 
 // Set DOCS_SITE_URL at build time to emit canonical URLs + sitemap.
 const site = process.env.DOCS_SITE_URL || undefined;
+
+// starlight-openapi only generates reference pages for the default locale,
+// but every localized link (sidebar, language picker, /zh-cn content pages)
+// prefixes the current locale — /zh-cn/reference/api/* would 404. Redirect
+// each generated href back to its English page; the map is emitted by
+// scripts/prepare-openapi.mjs (which always runs before build/dev).
+const zhApiRedirects = (() => {
+	try {
+		return JSON.parse(readFileSync('.generated/api-redirects.json', 'utf8'));
+	} catch {
+		return {};
+	}
+})();
 
 export default defineConfig({
 	site,
@@ -20,6 +34,7 @@ export default defineConfig({
 		'/operations/edge': '/self-hosting/edge',
 		'/operations/security': '/self-hosting/security',
 		'/operations/troubleshooting': '/troubleshooting',
+		...zhApiRedirects,
 	},
 	integrations: [
 		starlight({
@@ -79,7 +94,7 @@ export default defineConfig({
 				{
 					label: 'Concepts',
 					translations: { 'zh-CN': '概念' },
-					items: ['concepts'],
+					link: '/concepts/',
 				},
 				{
 					label: 'API & SDK reference',
@@ -116,7 +131,7 @@ export default defineConfig({
 				{
 					label: 'Troubleshooting',
 					translations: { 'zh-CN': '故障排查' },
-					items: ['troubleshooting'],
+					link: '/troubleshooting/',
 				},
 				{
 					label: 'For agents',
