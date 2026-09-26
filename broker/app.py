@@ -2,10 +2,14 @@
 
 Deliberately the minimum API a self-hosted SBX deployment needs:
 
-- ``POST /v1/github/install/sessions`` — start a signed install session
-  (unauthenticated: the response is only the public GitHub install URL plus
-  the signed state; the security lives in the signature, TTL, and the
-  deployment ``redirect_uri`` baked into it).
+- ``POST /v1/github/deployments/register`` + ``.../register/complete`` —
+  challenge-based origin binding: the deployment serves the challenge at
+  its own ``/.well-known/sbx-broker-challenge``, proving control of the
+  exact HTTPS origin, and gets back a deployment-scoped credential.
+- ``POST /v1/github/install/sessions`` — start a signed install session;
+  authenticated by the deployment credential, and the post-install
+  redirect can only ever go to the registered exact origin (no dynamic
+  ``redirect_uri`` accepted from callers).
 - ``GET /v1/github/install/callback`` — the public App's Setup URL: GitHub
   sends the browser here post-install; we verify + bind, then 302 back to
   the originating deployment with a one-time claim ``code``.
@@ -48,7 +52,18 @@ from broker.service import (
 
 class InstallSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    redirect_uri: str = Field(min_length=1)
+    origin: str = Field(min_length=1)
+    credential: str = Field(min_length=1)
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    origin: str = Field(min_length=1)
+
+
+class RegisterCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    registration_id: str = Field(min_length=1)
 
 
 class ClaimRequest(BaseModel):
@@ -106,10 +121,26 @@ def create_app(service: GitHubBrokerService | None = None) -> FastAPI:
     def healthz(request: Request) -> dict[str, Any]:
         return broker(request).health()
 
+    @app.post("/v1/github/deployments/register", status_code=201, response_model=None)
+    def register(request: Request, body: RegisterRequest) -> dict[str, Any] | JSONResponse:
+        try:
+            return broker(request).register_deployment(body.origin)
+        except BrokerError as exc:
+            return _error(exc)
+
+    @app.post("/v1/github/deployments/register/complete", status_code=200, response_model=None)
+    def register_complete(
+        request: Request, body: RegisterCompleteRequest
+    ) -> dict[str, Any] | JSONResponse:
+        try:
+            return broker(request).complete_registration(body.registration_id)
+        except BrokerError as exc:
+            return _error(exc)
+
     @app.post("/v1/github/install/sessions", status_code=201)
     def begin(request: Request, body: InstallSessionRequest) -> dict[str, Any]:
         try:
-            return broker(request).begin_install(body.redirect_uri)
+            return broker(request).begin_install(body.origin, body.credential)
         except BrokerError as exc:
             return _error(exc)
 

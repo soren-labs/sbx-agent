@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -776,6 +776,23 @@ def create_app(
                     pass
 
         threading.Thread(target=_warm_listing_indexes, daemon=True).start()
+
+    # SOR-220: the hosted broker proves a deployment controls its exact
+    # public origin by fetching this well-known challenge during the
+    # registration handshake. Unauthenticated by design — it only ever
+    # returns the currently-pending, already-random challenge token (or
+    # 404 when no handshake is in flight).
+    @app.get("/.well-known/sbx-broker-challenge", include_in_schema=False)
+    def broker_challenge(request: Request) -> Response:
+        from starlette.responses import PlainTextResponse
+
+        from control.api_v1.deps import get_github_app
+
+        service = get_github_app(request)
+        challenge = getattr(service, "pending_broker_challenge", lambda: None)()
+        if not challenge:
+            return PlainTextResponse("no pending challenge", status_code=404)
+        return PlainTextResponse(str(challenge))
 
     # SOR-211: the control plane serves the Console at "/" on the same
     # origin as ``/v1`` — the deployed Modal URL opens the UI directly,

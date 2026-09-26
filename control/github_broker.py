@@ -103,12 +103,41 @@ class GitHubBrokerClient:
             raise GitHubBrokerError(code, message[:200], status_code=resp.status_code)
         return data
 
-    def create_session(self, redirect_uri: str) -> dict[str, Any]:
+    def register_deployment(self, origin: str) -> dict[str, Any]:
+        """``POST /v1/github/deployments/register`` → ``{registration_id,
+        challenge, challenge_url}``. The challenge must then be served at
+        the deployment's well-known URL so the broker can prove this
+        deployment controls the exact origin it wants bound."""
+        data = self._request(
+            "POST", "/v1/github/deployments/register", json_body={"origin": origin}
+        )
+        if not isinstance(data, dict) or not str(data.get("registration_id") or ""):
+            raise GitHubBrokerError("broker_error", "broker returned no registration")
+        return data
+
+    def complete_registration(self, registration_id: str) -> dict[str, Any]:
+        """``POST /v1/github/deployments/register/complete`` — after the
+        challenge is live, the broker verifies and returns the
+        deployment-scoped credential + the pinned ``redirect_uri`` (once)."""
+        data = self._request(
+            "POST",
+            "/v1/github/deployments/register/complete",
+            json_body={"registration_id": registration_id},
+        )
+        if not isinstance(data, dict) or not data.get("credential"):
+            raise GitHubBrokerError("broker_error", "broker registration returned no credential")
+        return data
+
+    def create_session(self, origin: str, credential: str) -> dict[str, Any]:
         """``POST /v1/github/install/sessions`` → signed install session:
         ``{install_url, state, expires_at}`` where ``install_url`` is the
-        official ``github.com/apps/<slug>/installations/new`` page."""
+        official ``github.com/apps/<slug>/installations/new`` page. Session
+        creation is authenticated by the deployment-scoped credential;
+        the broker redirects only to the registered exact origin."""
         data = self._request(
-            "POST", "/v1/github/install/sessions", json_body={"redirect_uri": redirect_uri}
+            "POST",
+            "/v1/github/install/sessions",
+            json_body={"origin": origin, "credential": credential},
         )
         if not isinstance(data, dict) or not str(data.get("install_url") or ""):
             raise GitHubBrokerError("broker_error", "broker returned no install_url")

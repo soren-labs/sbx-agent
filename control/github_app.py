@@ -260,6 +260,18 @@ class GitHubAppStore(Protocol):
     def put_broker_binding(self, installation_id: int, binding: dict[str, Any]) -> None: ...
     def delete_broker_binding(self, installation_id: int) -> None: ...
 
+    # SOR-220 broker lane, deployment-level registration: the broker-issued
+    # ``sbxdep_`` credential that proves this deployment controls its public
+    # origin (challenge-verified). Keyed by the exact registered origin.
+    # ``*_broker_challenge`` holds the single pending well-known challenge
+    # while a registration handshake is in flight.
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None: ...
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None: ...
+    def delete_broker_deployment(self, origin: str) -> None: ...
+    def get_broker_challenge(self) -> str | None: ...
+    def put_broker_challenge(self, challenge: str) -> None: ...
+    def delete_broker_challenge(self) -> None: ...
+
 
 class InMemoryGitHubAppStore:
     def __init__(self) -> None:
@@ -267,6 +279,8 @@ class InMemoryGitHubAppStore:
         self._states: dict[str, float] = {}
         self._app_config: dict[str, Any] | None = None
         self._bindings: dict[int, dict[str, Any]] = {}
+        self._deployments: dict[str, dict[str, Any]] = {}
+        self._challenge = ""
         self._lock = threading.Lock()
 
     def list(self) -> list[InstallationRecord]:
@@ -320,6 +334,31 @@ class InMemoryGitHubAppStore:
     def delete_broker_binding(self, installation_id: int) -> None:
         with self._lock:
             self._bindings.pop(installation_id, None)
+
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None:
+        with self._lock:
+            raw = self._deployments.get(origin)
+        return dict(raw) if isinstance(raw, dict) else None
+
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._deployments[origin] = dict(record)
+
+    def delete_broker_deployment(self, origin: str) -> None:
+        with self._lock:
+            self._deployments.pop(origin, None)
+
+    def get_broker_challenge(self) -> str | None:
+        with self._lock:
+            return self._challenge or None
+
+    def put_broker_challenge(self, challenge: str) -> None:
+        with self._lock:
+            self._challenge = challenge
+
+    def delete_broker_challenge(self) -> None:
+        with self._lock:
+            self._challenge = ""
 
 
 class FileGitHubAppStore:
@@ -457,6 +496,57 @@ class FileGitHubAppStore:
     def delete_broker_binding(self, installation_id: int) -> None:
         self._binding_path(installation_id).unlink(missing_ok=True)
 
+    def _deployment_path(self, origin: str) -> Path:
+        import hashlib
+
+        digest = hashlib.sha256(origin.encode()).hexdigest()[:24]
+        return self._root / f"broker-deployment-{digest}.json"
+
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self._deployment_path(origin).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._deployment_path(origin)
+        tmp = path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        # 0600 — the deployment-scoped broker credential is revocable
+        # bearer material, protected like the manifest registry lane.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(record))
+        tmp.replace(path)
+
+    def delete_broker_deployment(self, origin: str) -> None:
+        self._deployment_path(origin).unlink(missing_ok=True)
+
+    def _challenge_path(self) -> Path:
+        return self._root / "broker-challenge.json"
+
+    def get_broker_challenge(self) -> str | None:
+        try:
+            data = json.loads(self._challenge_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return str(data) if isinstance(data, str) else None
+
+    def put_broker_challenge(self, challenge: str) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._challenge_path()
+        tmp = path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(challenge))
+        tmp.replace(path)
+
+    def delete_broker_challenge(self) -> None:
+        self._challenge_path().unlink(missing_ok=True)
+
 
 class ModalDictGitHubAppStore:
     """Production store backed by ``modal.Dict`` — lazy-imports modal."""
@@ -527,6 +617,32 @@ class ModalDictGitHubAppStore:
     def delete_broker_binding(self, installation_id: int) -> None:
         try:
             self._d().pop(f"binding:{installation_id}")
+        except KeyError:
+            pass
+
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None:
+        raw = self._d().get(f"dep:{origin}")
+        return raw if isinstance(raw, dict) else None
+
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        self._d()[f"dep:{origin}"] = dict(record)
+
+    def delete_broker_deployment(self, origin: str) -> None:
+        try:
+            self._d().pop(f"dep:{origin}")
+        except KeyError:
+            pass
+
+    def get_broker_challenge(self) -> str | None:
+        raw = self._d().get("broker:challenge")
+        return str(raw) if isinstance(raw, str) else None
+
+    def put_broker_challenge(self, challenge: str) -> None:
+        self._d()["broker:challenge"] = challenge
+
+    def delete_broker_challenge(self) -> None:
+        try:
+            self._d().pop("broker:challenge")
         except KeyError:
             pass
 
@@ -645,9 +761,22 @@ class GitHubAppClient:
         )
 
     def list_installations(self) -> list[dict[str, Any]]:
-        """``GET /app/installations`` (JWT) — the app's own installs only."""
-        data = self._app_request("GET", "/app/installations", what="list installations")
-        return data if isinstance(data, list) else []
+        """``GET /app/installations`` (JWT) — the app's own installs only.
+
+        Paginates ``per_page=100&page=N`` until a short page — the default
+        30-item page would hide installs past the first page and break the
+        callback's membership check."""
+        out: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            data = self._app_request(
+                "GET", f"/app/installations?per_page=100&page={page}", what="list installations"
+            )
+            batch = [i for i in data if isinstance(i, dict)] if isinstance(data, list) else []
+            out.extend(batch)
+            if len(batch) < 100:
+                return out
+            page += 1
 
     def create_installation_token(
         self, installation_id: int, *, repositories: list[str] | None = None
@@ -1101,13 +1230,91 @@ class GitHubAppService:
             return out
         if self._broker is None:
             _raise_unconfigured()
-        session = self._broker_call(self._broker.create_session, redirect_uri)
+        origin = _origin_of(redirect_uri) or ""
+        if not _is_public_origin(origin):
+            # Fail closed rather than ask the broker to bind an http (or
+            # otherwise non-public) callback origin — production deployments
+            # are https; loopback http is the scoped local-dev exception.
+            raise GitHubAppError(
+                "github_app_invalid",
+                "broker install requires the deployment's public https origin",
+            )
+        dep = self._broker_deployment(origin)
+        session = self._broker_create_session(origin, dep)
         return {
             "authorize_url": session["install_url"],
             "state": str(session.get("state") or ""),
             "expires_at": str(session.get("expires_at") or ""),
             "mode": "broker",
         }
+
+    def _broker_deployment(self, origin: str) -> dict[str, Any]:
+        """The registered deployment record for ``origin`` — present
+        credential scoped to the *current* broker, else register afresh.
+        The registration handshake proves origin control via the well-known
+        challenge before the broker ever issues a credential."""
+        dep = self._store.get_broker_deployment(origin)
+        if (
+            isinstance(dep, dict)
+            and dep.get("credential")
+            and str(dep.get("broker_url") or "") == self._broker.base_url
+        ):
+            return dep
+        return self._register_broker_deployment(origin)
+
+    def _register_broker_deployment(self, origin: str) -> dict[str, Any]:
+        """Challenge-based origin registration: get a challenge from the
+        broker, serve it at ``/.well-known/sbx-broker-challenge``, let the
+        broker verify over the public origin, then persist the issued
+        deployment credential in the protected lane."""
+        reg = self._broker_call(self._broker.register_deployment, origin)
+        challenge = str((reg or {}).get("challenge") or "")
+        registration_id = str((reg or {}).get("registration_id") or "")
+        if not challenge or not registration_id:
+            raise GitHubAppError(
+                "github_broker_error",
+                "broker registration returned no challenge",
+                status_code=502,
+            )
+        self._store.put_broker_challenge(challenge)
+        try:
+            done = self._broker_call(self._broker.complete_registration, registration_id)
+        finally:
+            self._store.delete_broker_challenge()
+        credential = str((done or {}).get("credential") or "")
+        redirect_uri = str((done or {}).get("redirect_uri") or "")
+        if not credential or _origin_of(redirect_uri) != origin:
+            raise GitHubAppError(
+                "github_broker_error",
+                "broker registration returned no credential",
+                status_code=502,
+            )
+        record = {
+            "origin": origin,
+            "credential": credential,
+            "redirect_uri": redirect_uri,
+            "broker_url": self._broker.base_url,
+            "registered_at": _iso_from_epoch(self._clock()),
+        }
+        self._store.put_broker_deployment(origin, record)
+        return record
+
+    def _broker_create_session(self, origin: str, dep: dict[str, Any]) -> dict[str, Any]:
+        """``create_session`` with one re-registration retry — a rotated or
+        wiped broker-side deployment record (broker redeploy/data loss) is
+        recovered by re-proving origin control, not by failing the user."""
+        try:
+            return self._broker_call(self._broker.create_session, origin, str(dep["credential"]))
+        except GitHubAppError as exc:
+            if not str(exc.code).endswith("broker_auth"):
+                raise
+        fresh = self._register_broker_deployment(origin)
+        return self._broker_call(self._broker.create_session, origin, str(fresh["credential"]))
+
+    def pending_broker_challenge(self) -> str | None:
+        """The well-known challenge a registration handshake is currently
+        serving — ``GET /.well-known/sbx-broker-challenge`` returns it."""
+        return self._store.get_broker_challenge()
 
     def complete_broker(self, code: str) -> InstallationRecord:
         """Broker-mode completion: redeem the one-time claim code the broker
@@ -1270,17 +1477,23 @@ class GitHubAppService:
                 out.append(self._record_installation(installation))
         for record in self._store.list():
             if record.via == "broker":
-                out.append(self._sync_broker_record(record))
+                synced = self._sync_broker_record(record)
+                if synced is not None:
+                    out.append(synced)
             elif record.installation_id not in seen:
                 self._store.delete(record.installation_id)
         self._invalidate_records()
         return out
 
     def _sync_broker_record(self, record: InstallationRecord) -> InstallationRecord | None:
-        """Refresh one broker-bound record; None when it must be dropped."""
+        """Refresh one broker-bound record; None when it must be dropped —
+        the local record AND binding are removed consistently so a broker
+        record with no working broker lane can never linger half-alive."""
         binding = self._store.get_broker_binding(record.installation_id)
         credential = str((binding or {}).get("credential") or "")
         if self._broker is None or not credential:
+            self._store.delete(record.installation_id)
+            self._store.delete_broker_binding(record.installation_id)
             return None
         try:
             data = self._broker.sync_installation(record.installation_id, credential)
@@ -1490,6 +1703,47 @@ def _origin_of(url: str) -> str | None:
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def _is_loopback_host(url: str) -> bool:
+    """Loopback origins are the ONE allowed exception to https-only —
+    explicitly scoped to local dev and in-process test seams."""
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".localhost")
+
+
+def _is_public_origin(origin: str) -> bool:
+    """An origin the broker may bind a deployment to: https, or http only
+    on loopback."""
+    return bool(origin) and (origin.startswith("https://") or _is_loopback_host(origin))
+
+
+# Operator override for the deployment's public origin when the request URL
+# cannot be trusted (TLS-terminated proxies without forwarded headers).
+PUBLIC_ORIGIN_ENV = "SBX_PUBLIC_ORIGIN"
+
+
+def public_request_origin(request: Any, env: Mapping[str, str] | None = None) -> str | None:
+    """The deployment's trusted public origin for callback construction.
+
+    Resolution order — ``SBX_PUBLIC_ORIGIN`` (operator-pinned), then the
+    proxy forwarded headers, then the direct request URL. Whatever wins must
+    be https (loopback http excepted); anything else returns ``None`` so the
+    broker path fails closed instead of registering an http origin.
+    """
+    env = os.environ if env is None else env
+    pinned = _origin_of(env.get(PUBLIC_ORIGIN_ENV) or "")
+    if pinned is not None:
+        return pinned if _is_public_origin(pinned) else None
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.url.netloc).split(",")[0].strip()
+    origin = _origin_of(f"{proto}://{host}")
+    return origin if origin and _is_public_origin(origin) else None
 
 
 def github_web_url(api_url: str) -> str:

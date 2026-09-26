@@ -3051,8 +3051,19 @@ def github_install_begin(
     the user sees is always the App *installation* page — never
     ``settings/apps/new``.
     """
+    from control.github_app import public_request_origin
+
     try:
-        redirect = str(request.url_for("github_install_callback"))
+        # The broker binds the flow to this deployment's *trusted public
+        # origin* — SBX_PUBLIC_ORIGIN or proxy forwarded headers — never a
+        # raw http request URL behind a TLS terminator.
+        origin = public_request_origin(request)
+        callback_path = request.url_for("github_install_callback").path
+        redirect = (
+            f"{origin}{callback_path}"
+            if origin
+            else str(request.url_for("github_install_callback"))
+        )
         return app.begin_install(redirect_uri=redirect)
     except GitHubAppError as exc:
         raise _github_app_error(exc) from exc

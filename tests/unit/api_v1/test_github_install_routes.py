@@ -48,20 +48,47 @@ class FakeGitHub:
 
 
 class FakeBroker:
-    """Duck-typed GitHubBrokerClient — records calls, no network."""
+    """Duck-typed GitHubBrokerClient — records calls, no network. Models
+    the real contract: origin registration first, then session creation
+    authenticated by the deployment-scoped credential."""
 
     base_url = "https://broker.test"
 
     def __init__(self) -> None:
-        self.sessions: list[str] = []
+        self.registrations: list[str] = []
+        self.sessions: list[tuple[str, str]] = []
         self.claimed: list[str] = []
         self.mints: list[tuple[int, str, list[str] | None]] = []
         self.synced: list[int] = []
         self.revoked: list[int] = []
         self.health_ok = True
+        # Test knobs: fail one credential, lose deployments server-side.
+        self.reject_credential: str | None = None
+        self.registered: dict[str, str] = {}
 
-    def create_session(self, redirect_uri: str) -> dict[str, Any]:
-        self.sessions.append(redirect_uri)
+    def register_deployment(self, origin: str) -> dict[str, Any]:
+        self.registrations.append(origin)
+        return {
+            "registration_id": f"reg_{len(self.registrations)}",
+            "challenge": "challenge_fake",
+            "challenge_url": f"{origin}/.well-known/sbx-broker-challenge",
+            "expires_at": "2026-01-01T00:10:00Z",
+        }
+
+    def complete_registration(self, registration_id: str) -> dict[str, Any]:
+        origin = self.registrations[-1]
+        credential = f"sbxdep_fake_{len(self.registrations)}"
+        self.registered[origin] = credential
+        return {
+            "origin": origin,
+            "credential": credential,
+            "redirect_uri": f"{origin}/v1/github/install/callback",
+        }
+
+    def create_session(self, origin: str, credential: str) -> dict[str, Any]:
+        self.sessions.append((origin, credential))
+        if credential == self.reject_credential:
+            raise GitHubBrokerError("broker_auth", "bad credential", status_code=403)
         return {
             "install_url": (
                 f"https://github.com/apps/{APP_SLUG}/installations/new?state=sbk1.fakesig"
@@ -114,6 +141,13 @@ class FakeBroker:
         return {"ok": self.health_ok, "configured": True, "app_slug": APP_SLUG}
 
 
+@pytest.fixture(autouse=True)
+def public_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the deployment's public https origin — a test client runs on
+    ``http://testserver``, which is neither https nor loopback."""
+    monkeypatch.setenv("SBX_PUBLIC_ORIGIN", "https://sbx.example.test")
+
+
 @pytest.fixture()
 def broker_service(v1_env: Any) -> FakeBroker:
     """Service with NO local App — the default self-hosted posture where
@@ -153,8 +187,11 @@ class TestBeginInstall:
         # Acceptance gate: the first GitHub page must never be the
         # App-registration surface.
         assert "settings/apps/new" not in body["authorize_url"]
-        # The signed state binds the flow to THIS deployment's callback.
-        assert broker_service.sessions[0].endswith("/v1/github/install/callback")
+        # The flow was bound to THIS deployment's registered https origin —
+        # registration proved origin control first, then session creation
+        # presented the issued deployment credential.
+        assert broker_service.registrations == ["https://sbx.example.test"]
+        assert broker_service.sessions == [("https://sbx.example.test", "sbxdep_fake_1")]
 
     def test_requires_auth(self, client: Any, broker_service: FakeBroker) -> None:
         assert client.post("/v1/github/install").status_code == 401
@@ -178,6 +215,36 @@ class TestBeginInstall:
         resp = client.post("/v1/github/install", headers=auth)
         assert resp.status_code == 503
         assert resp.json()["error"]["code"] == "github_app_unconfigured"
+
+    def test_stale_credential_triggers_reregistration(
+        self, client: Any, auth: dict, broker_service: FakeBroker
+    ) -> None:
+        """A wiped broker-side deployment record rejects the stored
+        credential once; the service re-proves origin control and retries
+        — the user still gets a one-click install URL."""
+        broker_service.reject_credential = "sbxdep_fake_1"
+        resp = client.post("/v1/github/install", headers=auth)
+        assert resp.status_code == 201, resp.text
+        assert len(broker_service.registrations) == 2
+        assert broker_service.sessions[-1] == (
+            "https://sbx.example.test",
+            "sbxdep_fake_2",
+        )
+
+    def test_http_origin_is_rejected_before_broker(
+        self,
+        client: Any,
+        auth: dict,
+        broker_service: FakeBroker,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Fail closed: a non-public (plain http, non-loopback) origin can
+        never reach the broker's session API."""
+        monkeypatch.setenv("SBX_PUBLIC_ORIGIN", "http://insecure.example.test")
+        resp = client.post("/v1/github/install", headers=auth)
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "github_app_invalid"
+        assert broker_service.sessions == []
 
 
 class TestCallback:
@@ -226,6 +293,25 @@ class TestBrokeredTokenPath:
             params={"code": "sbxclaim_good"},
             follow_redirects=False,
         )
+
+    def test_sync_drops_revoked_broker_installation(
+        self, client: Any, auth: dict, admin_auth: dict, broker_service: FakeBroker
+    ) -> None:
+        """Finding 2: when the broker reports the installation gone, sync
+        must delete the local record + binding and never serialize a None
+        row (the old None-append 500)."""
+        self._connect(client)
+
+        def gone(installation_id: int, credential: str) -> dict[str, Any]:
+            raise GitHubBrokerError("not_found", "installation gone", status_code=404)
+
+        broker_service.sync_installation = gone  # type: ignore[assignment]
+        resp = client.post("/v1/github/app/sync", headers=admin_auth)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["installations"] == []
+        status = client.get("/v1/github/app", headers=auth).json()
+        assert status["installations"] == []
+        assert status["configured"] is False
 
     def test_sandbox_token_mints_via_broker_least_privilege(
         self, client: Any, auth: dict, broker_service: FakeBroker, v1_env: Any

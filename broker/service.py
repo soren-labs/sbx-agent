@@ -18,6 +18,13 @@ Flow:
   App's Setup URL). Fails closed on any signature/TTL/replay violation, then
   records the binding and returns ``(redirect_uri, claim_code)`` for a 302
   back to the originating deployment.
+- ``register_deployment`` / ``complete_registration`` — a deployment proves
+  control of its exact public origin by serving a broker-issued challenge
+  at ``/.well-known/sbx-broker-challenge``; on success it receives a
+  deployment-scoped ``sbxdep_`` credential and a fixed callback URL.
+- ``begin_install(origin, credential)`` — session creation requires the
+  deployment credential; the state's ``ru`` is always the *registered*
+  callback URL, never requester-supplied (no open client/redirect).
 - ``claim`` — the deployment exchanges the one-time code for installation
   metadata + a per-installation broker credential (returned once).
 - ``mint_token`` / ``sync_installation`` / ``revoke_installation`` — the
@@ -25,9 +32,13 @@ Flow:
   credential and is fail-closed (unknown installation, wrong credential,
   repo outside the recorded selection → error, never a wider token).
 
-Stores keep pending states, pending claims, and bindings only — no key
-material. The file store writes every record ``0600``; the credential is
-persisted hashed (SHA-256) so a store leak cannot mint tokens.
+No endpoint and no store ever holds the App private key — it exists only
+in ``BrokerConfig``. Claims are the one place a *broker-issued* credential
+exists at rest: the pending claim payload holds the one-time installation
+credential in cleartext until claimed; it is single-use, expires after
+``CLAIM_TTL_S`` (enforced on redeem), and stores sweep expired entries on
+write. Credentials are persisted hashed (SHA-256) so a store leak cannot
+mint tokens or claim sessions. The file store writes every record ``0600``.
 """
 
 from __future__ import annotations
@@ -49,6 +60,7 @@ from control.github_app import (
     DEFAULT_API_URL,
     GitHubAppClient,
     GitHubAppConfig,
+    _is_loopback_host,
     _iso_from_epoch,
     _origin_of,
     github_web_url,
@@ -67,11 +79,39 @@ DEFAULT_STORE_DICT = "sbx-github-broker-store"
 
 # Install sessions die fast — the operator completes the GitHub install page
 # inside this window; claim codes the same (the deployment redeems them
-# server-to-server immediately after the redirect).
+# server-to-server immediately after the redirect). Pending deployment
+# registrations are equally short-lived.
 STATE_TTL_S = 600
 CLAIM_TTL_S = 600
+REGISTRATION_TTL_S = 600
 
 _STATE_VERSION = "sbk1"
+# The challenge a registering deployment must serve to prove origin control.
+CHALLENGE_PATH = "/.well-known/sbx-broker-challenge"
+
+
+def _is_registerable_origin(origin: str) -> bool:
+    """Production deployments must be exactly-HTTPS origins; plain http is
+    allowed ONLY for loopback (localhost/127.0.0.1/::1) — the explicitly
+    scoped exception that keeps local dev and the in-process e2e seam
+    working. No wildcard host matching anywhere."""
+    parsed = _origin_of(origin)
+    if parsed is None:
+        return False
+    if parsed.startswith("https://"):
+        return True
+    return parsed.startswith("http://") and _is_loopback_host(parsed)
+
+
+def _default_challenge_fetch(url: str) -> str | None:
+    """GET the deployment's challenge endpoint; None on any failure."""
+    import httpx
+
+    try:
+        resp = httpx.get(url, timeout=10.0)
+    except httpx.HTTPError:
+        return None
+    return resp.text if resp.status_code == 200 else None
 
 
 class BrokerError(Exception):
@@ -225,10 +265,22 @@ def binding_from_dict(data: Any) -> Binding | None:
 
 
 class BrokerStore(Protocol):
+    """Pending states/claims/registrations, deployments, bindings.
+
+    ``pop_claim`` returns the stored ``{"payload", "exp"}`` pair — expiry
+    is enforced centrally in ``GitHubBrokerService.claim`` so every store
+    fails closed identically. Claims carry the one-time credential in
+    cleartext for at most ``CLAIM_TTL_S``; implementations must sweep
+    expired claims on write."""
+
     def put_state(self, nonce: str, expires_epoch: float) -> None: ...
     def pop_state(self, nonce: str) -> float | None: ...
     def put_claim(self, code_hash: str, payload: dict[str, Any], expires_epoch: float) -> None: ...
     def pop_claim(self, code_hash: str) -> dict[str, Any] | None: ...
+    def put_registration(self, registration_id: str, record: dict[str, Any]) -> None: ...
+    def pop_registration(self, registration_id: str) -> dict[str, Any] | None: ...
+    def put_deployment(self, origin: str, record: dict[str, Any]) -> None: ...
+    def get_deployment(self, origin: str) -> dict[str, Any] | None: ...
     def get_binding(self, installation_id: int) -> dict[str, Any] | None: ...
     def put_binding(self, binding: dict[str, Any]) -> None: ...
     def delete_binding(self, installation_id: int) -> None: ...
@@ -237,7 +289,9 @@ class BrokerStore(Protocol):
 class InMemoryBrokerStore:
     def __init__(self) -> None:
         self._states: dict[str, float] = {}
-        self._claims: dict[str, tuple[dict[str, Any], float]] = {}
+        self._claims: dict[str, dict[str, Any]] = {}
+        self._regs: dict[str, dict[str, Any]] = {}
+        self._deps: dict[str, dict[str, Any]] = {}
         self._bindings: dict[int, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
@@ -251,12 +305,45 @@ class InMemoryBrokerStore:
 
     def put_claim(self, code_hash: str, payload: dict[str, Any], expires_epoch: float) -> None:
         with self._lock:
-            self._claims[code_hash] = (dict(payload), expires_epoch)
+            self._claims[code_hash] = {"payload": dict(payload), "exp": float(expires_epoch)}
+            self._sweep_claims_locked()
+
+    def _sweep_claims_locked(self) -> None:
+        """Drop expired pending claims — the plaintext credential must not
+        outlive its TTL at rest."""
+        now = time.time()
+        for key in [k for k, v in self._claims.items() if float(v.get("exp") or 0) < now]:
+            self._claims.pop(key, None)
 
     def pop_claim(self, code_hash: str) -> dict[str, Any] | None:
         with self._lock:
             item = self._claims.pop(code_hash, None)
-        return dict(item[0]) if item is not None else None
+        if not isinstance(item, dict):
+            return None
+        payload = item.get("payload")
+        return (
+            {"payload": dict(payload), "exp": float(item.get("exp") or 0)}
+            if isinstance(payload, dict)
+            else None
+        )
+
+    def put_registration(self, registration_id: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._regs[registration_id] = dict(record)
+
+    def pop_registration(self, registration_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            raw = self._regs.pop(registration_id, None)
+        return dict(raw) if isinstance(raw, dict) else None
+
+    def put_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._deps[origin] = dict(record)
+
+    def get_deployment(self, origin: str) -> dict[str, Any] | None:
+        with self._lock:
+            raw = self._deps.get(origin)
+        return dict(raw) if isinstance(raw, dict) else None
 
     def get_binding(self, installation_id: int) -> dict[str, Any] | None:
         with self._lock:
@@ -313,7 +400,15 @@ class FileBrokerStore:
     def put_claim(self, code_hash: str, payload: dict[str, Any], expires_epoch: float) -> None:
         with self._lock:
             claims = self._read("claims.json") or {}
-            claims[code_hash] = {"payload": payload, "exp": expires_epoch}
+            # sweep expired pending claims — the plaintext credential must
+            # not outlive its TTL at rest
+            now = time.time()
+            claims = {
+                k: v
+                for k, v in claims.items()
+                if isinstance(v, dict) and float(v.get("exp") or 0) >= now
+            }
+            claims[code_hash] = {"payload": payload, "exp": float(expires_epoch)}
             self._write("claims.json", claims)
 
     def pop_claim(self, code_hash: str) -> dict[str, Any] | None:
@@ -324,7 +419,34 @@ class FileBrokerStore:
                 self._write("claims.json", claims)
         if not isinstance(item, dict):
             return None
-        return item.get("payload") if isinstance(item.get("payload"), dict) else None
+        if not isinstance(item.get("payload"), dict):
+            return None
+        return {"payload": dict(item["payload"]), "exp": float(item.get("exp") or 0)}
+
+    def put_registration(self, registration_id: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            regs = self._read("registrations.json") or {}
+            regs[registration_id] = record
+            self._write("registrations.json", regs)
+
+    def pop_registration(self, registration_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            regs = self._read("registrations.json") or {}
+            item = regs.pop(registration_id, None)
+            if item is not None:
+                self._write("registrations.json", regs)
+        return item if isinstance(item, dict) else None
+
+    def put_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            deps = self._read("deployments.json") or {}
+            deps[origin] = record
+            self._write("deployments.json", deps)
+
+    def get_deployment(self, origin: str) -> dict[str, Any] | None:
+        deps = self._read("deployments.json") or {}
+        item = deps.get(origin)
+        return item if isinstance(item, dict) else None
 
     def get_binding(self, installation_id: int) -> dict[str, Any] | None:
         data = self._read(f"binding-{installation_id}.json")
@@ -369,16 +491,45 @@ class ModalDictBrokerStore:
         return float(expiry)
 
     def put_claim(self, code_hash: str, payload: dict[str, Any], expires_epoch: float) -> None:
-        self._d()[f"claim:{code_hash}"] = {"payload": payload, "exp": expires_epoch}
+        self._d()[f"claim:{code_hash}"] = {"payload": payload, "exp": float(expires_epoch)}
+        # sweep expired pending claims — the plaintext credential must not
+        # outlive its TTL at rest
+        now = time.time()
+        for key in self._d().keys():
+            if not str(key).startswith("claim:"):
+                continue
+            item = self._d().get(key)
+            if isinstance(item, dict) and float(item.get("exp") or 0) < now:
+                try:
+                    self._d().pop(key)
+                except KeyError:
+                    pass
 
     def pop_claim(self, code_hash: str) -> dict[str, Any] | None:
         try:
             item = self._d().pop(f"claim:{code_hash}")
         except KeyError:
             return None
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not isinstance(item.get("payload"), dict):
             return None
-        return item.get("payload") if isinstance(item.get("payload"), dict) else None
+        return {"payload": dict(item["payload"]), "exp": float(item.get("exp") or 0)}
+
+    def put_registration(self, registration_id: str, record: dict[str, Any]) -> None:
+        self._d()[f"reg:{registration_id}"] = dict(record)
+
+    def pop_registration(self, registration_id: str) -> dict[str, Any] | None:
+        try:
+            item = self._d().pop(f"reg:{registration_id}")
+        except KeyError:
+            return None
+        return item if isinstance(item, dict) else None
+
+    def put_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        self._d()[f"dep:{origin}"] = dict(record)
+
+    def get_deployment(self, origin: str) -> dict[str, Any] | None:
+        raw = self._d().get(f"dep:{origin}")
+        return raw if isinstance(raw, dict) else None
 
     def get_binding(self, installation_id: int) -> dict[str, Any] | None:
         raw = self._d().get(f"binding:{installation_id}")
@@ -415,6 +566,7 @@ class GitHubBrokerService:
         *,
         api_url: str = DEFAULT_API_URL,
         clock: Callable[[], float] = time.time,
+        challenge_fetcher: Callable[[str], str | None] | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -424,6 +576,9 @@ class GitHubBrokerService:
             api_url=self._api_url,
         )
         self._clock = clock
+        # How the broker fetches a registering deployment's well-known
+        # challenge (injectable for tests; default is a real HTTPS GET).
+        self._fetch = challenge_fetcher or _default_challenge_fetch
 
     # -- state signing ------------------------------------------------------
 
@@ -464,20 +619,111 @@ class GitHubBrokerService:
             raise BrokerError("broker_state", "unknown or consumed state", status_code=403)
         return payload
 
-    # -- install session ----------------------------------------------------
+    # -- deployment registration (challenge-proven origin binding) ---------
 
-    def begin_install(self, redirect_uri: str) -> dict[str, Any]:
-        """Create a signed install session for one SBX deployment.
-
-        ``redirect_uri`` is the deployment's own ``/v1/github/install/callback``
-        URL — it is baked into the signed state, so the post-install 302 can
-        only ever return to the deployment that started the flow (no open
-        redirect, no cross-deployment session swap).
+    def register_deployment(self, origin: str) -> dict[str, Any]:
+        """Step 1 of origin binding: issue a single-use registration +
+        challenge token. The deployment must serve ``challenge`` at
+        ``<origin>/.well-known/sbx-broker-challenge`` — only whoever controls
+        the exact HTTPS origin can complete registration, so the broker never
+        mints a session credential for an origin the caller doesn't own.
         """
         if not self._config.configured:
             raise _unconfigured()
-        if _origin_of(redirect_uri) is None:
-            raise BrokerError("broker_invalid", "redirect_uri must be an http(s) URL")
+        parsed = _origin_of(origin or "")
+        if parsed is None:
+            raise BrokerError("broker_invalid", "origin must be an http(s) URL")
+        if not _is_registerable_origin(parsed):
+            raise BrokerError("broker_origin", "deployment origin must be https", status_code=403)
+        registration_id = secrets.token_urlsafe(16)
+        challenge = secrets.token_urlsafe(24)
+        self._store.put_registration(
+            registration_id,
+            {
+                "origin": parsed,
+                "challenge_hash": hashlib.sha256(challenge.encode()).hexdigest(),
+                "exp": self._clock() + REGISTRATION_TTL_S,
+            },
+        )
+        return {
+            "registration_id": registration_id,
+            "challenge": challenge,
+            "challenge_url": f"{parsed}{CHALLENGE_PATH}",
+            "expires_at": _iso_from_epoch(self._clock() + REGISTRATION_TTL_S),
+        }
+
+    def complete_registration(self, registration_id: str) -> dict[str, Any]:
+        """Step 2: fetch the deployment's challenge endpoint over its
+        *registered* origin and compare — proof of origin control issues a
+        deployment-scoped ``sbxdep_`` credential and pins the callback URL
+        ``<origin>/v1/github/install/callback``. Single-use and fail closed:
+        a failed fetch consumes the registration."""
+        if not self._config.configured:
+            raise _unconfigured()
+        record = self._store.pop_registration(str(registration_id or ""))
+        if record is None or float(record.get("exp") or 0) < self._clock():
+            raise BrokerError(
+                "broker_registration", "unknown or expired registration", status_code=403
+            )
+        origin = str(record.get("origin") or "")
+        body = self._fetch(f"{origin}{CHALLENGE_PATH}")
+        served_hash = hashlib.sha256((body or "").strip().encode()).hexdigest()
+        if body is None or not hmac.compare_digest(
+            served_hash, str(record.get("challenge_hash") or "")
+        ):
+            raise BrokerError(
+                "broker_registration",
+                "deployment did not serve the challenge at its well-known URL",
+                status_code=403,
+            )
+        credential = f"sbxdep_{secrets.token_urlsafe(24)}"
+        redirect_uri = f"{origin}/v1/github/install/callback"
+        self._store.put_deployment(
+            origin,
+            {
+                "origin": origin,
+                "credential_hash": hashlib.sha256(credential.encode()).hexdigest(),
+                "redirect_uri": redirect_uri,
+                "registered_at": _iso_from_epoch(self._clock()),
+            },
+        )
+        return {"origin": origin, "credential": credential, "redirect_uri": redirect_uri}
+
+    def _deployment(self, origin: str, credential: str) -> dict[str, Any]:
+        """Authenticate a session request: exact registered origin + the
+        deployment-scoped credential issued at registration."""
+        dep = self._store.get_deployment(origin or "")
+        if dep is None:
+            raise BrokerError(
+                "broker_unregistered",
+                "deployment origin is not registered",
+                status_code=403,
+            )
+        expected = str(dep.get("credential_hash") or "")
+        actual = hashlib.sha256((credential or "").encode()).hexdigest()
+        if not credential or not hmac.compare_digest(expected, actual):
+            raise BrokerError("broker_auth", "invalid deployment credential", status_code=403)
+        return dep
+
+    # -- install session ----------------------------------------------------
+
+    def begin_install(self, origin: str, credential: str) -> dict[str, Any]:
+        """Create a signed install session for one *registered* deployment.
+
+        The caller must present the deployment-scoped credential issued by
+        ``complete_registration`` for ``origin``; the state's ``ru`` is the
+        registered callback URL ``<origin>/v1/github/install/callback`` —
+        never requester-supplied, so the post-install 302 can only return to
+        the verified deployment (no open redirect, no dynamic client).
+        """
+        if not self._config.configured:
+            raise _unconfigured()
+        dep = self._deployment(origin, credential)
+        redirect_uri = str(dep.get("redirect_uri") or "")
+        if not _is_registerable_origin(redirect_uri):
+            raise BrokerError(
+                "broker_origin", "registered callback origin is not https", status_code=403
+            )
         nonce = secrets.token_urlsafe(16)
         expires_at = self._clock() + STATE_TTL_S
         self._store.put_state(nonce, expires_at)
@@ -508,7 +754,11 @@ class GitHubBrokerService:
             ) from None
         payload = self._verify_state(state)
         redirect_uri = str(payload.get("ru") or "")
-        if _origin_of(redirect_uri) is None:
+        origin = _origin_of(redirect_uri)
+        # The redirect target must still be a *registered* deployment's exact
+        # callback — a state minted for a since-removed deployment fails here.
+        dep = self._store.get_deployment(origin or "") if origin else None
+        if origin is None or dep is None or str(dep.get("redirect_uri")) != redirect_uri:
             raise BrokerError("broker_state", "state carries no deployment", status_code=403)
 
         binding = self._read_installation(iid)
@@ -568,11 +818,15 @@ class GitHubBrokerService:
         per-installation broker credential (shown exactly once)."""
         if not code:
             raise BrokerError("broker_invalid", "claim requires a code")
-        payload = self._store.pop_claim(hashlib.sha256(code.encode()).hexdigest())
-        if payload is None:
+        item = self._store.pop_claim(hashlib.sha256(code.encode()).hexdigest())
+        # Pop-then-check keeps one-time semantics even when expired: the
+        # claim is destroyed either way, so an expired code is dead forever
+        # and can never be replayed.
+        if item is None or float(item.get("exp") or 0) < self._clock():
             raise BrokerError(
                 "broker_claim", "unknown, expired, or already-claimed code", status_code=403
             )
+        payload = item["payload"]
         binding = binding_from_dict(self._store.get_binding(int(payload["installation_id"])))
         if binding is None:
             raise BrokerError("not_found", "installation binding is gone", status_code=404)

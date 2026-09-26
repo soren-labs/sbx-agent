@@ -236,10 +236,11 @@ def build_app(demo: dict[str, str], base: str):
         return JSONResponse({"demo_workspace": demo, "providers": list(PROVIDERS)})
 
     @app.post("/__dev/github/reset", include_in_schema=False)
-    def dev_github_reset() -> JSONResponse:
+    def dev_github_reset(request: Request) -> JSONResponse:
         """Clear GitHub integration state between e2e scenarios — the two
         connect flows share one control-plane process, so each test starts
-        from "not configured" again."""
+        from "not configured" again (including the brokered deployment
+        registration + any pending well-known challenge)."""
         service = getattr(app.state, "github_app", None)
         if service is not None:
             store = service._store
@@ -247,6 +248,8 @@ def build_app(demo: dict[str, str], base: str):
                 store.delete(record.installation_id)
                 store.delete_broker_binding(record.installation_id)
             store.delete_app_config()
+            store.delete_broker_challenge()
+            store.delete_broker_deployment(str(request.base_url).rstrip("/"))
         return JSONResponse({"ok": True})
 
     @app.post("/__fake_gh/settings/apps/new", include_in_schema=False)
