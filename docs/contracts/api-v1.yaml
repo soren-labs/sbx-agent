@@ -187,6 +187,8 @@ x-canonical:
     - POST /v1/github/app/manifest
     - GET /v1/github/app/manifest/callback
     - POST /v1/github/app/manifest/complete
+    - POST /v1/github/install
+    - GET /v1/github/install/callback
     - GET /v1/auth
     - POST /v1/auth/connect
     - GET /v1/auth/connect/{sessionId}
@@ -1780,6 +1782,66 @@ paths:
                 $ref: "#/components/schemas/ApiKeyCreated"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /v1/github/install:
+    post:
+      tags: [github]
+      summary: |
+        Default Connect GitHub, step 1 (SOR-220): returns the URL the
+        browser opens plus a single-use `state` credential. `mode` is
+        `broker` (default): `authorize_url` is the official
+        `github.com/apps/<public-sbx-app>/installations/new?state=...`
+        page, resolved through the hosted Sorenforge integration broker —
+        the first GitHub page the user sees is the App *installation*
+        page, never `settings/apps/new`. `mode=app` is the local-App
+        authorize fallback when the deployment runs its own App.
+        Never returns private-key or token material.
+      operationId: beginGitHubInstall
+      responses:
+        "201":
+          description: Install URL + state issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorize_url, mode]
+                properties:
+                  authorize_url:
+                    type: string
+                  state:
+                    type: string
+                  expires_at:
+                    type: string
+                  mode:
+                    type: string
+                    enum: [broker, app]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/GitHubAppUpstream"
+        "503":
+          $ref: "#/components/responses/GitHubAppUnconfigured"
+  /v1/github/install/callback:
+    get:
+      tags: [github]
+      summary: |
+        Default Connect GitHub, step 2 (SOR-220): unauthenticated browser
+        redirect target. The broker 302s here with a single-use `code`
+        after the GitHub installation completes; exchanging it binds the
+        installation (id/account/repo coverage) to this deployment and
+        stores the broker credential in the protected lane. Exits 303 to
+        `/#/admin/github?broker=connected` or `?broker_error=<code>`.
+        Fail-closed: bad/expired/replayed codes never bind.
+      operationId: githubInstallCallback
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+      responses:
+        "303":
+          description: Redirect back to the Console GitHub view
   /v1/github/app:
     get:
       tags: [github]
@@ -3517,13 +3579,21 @@ components:
         synced_at:
           type: string
           format: date-time
+        via:
+          type: string
+          description: |
+            How the installation was bound: `broker` (SOR-220 default —
+            the hosted Sorenforge broker mints its tokens) or empty/local
+            (deployment's own App or authorize flow).
     GitHubAppStatus:
       type: object
       required: [configured, installable, installations, bridge_token]
       properties:
         configured:
           type: boolean
-          description: App id + private key present (JWT can be signed)
+          description: |
+            GitHub source configured — either a local App (id + private
+            key) or at least one broker-bound installation.
         installable:
           type: boolean
           description: App slug also present (authorize URL can be built)
@@ -3533,6 +3603,31 @@ components:
         app_slug:
           type: string
           nullable: true
+        source:
+          type: string
+          nullable: true
+          description: |
+            Where the effective GitHub identity lives: `env`
+            (operator-supplied App envs), `registry` (manifest-registered
+            App record), or `broker` (hosted broker on the public SBX
+            App). Metadata only.
+        broker:
+          type: object
+          description: |
+            Broker lane status (SOR-220 default connect path): the broker
+            URL this deployment is bound to, whether a binding exists,
+            and a short-TTL cached health probe. Never carries
+            credentials or key material.
+          properties:
+            url:
+              type: string
+            bound:
+              type: boolean
+            healthy:
+              type: boolean
+            app_slug:
+              type: string
+              nullable: true
         installations:
           type: array
           items:

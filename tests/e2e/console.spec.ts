@@ -432,9 +432,12 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
   test("github zero-config: manifest flow registers the app into install state (SOR-220)", async ({
     page,
   }) => {
+    await page.request.post("/__dev/github/reset");
     await connect(page);
     await page.getByTestId("nav-github").click();
     await expect(page.getByTestId("github-status")).toContainText("not configured");
+    // Manifest registration is the Advanced/self-hosted path now.
+    await page.getByTestId("github-advanced").locator("summary").click();
     await page.getByTestId("github-create-app").click();
 
     // The console POSTs the manifest to the (fake) GitHub apps/new page,
@@ -447,6 +450,36 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
 
     // The fake GitHub reports one org installation — the install/repo
     // selection surface is immediately usable, no redeploy or env export.
+    await expect(page.getByTestId("github-installations")).toContainText("e2e-org", {
+      timeout: 15_000,
+    });
+  });
+
+  test("github default connect: one click installs the public SBX App via the broker (SOR-220)", async ({
+    page,
+  }) => {
+    await page.request.post("/__dev/github/reset");
+    await connect(page);
+    await page.getByTestId("nav-github").click();
+    await expect(page.getByTestId("github-status")).toContainText("not configured");
+
+    // Acceptance gate: the FIRST GitHub page is the App *installation*
+    // page — /apps/<slug>/installations/new — never settings/apps/new.
+    const landedOnInstall = page.waitForURL(/\/__fake_gh\/apps\/[^/]+\/installations\/new/, {
+      timeout: 15_000,
+    });
+    await page.getByTestId("github-connect-default").click();
+    await landedOnInstall;
+    expect(page.url()).not.toContain("settings/apps/new");
+
+    // One click on Install: browser → broker callback → deployment
+    // callback → back here, already connected.
+    await page.getByTestId("gh-install").click();
+    await page.waitForURL(/broker=connected/, { timeout: 15_000 });
+    await expect(page.getByTestId("broker-connected")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("github-status")).toContainText("configured", {
+      timeout: 15_000,
+    });
     await expect(page.getByTestId("github-installations")).toContainText("e2e-org", {
       timeout: 15_000,
     });

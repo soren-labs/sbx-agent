@@ -250,6 +250,26 @@ class TestClientCalls:
         token, _ = client.create_installation_token(7)
         assert token == MINTED
 
+    def test_list_installations_paginated(self, config: GitHubAppConfig) -> None:
+        """``GET /app/installations`` defaults to 30 rows — the callback's
+        membership check needs every page, so the client must walk
+        ``per_page=100&page=N`` until a short page."""
+        seen_pages: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            page = request.url.params.get("page", "1")
+            assert request.url.params.get("per_page") == "100"
+            seen_pages.append(page)
+            if page == "1":
+                return httpx.Response(200, json=[{"id": i} for i in range(100)])
+            return httpx.Response(200, json=[{"id": 999}])
+
+        client = self._client(config, handler)
+        installs = client.list_installations()
+        assert seen_pages == ["1", "2"]
+        assert len(installs) == 101
+        assert installs[-1]["id"] == 999
+
     def test_installation_repositories_paginated(self, config: GitHubAppConfig) -> None:
         pages = {
             "1": {

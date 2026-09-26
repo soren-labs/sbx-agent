@@ -55,6 +55,11 @@ APP_SECRET_NAME_ENV = "SBX_GITHUB_APP_SECRET_NAME"
 APP_DICT_ENV = "SBX_GITHUB_APP_DICT"
 APP_STORE_DIR_ENV = "SBX_GITHUB_APP_STORE_DIR"
 APP_API_URL_ENV = "SBX_GITHUB_APP_API_URL"
+# SOR-220 default connect: the hosted Sorenforge integration broker. The App
+# private key lives ONLY at the broker — this deployment stores installation
+# metadata + a revocable per-installation broker credential, and sandboxes
+# receive short-lived installation tokens minted through it.
+BROKER_URL_ENV = "SBX_GITHUB_BROKER_URL"
 
 DEFAULT_DICT_NAME = "sbx-github-app"
 DEFAULT_API_URL = "https://api.github.com"
@@ -160,6 +165,11 @@ class InstallationRecord:
     suspended: bool = False
     recorded_at: str = ""
     synced_at: str = ""
+    # "" (default) = installed on the deployment's own App (env/manifest);
+    # "broker" = bound through the hosted Sorenforge broker (SOR-220) — its
+    # tokens are minted via the broker's per-installation credential, and the
+    # App private key never exists in this deployment.
+    via: str = ""
 
     def authorizes(self, slug: str) -> bool:
         """Whether this installation's repo selection covers ``owner/repo``."""
@@ -180,6 +190,7 @@ class InstallationRecord:
             "suspended": self.suspended,
             "recorded_at": self.recorded_at,
             "synced_at": self.synced_at,
+            "via": self.via,
         }
 
 
@@ -193,6 +204,7 @@ def record_to_dict(record: InstallationRecord) -> dict[str, Any]:
         "suspended": record.suspended,
         "recorded_at": record.recorded_at,
         "synced_at": record.synced_at,
+        "via": record.via,
     }
 
 
@@ -209,6 +221,7 @@ def record_from_dict(data: Any) -> InstallationRecord | None:
             suspended=bool(data.get("suspended", False)),
             recorded_at=str(data.get("recorded_at") or ""),
             synced_at=str(data.get("synced_at") or ""),
+            via=str(data.get("via") or ""),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -238,12 +251,36 @@ class GitHubAppStore(Protocol):
     def put_app_config(self, config: dict[str, Any]) -> None: ...
     def delete_app_config(self) -> None: ...
 
+    # SOR-220 broker lane: the per-installation broker binding —
+    # ``{credential, broker_url, deployment, bound_at}``. The credential is a
+    # revocable broker-issued bearer scoped to exactly one installation (it
+    # can request token mints for it, nothing more); it is NOT the App
+    # private key, which never exists in a self-hosted deployment.
+    def get_broker_binding(self, installation_id: int) -> dict[str, Any] | None: ...
+    def put_broker_binding(self, installation_id: int, binding: dict[str, Any]) -> None: ...
+    def delete_broker_binding(self, installation_id: int) -> None: ...
+
+    # SOR-220 broker lane, deployment-level registration: the broker-issued
+    # ``sbxdep_`` credential that proves this deployment controls its public
+    # origin (challenge-verified). Keyed by the exact registered origin.
+    # ``*_broker_challenge`` holds the single pending well-known challenge
+    # while a registration handshake is in flight.
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None: ...
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None: ...
+    def delete_broker_deployment(self, origin: str) -> None: ...
+    def get_broker_challenge(self) -> str | None: ...
+    def put_broker_challenge(self, challenge: str) -> None: ...
+    def delete_broker_challenge(self) -> None: ...
+
 
 class InMemoryGitHubAppStore:
     def __init__(self) -> None:
         self._items: dict[int, dict[str, Any]] = {}
         self._states: dict[str, float] = {}
         self._app_config: dict[str, Any] | None = None
+        self._bindings: dict[int, dict[str, Any]] = {}
+        self._deployments: dict[str, dict[str, Any]] = {}
+        self._challenge = ""
         self._lock = threading.Lock()
 
     def list(self) -> list[InstallationRecord]:
@@ -284,6 +321,44 @@ class InMemoryGitHubAppStore:
     def delete_app_config(self) -> None:
         with self._lock:
             self._app_config = None
+
+    def get_broker_binding(self, installation_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            raw = self._bindings.get(installation_id)
+        return dict(raw) if raw is not None else None
+
+    def put_broker_binding(self, installation_id: int, binding: dict[str, Any]) -> None:
+        with self._lock:
+            self._bindings[installation_id] = dict(binding)
+
+    def delete_broker_binding(self, installation_id: int) -> None:
+        with self._lock:
+            self._bindings.pop(installation_id, None)
+
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None:
+        with self._lock:
+            raw = self._deployments.get(origin)
+        return dict(raw) if isinstance(raw, dict) else None
+
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._deployments[origin] = dict(record)
+
+    def delete_broker_deployment(self, origin: str) -> None:
+        with self._lock:
+            self._deployments.pop(origin, None)
+
+    def get_broker_challenge(self) -> str | None:
+        with self._lock:
+            return self._challenge or None
+
+    def put_broker_challenge(self, challenge: str) -> None:
+        with self._lock:
+            self._challenge = challenge
+
+    def delete_broker_challenge(self) -> None:
+        with self._lock:
+            self._challenge = ""
 
 
 class FileGitHubAppStore:
@@ -395,6 +470,83 @@ class FileGitHubAppStore:
     def delete_app_config(self) -> None:
         self._app_config_path().unlink(missing_ok=True)
 
+    def _binding_path(self, installation_id: int) -> Path:
+        return self._root / f"broker-binding-{installation_id}.json"
+
+    def get_broker_binding(self, installation_id: int) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self._binding_path(installation_id).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def put_broker_binding(self, installation_id: int, binding: dict[str, Any]) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._binding_path(installation_id)
+        tmp = path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        # 0600 — the broker credential is revocable, installation-scoped
+        # bearer material (never the App private key), protected like the
+        # manifest registry lane.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(binding))
+        tmp.replace(path)
+
+    def delete_broker_binding(self, installation_id: int) -> None:
+        self._binding_path(installation_id).unlink(missing_ok=True)
+
+    def _deployment_path(self, origin: str) -> Path:
+        import hashlib
+
+        digest = hashlib.sha256(origin.encode()).hexdigest()[:24]
+        return self._root / f"broker-deployment-{digest}.json"
+
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self._deployment_path(origin).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._deployment_path(origin)
+        tmp = path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        # 0600 — the deployment-scoped broker credential is revocable
+        # bearer material, protected like the manifest registry lane.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(record))
+        tmp.replace(path)
+
+    def delete_broker_deployment(self, origin: str) -> None:
+        self._deployment_path(origin).unlink(missing_ok=True)
+
+    def _challenge_path(self) -> Path:
+        return self._root / "broker-challenge.json"
+
+    def get_broker_challenge(self) -> str | None:
+        try:
+            data = json.loads(self._challenge_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return str(data) if isinstance(data, str) else None
+
+    def put_broker_challenge(self, challenge: str) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._challenge_path()
+        tmp = path.with_suffix(".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(challenge))
+        tmp.replace(path)
+
+    def delete_broker_challenge(self) -> None:
+        self._challenge_path().unlink(missing_ok=True)
+
 
 class ModalDictGitHubAppStore:
     """Production store backed by ``modal.Dict`` — lazy-imports modal."""
@@ -452,6 +604,45 @@ class ModalDictGitHubAppStore:
     def delete_app_config(self) -> None:
         try:
             self._d().pop("app:config")
+        except KeyError:
+            pass
+
+    def get_broker_binding(self, installation_id: int) -> dict[str, Any] | None:
+        raw = self._d().get(f"binding:{installation_id}")
+        return raw if isinstance(raw, dict) else None
+
+    def put_broker_binding(self, installation_id: int, binding: dict[str, Any]) -> None:
+        self._d()[f"binding:{installation_id}"] = dict(binding)
+
+    def delete_broker_binding(self, installation_id: int) -> None:
+        try:
+            self._d().pop(f"binding:{installation_id}")
+        except KeyError:
+            pass
+
+    def get_broker_deployment(self, origin: str) -> dict[str, Any] | None:
+        raw = self._d().get(f"dep:{origin}")
+        return raw if isinstance(raw, dict) else None
+
+    def put_broker_deployment(self, origin: str, record: dict[str, Any]) -> None:
+        self._d()[f"dep:{origin}"] = dict(record)
+
+    def delete_broker_deployment(self, origin: str) -> None:
+        try:
+            self._d().pop(f"dep:{origin}")
+        except KeyError:
+            pass
+
+    def get_broker_challenge(self) -> str | None:
+        raw = self._d().get("broker:challenge")
+        return str(raw) if isinstance(raw, str) else None
+
+    def put_broker_challenge(self, challenge: str) -> None:
+        self._d()["broker:challenge"] = challenge
+
+    def delete_broker_challenge(self) -> None:
+        try:
+            self._d().pop("broker:challenge")
         except KeyError:
             pass
 
@@ -570,9 +761,22 @@ class GitHubAppClient:
         )
 
     def list_installations(self) -> list[dict[str, Any]]:
-        """``GET /app/installations`` (JWT) — the app's own installs only."""
-        data = self._app_request("GET", "/app/installations", what="list installations")
-        return data if isinstance(data, list) else []
+        """``GET /app/installations`` (JWT) — the app's own installs only.
+
+        Paginates ``per_page=100&page=N`` until a short page — the default
+        30-item page would hide installs past the first page and break the
+        callback's membership check."""
+        out: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            data = self._app_request(
+                "GET", f"/app/installations?per_page=100&page={page}", what="list installations"
+            )
+            batch = [i for i in data if isinstance(i, dict)] if isinstance(data, list) else []
+            out.extend(batch)
+            if len(batch) < 100:
+                return out
+            page += 1
 
     def create_installation_token(
         self, installation_id: int, *, repositories: list[str] | None = None
@@ -717,12 +921,17 @@ class GitHubAppService:
         records_ttl_s: float = 60.0,
         secret_writer: Any = None,
         secret_name: str | None = None,
+        broker: Any = None,
     ) -> None:
         self._env_config = config
         self._store = store
         self._api_url = api_url.rstrip("/")
         self._secret_writer = secret_writer
         self._secret_name = secret_name
+        # SOR-220 default path: ``control.github_broker.GitHubBrokerClient``
+        # (or a duck-typed fake). Present whenever the broker lane is enabled
+        # — it is USED only when no local App is configured.
+        self._broker = broker
         self._client = client or GitHubAppClient(
             config, api_url=self._api_url, config_resolver=self._resolve_config
         )
@@ -730,6 +939,7 @@ class GitHubAppService:
         self._records_ttl_s = records_ttl_s
         self._tokens: dict[tuple[int, str], tuple[str, float]] = {}
         self._records_cache: tuple[float, list[InstallationRecord]] | None = None
+        self._health_cache: tuple[float, dict[str, Any]] | None = None
         self._lock = threading.Lock()
 
     # -- config resolution (env → registry) --------------------------------
@@ -766,7 +976,28 @@ class GitHubAppService:
             return "env"
         if self._stored_app_record() is not None:
             return "registry"
+        if self._broker_bound():
+            return "broker"
         return None
+
+    def _broker_bound(self) -> bool:
+        """Any recorded installation bound through the hosted broker."""
+        try:
+            return any(r.via == "broker" for r in self._records())
+        except Exception:
+            return False
+
+    def _broker_call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Wrap broker client errors as GitHubAppError so the /v1 layer maps
+        them uniformly (codes stay ``github_broker_*``)."""
+        from control.github_broker import GitHubBrokerError
+
+        try:
+            return fn(*args, **kwargs)
+        except GitHubBrokerError as exc:
+            raise GitHubAppError(
+                f"github_broker_{exc.code}", exc.message, status_code=exc.status_code
+            ) from exc
 
     # -- posture -----------------------------------------------------------
 
@@ -799,20 +1030,51 @@ class GitHubAppService:
 
         ``bridge_token`` reports whether the PAT/env compatibility fallback
         (GH_TOKEN/GITHUB_TOKEN) can still supply tokens. ``source`` names
-        where the effective config lives — ``env`` (SOR-177 envs) or
-        ``registry`` (SOR-220 manifest registration).
+        where the effective config lives — ``env`` (SOR-177 envs),
+        ``registry`` (manifest registration), or ``broker`` (the hosted
+        Sorenforge App lane). ``broker`` reports the lane's reference/health
+        — non-sensitive metadata only.
         """
         cfg = self._resolve_config()
         stored = self._stored_app_record() or {}
+        records = self._records()
         return {
-            "configured": cfg.configured,
+            "configured": cfg.configured or any(r.via == "broker" for r in records),
             "installable": cfg.installable,
             "app_id": cfg.app_id or None,
             "app_slug": cfg.slug or None,
             "source": self._config_source(),
             "app_url": str(stored.get("html_url") or "") or None,
-            "installations": [r.public() for r in self._records()],
+            "broker": self._broker_status(),
+            "installations": [r.public() for r in records],
             "bridge_token": any(os.environ.get(name) for name in TOKEN_ENVS),
+        }
+
+    def _broker_status(self) -> dict[str, Any] | None:
+        """Broker lane reference + cached health probe (60 s TTL; never
+        raises — an unreachable broker reports ``healthy: False``)."""
+        if self._broker is None:
+            return None
+        bound = self._broker_bound()
+        with self._lock:
+            cached = self._health_cache
+        if cached is None or self._clock() - cached[0] > 60:
+            try:
+                probe = self._broker.health()
+                fresh = {
+                    "healthy": bool(probe.get("ok")),
+                    "app_slug": probe.get("app_slug"),
+                }
+            except Exception:
+                fresh = {"healthy": False, "app_slug": None}
+            with self._lock:
+                self._health_cache = (self._clock(), fresh)
+            cached = (self._clock(), fresh)
+        return {
+            "url": self._broker.base_url,
+            "bound": bound,
+            "healthy": cached[1].get("healthy"),
+            "app_slug": cached[1].get("app_slug"),
         }
 
     # -- zero-config registration (SOR-220 App Manifest flow) ---------------
@@ -947,6 +1209,164 @@ class GitHubAppService:
             return "failed"
         return "refreshed"
 
+    # -- default connect (SOR-220): brokered public-App install ------------
+
+    def begin_install(self, *, redirect_uri: str) -> dict[str, Any]:
+        """The DEFAULT Connect GitHub start — one click, no App creation.
+
+        Mode resolution:
+        - ``app``: a deployment-local App is installable (SOR-177 envs or a
+          manifest registration) — keep the existing single-App flow.
+        - ``broker``: no local App — the hosted broker returns the official
+          ``github.com/apps/<public-app>/installations/new`` URL carrying a
+          signed, single-use, short-TTL state bound to ``redirect_uri`` (the
+          deployment's own ``/v1/github/install/callback``). The browser goes
+          DIRECTLY to the install page — never ``settings/apps/new``.
+        """
+        cfg = self._resolve_config()
+        if cfg.installable:
+            out = self.begin_authorization()
+            out["mode"] = "app"
+            return out
+        if self._broker is None:
+            _raise_unconfigured()
+        origin = _origin_of(redirect_uri) or ""
+        if not _is_public_origin(origin):
+            # Fail closed rather than ask the broker to bind an http (or
+            # otherwise non-public) callback origin — production deployments
+            # are https; loopback http is the scoped local-dev exception.
+            raise GitHubAppError(
+                "github_app_invalid",
+                "broker install requires the deployment's public https origin",
+            )
+        dep = self._broker_deployment(origin)
+        session = self._broker_create_session(origin, dep)
+        return {
+            "authorize_url": session["install_url"],
+            "state": str(session.get("state") or ""),
+            "expires_at": str(session.get("expires_at") or ""),
+            "mode": "broker",
+        }
+
+    def _broker_deployment(self, origin: str) -> dict[str, Any]:
+        """The registered deployment record for ``origin`` — present
+        credential scoped to the *current* broker, else register afresh.
+        The registration handshake proves origin control via the well-known
+        challenge before the broker ever issues a credential."""
+        dep = self._store.get_broker_deployment(origin)
+        if (
+            isinstance(dep, dict)
+            and dep.get("credential")
+            and str(dep.get("broker_url") or "") == self._broker.base_url
+        ):
+            return dep
+        return self._register_broker_deployment(origin)
+
+    def _register_broker_deployment(self, origin: str) -> dict[str, Any]:
+        """Challenge-based origin registration: get a challenge from the
+        broker, serve it at ``/.well-known/sbx-broker-challenge``, let the
+        broker verify over the public origin, then persist the issued
+        deployment credential in the protected lane."""
+        reg = self._broker_call(self._broker.register_deployment, origin)
+        challenge = str((reg or {}).get("challenge") or "")
+        registration_id = str((reg or {}).get("registration_id") or "")
+        if not challenge or not registration_id:
+            raise GitHubAppError(
+                "github_broker_error",
+                "broker registration returned no challenge",
+                status_code=502,
+            )
+        self._store.put_broker_challenge(challenge)
+        try:
+            done = self._broker_call(self._broker.complete_registration, registration_id)
+        finally:
+            self._store.delete_broker_challenge()
+        credential = str((done or {}).get("credential") or "")
+        redirect_uri = str((done or {}).get("redirect_uri") or "")
+        if not credential or _origin_of(redirect_uri) != origin:
+            raise GitHubAppError(
+                "github_broker_error",
+                "broker registration returned no credential",
+                status_code=502,
+            )
+        record = {
+            "origin": origin,
+            "credential": credential,
+            "redirect_uri": redirect_uri,
+            "broker_url": self._broker.base_url,
+            "registered_at": _iso_from_epoch(self._clock()),
+        }
+        self._store.put_broker_deployment(origin, record)
+        return record
+
+    def _broker_create_session(self, origin: str, dep: dict[str, Any]) -> dict[str, Any]:
+        """``create_session`` with one re-registration retry — a rotated or
+        wiped broker-side deployment record (broker redeploy/data loss) is
+        recovered by re-proving origin control, not by failing the user."""
+        try:
+            return self._broker_call(self._broker.create_session, origin, str(dep["credential"]))
+        except GitHubAppError as exc:
+            if not str(exc.code).endswith("broker_auth"):
+                raise
+        fresh = self._register_broker_deployment(origin)
+        return self._broker_call(self._broker.create_session, origin, str(fresh["credential"]))
+
+    def pending_broker_challenge(self) -> str | None:
+        """The well-known challenge a registration handshake is currently
+        serving — ``GET /.well-known/sbx-broker-challenge`` returns it."""
+        return self._store.get_broker_challenge()
+
+    def complete_broker(self, code: str) -> InstallationRecord:
+        """Broker-mode completion: redeem the one-time claim code the broker
+        302'd back with → installation metadata + the per-installation
+        credential. Fails closed: unknown/expired/reused codes record
+        nothing. The credential lives in the protected binding lane — never
+        in responses or agent workspaces."""
+        if self._broker is None:
+            raise GitHubAppError(
+                "github_broker_disabled",
+                "the hosted broker lane is disabled (SBX_GITHUB_BROKER_URL=off)",
+                status_code=503,
+            )
+        if not code:
+            raise GitHubAppError("github_app_invalid", "broker callback requires a code")
+        data = self._broker_call(self._broker.claim, code)
+        inst = data.get("installation") if isinstance(data, dict) else None
+        if not isinstance(inst, dict):
+            raise GitHubAppError(
+                "github_broker_error", "broker claim returned no installation", status_code=502
+            )
+        try:
+            iid = int(inst["installation_id"])
+        except (KeyError, TypeError, ValueError):
+            raise GitHubAppError(
+                "github_broker_error", "broker claim returned no installation", status_code=502
+            ) from None
+        now = _iso_from_epoch(self._clock())
+        record = InstallationRecord(
+            installation_id=iid,
+            account_login=str(inst.get("account_login") or ""),
+            account_type=str(inst.get("account_type") or ""),
+            repository_selection=str(inst.get("repository_selection") or "selected"),
+            repositories=[str(r) for r in (inst.get("repositories") or [])],
+            suspended=bool(inst.get("suspended", False)),
+            recorded_at=now,
+            synced_at=str(inst.get("synced_at") or now),
+            via="broker",
+        )
+        self._store.put(record)
+        self._store.put_broker_binding(
+            iid,
+            {
+                "credential": str(data["credential"]),
+                "broker_url": self._broker.base_url,
+                "deployment": str(inst.get("deployment") or ""),
+                "bound_at": now,
+            },
+        )
+        self._invalidate_records()
+        return record
+
     # -- one-click authorization ------------------------------------------
 
     def begin_authorization(self) -> dict[str, Any]:
@@ -1038,28 +1458,73 @@ class GitHubAppService:
         return record
 
     def sync(self) -> list[InstallationRecord]:
-        """Re-read all installations from GitHub; drop ones GitHub forgot."""
-        if not self._resolve_config().configured:
+        """Re-read all installations from GitHub; drop ones GitHub forgot.
+
+        Broker-bound records refresh through the broker (per-installation
+        credential); a broker 404 means the installation is gone — the local
+        record AND binding are dropped, fail closed.
+        """
+        if not self._resolve_config().configured and not self._broker_bound():
             _raise_unconfigured()
         seen: set[int] = set()
         out: list[InstallationRecord] = []
-        for installation in self._client.list_installations():
-            iid = int(installation.get("id") or 0)
-            if not iid:
-                continue
-            seen.add(iid)
-            out.append(self._record_installation(installation))
+        if self._resolve_config().configured:
+            for installation in self._client.list_installations():
+                iid = int(installation.get("id") or 0)
+                if not iid:
+                    continue
+                seen.add(iid)
+                out.append(self._record_installation(installation))
         for record in self._store.list():
-            if record.installation_id not in seen:
+            if record.via == "broker":
+                synced = self._sync_broker_record(record)
+                if synced is not None:
+                    out.append(synced)
+            elif record.installation_id not in seen:
                 self._store.delete(record.installation_id)
         self._invalidate_records()
         return out
 
+    def _sync_broker_record(self, record: InstallationRecord) -> InstallationRecord | None:
+        """Refresh one broker-bound record; None when it must be dropped —
+        the local record AND binding are removed consistently so a broker
+        record with no working broker lane can never linger half-alive."""
+        binding = self._store.get_broker_binding(record.installation_id)
+        credential = str((binding or {}).get("credential") or "")
+        if self._broker is None or not credential:
+            self._store.delete(record.installation_id)
+            self._store.delete_broker_binding(record.installation_id)
+            return None
+        try:
+            data = self._broker.sync_installation(record.installation_id, credential)
+        except Exception as exc:
+            from control.github_broker import GitHubBrokerError
+
+            if isinstance(exc, GitHubBrokerError) and exc.code == "not_found":
+                self._store.delete(record.installation_id)
+                self._store.delete_broker_binding(record.installation_id)
+                return None
+            raise GitHubAppError(
+                "github_broker_error", "broker sync failed", status_code=502
+            ) from exc
+        inst = data.get("installation") or {}
+        record.account_login = str(inst.get("account_login") or record.account_login)
+        record.account_type = str(inst.get("account_type") or record.account_type)
+        record.repository_selection = str(
+            inst.get("repository_selection") or record.repository_selection
+        )
+        record.repositories = [str(r) for r in (inst.get("repositories") or record.repositories)]
+        record.suspended = bool(inst.get("suspended", record.suspended))
+        record.synced_at = _iso_from_epoch(self._clock())
+        self._store.put(record)
+        return record
+
     def revoke(self, installation_id: int | None = None) -> dict[str, Any]:
-        """Revoke installation(s): best-effort upstream uninstall, then local
-        records + token cache cleared — fail-closed on either side so a half-
-        revoked install never keeps working. ``installation_id=None`` revokes
-        every recorded installation. Returns ``{"revoked": n, "remote_deleted": b}``.
+        """Revoke installation(s): best-effort upstream uninstall — directly
+        for local-App records, through the broker for broker-bound ones —
+        then local records + token cache cleared, fail-closed on either side
+        so a half-revoked install never keeps working. ``installation_id=None``
+        revokes every recorded installation.
         """
         records = self._records()
         if installation_id is not None:
@@ -1072,11 +1537,14 @@ class GitHubAppService:
                 )
         remote_deleted = True
         for record in records:
-            if self._resolve_config().configured and not self._client.delete_installation(
+            if record.via == "broker":
+                remote_deleted = self._revoke_broker(record) and remote_deleted
+            elif self._resolve_config().configured and not self._client.delete_installation(
                 record.installation_id
             ):
                 remote_deleted = False
             self._store.delete(record.installation_id)
+            self._store.delete_broker_binding(record.installation_id)
             with self._lock:
                 self._tokens = {
                     key: value
@@ -1085,6 +1553,21 @@ class GitHubAppService:
                 }
                 self._records_cache = None
         return {"revoked": len(records), "remote_deleted": remote_deleted}
+
+    def _revoke_broker(self, record: InstallationRecord) -> bool:
+        """Best-effort broker-side revoke → upstream uninstall + binding drop."""
+        binding = self._store.get_broker_binding(record.installation_id)
+        credential = str((binding or {}).get("credential") or "")
+        if self._broker is None or not credential:
+            return False
+        try:
+            return bool(
+                self._broker.revoke_installation(record.installation_id, credential).get(
+                    "remote_deleted"
+                )
+            )
+        except Exception:
+            return False
 
     # -- sandbox token seam -------------------------------------------------
 
@@ -1096,22 +1579,39 @@ class GitHubAppService:
                 return record
         return None
 
+    def _record_supply_path(self, record: InstallationRecord) -> str | None:
+        """Which mint path serves a recorded installation — ``local`` for
+        deployment-App records (needs a configured App), ``broker`` for
+        broker-bound ones (needs the lane + a stored credential), else None.
+        """
+        if record.via == "broker":
+            binding = self._store.get_broker_binding(record.installation_id)
+            if self._broker is None or not (binding or {}).get("credential"):
+                return None
+            return "broker"
+        return "local" if self._resolve_config().configured else None
+
     def can_supply(self, repo: str | None = None) -> bool:
-        """Cheap no-network gate for ``github.injection_enabled``: a
-        configured app with at least one recorded (repo-authorizing)
-        installation."""
-        if not self._resolve_config().configured:
-            return False
+        """Cheap no-network gate for ``github.injection_enabled``: a recorded
+        (repo-authorizing) installation with a live mint path — local App
+        or broker-bound."""
         try:
             records = self._records()
         except Exception:
             return False
-        if repo is None:
-            return any(not r.suspended for r in records)
-        slug = _normalize_slug(repo)
-        if slug is None:
+        slug = _normalize_slug(repo) if repo else None
+        if repo and slug is None:
             return False  # non-github.com repo — no App can authorize it
-        return self.installation_for_repo(slug) is not None
+        candidates = (
+            [r for r in records if not r.suspended]
+            if slug is None
+            else [
+                r
+                for r in records
+                if r.account_login.lower() == slug.split("/", 1)[0].lower() and r.authorizes(slug)
+            ]
+        )
+        return any(self._record_supply_path(r) is not None for r in candidates)
 
     def sandbox_token(self, repo: str | None = None) -> str | None:
         """A short-lived installation token for sandbox injection.
@@ -1121,9 +1621,12 @@ class GitHubAppService:
         the caller knows the target. Without it, the first recorded
         installation's token covers its whole authorized selection.
         ``None`` = no authorized source (fail closed).
+
+        Broker-bound records mint through the broker's per-installation
+        credential; a broker ``not_found`` drops the stale record and fails
+        closed — repository revocation/selection changes can never leak a
+        wider token.
         """
-        if not self._resolve_config().configured:
-            return None
         slug = _normalize_slug(repo) if repo else None
         if repo and slug is None:
             return None
@@ -1137,17 +1640,50 @@ class GitHubAppService:
             if record is None:
                 return None
             repositories = None
+        path = self._record_supply_path(record)
+        if path is None:
+            return None
         key = (record.installation_id, ",".join(sorted(repositories or [])))
         with self._lock:
             cached = self._tokens.get(key)
             if cached is not None and cached[1] - _TOKEN_REFRESH_MARGIN_S > self._clock():
                 return cached[0]
-        token, expiry = self._client.create_installation_token(
-            record.installation_id, repositories=repositories
-        )
+        if path == "broker":
+            minted = self._broker_mint(record, repositories)
+        else:
+            minted = self._client.create_installation_token(
+                record.installation_id, repositories=repositories
+            )
+        if minted is None:
+            return None
+        token, expiry = minted
         with self._lock:
             self._tokens[key] = (token, expiry)
         return token
+
+    def _broker_mint(
+        self, record: InstallationRecord, repositories: list[str] | None
+    ) -> tuple[str, float] | None:
+        """Mint via the broker. Returns ``(token, expiry)`` on success,
+        ``None`` fail-closed (a broker 404 also forgets the stale record), or
+        re-raises GitHubAppError for non-404 broker failures."""
+        from control.github_broker import GitHubBrokerError
+
+        binding = self._store.get_broker_binding(record.installation_id)
+        credential = str((binding or {}).get("credential") or "")
+        try:
+            return self._broker.mint_token(
+                record.installation_id, credential, repositories=repositories
+            )
+        except GitHubBrokerError as exc:
+            if exc.code == "not_found":
+                self._store.delete(record.installation_id)
+                self._store.delete_broker_binding(record.installation_id)
+                self._invalidate_records()
+                return None
+            raise GitHubAppError(
+                f"github_broker_{exc.code}", exc.message, status_code=exc.status_code
+            ) from exc
 
 
 def _iso_from_epoch(epoch: float) -> str:
@@ -1167,6 +1703,47 @@ def _origin_of(url: str) -> str | None:
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def _is_loopback_host(url: str) -> bool:
+    """Loopback origins are the ONE allowed exception to https-only —
+    explicitly scoped to local dev and in-process test seams."""
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".localhost")
+
+
+def _is_public_origin(origin: str) -> bool:
+    """An origin the broker may bind a deployment to: https, or http only
+    on loopback."""
+    return bool(origin) and (origin.startswith("https://") or _is_loopback_host(origin))
+
+
+# Operator override for the deployment's public origin when the request URL
+# cannot be trusted (TLS-terminated proxies without forwarded headers).
+PUBLIC_ORIGIN_ENV = "SBX_PUBLIC_ORIGIN"
+
+
+def public_request_origin(request: Any, env: Mapping[str, str] | None = None) -> str | None:
+    """The deployment's trusted public origin for callback construction.
+
+    Resolution order — ``SBX_PUBLIC_ORIGIN`` (operator-pinned), then the
+    proxy forwarded headers, then the direct request URL. Whatever wins must
+    be https (loopback http excepted); anything else returns ``None`` so the
+    broker path fails closed instead of registering an http origin.
+    """
+    env = os.environ if env is None else env
+    pinned = _origin_of(env.get(PUBLIC_ORIGIN_ENV) or "")
+    if pinned is not None:
+        return pinned if _is_public_origin(pinned) else None
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.url.netloc).split(",")[0].strip()
+    origin = _origin_of(f"{proto}://{host}")
+    return origin if origin and _is_public_origin(origin) else None
 
 
 def github_web_url(api_url: str) -> str:
@@ -1205,6 +1782,8 @@ def default_service(env: Mapping[str, str] | None = None) -> GitHubAppService:
     global _default_key, _default_service
     env = os.environ if env is None else env
     config = GitHubAppConfig.from_env(env)
+    from control.github_broker import broker_url_from_env, client_from_env
+
     key = (
         config.app_id,
         config.slug,
@@ -1212,6 +1791,7 @@ def default_service(env: Mapping[str, str] | None = None) -> GitHubAppService:
         env.get(APP_DICT_ENV) or DEFAULT_DICT_NAME,
         env.get(APP_STORE_DIR_ENV) or "",
         env.get(APP_API_URL_ENV) or "",
+        env.get(BROKER_URL_ENV) or "",
         env.get("SBX_BACKEND") or "",
     )
     with _default_lock:
@@ -1234,6 +1814,7 @@ def default_service(env: Mapping[str, str] | None = None) -> GitHubAppService:
             api_url=api_url,
             secret_writer=secret_writer,
             secret_name=secret_name,
+            broker=client_from_env(env) if broker_url_from_env(env) else None,
         )
         _default_key = key
         return _default_service
