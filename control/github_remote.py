@@ -528,7 +528,7 @@ class RemoteGitHub:
             body={
                 "query": (
                     "mutation($id:ID!){markPullRequestReadyForReview("
-                    "input:{pullRequestId:$id}){pullRequest{number state draft url}}}"
+                    "input:{pullRequestId:$id}){pullRequest{number state isDraft url}}}"
                 ),
                 "variables": {"id": node_id},
             },
@@ -547,7 +547,7 @@ class RemoteGitHub:
         return {
             "number": pr.get("number") if isinstance(pr.get("number"), int) else number,
             "state": state.lower() if isinstance(state, str) else "open",
-            "draft": bool(pr.get("draft")),
+            "draft": bool(pr.get("isDraft")),
             "html_url": pr.get("url"),
             "merged": False,
         }
