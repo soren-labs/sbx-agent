@@ -25,8 +25,8 @@ export function docsUrl(page = "") {
 const NAV = [
   { id: "home", label: "Home", iconName: "home", href: "#/", match: ["home"] },
   { id: "tasks", label: "Tasks", iconName: "listTodo", href: "#/tasks", match: ["tasks", "task", "task-new"] },
-  { id: "integrations", label: "Integrations", iconName: "plug", href: "#/integrations", match: ["integrations", "github", "accounts", "capacity"] },
-  { id: "settings", label: "Settings", iconName: "settings", href: "#/settings", match: ["settings", "keys"] },
+  { id: "integrations", label: "Integrations", iconName: "plug", href: "#/integrations", match: ["integrations", "github", "accounts"] },
+  { id: "settings", label: "Settings", iconName: "settings", href: "#/settings", match: ["settings", "keys", "capacity", "runtime"] },
 ];
 
 // Raw primitives — still first-class routes, one level down.

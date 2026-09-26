@@ -10,6 +10,7 @@ import { renderKeys } from "./keys.js";
 import { renderNewAgent } from "./new-agent.js";
 import { renderNewTask } from "./new-task.js";
 import { renderNotFound } from "./not-found.js";
+import { renderRuntime } from "./runtime.js";
 import { renderSettings } from "./settings.js";
 import { renderTask } from "./task.js";
 import { renderTasks } from "./tasks.js";
@@ -32,6 +33,7 @@ export const VIEWS = {
   accounts: renderAccounts,
   keys: renderKeys,
   github: renderGithub,
+  runtime: renderRuntime,
   settings: renderSettings,
   "not-found": renderNotFound,
 };

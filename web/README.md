@@ -1,9 +1,10 @@
 # web/ — sbx-browser console
 
-A build-less single-page console for the public `/v1` API: agents and live
+A build-less single-page console for the public `/v1` API: tasks and live
 runs, repository workspaces (review pin, publish, merge, handoff), artifacts,
-workflows, capacity, and admin pages for accounts, API keys and the GitHub
-App. Plain ES modules + CSS — no bundler, no runtime dependencies.
+workflows, product integrations (GitHub, provider accounts) under
+Integrations, and operator surfaces (API keys, capacity, provider runtime)
+under Settings. Plain ES modules + CSS — no bundler, no runtime dependencies.
 
 ```
 index.html  app.js  styles.css  favicon.svg

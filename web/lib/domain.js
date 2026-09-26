@@ -98,6 +98,48 @@ export const isTaskEnded = (status) => Boolean(TASK_STATUS[status]?.ended);
 /** Needs a human look: failed, expired, or the delivery could not land. */
 export const isTaskAttention = (status) => ["error", "delivery_failed", "expired"].includes(status);
 
+// Canonical connection vocabulary from GET /v1/providers (SOR-221) —
+// `connection.status` is computed server-side from live account state.
+const CONNECTION_STATUS = {
+  connected: { tone: "green", label: "Connected" },
+  not_connected: { tone: "neutral", label: "Not connected" },
+  degraded: { tone: "amber", label: "Needs attention" },
+};
+
+export function connectionMeta(status) {
+  const meta = CONNECTION_STATUS[status];
+  return meta ? { ...meta, label: t(meta.label) } : { tone: "neutral", label: status || t("Unknown") };
+}
+
+// `runtime.status` from the same rows — deploy evidence written by
+// `sbx deploy`; diagnostics vocabulary, not user-facing connection state.
+const RUNTIME_STATUS = {
+  ready: { tone: "green", label: "Ready" },
+  degraded: { tone: "amber", label: "Degraded" },
+  unknown: { tone: "neutral", label: "No deploy record" },
+  disabled: { tone: "neutral", label: "Not enabled" },
+};
+
+export function runtimeMeta(status) {
+  const meta = RUNTIME_STATUS[status];
+  return meta ? { ...meta, label: t(meta.label) } : { tone: "neutral", label: status || t("Unknown") };
+}
+
+// Canonical account auth_state (AUTH_SESSION_STATES) → human label.
+const AUTH_STATE_LABELS = {
+  verified: "Signed in",
+  materialized: "Credential stored",
+  authenticating: "Signing in",
+  reauth_required: "Reconnect needed",
+  unhealthy: "Unhealthy",
+  unauthenticated: "Not signed in",
+  disabled: "Disabled",
+};
+
+export function authStateLabel(state) {
+  return state ? t(AUTH_STATE_LABELS[state] || state) : "";
+}
+
 /** `https://github.com/o/r(.git)` → `o/r`; any other address → basename. */
 export function repoName(repo) {
   if (!repo) return "";

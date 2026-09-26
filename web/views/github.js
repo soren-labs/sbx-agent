@@ -25,6 +25,31 @@ import { docsUrl } from "./shell.js";
 const CALLBACK_KEY = "sbx.console.github_callback";
 const PENDING_KEY = "sbx.console.github_pending";
 
+// GitHub-side settings pages for an installation. Org apps are managed under
+// the org's settings; user apps under the personal settings page. The origin
+// follows app_url so GHES deployments land on their own host.
+function githubOrigin(appUrl) {
+  const u = httpUrl(appUrl);
+  return u ? new URL(u).origin : "https://github.com";
+}
+
+function installationUrl(inst, st) {
+  const origin = githubOrigin(st.app_url);
+  if (!inst) return st.app_url ? httpUrl(st.app_url)?.href || `${origin}/settings/installations` : `${origin}/settings/installations`;
+  return inst.account_type === "Organization"
+    ? `${origin}/organizations/${encodeURIComponent(inst.account_login)}/settings/installations/${inst.installation_id}`
+    : `${origin}/settings/installations/${inst.installation_id}`;
+}
+
+function githubStatusBadge(st) {
+  if (!st.configured) return badge(t("Not connected"), { tone: "neutral", testid: "github-conn" });
+  const issues = (st.installations || []).filter((i) => i.suspended).length;
+  if (issues || (st.broker?.url && !st.broker.healthy)) {
+    return badge(t("Needs attention"), { tone: "amber", testid: "github-conn" });
+  }
+  return badge(t("Connected"), { tone: "green", testid: "github-conn" });
+}
+
 // SOR-220: two connect paths. DEFAULT — `api.githubInstall()` returns the
 // official github.com/apps/<public SBX App>/installations/new URL (broker
 // mode); the browser installs the pre-registered App once and GitHub/broker
@@ -169,39 +194,55 @@ export function renderGithub() {
       return;
     }
     manifestNotice();
+    const firstInstall = st.installations[0] || null;
     const posture = card({
-      title: t("Authorization"),
+      title: t("Connection"),
       iconName: "github",
       testid: "github-status",
-      actions: (st.installable || (st.broker && st.broker.url))
+      actions: st.configured
         ? [
-            st.installable || st.installations.length
-              ? actionButton(t("Sync"), async () => {
-                  try {
-                    await api.githubSync();
-                    toast(t("Installations refreshed from GitHub"), { tone: "success" });
-                  } catch (err) {
-                    toastError(err, t("Sync failed"));
-                  }
-                  await load();
-                }, { size: "sm", iconName: "refresh" })
+            actionButton(t("Sync"), async () => {
+              try {
+                await api.githubSync();
+                toast(t("Installations refreshed from GitHub"), { tone: "success" });
+              } catch (err) {
+                toastError(err, t("Sync failed"));
+              }
+              await load();
+            }, { size: "sm", iconName: "refresh" }),
+            h("a", { class: "btn btn-sm btn-secondary", href: installationUrl(firstInstall, st), target: "_blank", rel: "noopener noreferrer", "data-testid": "github-manage-repos" }, icon("external", { size: 14 }), h("span", null, t("Manage repositories"))),
+            (st.installable || (st.broker && st.broker.url))
+              ? actionButton(t("Reconnect"), connectGitHub, { size: "sm", variant: "secondary", iconName: "link", testid: "github-connect", title: t("Install the App on another account or re-run the connect flow") })
               : null,
-            actionButton(t("Connect GitHub"), connectGitHub, { size: "sm", variant: "primary", iconName: "external", testid: "github-connect" }),
           ]
         : null,
       body: h(
         "div",
         { class: "stack" },
         kv([
-          [t("GitHub App"), st.configured ? badge(t("configured"), { tone: "green" }) : badge(t("not configured"), { tone: "neutral" })],
-          st.source ? [t("Config source"), badge(st.source === "registry" ? t("registered") : st.source, { mono: true, testid: "github-source" })] : null,
-          [t("App"), st.app_slug ? h("a", { href: st.app_url || `https://github.com/apps/${st.app_slug}`, target: "_blank", rel: "noopener noreferrer" }, st.app_slug) : null],
-          [t("App id"), st.app_id ? h("code", null, st.app_id) : null],
-          [t("Token fallback"), st.bridge_token ? badge(t("GH_TOKEN available"), { tone: "amber" }) : badge(t("none"), { tone: "neutral" })],
-          st.broker && st.broker.url
-            ? [t("Connect lane"), st.broker.bound ? badge(t("brokered"), { tone: "green", testid: "github-broker-bound" }) : badge(st.broker.healthy ? t("broker ready") : t("broker unreachable"), { tone: st.broker.healthy ? "neutral" : "amber", testid: "github-broker-health" })]
+          [t("Status"), githubStatusBadge(st)],
+          st.configured && st.app_slug
+            ? [t("App"), h("a", { href: st.app_url || `https://github.com/apps/${st.app_slug}`, target: "_blank", rel: "noopener noreferrer" }, st.app_slug)]
+            : null,
+          st.configured
+            ? [t("Installations"), st.installations.length ? t("{n} connected", { n: st.installations.length }) : t("None yet")]
             : null,
         ]),
+        st.configured
+          ? h(
+              "details",
+              { class: "muted", "data-testid": "github-details" },
+              h("summary", null, t("Deployment details")),
+              kv([
+                st.source ? [t("Config source"), badge(st.source === "registry" ? t("registered") : st.source, { mono: true, testid: "github-source" })] : null,
+                [t("App id"), st.app_id ? h("code", null, st.app_id) : null],
+                [t("Token fallback"), st.bridge_token ? badge(t("GH_TOKEN available"), { tone: "amber" }) : badge(t("none"), { tone: "neutral" })],
+                st.broker && st.broker.url
+                  ? [t("Connect lane"), st.broker.bound ? badge(t("brokered"), { tone: "green", testid: "github-broker-bound" }) : badge(st.broker.healthy ? t("broker ready") : t("broker unreachable"), { tone: st.broker.healthy ? "neutral" : "amber", testid: "github-broker-health" })]
+                  : null,
+              ]),
+            )
+          : null,
         !st.configured
           ? h(
               "div",
@@ -272,6 +313,7 @@ export function renderGithub() {
                     h(
                       "td",
                       { class: "num" },
+                      h("a", { class: "btn btn-sm btn-ghost", href: installationUrl(inst, st), target: "_blank", rel: "noopener noreferrer", title: t("Manage repositories on GitHub"), "data-testid": "github-manage" }, icon("external", { size: 14 }), h("span", null, t("Manage"))),
                       actionButton(t("Revoke"), async () => {
                         const ok = await confirmDialog({
                           title: t("Revoke {account}?", { account: inst.account_login }),

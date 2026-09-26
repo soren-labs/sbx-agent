@@ -1,20 +1,41 @@
-import { clearConnection, getConnection, planeLabel } from "../lib/config.js";
+import { clearConnection, getConnection, hasScope, planeLabel } from "../lib/config.js";
 import { h } from "../lib/dom.js";
 import { getLang, setLang, t } from "../lib/i18n.js";
+import { icon } from "../lib/icons.js";
 import { navigate } from "../lib/router.js";
 import { getTheme, prompts, recentWorkflows, setTheme } from "../lib/store.js";
 import { badge, button, card, kv, pageHeader, segmented, toast } from "../lib/ui.js";
 
+/** Operator surface entry — product integrations live under Integrations;
+ *  these pages are deployment-level diagnostics and key administration. */
+function adminRow({ title, body, href, testid, locked }) {
+  return h(
+    "a",
+    {
+      class: "admin-row",
+      href,
+      "data-testid": testid,
+      style: "display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border);text-decoration:none;color:inherit",
+    },
+    h("div", { style: "flex:1;min-width:0" }, h("div", { class: "cell-title" }, title), h("span", { class: "cell-sub" }, body)),
+    locked
+      ? h("span", { class: "subtle", style: "display:inline-flex;align-items:center;gap:4px" }, icon("lock", { size: 13 }), t("Admin scope"))
+      : icon("arrowRight", { size: 16, className: "muted-icon" }),
+  );
+}
+
 export function renderSettings() {
   const conn = getConnection();
   const idn = conn.identity || {};
+  const admin = hasScope("admin");
   const el = h(
     "div",
     { class: "page page-narrow" },
-    pageHeader({ title: t("Settings"), subtitle: t("Stored in this browser only."), testid: "page-title" }),
+    pageHeader({ title: t("Settings"), subtitle: t("Console preferences, plus administration when your key has the admin scope."), testid: "page-title" }),
     h(
       "div",
       { class: "stack" },
+      h("div", { class: "section-title" }, t("This browser")),
       card({
         title: t("Connection"),
         iconName: "server",
@@ -72,12 +93,6 @@ export function renderSettings() {
         ),
       }),
       card({
-        title: t("API keys"),
-        iconName: "key",
-        subtitle: t("Mint keys for CI or share one with a teammate — scoped to agents or admin."),
-        body: h("a", { class: "btn", href: "#/settings/keys", "data-testid": "settings-keys" }, t("Manage API keys")),
-      }),
-      card({
         title: t("Local data"),
         iconName: "trash",
         body: h("p", { class: "muted" }, t("The console remembers prompts it sent (the API does not store them) and recently viewed workflows.")),
@@ -91,6 +106,38 @@ export function renderSettings() {
             },
           }),
         ],
+      }),
+      h("div", { class: "section-title" }, t("Administration"), h("span", { class: "subtle" }, " · ", t("deployment-wide operator surface"))),
+      card({
+        title: t("Administration"),
+        iconName: "shield",
+        subtitle: t("Operator diagnostics and key management — product integrations live under Integrations."),
+        testid: "admin-section",
+        body: h(
+          "div",
+          null,
+          adminRow({
+            title: t("API keys"),
+            body: t("Mint keys for CI or share one with a teammate — scoped to agents or admin."),
+            href: "#/settings/keys",
+            testid: "settings-keys",
+            locked: !admin,
+          }),
+          adminRow({
+            title: t("Capacity"),
+            body: t("Live provider slots — what can actually take a run right now."),
+            href: "#/settings/capacity",
+            testid: "settings-capacity",
+            locked: false,
+          }),
+          adminRow({
+            title: t("Provider runtime"),
+            body: t("Deploy evidence per provider: enabled state, image, version and last deploy detail."),
+            href: "#/settings/runtime",
+            testid: "settings-runtime",
+            locked: !admin,
+          }),
+        ),
       }),
       h("p", { class: "subtle", style: "font-size:12px;text-align:center" }, `sbx-browser console · ${planeLabel()}`),
     ),

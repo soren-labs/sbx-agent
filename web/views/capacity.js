@@ -94,7 +94,7 @@ export function renderCapacity() {
     pageHeader({
       title: t("Capacity"),
       subtitle: t("Models each provider offers and how many accounts have a free slot right now. `auto` scheduling picks the least-recently-used free account."),
-      back: { href: "#/integrations", label: t("Integrations") },
+      back: { href: "#/settings", label: t("Settings") },
       testid: "page-title",
     }),
     body,

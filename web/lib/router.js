@@ -17,7 +17,8 @@ const ROUTES = [
   ["integrations", /^\/integrations$/],
   ["accounts", /^\/integrations\/accounts$/],
   ["github", /^\/integrations\/github$/],
-  ["capacity", /^\/integrations\/capacity$/],
+  ["capacity", /^\/settings\/capacity$/],
+  ["runtime", /^\/settings\/runtime$/],
   ["settings", /^\/settings$/],
   ["keys", /^\/settings\/keys$/],
 ];
@@ -27,7 +28,8 @@ export const LEGACY_ROUTES = {
   "/admin/accounts": "/integrations/accounts",
   "/admin/keys": "/settings/keys",
   "/admin/github": "/integrations/github",
-  "/capacity": "/integrations/capacity",
+  "/capacity": "/settings/capacity",
+  "/integrations/capacity": "/settings/capacity",
 };
 
 export function parseHash(hash = window.location.hash) {
