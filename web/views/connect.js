@@ -151,7 +151,7 @@ export function renderConnect({ route, onConnected }) {
           { class: "connect-foot" },
           h("strong", null, t("Where do I get a key?")),
           h("span", null, rich(t("`sbx deploy` writes an admin key to")), " ", h("code", null, "~/.local/state/sbx/bootstrap.key"), "."),
-          h("span", null, t("Admins can mint more keys under Admin → API keys.")),
+          h("span", null, t("Admins can mint more keys under Settings → API keys.")),
           h("a", { href: docsUrl("getting-started/quick-start"), target: "_blank", rel: "noopener noreferrer" }, t("Read the quick start →")),
         ),
       ),

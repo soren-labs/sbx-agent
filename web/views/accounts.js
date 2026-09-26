@@ -1,6 +1,6 @@
 import { api } from "../lib/api.js";
 import { h, httpUrl, mount } from "../lib/dom.js";
-import { PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
+import { authStateLabel, PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
 import { fmtDateTime, fmtRelative } from "../lib/format.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
@@ -26,7 +26,7 @@ import {
 } from "../lib/ui.js";
 import { adminGate } from "./admin-gate.js";
 
-function importDialog(onDone) {
+export function importDialog(onDone) {
   const f = { provider: "codex", label: "", maxConcurrent: "1", models: "", files: [] };
   const body = h("div", { class: "fields" });
   const addFile = (path = PROVIDER_META[f.provider].credential) => {
@@ -154,10 +154,11 @@ const CONNECT_TERMINAL = ["verified", "materialized", "failed", "cancelled", "ex
 // POST /v1/auth/connect and surface the canonical session live (hosted
 // lane: browser/device URL scraped from the login output; pair lane: the
 // single-use `sbx auth pair` command on deploys with no host CLI).
-function connectDialog(onDone, opts = {}) {
+export function connectDialog(onDone, opts = {}) {
   const relink = opts.account || null;
+  const preset = opts.provider || null; // provider chosen on the calling page
   const f = {
-    provider: relink?.provider || "codex",
+    provider: relink?.provider || preset || "codex",
     label: relink?.label || "",
     maxConcurrent: "1",
     models: "",
@@ -249,7 +250,7 @@ function connectDialog(onDone, opts = {}) {
         title: t("No token paste"),
         body: t("Runs the provider's official login — the same engine as `sbx auth` — then captures, imports and verifies the credential for you."),
       }),
-      relink
+      relink || preset
         ? field(t("Provider"), providerTag(f.provider))
         : h(
             "div",
@@ -275,7 +276,7 @@ function connectDialog(onDone, opts = {}) {
   render();
 
   const dlg = openDialog({
-    title: relink ? t("Reconnect {label}", { label: f.label }) : t("Connect a provider"),
+    title: relink ? t("Reconnect {label}", { label: f.label }) : preset ? t("Connect {provider}", { provider: providerLabel(f.provider) }) : t("Connect a provider"),
     description: relink
       ? t("Re-authenticate the existing account in place — keeps its id, slots and scheduler state.")
       : t("Sign in with the provider's own flow — no credential file to upload."),
@@ -327,7 +328,7 @@ const AUTH_STATE_TONES = {
 function authStateBadge(account) {
   const state = account.auth_state;
   if (!state || state === "verified") return null;
-  return badge(state, { tone: AUTH_STATE_TONES[state] || "neutral", mono: true, testid: "auth-state" });
+  return badge(authStateLabel(state), { tone: AUTH_STATE_TONES[state] || "neutral", title: state, testid: "auth-state" });
 }
 
 export function renderAccounts() {
@@ -349,10 +350,9 @@ export function renderAccounts() {
         emptyState({
           iconName: "users",
           title: t("No accounts yet"),
-          body: t("Agents run under your own provider subscriptions. Import the credential file a provider CLI writes on login."),
+          body: t("Agents run under your own provider subscriptions. Connect signs in with the provider's official login — nothing to paste."),
           actions: [
             button(t("Connect provider"), { variant: "primary", iconName: "link", testid: "connect-provider", onClick: () => connectDialog(load) }),
-            button(t("Import account"), { iconName: "plus", onClick: () => importDialog(load) }),
           ],
           testid: "accounts-empty",
         }),
@@ -398,9 +398,9 @@ export function renderAccounts() {
                   (a.auth_state === "reauth_required" || a.auth_state === "unauthenticated" || a.status === "invalid")
                     ? button(t("Reconnect"), {
                         size: "sm",
-                        variant: "ghost",
+                        variant: "secondary",
                         iconName: "link",
-                        title: t("Run the provider's login again for this account (SOR-214 relink)"),
+                        title: t("Run the provider's login again for this account"),
                         testid: "account-relink",
                         onClick: () => connectDialog(load, { account: a }),
                       })
@@ -456,7 +456,7 @@ export function renderAccounts() {
       back: { href: "#/integrations", label: t("Integrations") },
       actions: [
         button(t("Connect provider"), { variant: "primary", iconName: "link", testid: "connect-provider", onClick: () => connectDialog(load) }),
-        button(t("Import account"), { iconName: "plus", testid: "import-account", onClick: () => importDialog(load) }),
+        button(t("Import credential file"), { variant: "ghost", iconName: "upload", title: t("Advanced: paste the file the provider CLI writes on login"), testid: "import-account", onClick: () => importDialog(load) }),
       ],
       testid: "page-title",
     }),

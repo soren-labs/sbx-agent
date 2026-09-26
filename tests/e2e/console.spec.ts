@@ -233,8 +233,10 @@ test.describe("web console against a real local /v1 control plane", () => {
     await page.waitForURL(/#\/settings\/keys/);
     await expect(page.getByTestId("page-title")).toContainText("API keys");
     await page.goto("/#/capacity");
-    await page.waitForURL(/#\/integrations\/capacity/);
+    await page.waitForURL(/#\/settings\/capacity/);
     await expect(page.getByTestId("capacity-codex")).toBeVisible();
+    await page.goto("/#/integrations/capacity");
+    await page.waitForURL(/#\/settings\/capacity/);
     await page.goto("/#/admin/github");
     await page.waitForURL(/#\/integrations\/github/);
     await expect(page.getByTestId("github-status")).toBeVisible();
@@ -282,8 +284,11 @@ test.describe("web console against a real local /v1 control plane", () => {
     await shot(page, "console_11_capacity.png");
 
     await page.getByTestId("nav-integrations").click();
+    // The hub lists every provider with its canonical connection status.
+    await expect(page.getByTestId("providers-table")).toBeVisible();
+    await expect(page.getByTestId("provider-status-codex")).toContainText("Connected");
     await page.getByTestId("int-github").click();
-    await expect(page.getByTestId("github-status")).toContainText("not configured");
+    await expect(page.getByTestId("github-status")).toContainText("Not connected");
   });
 
   test("live badge polls the summary rollup, never a full agent list (SOR-202)", async ({ page }) => {
@@ -604,7 +609,7 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
     await connect(page);
     await page.getByTestId("nav-integrations").click();
     await page.getByTestId("int-github").click();
-    await expect(page.getByTestId("github-status")).toContainText("not configured");
+    await expect(page.getByTestId("github-status")).toContainText("Not connected");
     // Manifest registration is the Advanced/self-hosted path now.
     await page.getByTestId("github-advanced").locator("summary").click();
     await page.getByTestId("github-create-app").click();
@@ -613,7 +618,7 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
     // which redirects back through the callback with code+state — the
     // whole dance runs in-browser, no manual copy of app credentials.
     await expect(page.getByTestId("manifest-connected")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("github-status")).toContainText("configured", {
+    await expect(page.getByTestId("github-status")).toContainText("Connected", {
       timeout: 15_000,
     });
 
@@ -631,7 +636,7 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
     await connect(page);
     await page.getByTestId("nav-integrations").click();
     await page.getByTestId("int-github").click();
-    await expect(page.getByTestId("github-status")).toContainText("not configured");
+    await expect(page.getByTestId("github-status")).toContainText("Not connected");
 
     // Acceptance gate: the FIRST GitHub page is the App *installation*
     // page — /apps/<slug>/installations/new — never settings/apps/new.
@@ -647,7 +652,7 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
     await page.getByTestId("gh-install").click();
     await page.waitForURL(/broker=connected/, { timeout: 15_000 });
     await expect(page.getByTestId("broker-connected")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("github-status")).toContainText("configured", {
+    await expect(page.getByTestId("github-status")).toContainText("Connected", {
       timeout: 15_000,
     });
     await expect(page.getByTestId("github-installations")).toContainText("e2e-org", {

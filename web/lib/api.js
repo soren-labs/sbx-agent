@@ -154,6 +154,10 @@ export const api = {
   workflow: (workflowId) => request("GET", `/v1/workflows/${enc(workflowId)}`),
   closeWorkflow: (workflowId) => request("DELETE", `/v1/workflows/${enc(workflowId)}`),
 
+  // SOR-221: canonical provider read model — catalog + runtime readiness
+  // + account connection per provider (agents scope).
+  listProviders: () => request("GET", "/v1/providers"),
+
   listAccounts: (query) => request("GET", "/v1/accounts", { query }),
   createAccount: (body) => request("POST", "/v1/accounts", { body }),
   deleteAccount: (id) => request("DELETE", `/v1/accounts/${enc(id)}`),
