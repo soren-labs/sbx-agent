@@ -170,6 +170,24 @@ class CredentialSync:
         except Exception:
             return None
 
+    def seed_blob(self, account_id: str | None) -> dict[str, Any] | None:
+        """The stored credential blob a session will be seeded with.
+
+        The registry blob is authoritative for the account; callers inject
+        it into the ``runner init`` env (``SBX_ACCOUNT_CREDENTIAL``) so a
+        blob-carrying account restores its auth files even when no managed
+        Secret mounts — e.g. an account row whose ``secret_name`` was never
+        materialized, or a non-Modal backend with no Secret store at all.
+        """
+        registry = self._registry()
+        if registry is None or not self._usable(account_id):
+            return None
+        try:
+            blob = registry.get_credential_blob(account_id)
+        except Exception:
+            return None
+        return dict(blob) if isinstance(blob, dict) else None
+
     @staticmethod
     def mark_run_credential(tags: dict[str, str]) -> None:
         """Copy ``cred_base_fp`` → ``cred_run_fp`` for the run being dispatched."""

@@ -85,11 +85,14 @@ def origin(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _create_with_workspace(
-    client: TestClient, auth: dict[str, str], decl: dict[str, str], **extra: Any
+    env: V1Env, client: TestClient, auth: dict[str, str], decl: dict[str, str], **extra: Any
 ) -> dict[str, Any]:
     body = create_agent(client, auth, workspace=decl, **extra)
     agent = body["agent"]
     wait_run(client, auth, agent["id"], "run-1")
+    # The verdict is durable while the watcher settles its post-run window
+    # (write-back + eager checkpoint) — callers get a usable idle agent.
+    wait_idle(env, agent["id"])
     return agent
 
 
@@ -98,7 +101,7 @@ class TestWorkspaceDeclaration:
         self, client: TestClient, auth: dict[str, str], v1_env: V1Env, origin: tuple[Path, str]
     ) -> None:
         repo, base = origin
-        agent = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         rec = v1_env.store.get(agent["id"])
         assert host_git(workdir(v1_env, agent["id"]), "rev-parse", "HEAD") == base
         ws = client.get(f"/v1/agents/{agent['id']}/workspace", headers=auth)
@@ -107,6 +110,10 @@ class TestWorkspaceDeclaration:
         assert body["checkout_sha"] == base
         assert body["head_sha"] == base
         assert body["reviewed_head_sha"] is None
+        # The run verdict is durable while the watcher finishes its post-run
+        # window (write-back + eager checkpoint) — wait for the settle.
+        wait_idle(v1_env, agent["id"])
+        rec = v1_env.store.get(agent["id"])
         assert rec is not None and rec.status == "idle"
 
     def test_wrong_base_sha_fails_explicitly(
@@ -174,7 +181,7 @@ class TestArtifactLifecycle:
         self, client: TestClient, auth: dict[str, str], v1_env: V1Env, origin: tuple[Path, str]
     ) -> None:
         repo, base = origin
-        agent = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         head = commit_in_agent(v1_env, agent["id"], "b.txt", "two\n")
 
         resp = client.post(f"/v1/agents/{agent['id']}/artifacts", json={}, headers=auth)
@@ -225,7 +232,7 @@ class TestArtifactLifecycle:
         repo, base = origin
         canary = "sk-canary-REDACTED-0000"
         monkeypatch.setenv("CODEX_AUTH_JSON", canary)
-        agent = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         (workdir(v1_env, agent["id"]) / "leak.txt").write_text(
             f"token={canary}\n", encoding="utf-8"
         )
@@ -243,7 +250,7 @@ class TestCrossAgentHandoff:
         repo, base = origin
 
         # A: declared workspace, produces b.txt — never pushed to origin.
-        agent_a = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent_a = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         head_a = commit_in_agent(v1_env, agent_a["id"], "b.txt", "two\n")
         artifact = client.post(
             f"/v1/agents/{agent_a['id']}/artifacts", json={}, headers=auth
@@ -258,6 +265,7 @@ class TestCrossAgentHandoff:
         prompt_b = "Continue the task; do not echo file contents."
         assert "two" not in prompt_b
         agent_b = _create_with_workspace(
+            v1_env,
             client,
             auth,
             workspace_decl(repo, base),
@@ -291,6 +299,7 @@ class TestCrossAgentHandoff:
         # (head_sha handoff requires the commit reachable in the shared repo).
         host_git(wd_b, "push", "-q", str(repo), f"{head_a}:refs/heads/work-a")
         agent_c = _create_with_workspace(
+            v1_env,
             client,
             auth,
             workspace_decl(repo, base),
@@ -323,13 +332,13 @@ class TestLiveHandoffRoute:
         self, client: TestClient, auth: dict[str, str], v1_env: V1Env, origin: tuple[Path, str]
     ) -> None:
         repo, base = origin
-        agent_a = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent_a = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         head_a = commit_in_agent(v1_env, agent_a["id"], "b.txt", "two\n")
         artifact = client.post(
             f"/v1/agents/{agent_a['id']}/artifacts", json={}, headers=auth
         ).json()["artifact"]
 
-        agent_b = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent_b = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         wait_idle(v1_env, agent_b["id"])
         resp = client.post(
             f"/v1/agents/{agent_b['id']}/handoff",
@@ -344,7 +353,7 @@ class TestLiveHandoffRoute:
         self, client: TestClient, auth: dict[str, str], v1_env: V1Env, origin: tuple[Path, str]
     ) -> None:
         repo, base = origin
-        agent = _create_with_workspace(client, auth, workspace_decl(repo, base))
+        agent = _create_with_workspace(v1_env, client, auth, workspace_decl(repo, base))
         wait_idle(v1_env, agent["id"])
         for body in ({}, {"artifact_id": "x", "head_sha": SHA_0}):
             resp = client.post(f"/v1/agents/{agent['id']}/handoff", json=body, headers=auth)

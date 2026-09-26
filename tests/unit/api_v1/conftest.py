@@ -212,3 +212,20 @@ def wait_sandbox(v1_env: V1Env, agent_id: str, *, timeout: float = 15.0) -> Any:
             return rec
         time.sleep(0.05)
     raise AssertionError(f"agent {agent_id} was never provisioned")
+
+
+def wait_status(v1_env: V1Env, agent_id: str, *statuses: str, timeout: float = 15.0) -> Any:
+    """Block until the session record settles into one of ``statuses``.
+
+    The idle/suspended transition after a terminal run is asynchronous:
+    ``wait_run`` sees the durable verdict while the watcher is still in
+    its post-run window (credential write-back + SOR-180 eager checkpoint)
+    holding ``running`` until the checkpoint settles.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rec = v1_env.store.get(agent_id)
+        if rec is not None and rec.status in statuses:
+            return rec
+        time.sleep(0.05)
+    raise AssertionError(f"agent {agent_id} never reached {statuses}")

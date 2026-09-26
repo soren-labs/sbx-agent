@@ -79,6 +79,7 @@ REVIEW_STALE = "review_stale"
 INDEPENDENCE_VIOLATION = "independence_violation"
 DELIVERY_FAILED = "delivery_failed"
 DELIVERY_NOT_FOUND = "delivery_not_found"
+MERGE_NOT_ALLOWED = "merge_not_allowed"
 
 REVIEW_VERDICTS = ("approve", "request_changes", "comment")
 
@@ -782,6 +783,13 @@ class RevisionService:
         """
         if self._workspaces is None:
             return None
+        if run_id:
+            # A run materializes at most one ready revision — a re-entrant
+            # finish (control-plane reconcile settling the same turn from
+            # evidence) replays the recorded one instead of duplicating.
+            for existing in self._store.list_revisions(agent_id):
+                if existing.run_id == run_id and existing.status == "ready":
+                    return existing
         record = self._workspaces.get(agent_id)
         if record is None or not record.prepared or record.checkout_sha is None:
             return None
@@ -879,6 +887,26 @@ class RevisionService:
                 review.stale = True
                 self._store.put_review(review)
 
+    def void_for_run(self, agent_id: str, run_id: str, *, code: str, message: str) -> int:
+        """Demote every ``ready`` revision produced by ``run_id``.
+
+        A run whose durable verdict settled non-FINISHED (a cancel won the
+        finish race) after its workspace already materialized must not keep
+        a deliverable revision — cancelled work never reaches a branch/PR.
+        The row is demoted to ``materialization_failed`` rather than
+        dropped, so the artifact stays auditable while ``deliver`` refuses
+        it (non-ready revisions raise ``revision_not_ready``).
+        """
+        count = 0
+        for revision in self._store.list_revisions(agent_id):
+            if revision.run_id == run_id and revision.status == "ready":
+                revision.status = "materialization_failed"
+                revision.error = {"code": code, "message": _clip(message)}
+                revision.updated_at = self._now()
+                self._store.put_revision(revision)
+                count += 1
+        return count
+
     def _payload(self, revision: Revision) -> tuple[str, bytes]:
         """``(kind, bytes)`` for the revision's artifact — bundle when the
         run committed cleanly, patch otherwise. Absent/corrupt is explicit."""
@@ -911,6 +939,65 @@ class RevisionService:
         return ("bundle" if member == BUNDLE_MEMBER else "patch"), data
 
     # -- delivery -------------------------------------------------------------
+
+    def _apply_pull_overrides(
+        self,
+        revision: Revision,
+        repo: str,
+        pr_data: dict[str, Any],
+        pr_req: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Apply caller ``pull_request`` overrides onto a tracked open PR.
+
+        ``deliver`` is declared "open/update the pull request": a caller
+        that re-delivers with ``pull_request`` fields expects them on the
+        existing request — ``title``/``body``/``target`` PATCH upstream,
+        ``draft: false`` marks ready for review (GraphQL; REST cannot).
+        The remote's post-update shape is merged into the durable record;
+        a refusal surfaces as the canonical error instead of a silent drop.
+        """
+        slug = github.repo_slug(repo)
+        remote = self._remote_for(repo, require_token=True) if slug else None
+        update = getattr(remote, "update_pull", None) if remote is not None else None
+        if slug is None or not callable(update):
+            raise RevisionError(
+                REPO_UNAVAILABLE,
+                f"pull request overrides on revision {revision.revision_id} need a "
+                "GitHub credential with pull-request write access on the control plane",
+            )
+        try:
+            data = update(
+                slug,
+                int(pr_data.get("number")),
+                title=pr_req.get("title"),
+                body=pr_req.get("body"),
+                base=(str(pr_req["target"]) if pr_req.get("target") else None),
+                draft=(bool(pr_req["draft"]) if "draft" in pr_req else None),
+            )
+        except RemoteGitHubError as exc:
+            code = getattr(exc, "code", REPO_UNAVAILABLE)
+            raise RevisionError(
+                code,
+                _clip(getattr(exc, "message", str(exc))),
+                status_code=_error_status(code),
+            ) from exc
+        out = dict(pr_data)
+        if isinstance(data, dict) and data:
+            url = data.get("html_url") or data.get("url")
+            if isinstance(url, str) and url:
+                out["url"] = url
+            if isinstance(data.get("state"), str):
+                out["state"] = data["state"]
+            live_base = data.get("base")
+            if isinstance(live_base, dict):
+                live_base = live_base.get("ref")
+            if isinstance(live_base, str) and live_base:
+                out["base"] = live_base
+            elif pr_req.get("target"):
+                out["base"] = str(pr_req["target"])
+            if isinstance(data.get("draft"), bool):
+                out["draft"] = data["draft"]
+        return out
 
     def _delivery_policy(
         self, revision: Revision, record: Any, overrides: Mapping[str, Any] | None
@@ -969,15 +1056,39 @@ class RevisionService:
                 WORKSPACE_INVALID, f"unsafe branch name: {branch!r}", status_code=400
             )
         existing_delivery = revision.delivery or {}
+        recorded_pr = existing_delivery.get("pull_request")
+        pr_satisfied = (not policy.get("auto_create_pr")) or (
+            isinstance(recorded_pr, dict)
+            and recorded_pr.get("number") is not None
+            and recorded_pr.get("state") not in ("merged", "closed")
+        )
         if (
             existing_delivery.get("status") == "delivered"
             and existing_delivery.get("branch") == branch
             and existing_delivery.get("pushed_head_sha")
+            and pr_satisfied
         ):
             # Idempotent replay: this exact revision payload already landed
             # on the resolved branch — return the durable record rather than
             # re-pushing (a patch-kind re-commit would mint a fresh sha and
-            # non-FF fail against the delivered remote head).
+            # non-FF fail against the delivered remote head). A replay that
+            # asks for a pull request the recorded delivery never opened —
+            # or whose recorded PR went terminal — is NOT a replay: fall
+            # through so the PR leg runs (the push converges on the live tip).
+            pr_req = (overrides or {}).get("pull_request")
+            if (
+                isinstance(pr_req, dict)
+                and isinstance(recorded_pr, dict)
+                and isinstance(recorded_pr.get("number"), int)
+            ):
+                # ``deliver`` is "open/update the PR": caller overrides on a
+                # replayed delivery apply to the recorded open pull request
+                # (title/body/base via PATCH, draft→ready via GraphQL) and
+                # persist on the durable delivery record.
+                updated = self._apply_pull_overrides(revision, repo, recorded_pr, pr_req)
+                revision.delivery = {**existing_delivery, "pull_request": updated}
+                revision.updated_at = self._now()
+                self._store.put_revision(revision)
             return revision
         try:
             kind, payload = self._payload(revision)
@@ -999,14 +1110,28 @@ class RevisionService:
                 commit_date=revision.created_at or None,
             )
             pr_data: dict[str, Any] | None = dict((record.pull_request if record else None) or {})
+            if pr_data.get("state") in ("merged", "closed"):
+                # A terminal pull request is never carried onto a new
+                # delivery — merge() itself leaves record.pull_request
+                # merged, so the next revision must re-anchor instead.
+                pr_data = None
             if policy.get("auto_create_pr"):
                 existing = record.pull_request if record else None
-                if existing and existing.get("state") not in ("merged", "closed"):
+                if existing and existing.get("state") in ("merged", "closed"):
+                    # Recorded-terminal PRs are never reused: drop it so
+                    # the find-or-create leg below re-anchors.
+                    existing = None
+                if existing:
                     # The locally-recorded state may lag upstream — refresh
                     # it when a remote resolves so a merged/closed PR is
                     # never carried forward as if still open.
                     state = existing.get("state")
                     number = existing.get("number")
+                    # The recorded PR only applies when its head branch is
+                    # the branch just pushed — a deliver to another branch
+                    # must not graft that PR's number onto this revision
+                    # (merge would then drift-check the wrong PR).
+                    head_ref = existing.get("head_branch") or (record.branch if record else None)
                     slug = github.repo_slug(repo)
                     remote = self._remote_for(repo) if slug and isinstance(number, int) else None
                     if remote is not None:
@@ -1016,14 +1141,23 @@ class RevisionService:
                                 state = "merged"
                             elif isinstance(live.get("state"), str):
                                 state = live["state"]
+                            live_ref = (live.get("head") or {}).get("ref")
+                            if isinstance(live_ref, str) and live_ref:
+                                head_ref = live_ref
                         except RemoteGitHubError:
                             pass  # unreachable → trust the recorded state
-                    if state not in ("merged", "closed"):
+                    if state in ("merged", "closed") or (
+                        head_ref is not None and head_ref != branch
+                    ):
+                        existing = None
+                    else:
                         # The tracked PR rides the pushed branch — head moved.
                         pr_data = dict(existing)
                         pr_data["head_sha"] = pushed
-                    else:
-                        existing = None
+                        pr_data["head_branch"] = branch
+                        pr_req = (overrides or {}).get("pull_request")
+                        if isinstance(pr_req, dict):
+                            pr_data = self._apply_pull_overrides(revision, repo, pr_data, pr_req)
                 if existing is None:
                     slug = github.repo_slug(repo)
                     if slug is None:
@@ -1041,14 +1175,24 @@ class RevisionService:
                             "pull requests — set GH_TOKEN/GITHUB_TOKEN or "
                             "authorize the GitHub App",
                         )
-                    data = remote.create_pull(
-                        slug,
-                        head=branch,
-                        base=str(policy.get("target") or (record.base_ref if record else "main")),
-                        title=str(policy.get("title") or f"sbx {revision.agent_id}"),
-                        body=str(policy.get("body") or ""),
-                        draft=bool(policy.get("draft")),
-                    )
+                    # Find-or-create: a PR for this head branch may already
+                    # exist upstream even when the local record tracks a
+                    # different branch (or was never recorded).
+                    data = None
+                    find_pull = getattr(remote, "find_pull", None)
+                    if callable(find_pull):
+                        data = find_pull(slug, branch)
+                    if data is None:
+                        data = remote.create_pull(
+                            slug,
+                            head=branch,
+                            base=str(
+                                policy.get("target") or (record.base_ref if record else "main")
+                            ),
+                            title=str(policy.get("title") or f"sbx {revision.agent_id}"),
+                            body=str(policy.get("body") or ""),
+                            draft=bool(policy.get("draft")),
+                        )
                     number = data.get("number")
                     pr_data = {
                         "number": number if isinstance(number, int) else None,
@@ -1056,13 +1200,19 @@ class RevisionService:
                         "state": data.get("state") or "open",
                         "ref": f"refs/pull/{number}/head" if isinstance(number, int) else None,
                         "head_sha": pushed,
+                        "head_branch": branch,
                         "base": str(
                             policy.get("target") or (record.base_ref if record else "main")
                         ),
-                        "draft": bool(policy.get("draft")),
+                        "draft": bool(data.get("draft") or policy.get("draft")),
                     }
-            elif pr_data:
+            elif pr_data and (record is None or record.branch in (None, branch)):
                 pr_data["head_sha"] = pushed
+            elif pr_data:
+                # The recorded PR tracks a different branch — carrying it
+                # forward would mis-link this revision's delivery to a pull
+                # request the push never touched.
+                pr_data = None
         except (RevisionError, RemoteGitHubError, WorkspaceError) as exc:
             code = getattr(exc, "code", "repo_unavailable")
             message = _clip(getattr(exc, "message", str(exc)))
@@ -1155,6 +1305,7 @@ class RevisionService:
         verdict: str,
         findings: Sequence[Mapping[str, Any]] = (),
         idempotency: dict[str, Any] | None = None,
+        comment_url: str | None = None,
     ) -> Review:
         """Record a durable review pinned to the revision's current head.
 
@@ -1190,6 +1341,7 @@ class RevisionService:
             stale=stale,
             created_at=self._now(),
             idempotency=dict(idempotency) if idempotency is not None else None,
+            comment_url=comment_url,
         )
         self._store.put_review(review)
         return review
@@ -1293,6 +1445,7 @@ class RevisionService:
         # Remote drift check: the live PR head must still be what was
         # delivered — and therefore what was reviewed.
         remote_sha: str | None = None
+        pull_draft = False
         try:
             pull = remote.get_pull(slug, number)
             head = pull.get("head") or {}
@@ -1302,21 +1455,50 @@ class RevisionService:
                     HEAD_SHA_MISMATCH,
                     f"PR #{number} is already {pull.get('state') or 'merged'}",
                 )
+            pull_draft = pull.get("draft") is True
         except RemoteGitHubError:
             # API unreachable (e.g. local dev): ls-remote is the same truth.
             remote_sha = github_remote.ls_remote(repo, f"refs/pull/{number}/head", env=self._env())
+        if pull_draft:
+            # A draft PR can never merge — say so in canonical shape instead
+            # of letting GitHub's 405 escape as an unstructured 500.
+            raise RevisionError(
+                MERGE_NOT_ALLOWED,
+                f"PR #{number} is a draft — mark it ready for review before merge",
+            )
         if remote_sha != pushed:
             raise RevisionError(
                 HEAD_SHA_MISMATCH,
                 f"remote PR #{number} resolves to {remote_sha}, not the "
                 f"reviewed/delivered head {pushed} — re-review required",
             )
-        data = remote.merge_pull(slug, number, sha=pushed)
+        try:
+            data = remote.merge_pull(slug, number, sha=pushed)
+        except RemoteGitHubError as exc:
+            detail = _clip(exc.message)
+            if exc.status == 405:
+                # GitHub's merge refusal for draft/blocked PRs is not a
+                # transport failure — surface it as a structured conflict.
+                raise RevisionError(
+                    MERGE_NOT_ALLOWED,
+                    f"GitHub refused merge of PR #{number}: {detail}",
+                ) from exc
+            if exc.status == 409:
+                raise RevisionError(
+                    HEAD_SHA_MISMATCH,
+                    f"PR #{number} head moved during merge ({detail}) — re-review required",
+                ) from exc
+            raise RevisionError(
+                REPO_UNAVAILABLE,
+                f"merge of PR #{number} failed: {detail}",
+                status_code=502,
+            ) from exc
         if not data.get("merged"):
             detail = _clip(str(data.get("message") or ""))[:200]
             raise RevisionError(
                 REPO_UNAVAILABLE,
                 f"GitHub refused merge of PR #{number}" + (f": {detail}" if detail else ""),
+                status_code=502,
             )
         now = self._now()
         merge_commit_sha = data.get("sha")
@@ -1405,6 +1587,7 @@ __all__ = [
     "FileRevisionStore",
     "INDEPENDENCE_VIOLATION",
     "InMemoryRevisionStore",
+    "MERGE_NOT_ALLOWED",
     "ModalDictRevisionStore",
     "REVISIONS_DICT_ENV",
     "REVISIONS_DICT_NAME",

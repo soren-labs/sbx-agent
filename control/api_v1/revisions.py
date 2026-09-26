@@ -300,6 +300,15 @@ def create_task_review(
         else None
     )
     try:
+        # The comment leg runs first: a review carrying ``comment`` on a
+        # revision with no delivered PR must fail without persisting the
+        # review row (post-and-persist order left a durable row behind a
+        # 404).
+        comment_url = None
+        if body.comment:
+            comment_url = revisions.post_review_comment(
+                revision, body.comment, handle=_live_handle(plane, revision.agent_id)
+            )
         review = revisions.add_review(
             revision,
             reviewer_identity=identity,
@@ -308,16 +317,8 @@ def create_task_review(
             verdict=body.verdict,
             findings=[f.model_dump(exclude_none=True) for f in (body.findings or [])],
             idempotency=pin,
+            comment_url=comment_url,
         )
-        if body.comment:
-            url = revisions.post_review_comment(
-                revision, body.comment, handle=_live_handle(plane, revision.agent_id)
-            )
-            if url:
-                review.comment_url = url
-                # Persist the resolved comment URL so an idempotent replay
-                # returns the identical recorded review.
-                revisions.save_review(review)
     except RevisionError as exc:
         if owned is not None:
             v1.idempotency.abandon(key.id, pin_key or "", owned)

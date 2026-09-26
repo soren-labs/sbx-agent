@@ -63,6 +63,13 @@ _PERMISSION_TRISTATE = ("yes", "no", "unknown")
 # GitHub object permissions that count as push-capable.
 _GITHUB_WRITE_PERMISSIONS = ("push", "maintain", "admin")
 
+# Token prefixes that carry *user-context* repository permissions. Anything
+# else (``ghs_`` server-to-server / installation tokens most importantly)
+# reports an all-false ``permissions`` block on ``GET /repos`` — that block
+# is the *user's* repo role, which is empty for app tokens — so the repo
+# object can never answer push capability for them.
+_GITHUB_USER_TOKEN_PREFIXES = ("ghp_", "github_pat_", "gho_", "ghu_", "ghr_")
+
 
 class TaskRefusal(Exception):
     """Resolution failure carrying a canonical ``{error:{code}}`` mapping."""
@@ -358,6 +365,40 @@ class GitHubApiResolver:
         status, body = self._get(f"/repos/{repo.slug}", token)
         return status, body if isinstance(body, dict) else None, token
 
+    def _installation_permissions(self, slug: str, token: str | None) -> dict[str, Any] | None:
+        """The token's effective permissions on ``slug`` via the
+        installation's repository list — the authoritative answer for
+        installation access tokens, for which ``GET /repos`` only reports
+        the (always-empty) *user* role block.
+
+        ``GET /installation/repositories`` is installation-token scoped:
+        each repo entry's ``permissions`` object carries the installation's
+        real repo-level grants (``push``/``maintain``/``admin``) rather
+        than a user's. Returns the repo's permission dict, ``{}`` when the
+        repo is outside the token's selection, or ``None`` when the seam
+        cannot answer (non-installation token, upstream error).
+        """
+        if not token:
+            return None
+        page = 1
+        found = False
+        while True:
+            status, body = self._get(f"/installation/repositories?per_page=100&page={page}", token)
+            if status != 200 or not isinstance(body, dict):
+                return None
+            entries = [r for r in (body.get("repositories") or []) if isinstance(r, dict)]
+            for entry in entries:
+                full_name = str(entry.get("full_name") or "").lower()
+                if full_name == slug.lower():
+                    found = True
+                    perms = entry.get("permissions")
+                    return dict(perms) if isinstance(perms, dict) else {}
+            total = int(body.get("total_count") or 0)
+            if len(entries) == 0 or page * 100 >= total:
+                break
+            page += 1
+        return {} if not found else None
+
     def default_branch(self, repo: CanonicalRepo) -> str | None:
         if repo.slug is None:
             return None
@@ -384,9 +425,26 @@ class GitHubApiResolver:
         token, source = self._token(repo)
         status, body = self._get(f"/repos/{repo.slug}", token)
         if status == 200 and isinstance(body, dict):
-            perms = body.get("permissions") if isinstance(body.get("permissions"), dict) else {}
-            can_push = any(bool(perms.get(p)) for p in _GITHUB_WRITE_PERMISSIONS)
-            push = "yes" if can_push else ("no" if perms else "unknown")
+            installation = source == "github_app" or (
+                token is not None and not token.startswith(_GITHUB_USER_TOKEN_PREFIXES)
+            )
+            if installation:
+                # ``GET /repos``'s ``permissions`` is the *user* role block —
+                # always all-false for installation tokens. The installation's
+                # own repo listing carries the token's real grants.
+                perms = self._installation_permissions(repo.slug, token)
+                if perms is None:
+                    push = "unknown"
+                else:
+                    push = (
+                        "yes"
+                        if any(bool(perms.get(p)) for p in _GITHUB_WRITE_PERMISSIONS)
+                        else "no"
+                    )
+            else:
+                perms = body.get("permissions") if isinstance(body.get("permissions"), dict) else {}
+                can_push = any(bool(perms.get(p)) for p in _GITHUB_WRITE_PERMISSIONS)
+                push = "yes" if can_push else ("no" if perms else "unknown")
             return {
                 "read": "yes",
                 "push": push,

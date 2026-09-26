@@ -18,7 +18,10 @@ class TestRuns:
         run = resp.json()
         assert run["id"] == "run-2"
         assert run["agent_id"] == agent["id"]
-        assert run["status"] in ("RUNNING", "FINISHED")
+        # The follow-up may land while run-1's record is still settling
+        # (post-run write-back + eager checkpoint) — durable QUEUED is the
+        # SOR-224 default and dispatches once the turn fully settles.
+        assert run["status"] in ("QUEUED", "RUNNING", "FINISHED")
         run = wait_run(client, auth, agent["id"], "run-2")
         assert run["status"] == "FINISHED"
         assert run["result"]["text"]

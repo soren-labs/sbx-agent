@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from control import github
 
@@ -56,13 +57,16 @@ class RemoteGitHubError(Exception):
     """A failed server-side GitHub/git operation carrying a canonical code.
 
     Codes mirror the ``WorkspaceError`` taxonomy so API surfaces map them
-    without translation.
+    without translation. ``status`` carries the upstream HTTP status when
+    the failure came from the REST API, so callers can distinguish a
+    mergeable-state refusal (405/409) from real unavailability (5xx).
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.status = status
 
 
 def parse_pull_url(url: Any) -> tuple[str, int] | None:
@@ -198,6 +202,14 @@ def push_payload(
     the push then converges ("Everything up-to-date") instead of
     non-fast-forward failing on its own previous commit.
 
+    When the delivery branch already exists and the payload commit does
+    not descend from its tip — the normal case for a *newer* revision
+    re-delivered onto a branch whose tip is a host-minted delivery commit —
+    the payload's tree is committed on top of the live tip and that sha is
+    returned. The branch stays fast-forward-only and still lands exactly
+    the revision's content; a tip that already carries the payload tree
+    resolves verbatim (crash-window convergence).
+
     Fails closed at every step: an unfetchable base, a missing bundle head,
     an unapplying patch, or a remote head that disagrees after push is an
     explicit ``RemoteGitHubError`` — nothing is recorded on drift.
@@ -229,6 +241,17 @@ def push_payload(
         fetch_ref = base_ref or "HEAD"
         proc = git_run(["fetch", "--no-tags", "-q", "origin", fetch_ref], work)
         _must(proc, "repo_unavailable", f"git fetch {fetch_ref} failed")
+        # The delivery branch's live tip, when it exists: a later revision
+        # delivered to the same branch cannot fast-forward the earlier
+        # delivery commit (host-minted patch commits are never ancestors of
+        # the sandbox's own chain), so the payload is re-anchored below.
+        remote_tip: str | None = None
+        proc = git_run(["fetch", "--no-tags", "-q", "origin", f"refs/heads/{branch}"], work)
+        if proc.returncode == 0:
+            tip = git_run(["rev-parse", "FETCH_HEAD"], work)
+            candidate = tip.stdout.strip() if tip.returncode == 0 else ""
+            if re.fullmatch(r"[0-9a-f]{40}", candidate):
+                remote_tip = candidate
         proc = git_run(["cat-file", "-e", f"{base_sha}^{{commit}}"], work)
         if proc.returncode != 0:
             raise RemoteGitHubError(
@@ -269,7 +292,10 @@ def push_payload(
                 "checkout_failed",
                 f"checkout of base {base_sha} failed",
             )
-            patch = work / "payload.diff"
+            # Keep the payload out of the worktree — ``git add -A`` below
+            # would otherwise commit ``payload.diff`` itself into the
+            # delivery.
+            patch = work / ".git" / "payload.diff"
             patch.write_bytes(payload)
             if payload.strip():
                 proc = git_run(["apply", "--check", str(patch)], work)
@@ -304,6 +330,50 @@ def push_payload(
             pushed = proc.stdout.strip()
         else:
             raise RemoteGitHubError("artifact_invalid", f"unknown payload kind {kind!r}")
+        if remote_tip is not None and remote_tip != pushed:
+            ancestor = git_run(["merge-base", "--is-ancestor", remote_tip, pushed], work)
+            if ancestor.returncode != 0:
+                # The branch tip is not in the payload's history — a plain
+                # push would non-FF fail. Delivering means the branch must
+                # reflect this revision, so the payload tree is re-anchored
+                # as a fresh commit on top of the live tip (FF, no history
+                # loss, never force-push). An already-converged tip — same
+                # tree, e.g. a crash-window retry after the push landed —
+                # resolves to the tip verbatim instead of adding an empty
+                # commit.
+                tip_tree = _must(
+                    git_run(["rev-parse", f"{remote_tip}^{{tree}}"], work),
+                    "checkout_failed",
+                    "could not resolve the remote branch tip tree",
+                ).stdout.strip()
+                new_tree = _must(
+                    git_run(["rev-parse", f"{pushed}^{{tree}}"], work),
+                    "checkout_failed",
+                    "could not resolve the payload tree",
+                ).stdout.strip()
+                if tip_tree == new_tree:
+                    pushed = remote_tip
+                else:
+                    commit = _must(
+                        git_run(
+                            [
+                                "-c",
+                                "user.name=sbx-delivery",
+                                "-c",
+                                "user.email=sbx-delivery@localhost",
+                                "commit-tree",
+                                new_tree,
+                                "-p",
+                                remote_tip,
+                                "-m",
+                                f"sbx delivery of revision head {head_sha}",
+                            ],
+                            work,
+                        ),
+                        "checkout_failed",
+                        "failed to re-anchor payload on the delivery branch tip",
+                    )
+                    pushed = commit.stdout.strip()
         _must(
             git_run(["push", "origin", f"{pushed}:refs/heads/{branch}"], work),
             "repo_unavailable",
@@ -363,6 +433,7 @@ class RemoteGitHub:
                 "repo_unavailable",
                 f"GitHub {method} {path} failed (http {resp.status_code})"
                 + (f": {detail[:200]}" if detail else ""),
+                status=resp.status_code,
             )
         try:
             return resp.json()
@@ -387,6 +458,99 @@ class RemoteGitHub:
             f"/repos/{slug}/pulls",
             body={"title": title, "head": head, "base": base, "body": body, "draft": draft},
         )
+
+    def find_pull(self, slug: str, head_branch: str) -> dict[str, Any] | None:
+        """The open PR on ``slug`` whose head branch is ``head_branch``.
+
+        ``head`` filters use GitHub's ``owner:branch`` form — same-repo
+        heads resolve against the slug's owner. Returns ``None`` when no
+        open PR tracks the branch.
+        """
+        owner = slug.split("/", 1)[0]
+        query = urlencode({"state": "open", "head": f"{owner}:{head_branch}", "per_page": "1"})
+        data = self._request("GET", f"/repos/{slug}/pulls?{query}")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
+        return None
+
+    def update_pull(
+        self,
+        slug: str,
+        number: int,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        base: str | None = None,
+        draft: bool | None = None,
+    ) -> dict[str, Any]:
+        """Apply caller-supplied changes to an open pull request.
+
+        ``title``/``body``/``base`` map to REST ``PATCH /pulls/{n}`` —
+        GitHub's REST update has no ``draft`` field, so ``draft=False``
+        (mark ready for review) goes through the GraphQL mutation. Returns
+        the post-update PR in the same normalized shape ``get_pull``
+        yields; ``draft=True`` on an already-open PR is a no-op (REST can
+        only re-draft via GraphQL, which the contract never asks for).
+        """
+        fields: dict[str, Any] = {}
+        if title is not None:
+            fields["title"] = title
+        if body is not None:
+            fields["body"] = body
+        if base is not None:
+            fields["base"] = base
+        data: dict[str, Any] | None = None
+        if fields:
+            updated = self._request("PATCH", f"/repos/{slug}/pulls/{number}", body=fields)
+            if isinstance(updated, dict):
+                data = updated
+        if draft is False:
+            pull = data if data is not None else self.get_pull(slug, number)
+            if pull.get("draft") is True:
+                node_id = pull.get("node_id")
+                if not isinstance(node_id, str) or not node_id:
+                    raise RemoteGitHubError(
+                        "repo_unavailable",
+                        f"PR #{number} is a draft but its node id is unavailable "
+                        "— cannot mark ready for review",
+                    )
+                data = self._mark_pull_ready(slug, number, node_id)
+            elif data is None:
+                data = pull
+        return data or {}
+
+    def _mark_pull_ready(self, slug: str, number: int, node_id: str) -> dict[str, Any]:
+        """``markPullRequestReadyForReview`` — GraphQL-only; REST cannot
+        clear ``draft`` on an open pull request."""
+        resp = self._request(
+            "POST",
+            "/graphql",
+            body={
+                "query": (
+                    "mutation($id:ID!){markPullRequestReadyForReview("
+                    "input:{pullRequestId:$id}){pullRequest{number state draft url}}}"
+                ),
+                "variables": {"id": node_id},
+            },
+        )
+        errors = resp.get("errors") if isinstance(resp, dict) else None
+        if errors:
+            detail = "; ".join(str(e.get("message") or e)[:200] for e in errors[:3])
+            raise RemoteGitHubError(
+                "repo_unavailable", f"mark PR #{number} ready for review failed: {detail}"
+            )
+        pr = (((resp or {}).get("data") or {}).get("markPullRequestReadyForReview") or {}).get(
+            "pullRequest"
+        ) or {}
+        # Normalize to the REST-ish shape callers record.
+        state = pr.get("state")
+        return {
+            "number": pr.get("number") if isinstance(pr.get("number"), int) else number,
+            "state": state.lower() if isinstance(state, str) else "open",
+            "draft": bool(pr.get("draft")),
+            "html_url": pr.get("url"),
+            "merged": False,
+        }
 
     def merge_pull(self, slug: str, number: int, *, sha: str) -> dict[str, Any]:
         """Merge with GitHub's required head-sha pin — fails closed when the

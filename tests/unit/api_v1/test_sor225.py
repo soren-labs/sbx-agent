@@ -226,6 +226,28 @@ class TestDeliverReviewMerge:
         listed = client.get(f"/v1/tasks/{task['id']}/reviews", headers=auth)
         assert [r["id"] for r in listed.json()["reviews"]] == [row["id"]]
 
+    def test_review_comment_on_undelivered_persists_nothing(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        body = _make_task(client, auth, origin)
+        task, agent = body["task"], body["agent"]
+        wait_idle(credentialed, agent["id"])
+        commit_in_agent(credentialed, agent["id"], "b.txt", "two\n")
+        _run_again(client, auth, agent["id"])
+
+        # A review carrying ``comment`` on a revision with no delivered PR
+        # fails — and must not leave the review row behind.
+        resp = client.post(
+            f"/v1/tasks/{task['id']}/reviews",
+            json={"verdict": "approve", "comment": "lgtm"},
+            headers=auth,
+        )
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "delivery_not_found"
+        listed = client.get(f"/v1/tasks/{task['id']}/reviews", headers=auth)
+        assert listed.status_code == 200
+        assert listed.json()["reviews"] == []
+
     def test_review_idempotency_key_replays(
         self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
     ) -> None:

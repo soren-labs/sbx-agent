@@ -242,6 +242,7 @@ class TestRecordCodec:
                 "state": "open",
                 "ref": "refs/pull/7/head",
                 "head_sha": SHA_B,
+                "head_branch": "sbx/a1",
                 "base": "main",
                 "draft": False,
                 "review_comment_url": "https://example.test/c/1",

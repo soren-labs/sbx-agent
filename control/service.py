@@ -460,11 +460,16 @@ class ControlPlane:
 
         sync = self.credential_sync
         seed_fp = None
+        seed_blob: dict[str, Any] | None = None
         if sync is not None and account_id != "auto":
             try:
                 seed_fp = sync.seed_fingerprint(account_id)
             except Exception:
                 seed_fp = None
+            try:
+                seed_blob = sync.seed_blob(account_id)
+            except Exception:
+                seed_blob = None
 
         try:
             init_args = ["init", "--auth", "auth_json", "--model", rec.model]
@@ -478,6 +483,12 @@ class ControlPlane:
                 if account_id != "auto":
                     init_args += ["--account-id", account_id]
                     init_env["SBX_ACCOUNT_ID"] = account_id
+            if seed_blob:
+                # The stored blob is the authoritative credential: inject it
+                # at init so a blob-carrying account restores its auth files
+                # even when no managed Secret mounts (``secret_name`` unset
+                # or never materialized, or a backend without Secrets).
+                init_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(seed_blob, ensure_ascii=False)
             if rec.sandbox_tags.get("effort_surface"):
                 init_env["SBX_EFFORT_SURFACE"] = rec.sandbox_tags["effort_surface"]
             if mcp_servers:
@@ -1149,10 +1160,30 @@ class ControlPlane:
                 if isinstance(contract, dict)
                 else None
             )
+        # Phase 2.5 (unlocked): a FINISHED verdict materializes its durable
+        # Revision BEFORE the terminal ledger record is published — a
+        # caller observing FINISHED must already resolve revisions/latest
+        # (the materialize→finish gap was user-visible as a transient 404).
+        # materialize() dedups by run_id so a reconcile/settle re-entry
+        # replays rather than double-materializes. A run whose ledger
+        # record already went terminal — a cancel landed first — does not
+        # materialize: cancelled work must never reach a revision.
+        if status == "FINISHED" and self.revision_hook is not None:
+            ledger_open = True
+            if self.run_ledger is not None:
+                try:
+                    prior = self.run_ledger.get(session_id, n)
+                    ledger_open = prior is None or not prior.terminal
+                except Exception:
+                    ledger_open = True
+            if ledger_open:
+                self._materialize_revision(session_id, handle, n)
+
         # Phase 3 (locked): fold the evidence into the session record and
         # persist the terminal outcome. finish() is monotonic, so a cancel
         # recorded by a concurrent stop()/close() still wins over this late
         # success — the verdict computed unlocked cannot resurrect a run.
+        eager = False
         with self._lock:
             rec = self.store.get(session_id)
             active = rec is not None and rec.status not in TERMINAL_STATUSES
@@ -1182,11 +1213,23 @@ class ControlPlane:
                         }
                     )
             if active:
-                if rec.current_turn_id == turn_id:
-                    rec.current_turn_id = None
-                    rec.current_turn_n = None
-                if rec.status == "running":
-                    rec.status = "idle"
+                # With checkpoints wired, the record stays ``running``
+                # (marker kept) through the eager checkpoint below: a
+                # follow-up landing inside the scrub→snapshot→reattach
+                # window must see the agent busy, and the public status is
+                # honest — the turn is still settling. A crashed watcher
+                # self-heals via reconcile_turn: the written turn payload
+                # re-runs this finish (hooks are idempotent) and settles
+                # the record.
+                eager = (
+                    rec.status == "running" and self.checkpoints is not None and handle is not None
+                )
+                if not eager:
+                    if rec.current_turn_id == turn_id:
+                        rec.current_turn_id = None
+                        rec.current_turn_n = None
+                    if rec.status == "running":
+                        rec.status = "idle"
                 rec.updated_at = now
                 rec.last_activity_at = now
                 self.store.put(rec)
@@ -1205,7 +1248,12 @@ class ControlPlane:
                     structured_output=structured_output,
                     contract_result=contract_result,
                 )
-            self._live.pop(session_id, None)
+            if not eager:
+                # The in-process watcher releases its reconcile gate with
+                # the record settled; the eager path releases it after the
+                # checkpoint settle below so reconcile_turn cannot re-enter
+                # a finish this watcher is still completing.
+                self._live.pop(session_id, None)
 
         # SOR-178: a git policy with ``auto_publish`` declares that a
         # successfully finished run publishes itself — the same publish path
@@ -1216,19 +1264,64 @@ class ControlPlane:
         # Auto-delivery only when the durable verdict is FINISHED too:
         # finish() is monotonic, so a cancel that won the finish race keeps
         # the record terminal — cancelled work must never reach a
-        # revision/branch/PR.
-        if status == "FINISHED" and (ledger_record is None or ledger_record.status == "FINISHED"):
-            # SOR-225: a successful code-changing run materializes a durable
-            # Revision before any publish — delivery then operates on the
-            # revision, not the sandbox.
-            self._materialize_revision(session_id, handle, n)
-            self._auto_publish_git(session_id, handle)
+        # revision/branch/PR. The revision itself already materialized in
+        # phase 2.5 (before the verdict published); publish stays gated on
+        # the durable FINISHED.
+        if status == "FINISHED":
+            if ledger_record is None or ledger_record.status == "FINISHED":
+                self._auto_publish_git(session_id, handle)
+            elif self.revisions is not None:
+                # A cancel won the finish race after the revision already
+                # materialized — the run's work product must not stay
+                # deliverable.
+                try:
+                    self.revisions.void_for_run(
+                        session_id,
+                        f"run-{n}",
+                        code="run_cancelled",
+                        message="run verdict settled non-FINISHED after materialization",
+                    )
+                except Exception:
+                    pass
 
         # SOR-147: harvest refreshed credential files after every turn — a
         # provider CLI that rotated its OAuth token mid-turn (incl. an
         # auth_invalid failure) writes the new blob back to the account
         # store, CAS-guarded by this session's base fingerprint.
         self._writeback_credentials(rec, handle)
+
+        # SOR-180: take the durable checkpoint eagerly at turn-end, while
+        # the sandbox is provably alive — an idle agent with no checkpoint
+        # is one platform loss away from terminal ``lost``. The record
+        # stays ``running`` until the checkpoint settles so a follow-up
+        # cannot dispatch onto the credential-scrubbed window, and a
+        # crashed watcher re-enters this finish from the turn payload.
+        if eager:
+            checkpoints = self.checkpoints
+            outcome = "none"
+            try:
+                outcome = checkpoints.checkpoint_live(rec, handle)
+            except Exception:
+                outcome = "none"
+            suspend = outcome == "suspend"
+            if suspend:
+                # Durable checkpoint but the live sandbox lost its
+                # credentials irrecoverably — release it; the next turn
+                # restores from the checkpoint instead.
+                try:
+                    self.backend.terminate(handle)
+                except Exception:
+                    pass
+            with self._lock:
+                stored = self.store.get(session_id)
+                if stored is not None and stored.current_turn_id == turn_id:
+                    stored.current_turn_id = None
+                    stored.current_turn_n = None
+                    if stored.status == "running":
+                        stored.status = "suspended" if suspend else "idle"
+                    stored.updated_at = self.clock()
+                    self.store.put(stored)
+                self._live.pop(session_id, None)
 
         # SOR-224: the turn ended — the agent is idle again, so the head of
         # the durable queue (if any) dispatches next. Best-effort: a queue
