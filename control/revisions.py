@@ -238,6 +238,10 @@ class Review:
     stale: bool = False
     comment_url: str | None = None
     created_at: str = ""
+    # Durable idempotency pin {key_id, key, fingerprint} — a replayed
+    # ``Idempotency-Key`` resolves to this review instead of writing a
+    # duplicate (same bound shape as RunRecord.idempotency).
+    idempotency: dict[str, Any] | None = None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -278,6 +282,7 @@ def review_to_dict(review: Review) -> dict[str, Any]:
         "stale": review.stale,
         "comment_url": review.comment_url,
         "created_at": review.created_at,
+        "idempotency": review.idempotency,
     }
 
 
@@ -293,6 +298,9 @@ def review_from_dict(data: Any) -> Review:
     for key in ("reviewer_agent_id", "reviewer_run_id", "comment_url"):
         if data.get(key) is not None and not isinstance(data[key], str):
             raise ValueError(f"review record field {key} must be a string")
+    idempotency = data.get("idempotency")
+    if idempotency is not None and not isinstance(idempotency, dict):
+        raise ValueError("review record field idempotency must be a dict")
     verdict = str(data.get("verdict") or "comment")
     if verdict not in REVIEW_VERDICTS:
         raise ValueError(f"review verdict must be one of {REVIEW_VERDICTS}: {verdict!r}")
@@ -310,6 +318,7 @@ def review_from_dict(data: Any) -> Review:
         stale=bool(data.get("stale", False)),
         comment_url=data.get("comment_url"),
         created_at=str(data.get("created_at") or ""),
+        idempotency=dict(idempotency) if idempotency is not None else None,
     )
 
 
@@ -1145,6 +1154,7 @@ class RevisionService:
         reviewer_run_id: str | None = None,
         verdict: str,
         findings: Sequence[Mapping[str, Any]] = (),
+        idempotency: dict[str, Any] | None = None,
     ) -> Review:
         """Record a durable review pinned to the revision's current head.
 
@@ -1179,9 +1189,27 @@ class RevisionService:
             independent=independent,
             stale=stale,
             created_at=self._now(),
+            idempotency=dict(idempotency) if idempotency is not None else None,
         )
         self._store.put_review(review)
         return review
+
+    def save_review(self, review: Review) -> None:
+        """Persist a mutated review row (e.g. a resolved ``comment_url``)."""
+        self._store.put_review(review)
+
+    def find_review_by_idempotency(self, agent_id: str, key_id: str, key: str) -> Review | None:
+        """The review durably pinned to ``(api key, Idempotency-Key)``, if any.
+
+        Same durable bound as the run/session pins: a replay that lands after
+        a control-plane restart still resolves to the original review instead
+        of writing a duplicate.
+        """
+        for review in self._store.list_reviews(agent_id=agent_id):
+            pin = review.idempotency or {}
+            if pin.get("key_id") == key_id and pin.get("key") == key:
+                return review
+        return None
 
     def current_review(self, revision: Revision) -> Review | None:
         """The gating review: newest non-stale verdict on this revision."""
