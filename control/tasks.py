@@ -365,39 +365,36 @@ class GitHubApiResolver:
         status, body = self._get(f"/repos/{repo.slug}", token)
         return status, body if isinstance(body, dict) else None, token
 
-    def _installation_permissions(self, slug: str, token: str | None) -> dict[str, Any] | None:
-        """The token's effective permissions on ``slug`` via the
-        installation's repository list — the authoritative answer for
-        installation access tokens, for which ``GET /repos`` only reports
-        the (always-empty) *user* role block.
+    def _push_capability(self, repo: CanonicalRepo, token: str | None) -> str:
+        """``yes``/``no``/``unknown`` — can ``token`` git-push to ``repo``?
 
-        ``GET /installation/repositories`` is installation-token scoped:
-        each repo entry's ``permissions`` object carries the installation's
-        real repo-level grants (``push``/``maintain``/``admin``) rather
-        than a user's. Returns the repo's permission dict, ``{}`` when the
-        repo is outside the token's selection, or ``None`` when the seam
-        cannot answer (non-installation token, upstream error).
+        Repository-object ``permissions`` blocks are the *user* role
+        grant — all-false for installation tokens on ``GET /repos`` and
+        inside ``GET /installation/repositories`` alike, so no repo
+        listing can answer this for the only credential class sbx mints
+        or bridges. ``git push`` itself answers it on its opening
+        request: ``GET <repo>.git/info/refs?service=git-receive-pack``
+        serves the ref advertisement only when the credential may write
+        (401/403 when it may not). The probe is non-mutating — the
+        advertisement is read-only, and repo selection coverage is
+        inherent: a repo the token cannot see never reaches this call.
         """
         if not token:
-            return None
-        page = 1
-        found = False
-        while True:
-            status, body = self._get(f"/installation/repositories?per_page=100&page={page}", token)
-            if status != 200 or not isinstance(body, dict):
-                return None
-            entries = [r for r in (body.get("repositories") or []) if isinstance(r, dict)]
-            for entry in entries:
-                full_name = str(entry.get("full_name") or "").lower()
-                if full_name == slug.lower():
-                    found = True
-                    perms = entry.get("permissions")
-                    return dict(perms) if isinstance(perms, dict) else {}
-            total = int(body.get("total_count") or 0)
-            if len(entries) == 0 or page * 100 >= total:
-                break
-            page += 1
-        return {} if not found else None
+            return "unknown"
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{repo.canonical}.git/info/refs?service=git-receive-pack",
+                headers={"Authorization": f"Bearer {token}"},
+                follow_redirects=True,
+            )
+        except Exception:
+            return "unknown"
+        if resp.status_code == 200:
+            return "yes"
+        if resp.status_code in (401, 403):
+            return "no"
+        return "unknown"
 
     def default_branch(self, repo: CanonicalRepo) -> str | None:
         if repo.slug is None:
@@ -430,17 +427,11 @@ class GitHubApiResolver:
             )
             if installation:
                 # ``GET /repos``'s ``permissions`` is the *user* role block —
-                # always all-false for installation tokens. The installation's
-                # own repo listing carries the token's real grants.
-                perms = self._installation_permissions(repo.slug, token)
-                if perms is None:
-                    push = "unknown"
-                else:
-                    push = (
-                        "yes"
-                        if any(bool(perms.get(p)) for p in _GITHUB_WRITE_PERMISSIONS)
-                        else "no"
-                    )
+                # always all-false for installation tokens, and the repo
+                # entries in ``GET /installation/repositories`` carry the
+                # same empty block. git's receive-pack advertisement is
+                # the only honest answer an installation token can read.
+                push = self._push_capability(repo, token)
             else:
                 perms = body.get("permissions") if isinstance(body.get("permissions"), dict) else {}
                 can_push = any(bool(perms.get(p)) for p in _GITHUB_WRITE_PERMISSIONS)
