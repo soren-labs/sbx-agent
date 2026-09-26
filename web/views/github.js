@@ -25,10 +25,13 @@ import { docsUrl } from "./shell.js";
 const CALLBACK_KEY = "sbx.console.github_callback";
 const PENDING_KEY = "sbx.console.github_pending";
 
-// SOR-220: the Console auto-posts {manifest} to GitHub's settings/apps/new
-// — the official App Manifest registration flow — and GitHub bounces the
-// browser back through /v1/github/app/manifest/callback, which 303s here
-// with `?manifest=connected` or `?manifest_error=<code>`.
+// SOR-220: two connect paths. DEFAULT — `api.githubInstall()` returns the
+// official github.com/apps/<public SBX App>/installations/new URL (broker
+// mode); the browser installs the pre-registered App once and GitHub/broker
+// bounce it back through /v1/github/install/callback → `?broker=connected`.
+// ADVANCED/self-hosted — the manifest flow below posts {manifest} to
+// settings/apps/new and GitHub returns via /v1/github/app/manifest/callback
+// → `?manifest=connected` or `?manifest_error=<code>`.
 function postManifest(res) {
   const url = httpUrl(res.manifest_url);
   if (!url) throw new Error("manifest_url is not an http(s) URL");
@@ -108,8 +111,52 @@ export function renderGithub() {
         }),
       );
     }
-    if (q.get("manifest") || q.get("manifest_error")) {
+    if (q.get("broker") === "connected") {
+      mount(
+        noticeEl,
+        banner({
+          tone: "success",
+          title: t("GitHub connected"),
+          body: t("The SBX App is installed — repository tokens are minted on demand."),
+          testid: "broker-connected",
+        }),
+      );
+    } else if (q.get("broker_error")) {
+      mount(
+        noticeEl,
+        banner({
+          tone: "danger",
+          title: t("GitHub connect failed"),
+          body: t("The broker returned `{code}` — start Connect GitHub again.", { code: q.get("broker_error") }),
+          testid: "broker-error",
+        }),
+      );
+    }
+    if (q.get("manifest") || q.get("manifest_error") || q.get("broker") || q.get("broker_error")) {
       history.replaceState(null, "", `${location.pathname}${location.hash.split("?")[0]}`);
+    }
+  }
+
+  // Default Connect GitHub (SOR-220): POST /v1/github/install resolves the
+  // broker session and hands back the *GitHub App installation* URL — the
+  // first GitHub page is always installations/new, never settings/apps/new.
+  // mode "app" (deployment-local App) keeps the SOR-177 state handshake.
+  async function connectGitHub() {
+    try {
+      const res = await api.githubInstall();
+      const url = httpUrl(res.authorize_url);
+      if (!url) throw new Error("authorize_url is not an http(s) URL");
+      if (res.mode === "broker") {
+        // The install page bounces straight back through the broker to
+        // /v1/github/install/callback → this view shows ?broker=connected.
+        window.location.assign(url);
+        return;
+      }
+      if (res.state) sessionStorage.setItem(PENDING_KEY, res.state);
+      window.open(url, "_blank", "noopener");
+      toast(t("Finish the installation on GitHub, then come back here."), { tone: "neutral", timeout: 8000 });
+    } catch (err) {
+      toastError(err, t("Could not start Connect GitHub"));
     }
   }
 
@@ -126,29 +173,20 @@ export function renderGithub() {
       title: t("Authorization"),
       iconName: "github",
       testid: "github-status",
-      actions: st.installable
+      actions: (st.installable || (st.broker && st.broker.url))
         ? [
-            actionButton(t("Sync"), async () => {
-              try {
-                await api.githubSync();
-                toast(t("Installations refreshed from GitHub"), { tone: "success" });
-              } catch (err) {
-                toastError(err, t("Sync failed"));
-              }
-              await load();
-            }, { size: "sm", iconName: "refresh" }),
-            actionButton(t("Connect GitHub"), async () => {
-              try {
-                const res = await api.githubAuthorize();
-                const url = httpUrl(res.authorize_url);
-                if (!url) throw new Error("authorize_url is not an http(s) URL");
-                sessionStorage.setItem(PENDING_KEY, res.state);
-                window.open(url, "_blank", "noopener");
-                toast(t("Finish the installation on GitHub, then come back here."), { tone: "neutral", timeout: 8000 });
-              } catch (err) {
-                toastError(err, t("Could not start authorization"));
-              }
-            }, { size: "sm", variant: "primary", iconName: "external", testid: "github-connect" }),
+            st.installable || st.installations.length
+              ? actionButton(t("Sync"), async () => {
+                  try {
+                    await api.githubSync();
+                    toast(t("Installations refreshed from GitHub"), { tone: "success" });
+                  } catch (err) {
+                    toastError(err, t("Sync failed"));
+                  }
+                  await load();
+                }, { size: "sm", iconName: "refresh" })
+              : null,
+            actionButton(t("Connect GitHub"), connectGitHub, { size: "sm", variant: "primary", iconName: "external", testid: "github-connect" }),
           ]
         : null,
       body: h(
@@ -160,28 +198,37 @@ export function renderGithub() {
           [t("App"), st.app_slug ? h("a", { href: st.app_url || `https://github.com/apps/${st.app_slug}`, target: "_blank", rel: "noopener noreferrer" }, st.app_slug) : null],
           [t("App id"), st.app_id ? h("code", null, st.app_id) : null],
           [t("Token fallback"), st.bridge_token ? badge(t("GH_TOKEN available"), { tone: "amber" }) : badge(t("none"), { tone: "neutral" })],
+          st.broker && st.broker.url
+            ? [t("Connect lane"), st.broker.bound ? badge(t("brokered"), { tone: "green", testid: "github-broker-bound" }) : badge(st.broker.healthy ? t("broker ready") : t("broker unreachable"), { tone: st.broker.healthy ? "neutral" : "amber", testid: "github-broker-health" })]
+            : null,
         ]),
         !st.configured
           ? h(
               "div",
               { class: "stack", style: "gap:10px" },
-              h("p", { class: "muted" }, t("Authorize repositories with one click — no personal tokens. Register a GitHub App for this deployment right now; the control plane stores the private material itself.")),
+              h("p", { class: "muted" }, t("Authorize repositories with one click — no personal tokens, no app registration. Connect GitHub installs the hosted SBX App and stores only installation metadata here.")),
               h(
                 "div",
                 null,
-                actionButton(t("Create GitHub App"), async () => {
-                  try {
-                    postManifest(await api.githubManifest({}));
-                  } catch (err) {
-                    toastError(err, t("Could not start GitHub App registration"));
-                  }
-                }, { variant: "primary", iconName: "github", testid: "github-create-app" }),
+                actionButton(t("Connect GitHub"), connectGitHub, { variant: "primary", iconName: "github", testid: "github-connect-default" }),
               ),
               h(
                 "details",
-                { class: "muted" },
-                h("summary", null, t("Manual: configure the App env vars instead (requires a redeploy)")),
-                h("p", null, t("Set these in the control plane environment (or its Modal Secret), then redeploy:")),
+                { class: "muted", "data-testid": "github-advanced" },
+                h("summary", null, t("Advanced: fully self-hosted — register your own GitHub App")),
+                h("p", null, t("This deployment runs its own App and stores its private key itself (GitHub's manifest flow). Only needed when you can't or won't use the hosted broker.")),
+                h(
+                  "div",
+                  { style: "margin:8px 0" },
+                  actionButton(t("Create GitHub App"), async () => {
+                    try {
+                      postManifest(await api.githubManifest({}));
+                    } catch (err) {
+                      toastError(err, t("Could not start GitHub App registration"));
+                    }
+                  }, { variant: "ghost", iconName: "github", testid: "github-create-app" }),
+                ),
+                h("p", null, t("Or set the App env vars yourself (requires a redeploy):")),
                 codeBlock("SBX_GITHUB_APP_ID=123456\nSBX_GITHUB_APP_SLUG=my-sbx-app\nSBX_GITHUB_APP_PRIVATE_KEY=<PEM, from a Modal Secret>\nSBX_GITHUB_EPHEMERAL=1"),
                 h("p", { class: "field-hint" }, t("Set the App's Setup URL to this console's address so GitHub returns here after installation.")),
                 h("a", { href: docsUrl("guides/github"), target: "_blank", rel: "noopener noreferrer" }, t("GitHub integration guide →")),

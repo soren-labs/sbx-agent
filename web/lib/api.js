@@ -159,6 +159,8 @@ export const api = {
   githubSync: () => request("POST", "/v1/github/app/sync"),
   githubRevoke: (installationId) =>
     request("DELETE", `/v1/github/app/installations/${enc(installationId)}`),
+  // SOR-220 default connect: {authorize_url: github.com/apps/<public app>/installations/new, mode:"broker"}
+  githubInstall: () => request("POST", "/v1/github/install"),
   // SOR-220: per-deployment App registration via GitHub's manifest flow —
   // the returned {manifest, manifest_url} is form-posted by the Console.
   githubManifest: (body) => request("POST", "/v1/github/app/manifest", { body }),
