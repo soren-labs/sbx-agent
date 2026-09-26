@@ -266,12 +266,14 @@ def test_github_unknown_access_warns_not_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
-# GitHubApiResolver.access — installation-token push capability (SOR-221)
+# GitHubApiResolver.access — installation-token push capability (SOR-221/235)
 #
-# ``GET /repos``'s ``permissions`` block reports the *user's* repo role, so
-# installation tokens (``ghs_*``, the only credential class sbx mints or
-# bridges) always read all-false there. Push capability for them comes
-# from ``GET /installation/repositories`` — the installation's real grants.
+# Repository-object ``permissions`` blocks report the *user's* repo role —
+# all-false for installation tokens (``ghs_*``, the only credential class
+# sbx mints or bridges) on ``GET /repos`` and inside ``GET
+# /installation/repositories`` alike. Push capability comes from git's own
+# smart-HTTP probe: ``GET <repo>.git/info/refs?service=git-receive-pack``
+# serves the advertisement only when the credential may write.
 # ---------------------------------------------------------------------------
 
 
@@ -291,7 +293,7 @@ class _FakeHttpClient:
         self._routes = routes
         self.calls: list[str] = []
 
-    def get(self, path: str, headers: dict | None = None) -> _FakeHttpResponse:
+    def get(self, path: str, headers: dict | None = None, **_kwargs: object) -> _FakeHttpResponse:
         self.calls.append(path)
         for prefix, (status, body) in self._routes.items():
             if path.startswith(prefix):
@@ -300,76 +302,61 @@ class _FakeHttpClient:
 
 
 _GITHUB_REPO = tasks.CanonicalRepo(canonical="https://github.com/o/r", kind="github", slug="o/r")
+_GITHUB_RECEIVE_PACK = "https://github.com/o/r.git/info/refs?service=git-receive-pack"
 
 
 def test_github_api_access_installation_token_push_yes() -> None:
-    """An all-false user-role block must not deny push when the
-    installation's repo listing shows the token is push-capable."""
-    resolver = tasks.GitHubApiResolver(
-        env={"GH_TOKEN": "ghs_installtoken"},
-        client=_FakeHttpClient(
-            {
-                "/repos/o/r": (
-                    200,
-                    {"permissions": {"admin": False, "push": False, "pull": False}},
-                ),
-                "/installation/repositories": (
-                    200,
-                    {
-                        "total_count": 1,
-                        "repositories": [
-                            {
-                                "full_name": "o/r",
-                                "permissions": {
-                                    "admin": False,
-                                    "push": True,
-                                    "pull": True,
-                                },
-                            }
-                        ],
-                    },
-                ),
-            }
-        ),
+    """All-false repo-permission blocks must not deny push when the
+    token's own receive-pack advertisement succeeds."""
+    client = _FakeHttpClient(
+        {
+            "/repos/o/r": (
+                200,
+                {"permissions": {"admin": False, "push": False, "pull": False}},
+            ),
+            # Same all-false shape real GitHub returns here — the probe
+            # must ignore it entirely.
+            "/installation/repositories": (
+                200,
+                {
+                    "total_count": 1,
+                    "repositories": [
+                        {
+                            "full_name": "o/r",
+                            "permissions": {"admin": False, "push": False, "pull": False},
+                        }
+                    ],
+                },
+            ),
+            _GITHUB_RECEIVE_PACK: (200, {}),
+        }
     )
+    resolver = tasks.GitHubApiResolver(env={"GH_TOKEN": "ghs_installtoken"}, client=client)
     access = resolver.access(_GITHUB_REPO)
     assert access["read"] == "yes"
     assert access["push"] == "yes"
+    assert _GITHUB_RECEIVE_PACK in client.calls
 
 
 def test_github_api_access_installation_token_push_no() -> None:
     """A repo the installation can only read is an honest ``no`` — the
     preflight refusal stays meaningful for genuinely read-only tokens."""
-    resolver = tasks.GitHubApiResolver(
-        env={"GH_TOKEN": "ghs_installtoken"},
-        client=_FakeHttpClient(
-            {
-                "/repos/o/r": (200, {"permissions": {}}),
-                "/installation/repositories": (
-                    200,
-                    {
-                        "total_count": 1,
-                        "repositories": [
-                            {
-                                "full_name": "o/r",
-                                "permissions": {
-                                    "admin": False,
-                                    "push": False,
-                                    "pull": True,
-                                },
-                            }
-                        ],
-                    },
-                ),
-            }
-        ),
-    )
-    assert resolver.access(_GITHUB_REPO)["push"] == "no"
+    for denied in (401, 403):
+        resolver = tasks.GitHubApiResolver(
+            env={"GH_TOKEN": "ghs_installtoken"},
+            client=_FakeHttpClient(
+                {
+                    "/repos/o/r": (200, {"permissions": {}}),
+                    _GITHUB_RECEIVE_PACK: (denied, {"message": "forbidden"}),
+                }
+            ),
+        )
+        assert resolver.access(_GITHUB_REPO)["push"] == "no"
 
 
-def test_github_api_access_installation_listing_unavailable_is_unknown() -> None:
-    """When the installation seam cannot answer, report ``unknown`` —
-    never fabricate a ``no`` from the meaningless user-role block."""
+def test_github_api_access_installation_probe_unavailable_is_unknown() -> None:
+    """When the push probe cannot answer, report ``unknown`` — never
+    fabricate a ``no`` from the meaningless user-role block."""
     resolver = tasks.GitHubApiResolver(
         env={"GH_TOKEN": "ghs_installtoken"},
         client=_FakeHttpClient(
@@ -378,7 +365,7 @@ def test_github_api_access_installation_listing_unavailable_is_unknown() -> None
                     200,
                     {"permissions": {"admin": False, "push": False, "pull": False}},
                 ),
-                "/installation/repositories": (403, {"message": "forbidden"}),
+                _GITHUB_RECEIVE_PACK: (500, {"message": "upstream"}),
             }
         ),
     )
@@ -387,20 +374,20 @@ def test_github_api_access_installation_listing_unavailable_is_unknown() -> None
 
 def test_github_api_access_user_token_keeps_repo_permissions() -> None:
     """PAT/user-context tokens keep the ``GET /repos`` permission check —
-    their block reflects the user's effective role."""
-    resolver = tasks.GitHubApiResolver(
-        env={"GH_TOKEN": "ghp_usertoken"},
-        client=_FakeHttpClient(
-            {
-                "/repos/o/r": (
-                    200,
-                    {"permissions": {"admin": False, "push": True, "pull": True}},
-                ),
-            }
-        ),
+    their block reflects the user's effective role, and no receive-pack
+    probe is issued."""
+    client = _FakeHttpClient(
+        {
+            "/repos/o/r": (
+                200,
+                {"permissions": {"admin": False, "push": True, "pull": True}},
+            ),
+        }
     )
+    resolver = tasks.GitHubApiResolver(env={"GH_TOKEN": "ghp_usertoken"}, client=client)
     access = resolver.access(_GITHUB_REPO)
     assert access["push"] == "yes"
+    assert not any("git-receive-pack" in c for c in client.calls)
 
 
 def test_delivery_preflight_passes_for_installation_token() -> None:
@@ -421,22 +408,7 @@ def test_delivery_preflight_passes_for_installation_token() -> None:
                         "permissions": {"admin": False, "push": False, "pull": False},
                     },
                 ),
-                "/installation/repositories": (
-                    200,
-                    {
-                        "total_count": 1,
-                        "repositories": [
-                            {
-                                "full_name": "o/r",
-                                "permissions": {
-                                    "admin": False,
-                                    "push": True,
-                                    "pull": True,
-                                },
-                            }
-                        ],
-                    },
-                ),
+                _GITHUB_RECEIVE_PACK: (200, {}),
             }
         ),
     )
