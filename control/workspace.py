@@ -244,8 +244,8 @@ class WorkspaceRecord:
     the agent declared none); ``branch`` the work branch the workspace
     materializes and publishes; ``pushed_head_sha`` the head last verified
     on the remote; ``pull_request`` the structured PR metadata a publish
-    recorded — ``{number, url, state, ref, head_sha, base, draft,
-    review_comment_url?}``.
+    recorded — ``{number, url, state, ref, head_sha, head_branch?, base,
+    draft, review_comment_url?}``.
 
     SOR-178 fields: ``merge`` is the durable merge record a review-gated
     ``merge`` wrote — ``{merged, merge_commit_sha, head_sha, merged_at}``;
@@ -353,6 +353,7 @@ _PULL_REQUEST_KEYS = (
     "state",
     "ref",
     "head_sha",
+    "head_branch",
     "base",
     "draft",
     "review_comment_url",
@@ -380,7 +381,7 @@ def _pull_request_from_dict(data: Any) -> dict[str, Any] | None:
     if draft is not None and not isinstance(draft, bool):
         raise ValueError("pull_request.draft must be a bool")
     out: dict[str, Any] = {"number": number, "head_sha": head_sha, "draft": bool(draft)}
-    for key in ("url", "state", "ref", "base", "review_comment_url"):
+    for key in ("url", "state", "ref", "head_branch", "base", "review_comment_url"):
         value = data.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"pull_request.{key} must be a string")
@@ -1209,7 +1210,14 @@ class WorkspaceService:
             self.save(record)
             if policy.get("auto_create_pr"):
                 pr = record.pull_request
-                if pr is None or pr.get("state") in ("merged", "closed"):
+                if (
+                    pr is None
+                    or pr.get("state") in ("merged", "closed")
+                    # A recorded PR only applies to the branch it was
+                    # published under — a branch switch must not graft the
+                    # old PR's number onto this push.
+                    or (pr.get("head_branch") or branch) != branch
+                ):
                     # A terminal PR cannot track new work — open a fresh one.
                     data = create_pull_request(
                         self._backend,
@@ -1228,6 +1236,7 @@ class WorkspaceService:
                         "state": data.get("state") or "open",
                         "ref": (f"refs/pull/{number}/head" if isinstance(number, int) else None),
                         "head_sha": head,
+                        "head_branch": branch,
                         "base": str(policy.get("target") or record.base_ref),
                         "draft": bool(policy.get("draft")),
                     }
@@ -1236,6 +1245,7 @@ class WorkspaceService:
                     # Record the new pinned head rather than recreating.
                     pr = dict(pr)
                     pr["head_sha"] = head
+                    pr["head_branch"] = branch
                     record.pull_request = pr
         except WorkspaceError as exc:
             # SOR-178: a publish failure is a durable fact on the record —

@@ -97,6 +97,12 @@ _ROWS: dict[str, tuple[int, bool, str, str]] = {
     "revision_not_ready": _row(409, True, "wait", "revision is not ready yet"),
     "review_stale": _row(409, False, "fix_request", "review targets an outdated revision"),
     "review_required": _row(409, False, "fix_request", "an approving review is required first"),
+    "merge_not_allowed": _row(
+        409,
+        False,
+        "fix_request",
+        "delivered pull request is not mergeable (e.g. draft or blocked)",
+    ),
     "independence_violation": _row(409, False, "fix_request", "reviewer not independent of author"),
     "artifact_secret": _row(409, False, "fix_request", "artifact contains secrets"),
     "github_app_configured": _row(409, False, "configure", "a github app is already configured"),

@@ -286,6 +286,48 @@ def test_stop_reconciles_before_cancelling() -> None:
     backend.terminate(handle)
 
 
+def test_finish_materializes_revision_before_terminal_record() -> None:
+    # SOR-221: a run must never read FINISHED before its durable revision
+    # exists — the materialize hook runs before the ledger's terminal
+    # publish, so revisions/latest is resolvable the moment wait returns.
+    plane, backend, store = _reconcile_plane()
+    handle = _stranded_session(backend, store, payload=_SUCCESS_PAYLOAD)
+    assert plane.run_ledger is not None
+    plane.run_ledger.begin(agent_id="s", n=1)
+    seen: dict[str, bool | None] = {}
+
+    def hook(rec, h, n: int) -> None:
+        run = plane.run_ledger.get("s", n)
+        seen["terminal_at_materialize"] = run.terminal if run is not None else None
+
+    plane.revision_hook = hook
+
+    assert plane.reconcile_turn("s") is True
+
+    assert seen["terminal_at_materialize"] is False
+    run = plane.run_ledger.get("s", 1)
+    assert run is not None and run.status == "FINISHED"
+    backend.terminate(handle)
+
+
+def test_finish_skips_materialize_when_run_already_terminal() -> None:
+    # A cancel that landed before the watcher settles must never
+    # materialize a revision — cancelled work never reaches one.
+    plane, backend, store = _reconcile_plane()
+    handle = _stranded_session(backend, store, payload=_SUCCESS_PAYLOAD)
+    plane.run_ledger.begin(agent_id="s", n=1)
+    plane.run_ledger.cancel("s", 1)
+    calls: list[int] = []
+    plane.revision_hook = lambda rec, h, n: calls.append(n)
+
+    assert plane.reconcile_turn("s") is True
+
+    assert calls == []
+    run = plane.run_ledger.get("s", 1)
+    assert run is not None and run.status == "CANCELLED"
+    backend.terminate(handle)
+
+
 def test_post_message_reconciles_then_dispatches_follow_up() -> None:
     # The stranded record must not 409: the freed agent takes a new turn.
     plane, backend, store = _reconcile_plane()

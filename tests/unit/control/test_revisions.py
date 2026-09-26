@@ -35,6 +35,7 @@ from control.workspace import (
     HEAD_SHA_MISMATCH,
     REVIEW_REQUIRED,
     InMemoryWorkspaceStore,
+    WorkspaceRecord,
     WorkspaceService,
     WorkspaceSpec,
 )
@@ -205,6 +206,21 @@ class TestMaterialize:
         assert revision.artifact_id is None
         assert revision.error and "code" in revision.error
         assert revision_store.get_revision(revision.revision_id) is not None
+
+    def test_same_run_materialize_replays_existing_revision(
+        self, tmp_path, backend, handle, workspaces, revisions, revision_store
+    ) -> None:
+        """A re-entrant finish (reconcile settling the same turn from
+        evidence) must replay the recorded revision — one run, one
+        revision."""
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", spec(origin, base))
+        write_in_workdir(handle, workspaces, "a1")
+        rev1 = _materialize(revisions, backend, handle)
+        assert rev1 is not None and rev1.status == "ready"
+        again = _materialize(revisions, backend, handle)
+        assert again is not None and again.revision_id == rev1.revision_id
+        assert len(revision_store.list_revisions("a1")) == 1
 
     def test_new_revision_marks_prior_reviews_stale(
         self, tmp_path, backend, handle, workspaces, revisions
@@ -396,27 +412,121 @@ class TestDeliver:
         assert retry.delivery["status"] == "delivered"
         assert retry.delivery["pushed_head_sha"] == pushed
 
+    def test_deliver_newer_revision_stacks_on_delivery_tip(
+        self, tmp_path, backend, handle, workspaces, revisions
+    ) -> None:
+        """SOR-221: re-delivering a *newer* revision onto the already-
+        delivered branch must not non-FF fail — the earlier delivery commit
+        is host-minted, so the payload tree is re-anchored on top of the
+        live branch tip and the push stays fast-forward."""
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", spec(origin, base))
+        write_in_workdir(handle, workspaces, "a1")
+        rev1 = _materialize(revisions, backend, handle)
+        out1 = revisions.deliver(rev1, overrides={"branch": "feat/stack"})
+        first = out1.delivery["pushed_head_sha"]
+
+        write_in_workdir(handle, workspaces, "a1", name="c.txt", content="three\n")
+        rev2 = _materialize(revisions, backend, handle, run_n=2)
+        out2 = revisions.deliver(rev2, overrides={"branch": "feat/stack"})
+        second = out2.delivery["pushed_head_sha"]
+
+        assert second != first
+        remote_sha = subprocess.run(
+            ["git", "ls-remote", str(origin), "refs/heads/feat/stack"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()[0]
+        assert remote_sha == second
+        # The second delivery descends from the first — a fast-forward.
+        ancestry = subprocess.run(
+            ["git", "-C", str(origin), "merge-base", "--is-ancestor", first, second],
+            capture_output=True,
+        )
+        assert ancestry.returncode == 0
+        # And the branch carries the full cumulative revision content —
+        # no stray payload file leaks into the delivery commit.
+        res = subprocess.run(
+            ["git", "clone", "-q", "-b", "feat/stack", str(origin), str(tmp_path / "clone2")],
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, res.stderr
+        clone = tmp_path / "clone2"
+        assert (clone / "a.txt").read_text() == "one\n"
+        assert (clone / "b.txt").read_text() == "two\n"
+        assert (clone / "c.txt").read_text() == "three\n"
+        assert not (clone / "payload.diff").exists()
+
 
 class FakeRemote:
     """Test seam for the control-plane GitHub client."""
 
-    def __init__(self, head_sha: str = SHA_B, state: str = "open") -> None:
+    def __init__(
+        self,
+        head_sha: str = SHA_B,
+        state: str = "open",
+        *,
+        draft: bool = False,
+        head_ref: str = "sbx/a1",
+    ) -> None:
         self.head_sha = head_sha
         self.state = state
+        self.draft = draft
+        self.head_ref = head_ref
         self.merge_calls: list[tuple[str, int, str | None]] = []
         self.comments: list[tuple[str, int, str]] = []
+        self.create_calls: list[dict[str, Any]] = []
+        self.find_calls: list[tuple[str, str]] = []
+        self.find_results: dict[str, dict[str, Any] | None] = {}
+        self.update_calls: list[dict[str, Any]] = []
+        self.update_error: RemoteGitHubError | None = None
+        self.update_result: dict[str, Any] | None = None
         self.get_pull_error: RemoteGitHubError | None = None
+        self.merge_error: RemoteGitHubError | None = None
 
     def get_pull(self, slug: str, number: int) -> dict[str, Any]:
         if self.get_pull_error is not None:
             raise self.get_pull_error
-        return {"head": {"sha": self.head_sha}, "state": self.state}
+        return {
+            "number": number,
+            "head": {"sha": self.head_sha, "ref": self.head_ref},
+            "state": self.state,
+            "draft": self.draft,
+        }
+
+    def find_pull(self, slug: str, head_branch: str) -> dict[str, Any] | None:
+        self.find_calls.append((slug, head_branch))
+        return self.find_results.get(head_branch)
+
+    def update_pull(self, slug: str, number: int, **kw: Any) -> dict[str, Any]:
+        self.update_calls.append(dict(kw))
+        if self.update_error is not None:
+            raise self.update_error
+        if self.update_result is not None:
+            return self.update_result
+        return {
+            "number": number,
+            "html_url": f"https://github.com/{slug}/pull/{number}",
+            "state": "open",
+            "draft": bool(kw.get("draft")),
+            "base": {"ref": kw.get("base") or "main"},
+        }
 
     def create_pull(self, slug: str, **kw: Any) -> dict[str, Any]:
-        return {"number": 7, "html_url": f"https://github.com/{slug}/pull/7", "state": "open"}
+        self.create_calls.append(dict(kw))
+        return {
+            "number": 7,
+            "html_url": f"https://github.com/{slug}/pull/7",
+            "state": "open",
+            "draft": bool(kw.get("draft")),
+        }
 
     def merge_pull(self, slug: str, number: int, sha: str | None = None) -> dict[str, Any]:
         self.merge_calls.append((slug, number, sha))
+        if self.merge_error is not None:
+            raise self.merge_error
         return {"merged": True, "sha": "e" * 40}
 
     def create_comment(self, slug: str, number: int, body: str) -> dict[str, Any]:
@@ -640,6 +750,274 @@ class TestReviewAndMerge:
         assert again.delivery["merged"] is True
         assert again.delivery["merge_commit_sha"] == "e" * 40
         assert len(remote.merge_calls) == 1  # no second upstream merge
+
+    def test_merge_draft_pr_is_structured_merge_not_allowed(
+        self, revisions, revision_store, monkeypatch, artifacts
+    ) -> None:
+        """A draft PR is not mergeable — the refusal is a canonical 409
+        ``merge_not_allowed``, never an unstructured 500."""
+        remote = FakeRemote(head_sha=SHA_B, draft=True)
+        rev = self._delivered(revisions, revision_store, monkeypatch, artifacts, remote)
+        revisions.add_review(rev, reviewer_identity="key:k", verdict="approve")
+        with pytest.raises(RevisionError) as excinfo:
+            revisions.merge(rev)
+        assert excinfo.value.code == "merge_not_allowed"
+        assert excinfo.value.status_code == 409
+        assert remote.merge_calls == []
+
+    def test_merge_pull_405_maps_to_merge_not_allowed(
+        self, revisions, revision_store, monkeypatch, artifacts
+    ) -> None:
+        """When get_pull missed the draft flag, GitHub's 405 refusal maps
+        to the same structured code instead of leaking as repo_unavailable."""
+        remote = FakeRemote(head_sha=SHA_B)
+        remote.merge_error = RemoteGitHubError(
+            "repo_unavailable", "GitHub PUT merge failed (http 405): draft", status=405
+        )
+        rev = self._delivered(revisions, revision_store, monkeypatch, artifacts, remote)
+        revisions.add_review(rev, reviewer_identity="key:k", verdict="approve")
+        with pytest.raises(RevisionError) as excinfo:
+            revisions.merge(rev)
+        assert excinfo.value.code == "merge_not_allowed"
+        assert excinfo.value.status_code == 409
+
+    def test_merge_pull_409_maps_to_head_sha_mismatch(
+        self, revisions, revision_store, monkeypatch, artifacts
+    ) -> None:
+        remote = FakeRemote(head_sha=SHA_B)
+        remote.merge_error = RemoteGitHubError(
+            "repo_unavailable", "GitHub PUT merge failed (http 409): head moved", status=409
+        )
+        rev = self._delivered(revisions, revision_store, monkeypatch, artifacts, remote)
+        revisions.add_review(rev, reviewer_identity="key:k", verdict="approve")
+        with pytest.raises(RevisionError) as excinfo:
+            revisions.merge(rev)
+        assert excinfo.value.code == HEAD_SHA_MISMATCH
+
+    def test_merge_pull_transport_error_stays_repo_unavailable(
+        self, revisions, revision_store, monkeypatch, artifacts
+    ) -> None:
+        remote = FakeRemote(head_sha=SHA_B)
+        remote.merge_error = RemoteGitHubError(
+            "repo_unavailable", "GitHub PUT merge failed (http 502)", status=502
+        )
+        rev = self._delivered(revisions, revision_store, monkeypatch, artifacts, remote)
+        revisions.add_review(rev, reviewer_identity="key:k", verdict="approve")
+        with pytest.raises(RevisionError) as excinfo:
+            revisions.merge(rev)
+        assert excinfo.value.code == "repo_unavailable"
+        assert excinfo.value.status_code == 502
+
+
+@needs_git
+class TestDeliverPullRequestBranch:
+    """SOR-221: a recorded PR is only valid for the branch it tracks.
+
+    Delivering a revision to a *different* branch must find-or-create the
+    PR for the pushed head — carrying the old PR's number forward makes
+    ``merge`` drift-check the wrong pull request (the acceptance saw
+    ``head_sha_mismatch`` on a mis-linked PR #28).
+    """
+
+    def _ws_with_pr(self, workspaces: WorkspaceService) -> None:
+        workspaces.save(
+            WorkspaceRecord(
+                agent_id="a1",
+                repo=GITHUB_REPO,
+                base_ref="main",
+                base_sha=SHA_A,
+                branch="sbx/a1",
+                pushed_head_sha="0" * 40,
+                pull_request={
+                    "number": 28,
+                    "url": "https://github.com/acme/widgets/pull/28",
+                    "state": "open",
+                    "ref": "refs/pull/28/head",
+                    "head_sha": "0" * 40,
+                    "head_branch": "sbx/a1",
+                    "base": "main",
+                },
+            )
+        )
+
+    def test_deliver_reuses_pr_tracking_the_same_branch(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        self._ws_with_pr(workspaces)
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(rev, overrides={"pull_request": {"title": "t"}})
+        pr = out.delivery["pull_request"]
+        assert pr["number"] == 28  # same open PR updated, not recreated
+        assert pr["head_sha"] == SHA_B
+        assert pr["head_branch"] == "sbx/a1"
+        assert remote.create_calls == []
+        # The title override was applied upstream, not dropped.
+        assert remote.update_calls == [{"title": "t", "body": None, "base": None, "draft": None}]
+
+    def test_deliver_other_branch_finds_matching_pr(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        self._ws_with_pr(workspaces)
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        remote.find_results["sbx/alt"] = {
+            "number": 30,
+            "html_url": "https://github.com/acme/widgets/pull/30",
+            "state": "open",
+            "draft": False,
+        }
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(
+            rev, overrides={"branch": "sbx/alt", "pull_request": {"title": "t"}}
+        )
+        pr = out.delivery["pull_request"]
+        assert pr["number"] == 30  # the PR for the pushed branch, not #28
+        assert pr["head_branch"] == "sbx/alt"
+        assert remote.find_calls == [("acme/widgets", "sbx/alt")]
+        assert remote.create_calls == []
+
+    def test_deliver_other_branch_creates_pr_when_none_exists(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        self._ws_with_pr(workspaces)
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(
+            rev, overrides={"branch": "sbx/alt", "pull_request": {"title": "t"}}
+        )
+        pr = out.delivery["pull_request"]
+        assert pr["number"] == 7  # freshly created for sbx/alt
+        assert pr["head_branch"] == "sbx/alt"
+        assert remote.create_calls == [
+            {"head": "sbx/alt", "base": "main", "title": "t", "body": "", "draft": False}
+        ]
+        # The workspace record now tracks the latest delivery's PR.
+        record = workspaces.get("a1")
+        assert record.pull_request["number"] == 7
+        assert record.branch == "sbx/alt"
+
+    def test_deliver_replay_honors_new_pull_request_override(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        """SOR-221: the idempotent replay only covers work the recorded
+        delivery already did — re-delivering with a ``pull_request``
+        override on a push-only delivery must run the PR leg, not no-op."""
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(rev, overrides={"branch": "sbx/a1"})
+        assert out.delivery["status"] == "delivered"
+        assert out.delivery["pull_request"] is None
+
+        again = revisions.deliver(out, overrides={"pull_request": {"title": "t"}})
+        pr = again.delivery["pull_request"]
+        assert pr["number"] == 7
+        assert pr["head_branch"] == "sbx/a1"
+        assert remote.create_calls == [
+            {"head": "sbx/a1", "base": "main", "title": "t", "body": "", "draft": False}
+        ]
+
+    def test_deliver_replay_after_pr_went_terminal_opens_fresh(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        """A replay whose recorded PR closed upstream is not a replay —
+        the PR leg re-runs and opens a fresh request."""
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(rev, overrides={"branch": "sbx/a1", "pull_request": {"title": "t"}})
+        assert out.delivery["pull_request"]["number"] == 7
+        # The recorded PR went terminal upstream.
+        delivery = dict(out.delivery)
+        delivery["pull_request"] = {**delivery["pull_request"], "state": "closed"}
+        out.delivery = delivery
+
+        again = revisions.deliver(out, overrides={"pull_request": {"title": "t2"}})
+        assert again.delivery["pull_request"]["number"] == 7
+        assert len(remote.create_calls) == 2  # a fresh PR was opened
+
+    def test_deliver_replay_applies_overrides_on_recorded_open_pr(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        """The idempotent push replay is not a blanket no-op: ``deliver``
+        is "open/update the PR", so a replay carrying pull_request fields
+        PATCHes them onto the recorded open request and persists them."""
+        self._ws_with_pr(workspaces)
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(rev, overrides={"pull_request": {"title": "t"}})
+        assert out.delivery["status"] == "delivered"
+        assert out.delivery["pull_request"]["number"] == 28
+        remote.update_calls.clear()
+
+        again = revisions.deliver(
+            out, overrides={"pull_request": {"target": "release", "draft": False}}
+        )
+        assert remote.update_calls == [
+            {"title": None, "body": None, "base": "release", "draft": False}
+        ]
+        pr = again.delivery["pull_request"]
+        assert pr["number"] == 28
+        assert pr["base"] == "release"
+        assert pr["draft"] is False
+        # The durable record holds the update, so a later merge gates on it.
+        stored = revision_store.get_revision(again.revision_id)
+        assert stored.delivery["pull_request"]["base"] == "release"
+
+    def test_deliver_replay_override_failure_surfaces_without_breaking_delivery(
+        self, revisions, revision_store, monkeypatch, artifacts, workspaces
+    ) -> None:
+        """An upstream refusal on a replay override is a structured error —
+        the already-delivered record stays delivered (the push+PR stand)."""
+        self._ws_with_pr(workspaces)
+        remote = FakeRemote(head_sha=SHA_B, head_ref="sbx/a1")
+        revisions._remote = remote
+        rev = _github_revision(revisions, revision_store, monkeypatch, artifacts)
+        out = revisions.deliver(rev, overrides={"pull_request": {"title": "t"}})
+        assert out.delivery["status"] == "delivered"
+
+        remote.update_error = RemoteGitHubError("repo_unavailable", "http 403: no scope")
+        with pytest.raises(RevisionError) as exc:
+            revisions.deliver(out, overrides={"pull_request": {"title": "nope"}})
+        assert exc.value.code == "repo_unavailable"
+        assert out.delivery["status"] == "delivered"
+
+    def test_void_for_run_demotes_ready_revision(self, revisions, revision_store) -> None:
+        """A run cancelled after materialization must not keep a
+        deliverable revision — void demotes ready rows for that run only."""
+        revision_store.put_revision(
+            Revision(
+                revision_id="rev-voided",
+                agent_id="a1",
+                n=1,
+                run_id="run-1",
+                head_sha=SHA_B,
+                created_at="t",
+                updated_at="t",
+            )
+        )
+        revision_store.put_revision(
+            Revision(
+                revision_id="rev-keeper",
+                agent_id="a1",
+                n=2,
+                run_id="run-2",
+                head_sha=SHA_B,
+                created_at="t",
+                updated_at="t",
+            )
+        )
+        assert revisions.void_for_run("a1", "run-1", code="run_cancelled", message="m") == 1
+        voided = revision_store.get_revision("rev-voided")
+        assert voided.status == "materialization_failed"
+        assert voided.error["code"] == "run_cancelled"
+        assert revision_store.get_revision("rev-keeper").status == "ready"
+        # Already-voided / other runs are untouched.
+        assert revisions.void_for_run("a1", "run-1", code="run_cancelled", message="m") == 0
 
 
 class _FakeDict:

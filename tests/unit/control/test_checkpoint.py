@@ -14,7 +14,6 @@ import pytest
 from control.backend import LocalProcessBackend, SandboxHandle, SandboxSpec
 from control.checkpoint import (
     CHECKPOINT_CHECKPOINTED,
-    CHECKPOINT_RESTORED,
     AgentCheckpoint,
     CheckpointService,
     CheckpointUnavailable,
@@ -281,7 +280,11 @@ def test_idle_suspend_then_followup_restores_same_agent(env) -> None:
     assert _session_json(new_root)["native_session_id"] == THREAD_ID
     assert rec.turns == 2
     cp = checkpoints.get(session_id)
-    assert cp is not None and cp.status == CHECKPOINT_RESTORED
+    # The restored checkpoint was consumed (``restored``) and the turn-2
+    # finish already captured the fresh eager checkpoint — the durable
+    # state is ``checkpointed`` again against the new sandbox's content.
+    assert cp is not None and cp.status == CHECKPOINT_CHECKPOINTED
+    assert cp.snapshot_ref
 
 
 def test_restore_reattaches_account_credentials(env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -380,6 +383,52 @@ def test_unrecoverable_suspend_falls_back_to_timed_out(env) -> None:
     assert any(a.kind == "timed_out" and a.session_id == session_id for a in actions)
     cp = checkpoints.get(session_id)
     assert cp is not None and cp.status == "failed" and cp.last_error
+
+
+def test_turn_finish_takes_eager_checkpoint(env) -> None:
+    """SOR-221: an idle agent with no checkpoint is one platform loss away
+    from terminal ``lost`` — the finish watcher captures the durable
+    checkpoint eagerly while the sandbox is provably alive, then releases
+    the busy marker so follow-ups keep working on the warm sandbox."""
+    plane, backend, store, checkpoints, snapshots = env
+    session_id = plane.create_session(owner="sbx", title="t", model=None)
+    rec = store.get(session_id)
+    assert rec is not None
+    old_sandbox_id = rec.sandbox_id
+
+    turn_id = plane.post_message(session_id, "first")
+    assert turn_id == "turn-1"
+    rec = _wait_status(store, session_id, "idle")
+    # The durable checkpoint exists the moment the agent goes idle — the
+    # platform can reclaim the warm sandbox at any point after this.
+    cp = checkpoints.get(session_id)
+    assert cp is not None and cp.status == CHECKPOINT_CHECKPOINTED
+    assert cp.snapshot_ref and cp.native_session_id == THREAD_ID
+    assert rec.current_turn_id is None
+    # The warm sandbox was kept (credential reattach succeeded — no blob
+    # configured means nothing to restore).
+    assert rec.sandbox_id == old_sandbox_id
+    assert backend.poll(rec.handle()).alive
+
+    # Platform reclaims the sandbox before any idle-expiry sweep: the
+    # eager checkpoint heals the loss to ``suspended``, never ``lost``.
+    backend.terminate(rec.handle())
+    actions = reap(
+        store,
+        backend,
+        _now() + timedelta(minutes=1),
+        idle_timeout_s=1800,
+        checkpoints=checkpoints,
+    )
+    rec = store.get(session_id)
+    assert rec is not None and rec.status == "suspended"
+    assert any(a.kind == "suspended" and a.session_id == session_id for a in actions)
+
+    # And the follow-up restores the same agent from that checkpoint.
+    turn_id = plane.post_message(session_id, "again")
+    assert turn_id == "turn-2"
+    rec = _wait_status(store, session_id, "idle")
+    assert _session_json(Path(rec.sandbox_root))["native_session_id"] == THREAD_ID
 
 
 def test_platform_loss_without_checkpoint_is_diagnosed(env) -> None:
@@ -498,7 +547,8 @@ def test_transient_restore_failure_keeps_suspended_and_retries(
     assert turn_id == "turn-2"
     rec = _wait_status(store, session_id, "idle")
     assert _session_json(Path(rec.sandbox_root))["native_session_id"] == THREAD_ID
-    assert checkpoints.get(session_id).status == CHECKPOINT_RESTORED
+    # The eager finish checkpoint re-arms the durable record (``restored`` → ``checkpointed``).
+    assert checkpoints.get(session_id).status == CHECKPOINT_CHECKPOINTED
 
 
 def test_transient_reattach_failure_keeps_suspended_and_retries(
@@ -534,7 +584,8 @@ def test_transient_reattach_failure_keeps_suspended_and_retries(
     turn_id = plane.post_message(session_id, "again")
     assert turn_id == "turn-2"
     _wait_status(store, session_id, "idle")
-    assert checkpoints.get(session_id).status == CHECKPOINT_RESTORED
+    # The eager finish checkpoint re-arms the durable record (``restored`` → ``checkpointed``).
+    assert checkpoints.get(session_id).status == CHECKPOINT_CHECKPOINTED
 
 
 def test_restore_without_snapshot_ref_marks_lost(env) -> None:
@@ -620,7 +671,8 @@ def test_workspace_head_recorded_and_verified(env) -> None:
     rec = _wait_status(store, session_id, "idle")
     restored = Path(rec.sandbox_root)
     assert host_git(restored / "repo", "rev-parse", "HEAD") == head
-    assert checkpoints.get(session_id).status == CHECKPOINT_RESTORED
+    # The eager finish checkpoint re-arms the durable record (``restored`` → ``checkpointed``).
+    assert checkpoints.get(session_id).status == CHECKPOINT_CHECKPOINTED
 
 
 def test_workspace_head_mismatch_fails_closed(env) -> None:

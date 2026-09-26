@@ -149,6 +149,56 @@ def test_seed_fingerprint_matches_stored_blob(cred_env: _CredEnv) -> None:
     assert cred_env.sync.seed_fingerprint(None) is None
 
 
+def test_seed_blob_returns_stored_blob(cred_env: _CredEnv) -> None:
+    """``seed_blob`` hands the authoritative stored blob to the provision
+    path — ``None`` for unusable accounts or when no blob is stored."""
+    assert cred_env.sync.seed_blob(ACCOUNT_ID) == _blob("old")
+    assert cred_env.sync.seed_blob("auto") is None
+    assert cred_env.sync.seed_blob(None) is None
+    assert cred_env.sync.seed_blob("acct-codex-unknown") is None
+
+
+def test_provision_seeds_registry_blob_without_ambient_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SOR-221: a blob-carrying account with no mountable Secret still gets
+    its credential at ``runner init`` — the registry blob rides the init
+    env (the same lane the verify probe uses), so the sandbox restores the
+    auth files even when ``secret_name`` is empty and no ambient
+    ``SBX_ACCOUNT_CREDENTIAL`` exists."""
+    monkeypatch.delenv("SBX_ACCOUNT_CREDENTIAL", raising=False)
+    monkeypatch.delenv("SBX_ACCOUNT_ID", raising=False)
+    registry = PersistentAccountRegistry(InMemoryAccountStore())
+    registry.put(
+        Account(
+            id=ACCOUNT_ID,
+            provider="codex",
+            label="h",
+            secret_name="",  # blob-only account — the reported gap
+            created_at="2026-09-19T00:00:00+00:00",
+        )
+    )
+    registry.put_credential_blob(ACCOUNT_ID, _blob("seeded"))
+    backend = LocalProcessBackend()
+    plane = ControlPlane(backend, InMemoryStore(), RUNNER)
+    plane.credential_sync = CredentialSync(lambda: registry)
+    session_id = plane.create_session(
+        owner="sbx",
+        title="t",
+        model="gpt-5.6-luna",
+        provider="codex",
+        account_id=ACCOUNT_ID,
+    )
+    try:
+        rec = plane.get(session_id)
+        assert rec is not None and rec.status == "idle"
+        restored = Path(rec.sandbox_root) / "home" / ".codex" / "auth.json"
+        assert restored.is_file()
+        assert "REDACTED-seeded" in restored.read_text(encoding="utf-8")
+    finally:
+        plane.close(session_id)
+
+
 def test_mark_run_credential_pins_base_fp() -> None:
     tags = {TAG_CRED_BASE_FP: "abc"}
     CredentialSync.mark_run_credential(tags)

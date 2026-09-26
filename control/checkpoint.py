@@ -129,17 +129,25 @@ _REATTACH_SCRIPT = (
     "    p = pathlib.PurePosixPath(rel)\n"
     "    if p.is_absolute() or not p.parts or any(x in ('..', '.') for x in p.parts):\n"
     "        raise SystemExit(3)\n"
-    "def target(rel):\n"
+    "def targets(rel):\n"
     "    parts = pathlib.PurePosixPath(rel).parts\n"
+    "    dests = []\n"
+    "    # The contract target: blob relpaths are relative to ``$HOME``.\n"
+    "    base = home.resolve()\n"
+    "    dest = base.joinpath(*parts).resolve()\n"
+    "    if not str(dest).startswith(str(base) + os.sep):\n"
+    "        raise SystemExit(4)\n"
+    "    dests.append(dest)\n"
+    "    # Codex exception: ``.codex/*`` also belongs under the actual\n"
+    "    # ``CODEX_HOME`` when it lives outside ``$HOME`` (P1 production).\n"
     "    if provider == 'codex' and parts and parts[0] == '.codex':\n"
     "        base = codex_home.resolve()\n"
     "        dest = base.joinpath(*parts[1:]).resolve()\n"
-    "    else:\n"
-    "        base = home.resolve()\n"
-    "        dest = base.joinpath(*parts).resolve()\n"
-    "    if not str(dest).startswith(str(base) + os.sep):\n"
-    "        raise SystemExit(4)\n"
-    "    return dest\n"
+    "        if not str(dest).startswith(str(base) + os.sep):\n"
+    "            raise SystemExit(4)\n"
+    "        if dest not in dests:\n"
+    "            dests.append(dest)\n"
+    "    return dests\n"
     "def decode(value):\n"
     "    if isinstance(value, str):\n"
     "        return value.encode('utf-8')\n"
@@ -170,7 +178,8 @@ _REATTACH_SCRIPT = (
     "    pending = []\n"
     "    for rel, value in sorted((blob.get('files') or {}).items()):\n"
     "        check(rel)\n"
-    "        pending.append((target(rel), decode(value)))\n"
+    "        for dest in targets(rel):\n"
+    "            pending.append((dest, decode(value)))\n"
     "    for dest, content in pending:\n"
     "        write_secret(dest, content)\n"
     "if provider == 'codex':\n"
@@ -541,43 +550,33 @@ class CheckpointService:
         except Exception:
             pass
 
-    def suspend(self, rec: SessionRecord, handle: SandboxHandle) -> bool:
-        """Checkpoint ``rec``'s live filesystem for a later same-agent restore.
+    def _capture(self, rec: SessionRecord, handle: SandboxHandle) -> AgentCheckpoint:
+        """Scrub → snapshot → build the durable record (not yet stored).
 
-        Returns ``True`` only when a durable ``checkpointed`` record with a
-        snapshot ref exists; the caller then releases the sandbox and moves
-        the record to ``suspended``. On ``False`` the failure is recorded
-        on the checkpoint record and the caller falls back to the
-        non-recoverable outcome — credentials are never snapshotted, so a
-        scrub failure aborts the snapshot rather than shipping them.
+        Raises on any capture failure; the caller records the diagnosis.
+        The record's fields are identical whether the sandbox is released
+        (``suspend``) or kept warm (``checkpoint_live``).
         """
-        if self._snapshots is None:
-            self.fail(rec.id, "no snapshot provider configured")
-            return False
-        try:
-            state = self._session_state(handle)
-            self._scrub(rec, handle, state)
-            # Pin the workspace identity the snapshot must reproduce:
-            # restore verifies ``session.json.native_session_id`` and the
-            # workdir's ``git rev-parse HEAD`` before credentials attach.
-            workspace_workdir = self._workdir(rec.id)
-            workspace_head_sha: str | None = None
-            if workspace_workdir is not None:
-                try:
-                    workspace_head_sha = git_head(self._backend, handle, workspace_workdir)
-                except Exception:
-                    workspace_head_sha = None
-            snapshot_ref = self._snapshots.snapshot(handle)
-        except Exception as exc:
-            self.fail(rec.id, f"checkpoint failed: {_clip(exc)}")
-            return False
+        state = self._session_state(handle)
+        self._scrub(rec, handle, state)
+        # Pin the workspace identity the snapshot must reproduce:
+        # restore verifies ``session.json.native_session_id`` and the
+        # workdir's ``git rev-parse HEAD`` before credentials attach.
+        workspace_workdir = self._workdir(rec.id)
+        workspace_head_sha: str | None = None
+        if workspace_workdir is not None:
+            try:
+                workspace_head_sha = git_head(self._backend, handle, workspace_workdir)
+            except Exception:
+                workspace_head_sha = None
+        snapshot_ref = self._snapshots.snapshot(handle)
         now = self._now().isoformat()
         try:
             existing = self._store.get(rec.id)
         except Exception:
             existing = None
         spec_secrets = rec.spec_secrets or {}
-        record = AgentCheckpoint(
+        return AgentCheckpoint(
             agent_id=rec.id,
             status=CHECKPOINT_CHECKPOINTED,
             snapshot_ref=snapshot_ref,
@@ -597,6 +596,25 @@ class CheckpointService:
             updated_at=now,
             checkpointed_at=now,
         )
+
+    def suspend(self, rec: SessionRecord, handle: SandboxHandle) -> bool:
+        """Checkpoint ``rec``'s live filesystem for a later same-agent restore.
+
+        Returns ``True`` only when a durable ``checkpointed`` record with a
+        snapshot ref exists; the caller then releases the sandbox and moves
+        the record to ``suspended``. On ``False`` the failure is recorded
+        on the checkpoint record and the caller falls back to the
+        non-recoverable outcome — credentials are never snapshotted, so a
+        scrub failure aborts the snapshot rather than shipping them.
+        """
+        if self._snapshots is None:
+            self.fail(rec.id, "no snapshot provider configured")
+            return False
+        try:
+            record = self._capture(rec, handle)
+        except Exception as exc:
+            self.fail(rec.id, f"checkpoint failed: {_clip(exc)}")
+            return False
         try:
             self._store.put(record)
         except Exception as exc:
@@ -606,6 +624,48 @@ class CheckpointService:
             self.fail(rec.id, f"checkpoint record write failed: {_clip(exc)}")
             return False
         return True
+
+    def checkpoint_live(self, rec: SessionRecord, handle: SandboxHandle) -> str:
+        """Checkpoint a live agent's filesystem WITHOUT releasing its sandbox.
+
+        The eager counterpart of ``suspend`` for run-finish: an idle agent
+        with no checkpoint is one platform loss away from terminal
+        ``lost``, so the durable artifact is taken while the sandbox is
+        provably alive. The scrubbed credentials are re-attached
+        immediately after the snapshot so the warm sandbox keeps working
+        (the credential-deletion window is seconds, not the idle
+        retention). Returns:
+
+        ``"live"``    — durable checkpoint + the sandbox stays usable;
+        ``"suspend"`` — durable checkpoint but credential reattach failed:
+                        the caller must release the sandbox and mark the
+                        record ``suspended`` — the next turn restores;
+        ``"none"``    — no durable checkpoint; credentials were re-attached
+                        best-effort so the live sandbox keeps working.
+        """
+        if self._snapshots is None:
+            return "none"
+        try:
+            record = self._capture(rec, handle)
+            self._store.put(record)
+        except Exception as exc:
+            # No durable checkpoint. The scrub may already have removed the
+            # credential files — re-attach best-effort so the still-live
+            # sandbox is not left unauthenticated.
+            self.fail(rec.id, f"checkpoint failed: {_clip(exc)}")
+            try:
+                self._reattach(handle)
+            except Exception:
+                pass
+            return "none"
+        try:
+            self._reattach(handle)
+        except Exception:
+            # The checkpoint is durable; the live sandbox can no longer
+            # authenticate — releasing it is strictly better than a warm
+            # agent that fails every follow-up.
+            return "suspend"
+        return "live"
 
     def restore(self, rec: SessionRecord) -> SandboxHandle:
         """Create a fresh sandbox pre-populated with the agent's checkpoint.

@@ -67,6 +67,7 @@ x-canonical:
     - invalid_resource
     - invalid_scope
     - invalid_source
+    - merge_not_allowed
     - not_found
     - pair_invalid
     - provider_exhausted
@@ -3608,6 +3609,7 @@ components:
                 - invalid_resource
                 - invalid_scope
                 - invalid_source
+                - merge_not_allowed
                 - not_found
                 - pair_invalid
                 - provider_exhausted

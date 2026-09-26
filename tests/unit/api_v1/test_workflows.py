@@ -9,7 +9,7 @@ from control.api_v1.deps import get_workflow_store
 from control.api_v1.state import V1State
 from control.api_v1.workflows import WorkflowService
 from control.workflow_store import FileWorkflowStore, InMemoryWorkflowStore, WorkflowTaskRecord
-from tests.unit.api_v1.conftest import create_agent, wait_run, wait_sandbox
+from tests.unit.api_v1.conftest import create_agent, wait_run, wait_sandbox, wait_status
 
 
 def _service(env, *, v1=None, run_states="app"):
@@ -108,6 +108,9 @@ class TestLookup:
         )
         for resp in (a1, a2):
             wait_run(client, auth, resp["agent"]["id"], "run-1")
+            # The verdict is durable while the watcher settles its post-run
+            # window — the session status flips idle after the checkpoint.
+            wait_status(v1_env, resp["agent"]["id"], "idle")
 
         view = _service(v1_env).lookup(v1_env.agents_key_id, "wf-1")
         assert view is not None

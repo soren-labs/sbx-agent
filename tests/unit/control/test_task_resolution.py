@@ -266,6 +266,191 @@ def test_github_unknown_access_warns_not_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
+# GitHubApiResolver.access — installation-token push capability (SOR-221)
+#
+# ``GET /repos``'s ``permissions`` block reports the *user's* repo role, so
+# installation tokens (``ghs_*``, the only credential class sbx mints or
+# bridges) always read all-false there. Push capability for them comes
+# from ``GET /installation/repositories`` — the installation's real grants.
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpResponse:
+    def __init__(self, status: int, body: object) -> None:
+        self.status_code = status
+        self._body = body
+
+    def json(self) -> object:
+        return self._body
+
+
+class _FakeHttpClient:
+    """``GitHubApiResolver(client=…)`` seam — path-prefix routed fake."""
+
+    def __init__(self, routes: dict[str, tuple[int, object]]) -> None:
+        self._routes = routes
+        self.calls: list[str] = []
+
+    def get(self, path: str, headers: dict | None = None) -> _FakeHttpResponse:
+        self.calls.append(path)
+        for prefix, (status, body) in self._routes.items():
+            if path.startswith(prefix):
+                return _FakeHttpResponse(status, body)
+        return _FakeHttpResponse(404, {})
+
+
+_GITHUB_REPO = tasks.CanonicalRepo(canonical="https://github.com/o/r", kind="github", slug="o/r")
+
+
+def test_github_api_access_installation_token_push_yes() -> None:
+    """An all-false user-role block must not deny push when the
+    installation's repo listing shows the token is push-capable."""
+    resolver = tasks.GitHubApiResolver(
+        env={"GH_TOKEN": "ghs_installtoken"},
+        client=_FakeHttpClient(
+            {
+                "/repos/o/r": (
+                    200,
+                    {"permissions": {"admin": False, "push": False, "pull": False}},
+                ),
+                "/installation/repositories": (
+                    200,
+                    {
+                        "total_count": 1,
+                        "repositories": [
+                            {
+                                "full_name": "o/r",
+                                "permissions": {
+                                    "admin": False,
+                                    "push": True,
+                                    "pull": True,
+                                },
+                            }
+                        ],
+                    },
+                ),
+            }
+        ),
+    )
+    access = resolver.access(_GITHUB_REPO)
+    assert access["read"] == "yes"
+    assert access["push"] == "yes"
+
+
+def test_github_api_access_installation_token_push_no() -> None:
+    """A repo the installation can only read is an honest ``no`` — the
+    preflight refusal stays meaningful for genuinely read-only tokens."""
+    resolver = tasks.GitHubApiResolver(
+        env={"GH_TOKEN": "ghs_installtoken"},
+        client=_FakeHttpClient(
+            {
+                "/repos/o/r": (200, {"permissions": {}}),
+                "/installation/repositories": (
+                    200,
+                    {
+                        "total_count": 1,
+                        "repositories": [
+                            {
+                                "full_name": "o/r",
+                                "permissions": {
+                                    "admin": False,
+                                    "push": False,
+                                    "pull": True,
+                                },
+                            }
+                        ],
+                    },
+                ),
+            }
+        ),
+    )
+    assert resolver.access(_GITHUB_REPO)["push"] == "no"
+
+
+def test_github_api_access_installation_listing_unavailable_is_unknown() -> None:
+    """When the installation seam cannot answer, report ``unknown`` —
+    never fabricate a ``no`` from the meaningless user-role block."""
+    resolver = tasks.GitHubApiResolver(
+        env={"GH_TOKEN": "ghs_installtoken"},
+        client=_FakeHttpClient(
+            {
+                "/repos/o/r": (
+                    200,
+                    {"permissions": {"admin": False, "push": False, "pull": False}},
+                ),
+                "/installation/repositories": (403, {"message": "forbidden"}),
+            }
+        ),
+    )
+    assert resolver.access(_GITHUB_REPO)["push"] == "unknown"
+
+
+def test_github_api_access_user_token_keeps_repo_permissions() -> None:
+    """PAT/user-context tokens keep the ``GET /repos`` permission check —
+    their block reflects the user's effective role."""
+    resolver = tasks.GitHubApiResolver(
+        env={"GH_TOKEN": "ghp_usertoken"},
+        client=_FakeHttpClient(
+            {
+                "/repos/o/r": (
+                    200,
+                    {"permissions": {"admin": False, "push": True, "pull": True}},
+                ),
+            }
+        ),
+    )
+    access = resolver.access(_GITHUB_REPO)
+    assert access["push"] == "yes"
+
+
+def test_delivery_preflight_passes_for_installation_token() -> None:
+    """End-to-end: POST /v1/tasks with a delivery policy must not 409
+    ``repo_unavailable`` on a verifiably push-capable installation token."""
+    resolver = tasks.GitHubApiResolver(
+        env={"GH_TOKEN": "ghs_installtoken"},
+        client=_FakeHttpClient(
+            {
+                "/repos/o/r/commits": (
+                    200,
+                    {"sha": "a" * 40},
+                ),
+                "/repos/o/r": (
+                    200,
+                    {
+                        "default_branch": "main",
+                        "permissions": {"admin": False, "push": False, "pull": False},
+                    },
+                ),
+                "/installation/repositories": (
+                    200,
+                    {
+                        "total_count": 1,
+                        "repositories": [
+                            {
+                                "full_name": "o/r",
+                                "permissions": {
+                                    "admin": False,
+                                    "push": True,
+                                    "pull": True,
+                                },
+                            }
+                        ],
+                    },
+                ),
+            }
+        ),
+    )
+    res, checks, warnings = tasks.resolve_source(
+        {"repo": "https://github.com/o/r"},
+        resolver=resolver,
+        env={"GH_TOKEN": "ghs_installtoken"},
+        needs_push=True,
+    )
+    assert res.base_sha == "a" * 40
+    assert any(c.name == "github.push" and c.status == "pass" for c in checks)
+
+
+# ---------------------------------------------------------------------------
 # delivery → git policy
 # ---------------------------------------------------------------------------
 

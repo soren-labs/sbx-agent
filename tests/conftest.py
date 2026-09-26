@@ -72,6 +72,11 @@ _CLOUD_KEYS = frozenset(
         "SBX_LINEAR_MCP_EPHEMERAL",
         "SBX_API_USER",
         "SBX_API_PASSWORD",
+        # Ambient CLI/deployment pointers on a dev host must never steer
+        # tests at a real deployment or leak a real API key.
+        "SBX_BASE_URL",
+        "SBX_API_KEY",
+        "SBX_RESOURCE_SECRETS",
         # An ambient work dir must never redirect sandbox writes off tmp_path.
         "SBX_WORK",
         # Ambient backend/transport selectors are per-test inputs, not host

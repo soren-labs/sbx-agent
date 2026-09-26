@@ -18,7 +18,13 @@ from control.devin_pool import DevinAccountPool
 from control.reaper import reap
 from control.scheduler import AccountScheduler
 from control.service import release_lease_for_action
-from tests.unit.api_v1.conftest import create_agent, seed_account, wait_run, wait_sandbox
+from tests.unit.api_v1.conftest import (
+    create_agent,
+    seed_account,
+    wait_run,
+    wait_sandbox,
+    wait_status,
+)
 
 _DEVIN = {"provider": "devin"}
 _BASIC = ("sbx", "sbx")
@@ -111,8 +117,9 @@ class TestReaperReleasesLease:
         pool = _devin_pool(v1_env)
         agent = create_agent(client, auth, agent=dict(_DEVIN))["agent"]
         wait_run(client, auth, agent["id"], "run-1")  # settles to idle
-        rec = v1_env.store.get(agent["id"])
-        assert rec.status == "idle"
+        # The run is terminal while the watcher finishes its post-run
+        # window (write-back + eager checkpoint) — wait for the settle.
+        rec = wait_status(v1_env, agent["id"], "idle")
         assert pool.active_count == 1
 
         # Sandbox dies behind the control plane's back (crash, Modal kill).
@@ -130,8 +137,7 @@ class TestReaperReleasesLease:
         pool = _devin_pool(v1_env)
         agent = create_agent(client, auth, agent=dict(_DEVIN))["agent"]
         wait_run(client, auth, agent["id"], "run-1")  # settles to idle
-        rec = v1_env.store.get(agent["id"])
-        assert rec.status == "idle"
+        rec = wait_status(v1_env, agent["id"], "idle")
         assert pool.active_count == 1
 
         # Idle past the session's timeout → terminate + timed_out + free.
@@ -183,7 +189,7 @@ class TestReaperReleasesLease:
         scheduler = _codex_scheduler(v1_env)
         agent = create_agent(client, auth)["agent"]
         wait_run(client, auth, agent["id"], "run-1")
-        rec = v1_env.store.get(agent["id"])
+        rec = wait_status(v1_env, agent["id"], "idle")
         assert scheduler.active_count == 1
         v1_env.backend.terminate(rec.handle())
         _reap(v1_env, datetime.now(UTC) + timedelta(seconds=5))

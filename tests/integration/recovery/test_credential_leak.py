@@ -10,6 +10,7 @@ scanned for it, on both success and provider-failure runs.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from control.store import record_to_dict
@@ -47,6 +48,14 @@ def test_credential_never_reaches_api_or_records(recovery_env, monkeypatch, scen
     agent_id = resp.json()["agent"]["id"]
     run_id = resp.json()["run"]["id"]
     env.wait_run(agent_id, run_id)
+    # The durable run verdict publishes while the watcher finishes its
+    # post-run window — the SOR-180 eager checkpoint scrubs then re-attaches
+    # credential files, so observe the FS only once the record settles.
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if env.store.get(agent_id).status != "running":
+            break
+        time.sleep(0.05)
 
     handle = env.sandbox_handle(agent_id)
     assert handle is not None

@@ -435,7 +435,19 @@ def assert_run_durable(
     reclamation and control-plane restarts cannot change them.
     """
     snap = env.wait_run(agent_id, run_id, timeout=timeout)
-    agent_before = env.get_agent(agent_id).json()
+    # The durable run verdict publishes while the watcher is still in its
+    # post-run window (credential write-back + SOR-180 eager checkpoint);
+    # the session record keeps ``running`` until that settles. Snapshot the
+    # agent only once it leaves the settle window — restart must preserve a
+    # settled status, not a transitional one.
+    deadline = time.monotonic() + timeout
+    while True:
+        agent_before = env.get_agent(agent_id).json()
+        if agent_before.get("status") not in ("running",):
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"agent {agent_id} never left the post-run settle window")
+        time.sleep(0.05)
 
     env.teardown(agent_id)
     resp = env.get_run(agent_id, run_id)
