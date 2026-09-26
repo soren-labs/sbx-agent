@@ -27,41 +27,118 @@ import {
 } from "../lib/ui.js";
 import { renderAgent } from "./agent.js";
 
-const DELIVERY_BADGE = { pending: "amber", delivered: "green", failed: "red" };
+function changesTabLink(taskId) {
+  return `/tasks/${encodeURIComponent(taskId)}`;
+}
 
-function deliveryCard(task, { onPublish }) {
-  const d = task.delivery;
-  if (!d) return null;
-  const pr = d.pull_request || {};
+/** The answer to "what happened and what do I do next" — one card. */
+function resultCard(task, revisions, { onPublish, onRetry }) {
+  const st = task.status;
+  const rev = revisions?.length ? revisions[revisions.length - 1] : null;
+  const delivery = rev?.delivery || {};
+  const pr = delivery.pull_request || {};
   const prUrl = pr.url || pr.html_url;
+  let tone = "info";
+  let title = "";
+  let body = null;
+  const actions = [];
+  const toChanges = (label, opts = {}) =>
+    button(label, {
+      variant: "secondary",
+      size: "sm",
+      iconName: "fileDiff",
+      ...opts,
+      onClick: () => navigate(changesTabLink(task.id), { tab: "changes" }),
+    });
+
+  if (st === "queued" || st === "awaiting_dispatch") {
+    title = t("Queued — a sandbox is being allocated");
+    body = h("p", { class: "muted" }, t("The run starts as soon as a provider account has a free slot."));
+  } else if (st === "running") {
+    title = t("Working on it");
+    body = h("p", { class: "muted" }, t("Watch the live run in the conversation below."));
+  } else if (st === "delivering") {
+    if (task.delivery?.status === "pending") {
+      tone = "warning";
+      title = t("Ready to publish");
+      body = h("p", { class: "muted" }, t("The run finished — publish to deliver the result."));
+      actions.push(actionButton(t("Publish now"), onPublish, { variant: "primary", size: "sm", iconName: "upload", testid: "publish-now" }));
+    } else {
+      title = t("Publishing the result…");
+    }
+  } else if (st === "delivery_failed") {
+    tone = "danger";
+    title = t("Delivery failed");
+    body = task.delivery?.error
+      ? h(
+          "code",
+          { "data-testid": "delivery-error" },
+          typeof task.delivery.error === "string"
+            ? task.delivery.error
+            : task.delivery.error.message || task.delivery.error.code || "",
+        )
+      : null;
+    actions.push(actionButton(t("Publish now"), onPublish, { variant: "primary", size: "sm", iconName: "upload", testid: "publish-now" }));
+  } else if (st === "error" || st === "expired") {
+    tone = "danger";
+    title = st === "expired" ? t("The task expired") : t("The task failed");
+    body = h("p", { class: "muted" }, t("See the run's final events in the conversation for the reason."));
+    actions.push(actionButton(t("Retry"), onRetry, { variant: "primary", size: "sm", iconName: "refresh", testid: "result-retry" }));
+  } else if (st === "cancelled") {
+    tone = "neutral";
+    title = t("Cancelled");
+    body = h("p", { class: "muted" }, t("Nothing else will run — send a follow-up below to continue the work."));
+  } else if (rev && rev.status !== "ready") {
+    tone = "danger";
+    title = t("Changes could not be packaged");
+    body = rev.error?.message ? h("code", null, rev.error.message) : null;
+    actions.push(actionButton(t("Retry"), onRetry, { variant: "primary", size: "sm", iconName: "refresh", testid: "result-retry" }));
+  } else if (rev) {
+    if (delivery.merged) {
+      tone = "success";
+      title = t("Merged");
+      body = h("p", { class: "muted" }, pr.number ? t("Pull request #{n} merged.", { n: pr.number }) : t("The changes are merged."));
+    } else if (pr.number) {
+      tone = "success";
+      title = t("Pull request #{n} is {state}", { n: pr.number, state: pr.state || t("open") });
+      actions.push(toChanges(t("Review changes")));
+      if (prUrl) actions.push(h("a", { class: "btn btn-sm btn-secondary", href: prUrl, target: "_blank", rel: "noopener" }, icon("external", { size: 13 }), t("View PR")));
+    } else if (delivery.status === "delivered") {
+      tone = "success";
+      title = t("Delivered to {branch}", { branch: delivery.branch || t("the work branch") });
+      actions.push(toChanges(t("Review changes")));
+    } else if (delivery.status === "failed") {
+      tone = "danger";
+      title = t("Delivery failed");
+      body = delivery.error
+        ? h("code", null, typeof delivery.error === "string" ? delivery.error : delivery.error.message || delivery.error.code || "")
+        : null;
+      actions.push(actionButton(t("Publish now"), onPublish, { variant: "primary", size: "sm", iconName: "upload", testid: "publish-now" }));
+    } else {
+      title = t("Revision {n} is ready to review", { n: rev.n });
+      body = h("p", { class: "muted" }, t("Check the diff, then publish or open a pull request."));
+      actions.push(toChanges(t("Review changes"), { variant: "primary" }));
+      if (isTaskEnded(st)) actions.push(actionButton(t("Publish"), onPublish, { variant: "secondary", size: "sm", iconName: "upload", testid: "publish-now" }));
+    }
+  } else if (task.resolved?.source?.repo || task.request?.source?.repo) {
+    title = t("Finished — no code changes were recorded");
+    body = h("p", { class: "muted" }, t("The run ended without leaving a revision."));
+  } else {
+    title = t("Finished");
+    body = h("p", { class: "muted" }, t("The result is the final reply in the conversation below."));
+  }
+  if (!title) return null;
   return card({
-    title: t("Delivery"),
-    iconName: "pullRequest",
-    testid: "delivery-card",
-    actions: [
-      prUrl ? h("a", { class: "btn btn-sm", href: prUrl, target: "_blank", rel: "noopener" }, icon("externalLink", { size: 13 }), t("View PR")) : null,
-      d.status !== "delivered" && task.agent_id && (task.status === "delivering" || isTaskEnded(task.status))
-        ? actionButton(t("Publish now"), onPublish, { variant: "secondary", size: "sm", iconName: "upload", testid: "publish-now" })
-        : null,
-    ],
+    title: t("Result"),
+    iconName: "circleCheck",
+    testid: "task-result",
+    class: `result-card tone-${tone}`,
     body: h(
       "div",
       { class: "fields" },
-      h(
-        "div",
-        { class: "row", style: "gap:8px;align-items:center" },
-        badge(t(d.status), { tone: DELIVERY_BADGE[d.status] || "neutral", testid: "delivery-status" }),
-        d.branch ? h("code", null, d.branch) : null,
-        d.pushed_head_sha ? mono(d.pushed_head_sha.slice(0, 8)) : null,
-        pr.number ? badge(`PR #${pr.number}`, { mono: true }) : null,
-      ),
-      d.error ? banner({ tone: "danger", title: t("Delivery failed"), body: h("code", null, String(d.error)), testid: "delivery-error" }) : null,
-      d.status === "pending" && (task.status === "queued" || task.status === "running")
-        ? h("p", { class: "muted" }, t("Publishes automatically when the run finishes."))
-        : null,
-      d.status === "pending" && task.status === "delivering"
-        ? h("p", { class: "muted" }, t("The run finished — publish to deliver the result."))
-        : null,
+      h("div", { class: "result-title" }, title),
+      body,
+      actions.length ? h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, actions) : null,
     ),
   });
 }
@@ -143,21 +220,29 @@ function taskDetails(task) {
 
 export function renderTask({ route, shell }) {
   const taskId = route.params.id;
-  const state = { task: null, error: null };
+  const state = { task: null, revisions: [], reviews: [], error: null };
   let agentView = null;
   let disposed = false;
 
   const headerEl = h("div");
   const goalEl = h("div");
-  const deliveryEl = h("div");
+  const resultEl = h("div");
   const agentEl = h("div");
-  const el = h("div", { class: "page page-wide", "data-testid": "task-view" }, headerEl, goalEl, deliveryEl, agentEl);
+  const el = h("div", { class: "page page-wide", "data-testid": "task-view" }, headerEl, goalEl, resultEl, agentEl);
 
   async function refresh() {
     try {
       const res = await api.getTask(taskId);
       state.task = res.task;
       state.error = null;
+      if (state.task.agent_id && !["queued", "awaiting_dispatch"].includes(state.task.status)) {
+        const [revs, rvws] = await Promise.all([
+          api.listTaskRevisions(taskId),
+          api.listTaskReviews(taskId),
+        ]);
+        state.revisions = revs.revisions || [];
+        state.reviews = rvws.reviews || [];
+      }
     } catch (err) {
       state.error = err;
     }
@@ -168,7 +253,7 @@ export function renderTask({ route, shell }) {
 
   async function publishNow() {
     try {
-      await api.deliverTask(taskId);
+      await api.deliverRevision(taskId, { revision: "latest" });
       toast(t("Publishing…"), { tone: "info" });
     } catch (err) {
       toastError(err, t("Could not publish"));
@@ -224,7 +309,13 @@ export function renderTask({ route, shell }) {
     if (isTaskLive(task.status)) {
       actions.push(actionButton(t("Cancel"), cancel, { variant: "danger", iconName: "stop", testid: "cancel-task" }));
     } else if (task.status !== "cancelled") {
-      actions.push(actionButton(t("Retry"), retry, { variant: "secondary", iconName: "refresh", testid: "retry-task" }));
+      actions.push(
+        actionButton(task.status === "delivery_failed" ? t("Retry publish") : t("Retry"), retry, {
+          variant: "secondary",
+          iconName: "refresh",
+          testid: "retry-task",
+        }),
+      );
     }
     mount(
       headerEl,
@@ -249,9 +340,16 @@ export function renderTask({ route, shell }) {
     const task = state.task;
     if (!task) return;
     mount(goalEl, goalCard(task));
-    mount(deliveryEl, deliveryCard(task, { onPublish: publishNow }));
+    mount(resultEl, resultCard(task, state.revisions, { onPublish: publishNow, onRetry: retry }));
     if (task.agent_id && !agentView) {
-      agentView = renderAgent({ route, shell, agentId: task.agent_id, taskId: task.id, extraDetails: taskDetails(task) });
+      agentView = renderAgent({
+        route,
+        shell,
+        agentId: task.agent_id,
+        taskId: task.id,
+        getTask: () => state.task,
+        extraDetails: taskDetails(task),
+      });
       mount(agentEl, agentView.el);
     }
     if (!task.agent_id) {

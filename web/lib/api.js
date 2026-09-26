@@ -121,6 +121,17 @@ export const api = {
   retryTask: (id, body) => request("POST", `/v1/tasks/${enc(id)}/retry`, { body }),
   deliverTask: (id) => request("POST", `/v1/tasks/${enc(id)}/delivery`),
   listTaskRuns: (id) => request("GET", `/v1/tasks/${enc(id)}/runs`),
+  createTaskRun: (id, body) => request("POST", `/v1/tasks/${enc(id)}/runs`, { body }),
+
+  // Task-scoped code lifecycle: revisions materialize per run, reviews pin
+  // an exact head, deliver/merge act on the durable revision (sandbox-free).
+  listTaskRevisions: (id) => request("GET", `/v1/tasks/${enc(id)}/revisions`),
+  getTaskRevision: (id, ref) =>
+    request("GET", `/v1/tasks/${enc(id)}/revisions/${enc(ref)}`),
+  listTaskReviews: (id, query) => request("GET", `/v1/tasks/${enc(id)}/reviews`, { query }),
+  createTaskReview: (id, body) => request("POST", `/v1/tasks/${enc(id)}/reviews`, { body }),
+  deliverRevision: (id, body) => request("POST", `/v1/tasks/${enc(id)}/deliver`, { body }),
+  mergeTask: (id, body) => request("POST", `/v1/tasks/${enc(id)}/merge`, { body }),
 
   listAgents: (query) => request("GET", "/v1/agents", { query }),
   agentsSummary: (query) => request("GET", "/v1/agents/summary", { query }),
