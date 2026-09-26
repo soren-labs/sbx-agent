@@ -99,8 +99,7 @@ export function renderNewTask({ route, shell }) {
     if (Object.keys(execution).length) body.execution = execution;
     const deliveryMode = f.delivery || (f.repo.trim() ? "pr" : "none");
     if (deliveryMode !== "none" && f.repo.trim()) {
-      body.delivery = {};
-      if (deliveryMode === "branch") body.delivery.auto_publish = true;
+      body.delivery = { auto_publish: true };
       if (f.branch.trim()) body.delivery.branch = f.branch.trim();
       if (deliveryMode === "pr") {
         const pr = {};

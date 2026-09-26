@@ -438,6 +438,87 @@ test.describe("web console against a real local /v1 control plane", () => {
       null,
     ]);
   });
+
+  test("task delivery: PR mode auto-publishes; parked delivery offers Publish now", async ({
+    page,
+  }) => {
+    await connect(page);
+    const { demo_workspace: ws } = await devInfo(page);
+
+    // A repo makes "Open a pull request" the default result — and the
+    // request body must carry auto_publish, the only trigger that lets a
+    // finished run deliver itself without a manual POST.
+    await page.goto("/#/tasks/new");
+    await page.getByTestId("f-prompt").fill("Write deliver.txt containing ok");
+    await page.getByTestId("f-repo").fill(ws.repo);
+    // Pin a provider: Automatic can land on the devin fake, which has no
+    // ACP mode, and codex has no seeded credential in e2e — either would
+    // make this test about the wrong thing.
+    await page.getByTestId("f-provider").selectOption("antigravity");
+    await expect(
+      page.locator('[data-testid=f-delivery] [data-value="pr"]'),
+    ).toHaveAttribute("aria-checked", "true");
+    await page.getByTestId("api-preview").locator("summary").click();
+    await expect(page.getByTestId("request-preview")).toContainText('"auto_publish": true');
+    await expect(page.getByTestId("request-preview")).toContainText('"pull_request"');
+    await page.getByTestId("create-task").click();
+
+    await page.waitForURL(/#\/tasks\/task_/, { timeout: 30_000 });
+    await waitRun(page, "run-1", "FINISHED");
+    // The delivery fired on its own. A local-path repo can take the push
+    // but cannot open a GitHub PR, so the attempt surfaces as a failed
+    // delivery — before the fix this parked forever at "delivering".
+    await expect(page.getByTestId("task-status")).toHaveAttribute(
+      "data-status",
+      "delivery_failed",
+      { timeout: 45_000 },
+    );
+    await expect(page.getByTestId("delivery-error")).toBeVisible();
+    await expect(page.getByTestId("publish-now")).toBeVisible();
+    await shot(page, "console_18_delivery_failed.png");
+
+    // A parked delivery (declared without auto_publish — e.g. an older
+    // API-created task) still needs an in-UI way to publish.
+    const created = await page.request.post("/v1/tasks", {
+      headers: { Authorization: `Bearer ${KEY}` },
+      data: {
+        prompt: { text: "Write parked.txt containing ok" },
+        source: { repo: ws.repo },
+        execution: { provider: "antigravity" },
+        delivery: { pull_request: { title: "e2e manual pr" } },
+      },
+    });
+    expect(created.status()).toBe(201);
+    const parked = ((await created.json()) as { task: { id: string } }).task;
+    await expect
+      .poll(
+        async () => {
+          const res = await page.request.get(`/v1/tasks/${parked.id}`, {
+            headers: { Authorization: `Bearer ${KEY}` },
+          });
+          return ((await res.json()) as { task: { status: string } }).task.status;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe("delivering");
+
+    await page.goto(`/#/tasks/${parked.id}`);
+    await expect(page.getByTestId("task-status")).toHaveAttribute(
+      "data-status",
+      "delivering",
+    );
+    await expect(page.getByTestId("publish-now")).toBeVisible();
+    await page.getByTestId("publish-now").click();
+    await expect(page.getByTestId("task-status")).toHaveAttribute(
+      "data-status",
+      "delivery_failed",
+      { timeout: 30_000 },
+    );
+    await expect(page.getByTestId("delivery-error")).toBeVisible();
+    // The affordance stays — the same click delivers once a push/PR path
+    // can succeed (a GitHub repo + configured integration).
+    await expect(page.getByTestId("publish-now")).toBeVisible();
+  });
 });
 
 test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {

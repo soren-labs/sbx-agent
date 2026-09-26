@@ -40,7 +40,7 @@ function deliveryCard(task, { onPublish }) {
     testid: "delivery-card",
     actions: [
       prUrl ? h("a", { class: "btn btn-sm", href: prUrl, target: "_blank", rel: "noopener" }, icon("externalLink", { size: 13 }), t("View PR")) : null,
-      d.status !== "delivered" && isTaskEnded(task.status) && task.agent_id
+      d.status !== "delivered" && task.agent_id && (task.status === "delivering" || isTaskEnded(task.status))
         ? actionButton(t("Publish now"), onPublish, { variant: "secondary", size: "sm", iconName: "upload", testid: "publish-now" })
         : null,
     ],
@@ -56,7 +56,12 @@ function deliveryCard(task, { onPublish }) {
         pr.number ? badge(`PR #${pr.number}`, { mono: true }) : null,
       ),
       d.error ? banner({ tone: "danger", title: t("Delivery failed"), body: h("code", null, String(d.error)), testid: "delivery-error" }) : null,
-      d.status === "pending" && isTaskLive(task.status) ? h("p", { class: "muted" }, t("Publishes automatically when the run finishes.")) : null,
+      d.status === "pending" && (task.status === "queued" || task.status === "running")
+        ? h("p", { class: "muted" }, t("Publishes automatically when the run finishes."))
+        : null,
+      d.status === "pending" && task.status === "delivering"
+        ? h("p", { class: "muted" }, t("The run finished — publish to deliver the result."))
+        : null,
     ),
   });
 }

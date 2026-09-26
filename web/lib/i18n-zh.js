@@ -496,6 +496,7 @@ export const ZH = {
   "The request was rejected as malformed or names an unknown provider.": "请求格式错误或指定了未知的 Provider。",
   "The request was rejected as malformed.": "请求格式错误。",
   "The requested model is not available to this account.": "该账号无法使用所请求的模型。",
+  "The run finished — publish to deliver the result.": "运行已结束——发布以交付结果。",
   "The run hit the per-turn time limit.": "运行达到了单轮时间上限。",
   "The run record gets an artifact:// reference.": "运行记录会获得一个 artifact:// 引用。",
   "The run was cancelled.": "运行已被取消。",
