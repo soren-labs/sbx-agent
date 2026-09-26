@@ -72,6 +72,12 @@ export function renderSettings() {
         ),
       }),
       card({
+        title: t("API keys"),
+        iconName: "key",
+        subtitle: t("Mint keys for CI or share one with a teammate — scoped to agents or admin."),
+        body: h("a", { class: "btn", href: "#/settings/keys", "data-testid": "settings-keys" }, t("Manage API keys")),
+      }),
+      card({
         title: t("Local data"),
         iconName: "trash",
         body: h("p", { class: "muted" }, t("The console remembers prompts it sent (the API does not store them) and recently viewed workflows.")),

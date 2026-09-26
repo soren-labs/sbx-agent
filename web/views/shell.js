@@ -1,5 +1,5 @@
 import { api } from "../lib/api.js";
-import { clearConnection, getConnection, hasScope, planeLabel } from "../lib/config.js";
+import { clearConnection, getConnection, planeLabel } from "../lib/config.js";
 import { h, mount } from "../lib/dom.js";
 import { getLang, setLang, t } from "../lib/i18n.js";
 import { icon, logo } from "../lib/icons.js";
@@ -21,17 +21,19 @@ export function docsUrl(page = "") {
   return `${DOCS_BASE}/${locale}${page ? `${page}/` : ""}`;
 }
 
+// Primary product surface: what you came to do.
 const NAV = [
+  { id: "home", label: "Home", iconName: "home", href: "#/", match: ["home"] },
+  { id: "tasks", label: "Tasks", iconName: "listTodo", href: "#/tasks", match: ["tasks", "task", "task-new"] },
+  { id: "integrations", label: "Integrations", iconName: "plug", href: "#/integrations", match: ["integrations", "github", "accounts", "capacity"] },
+  { id: "settings", label: "Settings", iconName: "settings", href: "#/settings", match: ["settings", "keys"] },
+];
+
+// Raw primitives — still first-class routes, one level down.
+const ADVANCED_NAV = [
   { id: "agents", label: "Agents", iconName: "bot", href: "#/agents", match: ["agents", "agent", "agent-new"] },
   { id: "workflows", label: "Workflows", iconName: "workflow", href: "#/workflows", match: ["workflows", "workflow"] },
   { id: "artifacts", label: "Artifacts", iconName: "package", href: "#/artifacts", match: ["artifacts", "artifact"] },
-  { id: "capacity", label: "Capacity", iconName: "gauge", href: "#/capacity", match: ["capacity"] },
-];
-
-const ADMIN_NAV = [
-  { id: "accounts", label: "Accounts", iconName: "users", href: "#/admin/accounts", match: ["accounts"] },
-  { id: "keys", label: "API keys", iconName: "key", href: "#/admin/keys", match: ["keys"] },
-  { id: "github", label: "GitHub", iconName: "github", href: "#/admin/github", match: ["github"] },
 ];
 
 const THEMES = [
@@ -49,6 +51,7 @@ export function createShell() {
   let liveCount = 0;
 
   const root = h("div", { class: "shell", "data-testid": "app-ready" });
+  const closeNav = () => root.classList.remove("nav-open");
 
   const link = (item, locked) =>
     h(
@@ -58,21 +61,20 @@ export function createShell() {
         href: item.href,
         "data-testid": `nav-${item.id}`,
         title: locked ? t("Requires an API key with the admin scope") : null,
-        onClick: () => root.classList.remove("nav-open"),
+        onClick: closeNav,
       },
       icon(item.iconName),
       h("span", null, t(item.label)),
       locked ? icon("lock", { size: 13, className: "muted-icon" }) : null,
-      item.id === "agents" && liveCount ? h("span", { class: "nav-count", title: t("Active agents") }, String(liveCount)) : null,
+      item.id === "tasks" && liveCount ? h("span", { class: "nav-count", title: t("Active tasks") }, String(liveCount)) : null,
     );
 
   function renderNav() {
-    const admin = hasScope("admin");
     mount(
       navEl,
       NAV.map((item) => link(item, false)),
-      h("div", { class: "nav-section" }, t("Admin")),
-      ADMIN_NAV.map((item) => link(item, !admin)),
+      h("div", { class: "nav-section" }, t("Advanced")),
+      ADVANCED_NAV.map((item) => link(item, false)),
     );
   }
 
@@ -121,10 +123,9 @@ export function createShell() {
       }),
       h(
         "a",
-        { class: "btn btn-ghost btn-sm btn-icon", href: docsUrl(), target: "_blank", rel: "noopener noreferrer", title: t("Documentation") },
+        { class: "btn btn-ghost btn-sm btn-icon", href: docsUrl(), target: "_blank", rel: "noopener noreferrer", title: t("Documentation"), "data-testid": "nav-docs" },
         icon("book"),
       ),
-      h("a", { class: "btn btn-ghost btn-sm btn-icon", href: "#/settings", title: t("Settings"), "data-testid": "nav-settings" }, icon("settings")),
       button("", {
         variant: "ghost",
         size: "sm",
@@ -143,10 +144,25 @@ export function createShell() {
     "aside",
     { class: "sidebar" },
     h(
-      "a",
-      { class: "brand", href: "#/agents" },
-      logo(28),
-      h("span", null, h("span", { class: "brand-name" }, "sbx-browser"), h("span", { class: "brand-plane", title: planeLabel() }, planeLabel())),
+      "div",
+      { class: "sidebar-top" },
+      h(
+        "a",
+        { class: "brand", href: "#/" },
+        logo(28),
+        h("span", null, h("span", { class: "brand-name" }, "sbx-browser"), h("span", { class: "brand-plane", title: planeLabel() }, planeLabel())),
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "nav-close",
+          "aria-label": t("Close menu"),
+          "data-testid": "nav-close",
+          onClick: closeNav,
+        },
+        icon("x"),
+      ),
     ),
     navEl,
     h("div", { class: "sidebar-foot" }, identityEl, toolsEl),
@@ -155,22 +171,29 @@ export function createShell() {
   const mobileBar = h(
     "div",
     { class: "mobile-bar" },
-    button("", { variant: "ghost", size: "sm", iconName: "menu", title: t("Menu"), onClick: () => root.classList.toggle("nav-open") }),
+    button("", { variant: "ghost", size: "sm", iconName: "menu", title: t("Menu"), testid: "nav-menu", onClick: () => root.classList.toggle("nav-open") }),
     logo(22),
     h("strong", null, "sbx-browser"),
   );
 
-  mount(root, sidebar, h("div", { style: "min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr);height:100%" }, mobileBar, main));
+  const scrim = h("div", { class: "nav-scrim", "data-testid": "nav-scrim", onClick: closeNav });
+  const onKey = (ev) => {
+    if (ev.key === "Escape" && root.classList.contains("nav-open")) closeNav();
+  };
+  document.addEventListener("keydown", onKey);
+
+  mount(root, scrim, sidebar, h("div", { style: "min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr);height:100%" }, mobileBar, main));
   renderNav();
   renderIdentity();
   renderTools();
 
-  // Live-agent badge on the nav: the cheap /v1/agents/summary rollup, not
-  // a full listAgents page. View actions call bumpLive() for immediate
+  // Live-task badge on the nav: the cheap /v1/agents/summary rollup, not
+  // a full list fetch. View actions call bumpLive() for immediate
   // refresh; the 30s tick is only the fallback while events are absent.
   const live = poller(async () => {
     if (!root.isConnected) {
       live.stop();
+      document.removeEventListener("keydown", onKey);
       return;
     }
     const res = await api.agentsSummary();
@@ -196,7 +219,6 @@ export function createShell() {
       mount(main, el);
     },
     refreshIdentity() {
-      renderNav();
       renderIdentity();
     },
     bumpLive() {

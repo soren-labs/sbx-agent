@@ -1,90 +1,13 @@
 import { api } from "../lib/api.js";
 import { getConnection, hasScope } from "../lib/config.js";
 import { debounce, h, mount } from "../lib/dom.js";
-import { CANONICAL_EFFORTS, explainApiError, PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
+import { explainApiError, PROVIDER_META, PROVIDERS, providerLabel } from "../lib/domain.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
 import { navigate } from "../lib/router.js";
 import { prompts } from "../lib/store.js";
 import { banner, button, card, codeBlock, field, pageHeader, segmented, toast, toggle } from "../lib/ui.js";
-
-const SHA = /^[0-9a-f]{40}$/;
-const DEFAULT_SCHEMA = `{
-  "type": "object",
-  "properties": {
-    "summary": { "type": "string" },
-    "files_changed": { "type": "array", "items": { "type": "string" } }
-  },
-  "required": ["summary"]
-}`;
-
-function uuid() {
-  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function num(value) {
-  if (value === "" || value == null) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : NaN;
-}
-
-function rangeValue(min, max) {
-  const a = num(min);
-  const b = num(max);
-  if (a == null && b == null) return undefined;
-  if (a != null && b != null) return a === b ? a : [a, b];
-  return a ?? b;
-}
-
-/** Comma/Enter separated token input. */
-function chipInput(values, onChange, { placeholder, testid }) {
-  const root = h("div", { class: "chip-input", "data-testid": testid });
-  const input = h("input", {
-    placeholder,
-    onKeydown: (ev) => {
-      if ((ev.key === "Enter" || ev.key === ",") && input.value.trim()) {
-        ev.preventDefault();
-        add(input.value);
-      } else if (ev.key === "Backspace" && !input.value && values.length) {
-        values.pop();
-        onChange(values);
-        render();
-      }
-    },
-    onBlur: () => input.value.trim() && add(input.value),
-  });
-  function add(raw) {
-    for (const part of raw.split(",")) {
-      const v = part.trim();
-      if (v && !values.includes(v)) values.push(v);
-    }
-    input.value = "";
-    onChange(values);
-    render();
-    input.focus();
-  }
-  function render() {
-    mount(
-      root,
-      values.map((v) =>
-        h(
-          "span",
-          { class: "chip" },
-          v,
-          h("button", { type: "button", "aria-label": t("Remove"), onClick: () => {
-            values.splice(values.indexOf(v), 1);
-            onChange(values);
-            render();
-          } }, icon("x", { size: 12 })),
-        ),
-      ),
-      input,
-    );
-  }
-  render();
-  root.addEventListener("click", () => input.focus());
-  return root;
-}
+import { chipInput, DEFAULT_SCHEMA, effortOptions, num, providerModels, rangeValue, SHA, uuid } from "./form-parts.js";
 
 export function renderNewAgent({ route, shell }) {
   const q = route.query;
@@ -302,42 +225,16 @@ export function renderNewAgent({ route, shell }) {
   const dynamicSections = h("div", { class: "stack" });
   mount(sections, errorSlot, taskCard, dynamicSections);
 
-  // SOR-204: /v1/models rows are per (account, model) — dedupe across
-  // accounts when the scheduler picks one (auto), else pin to the
-  // selected account so only its servable models are offered.
-  function providerModels(provider, accountId) {
-    const rows = models.filter((m) => m.provider === provider);
-    if (!accountId || accountId === "auto") {
-      const byModel = new Map();
-      for (const r of rows) {
-        const cur = byModel.get(r.model);
-        if (!cur || (r.accounts_available || 0) > (cur.accounts_available || 0)) {
-          byModel.set(r.model, r);
-        }
-      }
-      return [...byModel.values()];
-    }
-    return rows.filter((m) => !m.account || m.account === accountId);
-  }
-
-  // Canonical ladder filtered to what the selected account/model rows
-  // actually advertise — unsupported levels are hidden, never offered.
-  function effortOptions(rows) {
-    const supported = new Set();
-    for (const r of rows) for (const e of r.reasoning_efforts || []) supported.add(e);
-    return CANONICAL_EFFORTS.filter((e) => supported.has(e));
-  }
-
   function renderSections() {
-    const provModels = providerModels(f.provider, f.account);
+    const provModels = providerModels(models, f.provider, f.account);
     if (f.model && provModels.length && !provModels.some((m) => m.model === f.model)) {
       f.model = "";
     }
     const selectedRows = f.model
       ? provModels.filter((m) => m.model === f.model || (m.aliases || []).includes(f.model))
       : provModels;
-    const efforts = effortOptions(selectedRows);
-    if (f.effort && !efforts.includes(f.effort)) f.effort = "";
+    const effortList = effortOptions(selectedRows);
+    if (f.effort && !effortList.includes(f.effort)) f.effort = "";
     const capsStale = provModels.some((m) => m.stale);
     const provAccounts = accounts.filter((a) => a.provider === f.provider);
 
@@ -345,7 +242,7 @@ export function renderNewAgent({ route, shell }) {
       "div",
       { class: "provider-picker", role: "radiogroup", "data-testid": "provider-picker" },
       PROVIDERS.map((p) => {
-        const pm = providerModels(p, "auto");
+        const pm = providerModels(models, p, "auto");
         const free = pm.reduce((n, m) => Math.max(n, m.accounts_available || 0), 0);
         const configured = pm.length > 0;
         return h(
@@ -395,7 +292,7 @@ export function renderNewAgent({ route, shell }) {
     );
 
     const effortControl = segmented(
-      [{ value: "", label: t("Default") }, ...efforts.map((v) => ({ value: v, label: t(v) }))],
+      [{ value: "", label: t("Default") }, ...effortList.map((v) => ({ value: v, label: t(v) }))],
       f.effort,
       (v) => {
         f.effort = v;
@@ -450,7 +347,7 @@ export function renderNewAgent({ route, shell }) {
           field(t("Account"), accountControl, { hint: t("Pinning an account fails fast when it is busy instead of waiting.") }),
         ),
         field(t("Reasoning effort"), effortControl, {
-          hint: efforts.length
+          hint: effortList.length
             ? t("Applies to every run of this agent.")
             : f.model
               ? t("{model} has no native effort setting.", { model: f.model })
@@ -745,7 +642,7 @@ export function renderNewAgent({ route, shell }) {
   (async () => {
     try {
       models = (await api.models()).models || [];
-      if (models.length && !providerModels(f.provider).length) f.provider = models[0].provider;
+      if (models.length && !providerModels(models, f.provider).length) f.provider = models[0].provider;
     } catch {
       models = [];
     }
