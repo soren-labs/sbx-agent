@@ -32,16 +32,20 @@ import {
 } from "../lib/ui.js";
 import { workflowChip } from "./agents.js";
 import { artifactTable, snapshotDialog } from "./artifacts.js";
+import { renderTaskChanges } from "./task-changes.js";
 import { createRunBlock } from "./timeline.js";
 import { renderWorkspaceTab } from "./workspace.js";
 
 const AUTO_ACTIVITY_RUNS = 3;
 
-export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, extraDetails }) {
+export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, getTask, extraDetails }) {
   const agentId = agentIdOverride || route.params.id;
   const embedded = Boolean(taskId);
   const tabBase = embedded ? `/tasks/${encodeURIComponent(taskId)}` : `/agents/${encodeURIComponent(agentId)}`;
-  const tab = ["conversation", "workspace", "artifacts", "details"].includes(route.query.tab) ? route.query.tab : "conversation";
+  const TAB_IDS = embedded
+    ? ["conversation", "changes", "details"]
+    : ["conversation", "workspace", "artifacts", "details"];
+  const tab = TAB_IDS.includes(route.query.tab) ? route.query.tab : "conversation";
   const state = {
     agent: null,
     runs: [],
@@ -53,6 +57,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
   const blocks = new Map();
   const streams = new Map();
   const idleTimers = new Map();
+  let changesView = null;
   let disposed = false;
 
   const headerEl = h("div");
@@ -96,6 +101,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
     if (disposed) return;
     renderHeader();
     if (tab === "conversation") syncConversation();
+    if (tab === "changes") void changesView?.refresh();
   }
 
   // ------------------------------------------------------- streams
@@ -162,7 +168,9 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
     }
     const run = activeRun();
     const actions = [];
-    if (run) {
+    // Embedded (task page): the task header owns Cancel/Retry; the run-scoped
+    // action stays only on the standalone agent page.
+    if (run && !embedded) {
       actions.push(
         actionButton(t("Cancel run"), async () => {
           try {
@@ -175,7 +183,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
         }, { variant: "danger", iconName: "stop", testid: "cancel-run" }),
       );
     }
-    if (state.workspace && live()) {
+    if (state.workspace && live() && !embedded) {
       actions.push(button(t("Snapshot"), { iconName: "camera", testid: "snapshot", onClick: () => snapshotDialog(agentId, state.runs, () => navigate(tabBase, { tab: "artifacts" })) }));
     }
     if (!isAgentEnded(a.status)) {
@@ -224,8 +232,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
           tabs(
             [
               { id: "conversation", label: t("Conversation"), iconName: "message", href: href(tabBase), count: state.runs.length || null },
-              { id: "workspace", label: t("Workspace"), iconName: "branch", href: href(tabBase, { tab: "workspace" }) },
-              { id: "artifacts", label: t("Artifacts"), iconName: "package", href: href(tabBase, { tab: "artifacts" }) },
+              { id: "changes", label: t("Changes"), iconName: "fileDiff", href: href(tabBase, { tab: "changes" }) },
               { id: "details", label: t("Details"), iconName: "info", href: href(tabBase, { tab: "details" }) },
             ],
             tab,
@@ -343,7 +350,8 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
     state.sending = true;
     renderComposer();
     try {
-      const run = await api.createRun(agentId, body);
+      const created = embedded ? await api.createTaskRun(taskId, body) : await api.createRun(agentId, body);
+      const run = created?.run ?? created;
       composerState.text = "";
       prompts.set(agentId, run.id, text);
       state.runs.push(run);
@@ -569,6 +577,10 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ex
     if (tab === "conversation") {
       mount(bodyEl, h("div", { class: "agent-layout" }, h("div", null, conversationEl, composerEl), asideEl));
       syncConversation();
+    } else if (tab === "changes" && embedded) {
+      if (!changesView) changesView = renderTaskChanges({ taskId, getTask });
+      mount(bodyEl, changesView.el);
+      void changesView.refresh();
     } else if (tab === "workspace") {
       mount(bodyEl, renderWorkspaceTab({ agentId, getAgent: () => state.agent, onChanged: () => void refresh() }).el);
     } else if (tab === "artifacts") {

@@ -524,6 +524,80 @@ test.describe("web console against a real local /v1 control plane", () => {
     // can succeed (a GitHub repo + configured integration).
     await expect(page.getByTestId("publish-now")).toBeVisible();
   });
+
+  test("task lifecycle UX: Result card, Changes tab, review staleness, merge gate (SOR-230/231)", async ({
+    page,
+  }) => {
+    await connect(page);
+    const { demo_workspace: ws } = await devInfo(page);
+
+    // A repo task whose result publishes to a branch — local pushes work,
+    // so this exercises the whole lifecycle without GitHub.
+    const created = await page.request.post("/v1/tasks", {
+      headers: { Authorization: `Bearer ${KEY}` },
+      data: {
+        prompt: { text: "Write lifecycle.txt containing ok" },
+        name: "lifecycle e2e",
+        source: { repo: ws.repo },
+        execution: { provider: "antigravity" },
+        delivery: { auto_publish: true },
+      },
+    });
+    expect(created.status()).toBe(201);
+    const task = ((await created.json()) as { task: { id: string } }).task;
+
+    await page.goto(`/#/tasks/${task.id}`);
+    // The Result card answers "what came out" before the user opens diffs.
+    await expect(page.getByTestId("task-result")).toContainText("Delivered to", {
+      timeout: 90_000,
+    });
+
+    // Changes tab: revision accordion with pipeline, diff, delivery, review.
+    await page.getByTestId("tab-changes").click();
+    await expect(page.getByTestId("changes-tab")).toBeVisible();
+    await expect(page.getByTestId("rev-head-1")).toContainText("Revision 1");
+    await expect(page.getByTestId("rev-pipeline")).toBeVisible();
+    // The fake agent CLI always writes hello.txt to the worktree.
+    await expect(page.getByTestId("rev-diff-1")).toContainText("hello.txt", {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("rev-delivery-status")).toContainText("delivered");
+    await shot(page, "console_21_changes.png");
+
+    // Review dialog records a verdict pinned to this revision's head.
+    await page.getByTestId("add-review-1").click();
+    await expect(page.getByTestId("review-dialog")).toBeVisible();
+    await page.getByTestId("review-submit").click();
+    await expect(page.getByTestId("review-list")).toContainText("Approved", {
+      timeout: 15_000,
+    });
+
+    // A follow-up run through the task composer produces Revision 2; the
+    // approval on Revision 1 flips stale instead of silently transferring.
+    await page.getByTestId("tab-conversation").click();
+    await page.getByTestId("composer").fill("Write goodbye.txt too");
+    await page.getByTestId("send").click();
+    await waitRun(page, "run-2", "FINISHED");
+    await page.getByTestId("tab-changes").click();
+    await expect(page.getByTestId("rev-head-2")).toContainText("Revision 2", {
+      timeout: 60_000,
+    });
+    await expect(page.getByTestId("rev-head-stale")).toBeVisible();
+    // The stale badge also shows inside the old revision's review list.
+    await page.getByTestId("rev-head-1").click();
+    await expect(page.getByTestId("review-stale")).toBeVisible();
+    await shot(page, "console_22_stale_review.png");
+
+    // No PR was requested: the merge gate stays hidden — the checklist is
+    // the PR journey, not a generic finish line.
+    await expect(page.getByTestId("merge-card")).toHaveCount(0);
+
+    // Technical metadata (hashes, artifact ids) stays behind disclosure.
+    const tech = page.locator("details.tech-details").first();
+    await tech.locator("summary").click();
+    await expect(tech).toContainText("rev-");
+    await expect(tech).toContainText("Base → head");
+  });
 });
 
 test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
