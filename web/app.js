@@ -2,7 +2,7 @@ import { api } from "./lib/api.js";
 import { clearConnection, getConnection, isConnected, saveConnection } from "./lib/config.js";
 import { h, mount } from "./lib/dom.js";
 import { onLangChange, t } from "./lib/i18n.js";
-import { navigate, parseHash } from "./lib/router.js";
+import { LEGACY_ROUTES, navigate, parseHash } from "./lib/router.js";
 import { applyTheme } from "./lib/store.js";
 import { toast } from "./lib/ui.js";
 import { renderConnect } from "./views/connect.js";
@@ -31,7 +31,7 @@ function captureGithubCallback() {
       setup_action: params.get("setup_action") || "",
     }),
   );
-  history.replaceState(null, "", `${window.location.pathname}#/admin/github`);
+  history.replaceState(null, "", `${window.location.pathname}#/integrations/github`);
 }
 
 function disposeView() {
@@ -57,13 +57,18 @@ async function refreshIdentity() {
 async function route() {
   const r = parseHash();
   if (!isConnected() && r.name !== "connect") {
-    navigate("/connect", r.path && r.path !== "/agents" ? { next: r.path } : undefined, { replace: true });
+    navigate("/connect", r.path && r.path !== "/" ? { next: r.path } : undefined, { replace: true });
+    return;
+  }
+  const legacy = LEGACY_ROUTES[r.path];
+  if (legacy) {
+    navigate(legacy, r.query, { replace: true });
     return;
   }
   disposeView();
   if (r.name === "connect") {
     shell = null;
-    view = renderConnect({ route: r, onConnected: (next) => navigate(next || "/agents") });
+    view = renderConnect({ route: r, onConnected: (next) => navigate(next || "/") });
     mount(app, view.el);
     return;
   }

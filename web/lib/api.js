@@ -107,6 +107,21 @@ export const api = {
   me: (key) => request("GET", "/v1/me", { key }),
   models: () => request("GET", "/v1/models"),
 
+  // Tasks: the canonical product surface — create/preflight resolve
+  // provider, account, model and the repo pin server-side.
+  listTasks: () => request("GET", "/v1/tasks"),
+  getTask: (id) => request("GET", `/v1/tasks/${enc(id)}`),
+  createTask: (body, idempotencyKey) =>
+    request("POST", "/v1/tasks", {
+      body,
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+    }),
+  taskPreflight: (body) => request("POST", "/v1/tasks/preflight", { body }),
+  cancelTask: (id) => request("POST", `/v1/tasks/${enc(id)}/cancel`),
+  retryTask: (id, body) => request("POST", `/v1/tasks/${enc(id)}/retry`, { body }),
+  deliverTask: (id) => request("POST", `/v1/tasks/${enc(id)}/delivery`),
+  listTaskRuns: (id) => request("GET", `/v1/tasks/${enc(id)}/runs`),
+
   listAgents: (query) => request("GET", "/v1/agents", { query }),
   agentsSummary: (query) => request("GET", "/v1/agents/summary", { query }),
   getAgent: (id) => request("GET", `/v1/agents/${enc(id)}`),

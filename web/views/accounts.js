@@ -451,8 +451,9 @@ export function renderAccounts() {
     "div",
     { class: "page page-wide" },
     pageHeader({
-      title: t("Accounts"),
+      title: t("Provider accounts"),
       subtitle: t("Provider logins agents run under. The scheduler spreads runs across active accounts, respects each account's slots and cools down accounts that hit rate limits."),
+      back: { href: "#/integrations", label: t("Integrations") },
       actions: [
         button(t("Connect provider"), { variant: "primary", iconName: "link", testid: "connect-provider", onClick: () => connectDialog(load) }),
         button(t("Import account"), { iconName: "plus", testid: "import-account", onClick: () => importDialog(load) }),

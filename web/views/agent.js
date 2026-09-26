@@ -37,8 +37,10 @@ import { renderWorkspaceTab } from "./workspace.js";
 
 const AUTO_ACTIVITY_RUNS = 3;
 
-export function renderAgent({ route, shell }) {
-  const agentId = route.params.id;
+export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, extraDetails }) {
+  const agentId = agentIdOverride || route.params.id;
+  const embedded = Boolean(taskId);
+  const tabBase = embedded ? `/tasks/${encodeURIComponent(taskId)}` : `/agents/${encodeURIComponent(agentId)}`;
   const tab = ["conversation", "workspace", "artifacts", "details"].includes(route.query.tab) ? route.query.tab : "conversation";
   const state = {
     agent: null,
@@ -155,7 +157,7 @@ export function renderAgent({ route, shell }) {
   function renderHeader() {
     const a = state.agent;
     if (!a) {
-      mount(headerEl, pageHeader({ title: agentId, back: { href: "#/agents", label: t("Agents") } }));
+      mount(headerEl, embedded ? null : pageHeader({ title: agentId, back: { href: "#/agents", label: t("Agents") } }));
       return;
     }
     const run = activeRun();
@@ -174,11 +176,11 @@ export function renderAgent({ route, shell }) {
       );
     }
     if (state.workspace && live()) {
-      actions.push(button(t("Snapshot"), { iconName: "camera", testid: "snapshot", onClick: () => snapshotDialog(agentId, state.runs, () => navigate(`/agents/${encodeURIComponent(agentId)}`, { tab: "artifacts" })) }));
+      actions.push(button(t("Snapshot"), { iconName: "camera", testid: "snapshot", onClick: () => snapshotDialog(agentId, state.runs, () => navigate(tabBase, { tab: "artifacts" })) }));
     }
     if (!isAgentEnded(a.status)) {
       actions.push(
-        actionButton(t("Close agent"), async () => {
+        actionButton(t(embedded ? "Close" : "Close agent"), async () => {
           const ok = await confirmDialog({
             title: t("Close this agent?"),
             body: t("The sandbox is reclaimed and any running run is cancelled. Run history and artifacts stay available read-only."),
@@ -196,6 +198,43 @@ export function renderAgent({ route, shell }) {
           shell?.bumpLive();
         }, { variant: "secondary", iconName: "x", testid: "close-agent" }),
       );
+    }
+    if (embedded) {
+      // The task page owns the page header; the embedded agent keeps its
+      // tabs, run actions and lifecycle banners.
+      mount(
+        headerEl,
+        a.status === "creating"
+          ? banner({ tone: "info", title: t("Starting the sandbox"), body: t("Cold starts take a few seconds. The first run begins as soon as the provider CLI is ready."), testid: "cold-start" })
+          : null,
+        isAgentEnded(a.status)
+          ? banner({
+              tone: a.status === "lost" ? "danger" : "neutral",
+              title: { closed: t("This agent is closed"), timed_out: t("This agent timed out"), lost: t("This agent's sandbox was lost") }[a.status] || t("This agent has ended"),
+              body: t("Its history is read-only. Start a new task to continue the work — hand off an artifact to keep the changes."),
+              testid: "readonly-banner",
+            })
+          : null,
+      );
+      mount(
+        tabsEl,
+        h(
+          "div",
+          { class: "tab-row" },
+          tabs(
+            [
+              { id: "conversation", label: t("Conversation"), iconName: "message", href: href(tabBase), count: state.runs.length || null },
+              { id: "workspace", label: t("Workspace"), iconName: "branch", href: href(tabBase, { tab: "workspace" }) },
+              { id: "artifacts", label: t("Artifacts"), iconName: "package", href: href(tabBase, { tab: "artifacts" }) },
+              { id: "details", label: t("Details"), iconName: "info", href: href(tabBase, { tab: "details" }) },
+            ],
+            tab,
+            { testid: "agent-tabs" },
+          ),
+          actions.length ? h("div", { class: "tab-actions" }, actions) : null,
+        ),
+      );
+      return;
     }
     mount(
       headerEl,
@@ -230,10 +269,10 @@ export function renderAgent({ route, shell }) {
       tabsEl,
       tabs(
         [
-          { id: "conversation", label: t("Conversation"), iconName: "message", href: href(`/agents/${encodeURIComponent(agentId)}`), count: state.runs.length || null },
-          { id: "workspace", label: t("Workspace"), iconName: "branch", href: href(`/agents/${encodeURIComponent(agentId)}`, { tab: "workspace" }) },
-          { id: "artifacts", label: t("Artifacts"), iconName: "package", href: href(`/agents/${encodeURIComponent(agentId)}`, { tab: "artifacts" }) },
-          { id: "details", label: t("Details"), iconName: "info", href: href(`/agents/${encodeURIComponent(agentId)}`, { tab: "details" }) },
+          { id: "conversation", label: t("Conversation"), iconName: "message", href: href(tabBase), count: state.runs.length || null },
+          { id: "workspace", label: t("Workspace"), iconName: "branch", href: href(tabBase, { tab: "workspace" }) },
+          { id: "artifacts", label: t("Artifacts"), iconName: "package", href: href(tabBase, { tab: "artifacts" }) },
+          { id: "details", label: t("Details"), iconName: "info", href: href(tabBase, { tab: "details" }) },
         ],
         tab,
         { testid: "agent-tabs" },
@@ -462,6 +501,7 @@ export function renderAgent({ route, shell }) {
     const a = state.agent;
     mount(
       bodyEl,
+      extraDetails || null,
       h(
         "div",
         { class: "grid-2" },
@@ -517,7 +557,7 @@ export function renderAgent({ route, shell }) {
       mount(
         bodyEl,
         state.error.status === 404
-          ? emptyState({ iconName: "search", title: t("Agent not found"), body: t("It may belong to another API key, or the id is wrong."), actions: [button(t("Back to agents"), { onClick: () => navigate("/agents") })] })
+          ? emptyState({ iconName: "search", title: t("Agent not found"), body: t("It may belong to another API key, or the id is wrong."), actions: [button(embedded ? t("Back to tasks") : t("Back to agents"), { onClick: () => navigate(embedded ? "/tasks" : "/agents") })] })
           : errorBanner(state.error, { retry: () => void start() }),
       );
       return;

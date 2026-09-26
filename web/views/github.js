@@ -329,6 +329,7 @@ export function renderGithub() {
     pageHeader({
       title: t("GitHub"),
       subtitle: t("Let agents clone, push and open pull requests on private repositories."),
+      back: { href: "#/integrations", label: t("Integrations") },
       testid: "page-title",
     }),
     noticeEl,

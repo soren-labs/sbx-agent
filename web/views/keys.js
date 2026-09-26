@@ -148,6 +148,7 @@ export function renderKeys() {
     pageHeader({
       title: t("API keys"),
       subtitle: t("Each key is a Bearer token for /v1. Agents, runs and workflows are scoped to the key that created them."),
+      back: { href: "#/settings", label: t("Settings") },
       actions: [button(t("Create key"), { variant: "primary", iconName: "plus", testid: "create-key", onClick: () => createDialog(load) })],
       testid: "page-title",
     }),

@@ -27,8 +27,10 @@ test.describe("web console against a real local /v1 control plane", () => {
     await page.getByTestId("connect-submit").click();
     await expect(page.getByTestId("app-ready")).toBeVisible();
     await expect(page.getByTestId("identity")).toContainText("admin");
-    await expect(page.getByTestId("agents-empty")).toBeVisible();
-    await shot(page, "console_02_agents_empty.png");
+    // The task-first shell lands on Home.
+    await expect(page.getByTestId("home-view")).toBeVisible();
+    await expect(page.getByTestId("home-empty")).toBeVisible();
+    await shot(page, "console_02_home_empty.png");
   });
 
   // SOR-211: `sbx open` mints a one-time grant the browser redeems.
@@ -186,9 +188,83 @@ test.describe("web console against a real local /v1 control plane", () => {
     await expect(page.getByRole("dialog")).toContainText("Workflow cleanup");
   });
 
+  test("task-first shell: home stats, tasks list, create task, task detail", async ({
+    page,
+  }) => {
+    await connect(page);
+    await expect(page.getByTestId("home-view")).toBeVisible();
+    await expect(page.getByTestId("home-stats")).toBeVisible();
+    await expect(page.getByTestId("home-empty")).toBeVisible();
+
+    // Create a task the way a human would: a goal, everything else Automatic.
+    await page.goto("/#/tasks/new");
+    await page.getByTestId("f-prompt").fill("Write taskgoal.txt containing ok");
+    await page.getByTestId("f-name").fill("first task");
+    await expect(page.getByTestId("preflight-checks")).toBeVisible({ timeout: 15_000 });
+    // The human-facing default: no repo means report-only delivery.
+    await expect(page.locator('[data-testid=f-delivery] [data-value="none"]')).toHaveAttribute("aria-checked", "true");
+    await shot(page, "console_15_new_task.png");
+    await page.getByTestId("create-task").click();
+
+    await page.waitForURL(/#\/tasks\/task_/, { timeout: 30_000 });
+    await expect(page.getByTestId("task-title")).toHaveText("first task", { timeout: 30_000 });
+    await expect(page.getByTestId("task-goal")).toContainText("taskgoal.txt");
+    await waitRun(page, "run-1", "FINISHED");
+    await expect(page.getByTestId("task-status")).toHaveAttribute("data-status", "finished", {
+      timeout: 45_000,
+    });
+    await shot(page, "console_16_task.png");
+
+    await page.getByTestId("nav-tasks").click();
+    await expect(page.getByTestId("tasks-table")).toContainText("first task");
+    await page.getByTestId("tasks-search").fill("nope");
+    await expect(page.getByTestId("tasks-none")).toBeVisible();
+    await page.getByTestId("tasks-search").fill("");
+    await page.getByTestId("task-row").filter({ hasText: "first task" }).click();
+    await expect(page.getByTestId("task-view")).toBeVisible();
+  });
+
+  test("legacy admin/capacity routes redirect to their new homes", async ({ page }) => {
+    await connect(page);
+    await page.goto("/#/admin/accounts");
+    await page.waitForURL(/#\/integrations\/accounts/);
+    await expect(page.getByTestId("accounts-table")).toBeVisible();
+    await page.goto("/#/admin/keys");
+    await page.waitForURL(/#\/settings\/keys/);
+    await expect(page.getByTestId("page-title")).toContainText("API keys");
+    await page.goto("/#/capacity");
+    await page.waitForURL(/#\/integrations\/capacity/);
+    await expect(page.getByTestId("capacity-codex")).toBeVisible();
+    await page.goto("/#/admin/github");
+    await page.waitForURL(/#\/integrations\/github/);
+    await expect(page.getByTestId("github-status")).toBeVisible();
+  });
+
+  test("mobile drawer: hamburger opens, close button and Escape dismiss", async ({
+    browser,
+  }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await ctx.newPage();
+    await connect(page);
+    const shell = page.locator(".shell");
+    await page.getByTestId("nav-menu").click();
+    await expect(shell).toHaveClass(/nav-open/);
+    await expect(page.getByTestId("nav-close")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(shell).not.toHaveClass(/nav-open/);
+    await page.getByTestId("nav-menu").click();
+    await page.getByTestId("nav-tasks").click();
+    await expect(shell).not.toHaveClass(/nav-open/);
+    await expect(page.getByTestId("tasks-view")).toBeVisible();
+    await shot(page, "console_17_mobile_tasks.png");
+    await ctx.close();
+  });
+
   test("agents list filters, capacity and GitHub posture", async ({ page }) => {
     await connect(page);
-    await expect(page.getByTestId("agent-row")).toHaveCount(3);
+    await page.getByTestId("nav-agents").click();
+    // 3 agents from the earlier tests + 1 backing the task created above.
+    await expect(page.getByTestId("agent-row")).toHaveCount(4);
     await page.locator('[data-testid=agents-filter] [data-value="ended"]').click();
     await expect(page.getByTestId("agent-row")).toHaveCount(2);
     await page.locator('[data-testid=agents-filter] [data-value="all"]').click();
@@ -197,13 +273,16 @@ test.describe("web console against a real local /v1 control plane", () => {
     await page.getByTestId("agents-search").fill("");
     await shot(page, "console_10_agents.png");
 
-    await page.getByTestId("nav-capacity").click();
+    await page.getByTestId("nav-integrations").click();
+    await expect(page.getByTestId("int-capacity")).toBeVisible();
+    await page.getByTestId("int-capacity").click();
     for (const provider of ["codex", "devin", "antigravity", "grok", "opencode"]) {
       await expect(page.getByTestId(`capacity-${provider}`)).toBeVisible();
     }
     await shot(page, "console_11_capacity.png");
 
-    await page.getByTestId("nav-github").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-github").click();
     await expect(page.getByTestId("github-status")).toContainText("not configured");
   });
 
@@ -221,6 +300,7 @@ test.describe("web console against a real local /v1 control plane", () => {
     });
 
     await connect(page);
+    await page.getByTestId("nav-agents").click();
     await expect(page.getByTestId("agents-table")).toBeVisible();
     // Mounting the Agents page costs exactly one full page plus the cheap
     // rollup (shell badge + the list's own baseline). The baseline fires
@@ -238,7 +318,8 @@ test.describe("web console against a real local /v1 control plane", () => {
 
     // Parked away from the Agents page: over the old 15s sidebar cadence
     // no full-list fetch may recur at all.
-    await page.getByTestId("nav-capacity").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-capacity").click();
     const listBefore = hits.list;
     await page.waitForTimeout(16_500);
     expect(hits.list).toBe(listBefore);
@@ -257,7 +338,8 @@ test.describe("web console against a real local /v1 control plane", () => {
 
   test("admin: accounts import/remove and API key lifecycle with scopes", async ({ page, browser }) => {
     await connect(page);
-    await page.getByTestId("nav-accounts").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-accounts").click();
     await expect(page.getByTestId("accounts-table")).toContainText("codex-1");
     await page.getByTestId("import-account").click();
     await page.getByTestId("acct-provider").selectOption("grok");
@@ -275,7 +357,8 @@ test.describe("web console against a real local /v1 control plane", () => {
     await page.getByTestId("confirm-ok").click();
     await expect(page.getByTestId("accounts-table")).not.toContainText("e2e grok seat");
 
-    await page.getByTestId("nav-keys").click();
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("settings-keys").click();
     await page.getByTestId("create-key").click();
     await page.getByTestId("key-label").fill("e2e automation");
     await page.getByTestId("key-submit").click();
@@ -291,7 +374,8 @@ test.describe("web console against a real local /v1 control plane", () => {
     const other = await browser.newContext({ colorScheme: "light", viewport: { width: 1280, height: 800 } });
     const scoped = await other.newPage();
     await connect(scoped, plaintext);
-    await scoped.getByTestId("nav-accounts").click();
+    await scoped.getByTestId("nav-integrations").click();
+    await scoped.getByTestId("int-accounts").click();
     await expect(scoped.getByTestId("admin-locked")).toBeVisible();
 
     // Revoking it bounces the other session back to Connect.
@@ -314,6 +398,7 @@ test.describe("web console against a real local /v1 control plane", () => {
     await connect(page);
     await expect(page.getByTestId("nav-agents")).toContainText("Agent");
     await expect(page.getByTestId("nav-workflows")).toContainText("工作流");
+    await page.getByTestId("nav-agents").click();
     await page.getByTestId("agent-row").filter({ hasText: "hello agent" }).click();
     await waitRun(page, "run-3", "FINISHED");
     await expect(page.getByTestId("tab-conversation")).toContainText("对话");
@@ -360,7 +445,8 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
     page,
   }) => {
     await connect(page);
-    await page.getByTestId("nav-accounts").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-accounts").click();
     await page.getByTestId("connect-provider").first().click();
     await page.getByTestId("connect-provider-select").selectOption("codex");
     await page.getByTestId("connect-label").fill("e2e connected seat");
@@ -385,7 +471,8 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
     page,
   }) => {
     await connect(page);
-    await page.getByTestId("nav-accounts").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-accounts").click();
     await page.getByTestId("connect-provider").first().click();
     await page.getByTestId("connect-provider-select").selectOption("grok");
     await page.getByTestId("connect-label").fill("e2e pair seat");
@@ -434,7 +521,8 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
   }) => {
     await page.request.post("/__dev/github/reset");
     await connect(page);
-    await page.getByTestId("nav-github").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-github").click();
     await expect(page.getByTestId("github-status")).toContainText("not configured");
     // Manifest registration is the Advanced/self-hosted path now.
     await page.getByTestId("github-advanced").locator("summary").click();
@@ -460,7 +548,8 @@ test.describe("functional onboarding seams (SOR-214 / SOR-220)", () => {
   }) => {
     await page.request.post("/__dev/github/reset");
     await connect(page);
-    await page.getByTestId("nav-github").click();
+    await page.getByTestId("nav-integrations").click();
+    await page.getByTestId("int-github").click();
     await expect(page.getByTestId("github-status")).toContainText("not configured");
 
     // Acceptance gate: the FIRST GitHub page is the App *installation*

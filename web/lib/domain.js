@@ -66,7 +66,22 @@ const ACCOUNT_STATUS = {
   disabled: { tone: "neutral", label: "Disabled" },
 };
 
-const TABLES = { agent: AGENT_STATUS, run: RUN_STATUS, account: ACCOUNT_STATUS };
+// Task lifecycle from _aggregate_status (control/api_v1/tasks.py) — the
+// canonical product unit; records may also sit in "stored"/"awaiting_dispatch".
+const TASK_STATUS = {
+  queued: { tone: "violet", label: "Queued", live: true },
+  running: { tone: "blue", label: "Running", live: true },
+  delivering: { tone: "blue", label: "Delivering", live: true },
+  finished: { tone: "green", label: "Finished", ended: true },
+  delivery_failed: { tone: "red", label: "Delivery failed", ended: true },
+  error: { tone: "red", label: "Failed", ended: true },
+  expired: { tone: "amber", label: "Expired", ended: true },
+  cancelled: { tone: "neutral", label: "Cancelled", ended: true },
+  stored: { tone: "neutral", label: "Stored" },
+  awaiting_dispatch: { tone: "violet", label: "Queued", live: true },
+};
+
+const TABLES = { agent: AGENT_STATUS, run: RUN_STATUS, account: ACCOUNT_STATUS, task: TASK_STATUS };
 
 export function statusMeta(kind, status) {
   const meta = TABLES[kind]?.[status];
@@ -78,6 +93,27 @@ export function statusMeta(kind, status) {
 export const isAgentLive = (status) => ["creating", "idle", "running"].includes(status);
 export const isAgentEnded = (status) => Boolean(AGENT_STATUS[status]?.ended);
 export const isRunLive = (status) => status === "CREATING" || status === "RUNNING";
+export const isTaskLive = (status) => Boolean(TASK_STATUS[status]?.live);
+export const isTaskEnded = (status) => Boolean(TASK_STATUS[status]?.ended);
+/** Needs a human look: failed, expired, or the delivery could not land. */
+export const isTaskAttention = (status) => ["error", "delivery_failed", "expired"].includes(status);
+
+/** `https://github.com/o/r(.git)` → `o/r`; any other address → basename. */
+export function repoName(repo) {
+  if (!repo) return "";
+  const raw = String(repo).trim().replace(/\.git$/, "").replace(/\/+$/, "");
+  const gh = raw.match(/github\.com[:/]([^/]+\/[^/]+)$/i);
+  if (gh) return gh[1];
+  return raw.split("/").pop() || raw;
+}
+
+/** Display name for a task record: explicit name, else the prompt's first line. */
+export function taskTitle(task) {
+  const name = task?.request?.name;
+  if (name) return name;
+  const line = String(task?.prompt?.text || "").split("\n")[0].trim();
+  return line ? (line.length > 80 ? `${line.slice(0, 77)}…` : line) : task?.id || "";
+}
 
 /** API error codes (`{error:{code}}`) → what it means for the operator. */
 const API_ERROR_HELP = {

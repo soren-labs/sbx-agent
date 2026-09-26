@@ -1,7 +1,12 @@
-/** Hash router: `#/agents/abc?tab=workspace` → {name, params, query}. */
+/** Hash router: `#/tasks/abc?tab=workspace` → {name, params, query}. */
 
 const ROUTES = [
   ["connect", /^\/connect$/],
+  ["home", /^\/$/],
+  ["home", /^\/home$/],
+  ["tasks", /^\/tasks$/],
+  ["task-new", /^\/tasks\/new$/],
+  ["task", /^\/tasks\/([^/]+)$/, ["id"]],
   ["agents", /^\/agents$/],
   ["agent-new", /^\/agents\/new$/],
   ["agent", /^\/agents\/([^/]+)$/, ["id"]],
@@ -9,15 +14,24 @@ const ROUTES = [
   ["workflow", /^\/workflows\/([^/]+)$/, ["id"]],
   ["artifacts", /^\/artifacts$/],
   ["artifact", /^\/artifacts\/([^/]+)$/, ["id"]],
-  ["capacity", /^\/capacity$/],
-  ["accounts", /^\/admin\/accounts$/],
-  ["keys", /^\/admin\/keys$/],
-  ["github", /^\/admin\/github$/],
+  ["integrations", /^\/integrations$/],
+  ["accounts", /^\/integrations\/accounts$/],
+  ["github", /^\/integrations\/github$/],
+  ["capacity", /^\/integrations\/capacity$/],
   ["settings", /^\/settings$/],
+  ["keys", /^\/settings\/keys$/],
 ];
 
+/** Old bookmarks keep working — these paths land on their new homes. */
+export const LEGACY_ROUTES = {
+  "/admin/accounts": "/integrations/accounts",
+  "/admin/keys": "/settings/keys",
+  "/admin/github": "/integrations/github",
+  "/capacity": "/integrations/capacity",
+};
+
 export function parseHash(hash = window.location.hash) {
-  const raw = hash.replace(/^#/, "") || "/agents";
+  const raw = hash.replace(/^#/, "") || "/";
   const [path, qs = ""] = raw.split("?");
   const query = Object.fromEntries(new URLSearchParams(qs));
   for (const [name, re, keys = []] of ROUTES) {
