@@ -14,6 +14,7 @@ import {
   errorBanner,
   field,
   kv,
+  labelize,
   pageHeader,
   skeleton,
   toast,
@@ -290,7 +291,8 @@ export function renderGithub() {
         ? h(
             "div",
             { class: "table-wrap", style: "border:0" },
-            h(
+            labelize(
+              h(
               "table",
               { class: "table", "data-testid": "github-installations" },
               h("thead", null, h("tr", null, [t("Account"), t("Repositories"), t("Synced"), ""].map((c) => h("th", null, c)))),
@@ -333,8 +335,8 @@ export function renderGithub() {
                   ),
                 ),
               ),
-            ),
-          )
+              )),
+            )
         : emptyState({
             iconName: "github",
             title: t("No installations"),

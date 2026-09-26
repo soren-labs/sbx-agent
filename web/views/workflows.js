@@ -13,6 +13,7 @@ import {
   emptyState,
   errorBanner,
   kv,
+  labelize,
   openDialog,
   pageHeader,
   poller,
@@ -75,7 +76,8 @@ export function renderWorkflows() {
       h(
         "div",
         { class: "table-wrap" },
-        h(
+        labelize(
+          h(
           "table",
           { class: "table", "data-testid": "workflows-table" },
           h("thead", null, h("tr", null, [t("Workflow"), t("Agents"), t("Open"), t("Last activity")].map((c) => h("th", null, c)))),
@@ -100,6 +102,7 @@ export function renderWorkflows() {
                 h("td", { colspan: "3", class: "subtle" }, t("Recently viewed")),
               ),
             ),
+          ),
           ),
         ),
       ),
@@ -190,7 +193,8 @@ export function renderWorkflow({ route }) {
       body: h(
         "div",
         { class: "table-wrap", style: "border:0" },
-        h(
+        labelize(
+          h(
           "table",
           { class: "table", "data-testid": "workflow-agents" },
           h("thead", null, h("tr", null, [t("Task"), t("Role"), t("Agent"), t("Status"), t("Latest run"), t("Runs")].map((c) => h("th", null, c)))),
@@ -215,6 +219,7 @@ export function renderWorkflow({ route }) {
                 h("td", null, String(a.runs)),
               ),
             ),
+          ),
           ),
         ),
       ),

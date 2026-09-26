@@ -4,7 +4,7 @@ import { isTaskAttention, isTaskLive, taskTitle } from "../lib/domain.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
 import { navigate } from "../lib/router.js";
-import { emptyState, errorBanner, linkButton, pageHeader, poller, segmented, skeleton } from "../lib/ui.js";
+import { emptyState, errorBanner, labelize, linkButton, pageHeader, poller, segmented, skeleton } from "../lib/ui.js";
 import { taskRow } from "./home.js";
 
 const FILTERS = [
@@ -66,11 +66,13 @@ export function renderTasks({ route }) {
       h(
         "div",
         { class: "table-wrap" },
-        h(
-          "table",
-          { class: "table", "data-testid": "tasks-table" },
-          h("thead", null, h("tr", null, [t("Task"), t("Status"), t("AI"), t("Repository"), t("Updated")].map((c) => h("th", null, c)))),
-          h("tbody", null, rows.map((task) => taskRow(task))),
+        labelize(
+          h(
+            "table",
+            { class: "table", "data-testid": "tasks-table" },
+            h("thead", null, h("tr", null, [t("Task"), t("Status"), t("AI"), t("Repository"), t("Updated")].map((c) => h("th", null, c)))),
+            h("tbody", null, rows.map((task) => taskRow(task))),
+          ),
         ),
       ),
     );

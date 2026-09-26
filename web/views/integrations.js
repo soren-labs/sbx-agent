@@ -4,7 +4,7 @@ import { h, mount } from "../lib/dom.js";
 import { connectionMeta, providerLabel } from "../lib/domain.js";
 import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
-import { badge, banner, button, card, errorBanner, pageHeader, providerTag, skeleton } from "../lib/ui.js";
+import { badge, banner, button, card, errorBanner, labelize, pageHeader, providerTag, skeleton } from "../lib/ui.js";
 import { connectDialog } from "./accounts.js";
 
 function githubBadge(st) {
@@ -84,11 +84,13 @@ export function renderIntegrations() {
         h(
           "div",
           { class: "table-wrap", style: "border:0" },
-          h(
-            "table",
-            { class: "table", "data-testid": "providers-table" },
-            h("thead", null, h("tr", null, [t("Provider"), t("Status"), t("Accounts"), ""].map((c) => h("th", null, c)))),
-            h("tbody", null, rows.map((r) => providerRow(r, { admin, reload: load }))),
+          labelize(
+            h(
+              "table",
+              { class: "table", "data-testid": "providers-table" },
+              h("thead", null, h("tr", null, [t("Provider"), t("Status"), t("Accounts"), ""].map((c) => h("th", null, c)))),
+              h("tbody", null, rows.map((r) => providerRow(r, { admin, reload: load }))),
+            ),
           ),
         ),
       );

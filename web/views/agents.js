@@ -10,6 +10,7 @@ import {
   codeBlock,
   emptyState,
   errorBanner,
+  labelize,
   linkButton,
   mono,
   pageHeader,
@@ -153,7 +154,7 @@ export function renderAgents({ route }) {
     if (!rows.length) {
       return mount(listEl, emptyState({ iconName: "search", title: t("No agents match these filters"), compact: true }));
     }
-    const table = h(
+    const table = labelize(h(
       "table",
       { class: "table", "data-testid": "agents-table" },
       h(
@@ -203,7 +204,7 @@ export function renderAgents({ route }) {
             h("td", { class: "nowrap muted", title: a.updated_at }, fmtRelative(a.updated_at)),
           ),
         ),
-      ),
+      )),
     );
     mount(
       listEl,

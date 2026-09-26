@@ -13,6 +13,7 @@ import {
   errorBanner,
   field,
   kv,
+  labelize,
   mono,
   openDialog,
   pageHeader,
@@ -49,7 +50,8 @@ export function artifactTable(artifacts, { hideProducer } = {}) {
   return h(
     "div",
     { class: "table-wrap" },
-    h(
+    labelize(
+      h(
       "table",
       { class: "table", "data-testid": "artifacts-table" },
       h(
@@ -96,7 +98,7 @@ export function artifactTable(artifacts, { hideProducer } = {}) {
             h("td", { class: "nowrap muted", title: fmtDateTime(a.created_at) }, fmtRelative(a.created_at)),
           ),
         ),
-      ),
+      )),
     ),
   );
 }
@@ -318,7 +320,8 @@ export function renderArtifact({ route }) {
           body: h(
             "div",
             { class: "table-wrap", style: "border:0" },
-            h(
+            labelize(
+              h(
               "table",
               { class: "table", "data-testid": "artifact-files" },
               h("thead", null, h("tr", null, h("th", null, t("Path")), h("th", { class: "num" }, t("Size")), h("th", null, "sha256"), h("th", null, ""))),
@@ -335,7 +338,7 @@ export function renderArtifact({ route }) {
                     h("td", { class: "num" }, button("", { variant: "ghost", size: "xs", iconName: "download", title: t("Download"), onClick: () => downloadMember(art.artifact_id, `files/${file.path}`) })),
                   ),
                 ),
-              ),
+              )),
             ),
           ),
         }),

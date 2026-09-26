@@ -14,6 +14,7 @@ import {
   emptyState,
   errorBanner,
   field,
+  labelize,
   openDialog,
   pageHeader,
   poller,
@@ -364,7 +365,8 @@ export function renderAccounts() {
       h(
         "div",
         { class: "table-wrap" },
-        h(
+        labelize(
+          h(
           "table",
           { class: "table", "data-testid": "accounts-table" },
           h("thead", null, h("tr", null, [t("Account"), t("Provider"), t("Status"), t("Slots"), t("Models"), t("Last used"), ""].map((c) => h("th", null, c)))),
@@ -441,6 +443,7 @@ export function renderAccounts() {
                 ),
               ),
             ),
+          ),
           ),
         ),
       ),

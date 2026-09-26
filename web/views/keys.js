@@ -13,6 +13,7 @@ import {
   copyButton,
   errorBanner,
   field,
+  labelize,
   openDialog,
   pageHeader,
   skeleton,
@@ -91,7 +92,8 @@ export function renderKeys() {
       h(
         "div",
         { class: "table-wrap" },
-        h(
+        labelize(
+          h(
           "table",
           { class: "table", "data-testid": "keys-table" },
           h("thead", null, h("tr", null, [t("Key"), t("Scopes"), t("Created"), t("Status"), ""].map((c) => h("th", null, c)))),
@@ -136,6 +138,7 @@ export function renderKeys() {
                 ),
               ),
             ),
+          ),
           ),
         ),
       ),

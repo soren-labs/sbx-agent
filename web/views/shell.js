@@ -51,7 +51,21 @@ export function createShell() {
   let liveCount = 0;
 
   const root = h("div", { class: "shell", "data-testid": "app-ready" });
-  const closeNav = () => root.classList.remove("nav-open");
+  let navReturnFocus = null;
+  const setNavOpen = (open) => {
+    const was = root.classList.contains("nav-open");
+    root.classList.toggle("nav-open", open);
+    menuBtn.setAttribute("aria-expanded", String(open));
+    if (open && !was) {
+      navReturnFocus = document.activeElement;
+      navCloseBtn.focus();
+    }
+    if (!open) {
+      if (was && navReturnFocus && sidebar.contains(document.activeElement)) navReturnFocus.focus();
+      navReturnFocus = null;
+    }
+  };
+  const closeNav = () => setNavOpen(false);
 
   const link = (item, locked) =>
     h(
@@ -59,6 +73,7 @@ export function createShell() {
       {
         class: ["nav-link", item.match.includes(active) && "is-active", locked && "is-locked"],
         href: item.href,
+        "aria-current": item.match.includes(active) ? "page" : null,
         "data-testid": `nav-${item.id}`,
         title: locked ? t("Requires an API key with the admin scope") : null,
         onClick: closeNav,
@@ -140,9 +155,20 @@ export function createShell() {
     );
   }
 
+  const navCloseBtn = h(
+    "button",
+    {
+      type: "button",
+      class: "nav-close",
+      "aria-label": t("Close menu"),
+      "data-testid": "nav-close",
+      onClick: closeNav,
+    },
+    icon("x"),
+  );
   const sidebar = h(
     "aside",
-    { class: "sidebar" },
+    { class: "sidebar", id: "app-nav" },
     h(
       "div",
       { class: "sidebar-top" },
@@ -152,26 +178,26 @@ export function createShell() {
         logo(28),
         h("span", null, h("span", { class: "brand-name" }, "sbx-browser"), h("span", { class: "brand-plane", title: planeLabel() }, planeLabel())),
       ),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "nav-close",
-          "aria-label": t("Close menu"),
-          "data-testid": "nav-close",
-          onClick: closeNav,
-        },
-        icon("x"),
-      ),
+      navCloseBtn,
     ),
     navEl,
     h("div", { class: "sidebar-foot" }, identityEl, toolsEl),
   );
 
+  const menuBtn = button("", {
+    variant: "ghost",
+    size: "sm",
+    iconName: "menu",
+    title: t("Menu"),
+    testid: "nav-menu",
+    onClick: () => setNavOpen(!root.classList.contains("nav-open")),
+  });
+  menuBtn.setAttribute("aria-controls", "app-nav");
+  menuBtn.setAttribute("aria-expanded", "false");
   const mobileBar = h(
     "div",
     { class: "mobile-bar" },
-    button("", { variant: "ghost", size: "sm", iconName: "menu", title: t("Menu"), testid: "nav-menu", onClick: () => root.classList.toggle("nav-open") }),
+    menuBtn,
     logo(22),
     h("strong", null, "sbx-browser"),
   );
