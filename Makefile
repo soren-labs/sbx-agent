@@ -30,6 +30,15 @@ docs-build:
 	npm --prefix docs-site ci
 	npm --prefix docs-site run build
 
+# Build the site and run the docs link/structure check.
+docs-check:
+	npm --prefix docs-site ci
+	npm --prefix docs-site run check
+
+# Regenerate the errors reference table from control/api_v1/error_catalog.py.
+docs-sync-errors:
+	uv run python docs-site/scripts/sync_error_reference.py
+
 # Refresh the console guide's screenshots from the Playwright console suite.
 docs-screenshots: test-e2e
 	node docs-site/scripts/sync-console-screenshots.mjs

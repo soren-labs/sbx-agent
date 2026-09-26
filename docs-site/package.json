@@ -8,6 +8,8 @@
     "prepare-openapi": "node scripts/prepare-openapi.mjs",
     "dev": "npm run prepare-openapi && astro dev",
     "build": "npm run prepare-openapi && astro build",
+    "check": "npm run prepare-openapi && astro build && node scripts/check-links.mjs",
+    "check:links": "node scripts/check-links.mjs",
     "preview": "astro preview",
     "astro": "astro"
   },

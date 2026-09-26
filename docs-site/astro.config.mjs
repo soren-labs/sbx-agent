@@ -8,6 +8,19 @@ const site = process.env.DOCS_SITE_URL || undefined;
 
 export default defineConfig({
 	site,
+	// Legacy slugs from the pre-foundation IA.
+	redirects: {
+		'/getting-started/concepts': '/concepts',
+		'/guides/github': '/integrations/github',
+		'/providers/overview': '/integrations/providers',
+		'/providers/notes': '/integrations/provider-notes',
+		'/operations/deploy': '/self-hosting/deploy',
+		'/operations/configuration': '/self-hosting/configuration',
+		'/operations/upgrade-and-uninstall': '/self-hosting/upgrade-and-uninstall',
+		'/operations/edge': '/self-hosting/edge',
+		'/operations/security': '/self-hosting/security',
+		'/operations/troubleshooting': '/troubleshooting',
+	},
 	integrations: [
 		starlight({
 			title: 'sbx-browser',
@@ -44,13 +57,9 @@ export default defineConfig({
 			],
 			sidebar: [
 				{
-					label: 'Start here',
+					label: 'Getting started',
 					translations: { 'zh-CN': '开始' },
-					items: [
-						'getting-started/introduction',
-						'getting-started/quick-start',
-						'getting-started/concepts',
-					],
+					items: ['getting-started/introduction', 'getting-started/quick-start'],
 				},
 				{
 					label: 'Guides',
@@ -65,29 +74,16 @@ export default defineConfig({
 						'guides/structured-output',
 						'guides/resources-and-compute',
 						'guides/accounts',
-						'guides/github',
 					],
 				},
 				{
-					label: 'Operate',
-					translations: { 'zh-CN': '部署与运维' },
-					items: [
-						'operations/deploy',
-						'operations/configuration',
-						'operations/upgrade-and-uninstall',
-						'operations/edge',
-						'operations/security',
-						'operations/troubleshooting',
-					],
+					label: 'Concepts',
+					translations: { 'zh-CN': '概念' },
+					items: ['concepts'],
 				},
 				{
-					label: 'Providers',
-					translations: { 'zh-CN': 'Provider' },
-					items: ['providers/overview', 'providers/notes'],
-				},
-				{
-					label: 'Reference',
-					translations: { 'zh-CN': '参考' },
+					label: 'API & SDK reference',
+					translations: { 'zh-CN': 'API 与 SDK 参考' },
 					items: [
 						'reference/errors',
 						'reference/events',
@@ -95,6 +91,40 @@ export default defineConfig({
 						'reference/cli',
 						'reference/limits',
 						...openAPISidebarGroups,
+					],
+				},
+				{
+					label: 'Integrations',
+					translations: { 'zh-CN': '集成' },
+					items: [
+						'integrations/providers',
+						'integrations/github',
+						'integrations/provider-notes',
+					],
+				},
+				{
+					label: 'Self-hosting',
+					translations: { 'zh-CN': '自托管' },
+					items: [
+						'self-hosting/deploy',
+						'self-hosting/configuration',
+						'self-hosting/upgrade-and-uninstall',
+						'self-hosting/edge',
+						'self-hosting/security',
+					],
+				},
+				{
+					label: 'Troubleshooting',
+					translations: { 'zh-CN': '故障排查' },
+					items: ['troubleshooting'],
+				},
+				{
+					label: 'For agents',
+					translations: { 'zh-CN': 'Agent 入口' },
+					items: [
+						'agents',
+						{ label: 'llms.txt', link: '/llms.txt', attrs: { target: '_blank' } },
+						{ label: 'openapi.json', link: '/openapi.json', attrs: { target: '_blank' } },
 					],
 				},
 				{

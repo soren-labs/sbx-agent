@@ -5,7 +5,7 @@ description: Lifecycle timers, concurrency caps, compute bounds and durable stor
 
 Every value below is a control-plane setting: export it before
 `uv run sbx deploy` and the deploy forwards it to the remote control plane.
-See [Configuration](/operations/configuration/).
+See [Configuration](/self-hosting/configuration/).
 
 ## Lifecycle timers
 

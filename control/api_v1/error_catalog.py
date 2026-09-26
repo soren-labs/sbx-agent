@@ -7,6 +7,11 @@ truth for the ``x-canonical.error_subcodes`` list in
 ``docs/contracts/api-v1.yaml`` and the error code enum in the generated
 ``/v1/openapi.json`` — a code not listed here must not be emitted.
 
+The public docs error table
+(``docs-site/src/content/docs/reference/errors.md``) is rendered from this
+module by ``docs-site/scripts/sync_error_reference.py``; run
+``make docs-sync-errors`` after editing rows here.
+
 ``action`` vocabulary (stable):
 
 * ``authenticate`` — supply or repair credentials, then resend.

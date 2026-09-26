@@ -106,12 +106,12 @@ The web console calls `/v1`; `/api` is kept for internal/legacy callers only. No
 **Version: v0.1.1 — Public alpha.**
 
 - The `/v1` API shape may evolve before 1.0.
-- All five providers (codex, devin, antigravity, grok, opencode) have passed real-account gates on Modal. See [Provider support](/providers/overview/) for the detailed matrix and evidence.
+- All five providers (codex, devin, antigravity, grok, opencode) have passed real-account gates on Modal. See [Provider support](/integrations/providers/) for the detailed matrix and evidence.
 - Single workspace per deployment (multi-workspace architecture is not yet supported).
 - No browser UI (the web console is an internal dashboard, no terminal/noVNC).
 
 ## What's next?
 
 → [Quick start](/getting-started/quick-start/): Clone, configure, and deploy.  
-→ [Concepts](/getting-started/concepts/): Agent, Run, Provider, Sandbox, Workflow, and more.  
+→ [Concepts](/concepts/): Agent, Run, Provider, Sandbox, Workflow, and more.  
 → [Creating agents](/guides/agents-and-runs/): Your first multi-turn run.
