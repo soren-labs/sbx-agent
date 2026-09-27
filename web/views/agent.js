@@ -314,14 +314,14 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
         blocks.set(run.id, block);
         conversationEl.append(block.el);
         const recent = idx >= state.runs.length - AUTO_ACTIVITY_RUNS;
-        if (agentLive && (isRunLive(run.status) || recent)) openRunStream(run.id);
+        // Ended agents replay the durable transcript captured at turn end.
+        if (isRunLive(run.status) ? agentLive : recent) openRunStream(run.id);
       } else {
         block.update(run);
         block.setAgentLive(agentLive);
         if (isRunLive(run.status) && agentLive) openRunStream(run.id);
       }
     });
-    if (!agentLive) for (const id of [...streams.keys()]) closeStream(id);
     renderComposer();
     renderAside();
   }
