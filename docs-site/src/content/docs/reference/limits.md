@@ -4,7 +4,7 @@ description: Lifecycle timers, concurrency caps, compute bounds and durable stor
 ---
 
 Every value below is a control-plane setting: export it before
-`uv run sbx deploy` and the deploy forwards it to the remote control plane.
+`./sbx deploy` and the deploy forwards it to the remote control plane.
 See [Configuration](/self-hosting/configuration/).
 
 ## Lifecycle timers
@@ -95,12 +95,12 @@ and control-plane restarts:
 # Long analysis turns: allow 30-minute turns.
 export SBX_TURN_MAX_SECONDS=1800
 export SBX_SANDBOX_IDLE_TIMEOUT_S=2100   # ≥ 1800 + SBX_RUN_GRACE_S (300)
-uv run sbx deploy
+./sbx deploy
 ```
 
 ```bash
 # Short interactive work: reclaim idle agents after one minute.
 export SBX_TURN_MAX_SECONDS=300
 export SBX_IDLE_TIMEOUT_S=60
-uv run sbx deploy
+./sbx deploy
 ```

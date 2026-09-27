@@ -1,0 +1,59 @@
+[
+  {
+    "provider": "codex",
+    "support": "stable",
+    "cli": "codex",
+    "install_kind": "npm",
+    "reproducible": true,
+    "summary": "Codex CLI via public npm artifact",
+    "default_models": [
+      "gpt-5.6-luna"
+    ]
+  },
+  {
+    "provider": "devin",
+    "support": "experimental",
+    "cli": "devin",
+    "install_kind": "bundle",
+    "reproducible": true,
+    "summary": "Official sha256-verified Devin CLI bundle",
+    "default_models": [
+      "swe-2-high",
+      "swe-2-medium"
+    ]
+  },
+  {
+    "provider": "antigravity",
+    "support": "experimental",
+    "cli": "agy",
+    "install_kind": "host-binary",
+    "reproducible": false,
+    "summary": "Anti-Gravity CLI from the build host (local-assisted)",
+    "default_models": [
+      "gemini-3.8-flash-low"
+    ]
+  },
+  {
+    "provider": "grok",
+    "support": "experimental",
+    "cli": "grok",
+    "install_kind": "host-binary",
+    "reproducible": false,
+    "summary": "Grok CLI from the build host (local-assisted)",
+    "default_models": [
+      "grok-4.6"
+    ]
+  },
+  {
+    "provider": "opencode",
+    "support": "experimental",
+    "cli": "opencode",
+    "install_kind": "npm",
+    "reproducible": true,
+    "summary": "OpenCode CLI via public npm artifact",
+    "default_models": [
+      "openai/gpt-5.6-luna",
+      "opencode/claude-sonnet-4-5"
+    ]
+  }
+]

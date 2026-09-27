@@ -1,54 +1,63 @@
 # sbx-browser
 
-> Self-hosted orchestration for cloud coding agents: describe a task, and sbx-browser runs an official provider CLI (Codex, Devin, Antigravity, Grok, OpenCode) in an isolated Modal Sandbox behind one REST API.
+> Task-oriented orchestration for coding-agent CLIs on your own Modal workspace. Use an existing SBX with only a base URL + API key, or self-host with `./sbx deploy`.
 
-Self-hosted under your own Modal workspace and your own provider subscriptions; not a hosted service.
+## Start
 
-## Getting started
+- [Introduction](/getting-started/introduction/): product model and deployment boundary
+- [Quick start](/getting-started/quick-start/): existing deployment and fresh self-host paths
+- [Core concepts](/concepts/): Task, Run, Revision, Delivery, Review and Integrations
 
-- [Introduction](/getting-started/introduction/): what sbx-browser is and when to use it
-- [Quick start](/getting-started/quick-start/): use an existing deployment or self-host, first task in ~10 minutes
-
-## Guides
+## Use SBX
 
 - [Tasks](/guides/tasks/): create, monitor, follow up, cancel and retry
-- [Repositories & delivery](/guides/repositories/): revisions, branches, pull requests, review-gated merge
-- [Console](/guides/console/): web console for tasks, review, accounts and keys
-- [Accounts](/guides/accounts/): provider accounts, slots, failover
-- [Streaming](/guides/streaming/): SSE events, Last-Event-ID resume
-- [Structured output](/guides/structured-output/): JSON Schema contracts on run results
-- [Agents and runs](/guides/agents-and-runs/): the lower-level surface under tasks
-- [Workflows](/guides/workflows/): gated pipelines and recovery
-- [Artifacts & handoffs](/guides/handoffs-and-artifacts/): checkpoints and cross-agent handoff
-- [Resources & compute](/guides/resources-and-compute/): CPU/memory, secrets, MCP servers
+- [Repositories and delivery](/guides/repositories/): revisions, branches, pull requests, review-gated merge
+- [Streaming](/guides/streaming/): SSE and reconnect
+- [Recovery](/guides/recovery/): recover after disconnects and uncertain mutations
+- [Examples](/guides/examples/): canonical executable SDK examples
 
-## Concepts
+## API
 
-- [Concepts](/concepts/): task, run, revision, delivery, review, agent, provider, account, workflow, artifact
+- [API overview](/api/overview/)
+- [Authentication](/api/authentication/)
+- [Task lifecycle](/api/task-lifecycle/)
+- [Idempotency](/api/idempotency/)
+- [Pagination](/api/pagination/)
+- [REST reference](/reference/api/): generated from the runtime OpenAPI contract
+- [Errors](/reference/errors/): canonical codes and retry hints
+- [Events](/reference/events/): SSE event contract
 
-## Reference
+## Python SDK
 
-- [REST API](/reference/api/): interactive per-operation reference for /v1
-- [Errors](/reference/errors/): HTTP and run error codes
-- [Events](/reference/events/): canonical event types
-- [Python client](/reference/python-client/): sbx.sdk usage
-- [CLI](/reference/cli/): sbx command reference
-- [Limits](/reference/limits/): quotas and bounds
+- [Quickstart](/sdk/python/quickstart/)
+- [Tasks](/sdk/python/tasks/)
+- [Streaming](/sdk/python/streaming/)
+- [Delivery, review and merge](/sdk/python/delivery/)
+- [Errors and retries](/sdk/python/errors/)
+- [Complete client reference](/reference/python-client/)
 
 ## Integrations
 
-- [Providers](/integrations/providers/): support matrix and evidence
-- [GitHub](/integrations/github/): GitHub App or PAT for private repos and PRs
+- [AI providers](/integrations/providers/)
+- [GitHub](/integrations/github/)
+- [Modal](/integrations/modal/)
 
 ## Self-hosting
 
-- [Deploy](/self-hosting/deploy/): sbx deploy, verify, scale
-- [Configuration](/self-hosting/configuration/): environment and knobs
-- [Edge](/self-hosting/edge/): Cloudflare/edge fronting
-- [Security](/self-hosting/security/): keys, scopes, secrets handling
-- [Troubleshooting](/troubleshooting/): common problems and fixes
+- [Deploy](/self-hosting/deploy/)
+- [Configuration](/self-hosting/configuration/)
+- [Custom domains](/self-hosting/custom-domain/)
+- [Upgrade and uninstall](/self-hosting/upgrade-and-uninstall/)
+- [Security](/self-hosting/security/)
+- [State and backup](/self-hosting/state-and-backup/)
+- [Troubleshooting](/troubleshooting/)
 
-## Machine-readable
+## For agents
 
-- [openapi.json](/openapi.json): the public /v1 OpenAPI 3.1 spec (also served live at /v1/openapi.json on a running control plane)
-- [For agents and LLMs](/agents/): entry points for machine consumers
+- [Deterministic agent workflow](/agents/guide/)
+- [Full public-doc bundle](/llms-full.txt)
+- [OpenAPI](/openapi.json)
+- [Docs/product version](/version.json)
+- [Exact CLI help](/cli-help.txt)
+- [Config reference](/config-reference.json)
+- [Provider runtime reference](/provider-reference.json)

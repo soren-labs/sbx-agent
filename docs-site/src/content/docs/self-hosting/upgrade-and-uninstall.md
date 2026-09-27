@@ -17,31 +17,41 @@ To upgrade to a new sbx-browser version:
 
 2. **Re-deploy (preserves durable data):**
    ```bash
-   uv run sbx upgrade
+   ./sbx upgrade
    ```
 
 3. **Verify:**
    ```bash
-   uv run sbx doctor
+   ./sbx doctor
    ```
 
 </Steps>
 
 `sbx upgrade` rebuilds images, updates the control plane, and restarts the Modal App — but does not touch durable Dicts. All runs, accounts, workflows, and artifacts persist.
 
+Two operator-facing things require attention after an upgrade:
+
+- **Runtime-minted API keys** are in-memory and are cleared when the control
+  plane restarts. The durable bootstrap admin key remains available to mint
+  replacements.
+- If you front SBX with the optional Cloudflare Worker from `deploy/sbx-edge`,
+  redeploy that worker after upgrading. It bundles the Console's static
+  `web/` assets at deploy time; leaving it untouched can put an old Console
+  in front of a new `/v1` backend.
+
 ### Rollback
 
 To rollback provider CLI versions:
 
 ```bash
-uv run sbx deploy --versions-lock <previous-lock.json>
+./sbx deploy --versions-lock <previous-lock.json>
 ```
 
 Or use the environment variable:
 
 ```bash
 export SBX_VERSIONS_LOCK="/path/to/previous-lock.json"
-uv run sbx deploy
+./sbx deploy
 ```
 
 The lock file (created at deploy time as `$SBX_STATE_DIR/cli-versions.json`) captures all resolved versions. Replaying it skips upstream version checks.
@@ -53,7 +63,7 @@ The lock file (created at deploy time as `$SBX_STATE_DIR/cli-versions.json`) cap
 Closes all agents and sandboxes, but keeps durable data:
 
 ```bash
-uv run sbx uninstall
+./sbx uninstall
 ```
 
 This:
@@ -68,7 +78,7 @@ You can re-deploy later and resume from the same durable state.
 ### Full uninstall (erase everything)
 
 ```bash
-uv run sbx uninstall --purge-data --purge-credentials
+./sbx uninstall --purge-data --purge-credentials
 ```
 
 This also deletes:
@@ -139,7 +149,7 @@ If a PAT or GitHub App secret leaks:
    ```bash
    modal secret delete sbx-github
    modal secret create sbx-github GH_TOKEN="..."
-   uv run sbx deploy
+   ./sbx deploy
    ```
 
 ## Cleanup & maintenance

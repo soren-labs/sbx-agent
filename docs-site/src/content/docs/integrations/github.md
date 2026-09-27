@@ -1,188 +1,115 @@
 ---
-title: GitHub access
-description: Let agents clone, push and open pull requests on private GitHub repositories with a GitHub App or a personal access token.
+title: GitHub
+description: Connect private GitHub repositories and pull-request delivery through the SBX GitHub App.
 ---
 
-Public repositories and non-GitHub remotes need no credentials: an agent's
-[workspace](/guides/repositories/) clones them directly. For **private**
-github.com repositories — clone, fetch, push, and opening pull requests — arm
-the optional GitHub bridge with one of two token sources:
+Public repositories do not need GitHub credentials. For private repositories,
+branch pushes, pull requests and merges, connect the **SBX GitHub App**.
 
-- a **GitHub App** (preferred): repository owners authorize it in the
-  browser, and the control plane mints short-lived installation tokens; or
-- a **personal access token** (PAT) held by the control plane.
+## Default: install the SBX GitHub App once
 
-Either way the bridge is:
-
-- **Opt-in.** Nothing is injected unless the control plane runs with
-  `SBX_GITHUB_EPHEMERAL=1`. A token alone does nothing.
-- **Env-only inside the sandbox.** A git credential helper scoped to
-  `https://github.com` answers `x-access-token` / `$GH_TOKEN` at runtime, so
-  the token never lands in argv, git config, a cloned repo's `.git/config`,
-  or any file.
-- **HTTPS only.** SSH remotes are untouched — declare `https://github.com/…`
-  URLs when you want the token used.
-- **Provider-agnostic.** It applies to every provider's sandbox.
-
-If both sources are configured, a `GH_TOKEN` / `GITHUB_TOKEN` on the control
-plane takes precedence over the App.
-
-## Option A: GitHub App (preferred)
-
-### 1. Create the App
-
-On GitHub: **Settings → Developer settings → GitHub Apps → New GitHub App**.
-
-- **Setup URL** (post-installation redirect): your console's URL. The console
-  picks up the `installation_id` and `state` GitHub appends and completes the
-  authorization for you.
-- **Webhook:** not used — you can leave it inactive.
-- **Repository permissions:** `Contents: Read and write`, plus
-  `Pull requests: Read and write` if agents open or merge pull requests.
-  `Metadata: Read` is granted automatically.
-
-Note the **App ID** and the App's **slug** (the name in
-`https://github.com/apps/<slug>`), and generate a **private key** (PEM).
-
-### 2. Configure the control plane
-
-A deployed control plane reads the private key from a Modal Secret:
+From a configured self-hosted checkout:
 
 ```bash
-modal secret create sbx-github-app \
-  SBX_GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem)"
-
-export SBX_GITHUB_APP_ID=123456
-export SBX_GITHUB_APP_SLUG=my-sbx-app
-export SBX_GITHUB_APP_SECRET_NAME=sbx-github-app
-export SBX_GITHUB_EPHEMERAL=1
-uv run sbx deploy
+./sbx github connect
 ```
 
-The same settings live in `~/.config/sbx/config.toml` as
-`[github] ephemeral` and `[github_app] app_id`, `slug`, `secret_name`.
-`sbx deploy` fails before writing anything if the named Secret does not
-exist. A local control plane (`SBX_BACKEND=local`) reads
-`SBX_GITHUB_APP_PRIVATE_KEY` straight from its environment instead.
+Or open **Integrations → GitHub → Connect GitHub** in the web console.
 
-### 3. Authorize repositories
+The browser goes directly to GitHub's official installation screen for the
+pre-registered SBX App:
 
-In the console, open **Integrations → GitHub** and click **Connect GitHub**
-— or run `sbx github connect`, which opens the same install page
-(`--print` shows the URL instead). GitHub opens in a new tab: pick the
-account and repositories, and GitHub redirects
-back to the console, which records the installation. If the redirect cannot
-reach the console, paste the `installation_id` from the redirect URL into the
-form on the same page.
+1. choose the GitHub account or organization;
+2. choose **All repositories** or **Only select repositories**;
+3. click **Install**.
 
-The same flow over the API (any key with the `agents` scope):
+GitHub redirects back to SBX and the integration becomes **Connected**. This
+is the normal path: no user OAuth step, PAT, PEM download, Modal Secret or
+per-deployment GitHub App registration is required.
+
+If the installation already exists, SBX can bind the deployment to that
+installation without asking you to grant the same permissions again.
+
+## What SBX stores
+
+The self-hosted control plane keeps non-secret installation metadata and the
+binding needed to request tokens. When a task needs repository access, the
+trusted GitHub broker mints a short-lived installation token scoped to that
+installation/repository.
+
+The shared App private key is **not** stored in your self-hosted deployment or
+agent sandbox. Installation tokens are short-lived and are injected only for
+git/GitHub operations; they are not written into the repository's git config.
+
+## Repository permissions
+
+The public App uses the permissions required by the product workflow:
+
+- **Contents: read/write** — clone/fetch/push branches;
+- **Pull requests: read/write** — open/update/read pull requests;
+- **Metadata: read** — granted by GitHub.
+
+Use GitHub's installation settings to change which repositories the App may
+access.
+
+## Verify the connection
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/github/app/authorize" \
+curl "$SBX_BASE_URL/v1/github/app" \
   -H "Authorization: Bearer $SBX_API_KEY"
 ```
 
-```json
-{
-  "authorize_url": "https://github.com/apps/my-sbx-app/installations/new?state=…",
-  "state": "…",
-  "expires_at": "2026-09-23T10:30:00Z"
-}
+The response reports connection/installations without exposing tokens or
+private keys. In the console, **Integrations → GitHub** presents the same
+canonical state as Connected / Needs attention / Reconnect / Manage
+repositories.
+
+## Use GitHub from a task
+
+Declare the repository and delivery target; no GitHub token belongs in the
+task payload:
+
+```python
+from sbx.sdk import SbxClient
+
+client = SbxClient()
+created = client.tasks.create(
+    "Add request logging and tests",
+    source={"repo": "https://github.com/acme/private-api"},
+    delivery={"pull_request": {"title": "Add request logging"}},
+)
 ```
 
-Open `authorize_url` in a browser. `state` is single-use and expires after
-10 minutes. When GitHub redirects, send the `installation_id` it appended
-together with the `state`:
+Use `client.tasks.preflight(...)` first when you want to verify repository
+read/push capability without allocating a sandbox.
 
-```bash
-curl -X POST "$SBX_BASE_URL/v1/github/app/authorize/callback" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"installation_id": 12345678, "state": "…"}'
-```
+## Reconnect or revoke
 
-The control plane stores only the installation's metadata — id, account, and
-which repositories it covers. Tokens are minted on demand per repository,
-cached in memory and refreshed before they expire. A workspace repository
-that no installation covers gets no App token.
+If an installation is suspended, removed, or no longer covers the requested
+repository, reconnect from the Integrations page or run `./sbx github
+connect` again. Admin APIs can sync or revoke recorded installations; see the
+[REST reference](/reference/api/).
 
-### 4. Manage installations
+## Advanced alternatives
 
-| Action | Request | Scope |
-| --- | --- | --- |
-| Posture: configured?, installations, whether a bridge PAT exists | `GET /v1/github/app` | `agents` |
-| Re-read installations from GitHub, dropping ones deleted there | `POST /v1/github/app/sync` | `admin` |
-| Revoke one installation (best-effort uninstall on GitHub, then forget it) | `DELETE /v1/github/app/installations/{installationId}` | `admin` |
+The default public-App flow is intentionally the simplest path. Advanced
+self-hosters can instead use:
 
-Responses carry names, ids and repository lists only — never keys or tokens.
-To reconnect after revoking, run the authorize flow again.
+- a **deployment-owned GitHub App** created through GitHub's Manifest flow;
+- an **operator-supplied GitHub App**;
+- a **PAT** as a compatibility/fallback token source.
 
-## Option B: personal access token
+Those modes require managing their own long-lived secret material and should
+be used only when the public SBX App/broker model is not acceptable for the
+deployment. The exact configuration knobs are in
+[Configuration](/self-hosting/configuration/) and the generated API/CLI
+references.
 
-Create a **fine-grained** token scoped to the repositories agents work on,
-with `Contents: Read and write` and — only if agents open pull requests —
-`Pull requests: Read and write`, and the shortest practical expiry. A classic
-`repo` token works but grants far more than needed.
+## Troubleshooting
 
-A deployed control plane cannot see your shell's environment, so store the
-token in a Modal Secret and name it:
-
-```bash
-modal secret create sbx-github GH_TOKEN='github_pat_...'
-export SBX_GITHUB_EPHEMERAL=1 SBX_GITHUB_SECRET_NAME=sbx-github
-uv run sbx deploy
-```
-
-(`[github] ephemeral = true` and `secret_name = "sbx-github"` in
-`config.toml` are equivalent.) For a local control plane, export `GH_TOKEN`
-(or `GITHUB_TOKEN`) and `SBX_GITHUB_EPHEMERAL=1` in its environment.
-
-`sbx init` and `sbx doctor` include an advisory `github` check that reports
-which source exists and whether the bridge is armed — never the token.
-
-## Use it from a task
-
-Name the private repository as the task's `source` and declare where the
-result goes:
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": {"text": "Add request logging to the API"},
-    "source": {"repo": "https://github.com/example/private-repo.git"},
-    "delivery": {
-      "branch": "agent/logging",
-      "pull_request": {"title": "Add request logging"}
-    }
-  }'
-```
-
-The sandbox clones the repository with the injected token. Publish on
-demand with `POST /v1/tasks/{id}/deliver`, or set
-`"delivery": {"auto_publish": true}` to push after every finished run. See
-[Repositories, revisions and delivery](/guides/repositories/) for revisions,
-reviews and the review-gated merge.
-
-The lower-level agent API (`POST /v1/agents` with `workspace` and a `git`
-policy) offers the same machinery for callers that pin an exact base commit
-themselves.
-
-## Errors
-
-| Code | Meaning |
+| Symptom | What to check |
 | --- | --- |
-| `repo_unavailable` | Clone, fetch, push or pull-request creation failed: the repository is unreachable, credentials are missing (a private github.com repo without the bridge armed), or the remote resolved to a different commit than the head just pushed. |
-| `checkout_failed` | `base_ref` / `base_sha` does not resolve in the fresh clone. |
-| `workspace_invalid` | The `git` policy is invalid — for example `auto_create_pr` without `push`, or an unsafe branch name. |
-
-## Security notes
-
-- Prefer the GitHub App: nobody handles a long-lived token, and each minted
-  token is short-lived and limited to the repositories the owner selected.
-- Keep private keys and PATs out of version control; on deployed control
-  planes they belong only in the Modal Secrets you name.
-- All sandboxes share one GitHub identity. Merge readiness is therefore
-  gated by sbx-browser's own exact-commit review pin, not by a GitHub review
-  approval — see [Repositories & git](/guides/repositories/).
+| `repo_unavailable` during preflight | The installation exists, covers the repository, and the canonical deployment is current. |
+| Clone works but push/PR does not | The installation must have Contents read/write and Pull requests read/write. |
+| Integration says Needs attention | Reconnect or manage the GitHub installation, then sync again. |
+| A moved/renamed repo fails | Re-run preflight so SBX canonicalizes the current repository/ref. |

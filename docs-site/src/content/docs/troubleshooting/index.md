@@ -1,261 +1,160 @@
 ---
 title: Troubleshooting
-description: Common problems and solutions.
+description: Diagnose deployment, provider, repository, task, streaming and delivery failures from the public product state.
 ---
 
-## Deployment issues
+Start with the layer that failed. Do not treat every provider/repository error
+as a broken deployment.
 
-### `sbx init` fails: "Python 3.12+ required"
+## Platform/deployment
 
-**Fix:** Install Python 3.12 or newer.
+### Modal is not authenticated
+
+On an interactive fresh clone, `./sbx deploy` can launch the normal Modal
+login flow. You can also authenticate explicitly:
 
 ```bash
-python --version
-pyenv install 3.12.0  # if using pyenv
+modal token new
+./sbx deploy
+./sbx doctor
 ```
 
-### `sbx deploy` fails: "Modal credentials not found"
+CI/non-interactive deployments need valid `MODAL_TOKEN_ID` and
+`MODAL_TOKEN_SECRET`.
 
-**Fix:** Authenticate with Modal:
+### Platform is healthy but no provider is available
+
+A zero-provider deployment is valid. Connect one after deployment:
 
 ```bash
-uv run modal token new
-# or export MODAL_TOKEN_ID + MODAL_TOKEN_SECRET
-uv run sbx doctor
+./sbx auth login --provider devin
+./sbx auth status
 ```
 
-### `sbx deploy` fails: "Secret sbx-codex-auth not found"
+Provider runtime/account problems should degrade that provider, not require
+manually creating provider Secrets just to make the core platform healthy.
 
-**Fix:** Create the shared Codex credential Secret:
+### Custom domain shows an older Console than the backend
 
-```bash
-modal secret create sbx-codex-auth \
-  CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
-uv run sbx deploy
-```
+If the native Modal control-plane URL has the new UI but a Cloudflare edge
+hostname does not, redeploy `deploy/sbx-edge`: the optional worker bundles
+static `web/` files at deploy time. See [Custom domains](/self-hosting/custom-domain/).
 
-(Only needed if `codex` is in `SBX_PROVIDERS`.)
+## Authentication and provider accounts
 
-### Image build timeout
+### API key is rejected
 
-**Fix:** Modal may be slow or capacity-constrained. Retry:
-
-```bash
-uv run sbx deploy
-```
-
-If persistent, check Modal status and consider deploying at a different time.
-
-## Runtime issues
-
-### `429 concurrency_limit` when creating agents
-
-**Fix:** Close idle agents or increase the cap:
+Verify with:
 
 ```bash
-curl -X DELETE "$SBX_BASE_URL/v1/agents/{idle-id}" \
+curl -i "$SBX_BASE_URL/v1/me" \
   -H "Authorization: Bearer $SBX_API_KEY"
-
-# Or increase globally
-export SBX_MAX_CONCURRENT="16"
-uv run sbx deploy
 ```
 
-### `409 account_unavailable` — named account cannot take the agent
+If the control plane was restarted, a runtime-minted key may have been
+cleared. Use the durable bootstrap admin key to mint a new scoped key.
 
-The account you named is missing, belongs to another provider, or is not
-`active` (for example `cooling` after a rate limit — 15 minutes by default —
-or `invalid` after an auth failure).
-
-**Fix:** check its status, then use another account or `account_id: "auto"`:
+### Provider says Needs attention / `auth_invalid`
 
 ```bash
-# List accounts
-curl -X GET "$SBX_BASE_URL/v1/accounts" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-
-# Use a specific account
-curl -X POST "$SBX_BASE_URL/v1/agents" \
-  -d '{"agent": {"account_id": "devin-test"}}' ...
+./sbx auth verify --provider devin
+./sbx auth relink --provider devin --relogin
 ```
 
-### Run hangs or never starts
+Only verified accounts are schedulable. Avoid repeated Task retries until the
+integration itself is healthy.
 
-**Possible causes:**
-1. **Sandbox creation is slow** — Modal may be provisioning. Wait 30+ seconds.
-2. **Turn timeout is too short** — increase `SBX_TURN_MAX_SECONDS`.
-3. **Control plane crashed** — check logs:
-   ```bash
-   modal app logs sbx-control --tail 50
-   ```
-4. **Sandbox lost** — the run will eventually expire and return `UNKNOWN`. For a task, `POST /v1/tasks/{id}/retry` re-runs it on a fresh sandbox; for a bare agent, retry on a fresh one.
+### `account_unavailable` / `provider_unavailable`
 
-### `ERROR: event_parse_error` — event stream corrupted
+The requested provider/model/account currently has no eligible verified slot.
+Prefer automatic account selection, wait for `retry_after` when present, or
+connect/repair another account. Reduce concurrency when the provider itself is
+throttling the subscription.
 
-**Cause:** Provider CLI output was malformed JSON (rare).
+## Repository / GitHub
 
-**Fix:** The run is unrecoverable. Check the agent status and retry on a new agent.
+### `repo_unavailable` during preflight/create
 
-### Run times out (exit code 3)
+Check:
 
-**Fix:** Increase the per-turn timeout:
+1. the GitHub integration is Connected;
+2. the installation covers the target repository;
+3. the deployment is running the latest expected version;
+4. preflight on the exact repository/ref succeeds.
 
 ```bash
-export SBX_TURN_MAX_SECONDS="1800"  # 30 min instead of 15
-uv run sbx deploy
+./sbx github connect
 ```
 
-Or request more compute on the task:
+Do **not** work around a failed `delivery.pull_request` preflight by silently
+creating a different kind of task. Fix the repository capability first.
 
-```json
-{
-  "prompt": {"text": "..."},
-  "compute": {
-    "cpu": [2, 4],
-    "memory_mib": [2048, 16384]
-  }
-}
-```
+### Clone works but push/PR fails
 
-## Credential issues
+The installation must cover the repo and have Contents read/write + Pull
+requests read/write. Reconnect/manage the GitHub installation, then rerun
+preflight.
 
-### `auth_invalid` on every run
+### Review is stale / merge is refused
 
-**Fix:** Verify the credential:
+A later code revision changed the delivered head after the recorded review.
+Review the newest revision, then merge again. Never bypass the exact-head gate
+by copying an old approval to a new SHA.
+
+## Task/run failures
+
+### Task is queued for a long time
+
+Read the task detail and structured run error, then check provider slots and
+account status. A busy follow-up normally queues behind the active run; this is
+not the same as a failed Task.
+
+### Run timed out
+
+Increase the appropriate **turn** timeout only when the work genuinely needs
+more wall time; do not confuse it with post-session idle retention or the
+sandbox hard timeout. Exact config fields/defaults are generated in
+[`/config-reference.json`](/config-reference.json).
+
+### Retry the right lane
+
+- code/execution failure → `client.tasks.retry(task_id, mode="run")`;
+- publish/PR-only failure after good code → `mode="delivery"`;
+- invalid auth/repository/config → repair the integration/request before retrying.
+
+See [Recovery](/guides/recovery/).
+
+## Streaming/network
+
+SSE disconnects are recoverable. Resume with `Last-Event-ID` or use the SDK's
+run watch/resume behavior. The durable Task/Run record remains the terminal
+source of truth even when the last event was lost.
+
+For an uncertain mutation timeout, catch `SbxTransportError`, read the
+suggested durable `check` resource, then decide whether a retry is necessary.
+Idempotency keys protect normal SDK mutation retries.
+
+## Artifacts / secret detection
+
+If artifact collection returns `artifact_secret`, remove the sensitive content
+from the workspace and rotate it if it was a real credential. The artifact
+collector intentionally fails closed rather than persisting suspected secret
+material.
+
+## Diagnostics for operators
 
 ```bash
-uv run sbx auth verify --account-id devin-1
-# or: curl -X POST "$SBX_BASE_URL/v1/accounts/{id}/verify" \
-#   -H "Authorization: Bearer $SBX_API_KEY"
+./sbx status
+./sbx doctor
+./sbx auth status
 ```
 
-If `auth_invalid`, sign in again and refresh the stored credential — the
-shortest path is `sbx auth relink` (re-capture → refresh → verify). The
-explicit form:
+Then inspect Modal application logs/dashboard when the control plane itself is
+unhealthy. Prefer these product/status surfaces over reading Dict/Secret
+contents directly.
 
-```bash
-# Re-login with the provider locally
-codex login
-devin  # or `agy`, `grok`, `opencode auth login`
+## Still blocked?
 
-# Re-import
-uv run python -m control.onboarding --modal import \
-  --provider devin \
-  --from ~/.local/share/devin/credentials.toml \
-  --account-id devin-1
-
-# Verify again
-curl -X POST "$SBX_BASE_URL/v1/accounts/devin-1/verify" ...
-```
-
-### `rate_limited` repeatedly
-
-**Fix:** The provider is throttling your account. Options:
-
-1. **Wait** — the scheduler automatically retries with exponential backoff (see `retry_after`)
-2. **Add accounts** — scale to multiple provider accounts with `SBX_<PROVIDER>_ACCOUNTS`
-3. **Reduce concurrency** — lower `SBX_MAX_CONCURRENT` or per-provider slots
-
-### Secret material leaked in run
-
-**Fix:** If you accidentally committed a credential to the repo and an agent saw it:
-
-1. **Rotate the credential immediately** (new API key, new token, etc.)
-2. **Remove from git history:**
-   ```bash
-   git filter-repo --invert-paths --path .env
-   git push --force
-   ```
-3. **Block future leaks** — add to `.gitignore` and use `pre-commit` hooks
-
-## Network issues
-
-### SSE stream drops frequently
-
-**Cause:** Network instability or server timeout.
-
-**Fix:** Implement exponential backoff and `Last-Event-ID` reconnect (see [Streaming](/guides/streaming/)):
-
-```python
-for event in client.watch(agent_id, run_id, read_timeout_s=120):
-    # Automatic reconnect with Last-Event-ID
-    pass
-```
-
-### `curl` hangs on SSE stream
-
-**Fix:** SSE is a long-lived connection. This is normal. Interrupt with `Ctrl+C` or set a read timeout:
-
-```bash
-timeout 300 curl -X GET "..." --no-buffer
-```
-
-## Control plane issues
-
-### `GET /v1/me` fails — control plane unreachable
-
-**Fix:** Check if the app is running:
-
-```bash
-modal app list | grep sbx-control
-
-# View logs
-modal app logs sbx-control --tail 100
-
-# Restart
-modal app stop sbx-control
-uv run sbx deploy
-```
-
-### Reaper never cleans up idle agents
-
-**Fix:** The reaper runs every 5 minutes. Check logs:
-
-```bash
-modal app logs sbx-control --tail 100 | grep reaper
-```
-
-If the reaper is stuck, restart the app:
-
-```bash
-modal app stop sbx-control
-uv run sbx deploy
-```
-
-## Debugging
-
-### Enable verbose logging
-
-```bash
-export LOGLEVEL=DEBUG
-uv run sbx doctor
-uv run sbx deploy
-```
-
-### Check sandbox logs
-
-If an agent seems stuck, view the sandbox's container logs (sandboxes run as Modal containers):
-
-```bash
-modal container list
-modal container logs <container-id>
-```
-
-### Inspect durable state
-
-Check the run ledger:
-
-```bash
-modal dict list
-modal dict items sbx-runs
-```
-
-(Dicts are binary; use Modal CLI or the Python API to inspect.)
-
-### Report a bug
-
-File an issue on GitHub with:
-- sbx-browser version (`git log -1 --oneline`)
-- Reproduction steps
-- Command output (sanitize any credentials)
-- Modal app logs (`modal app logs sbx-control --tail 100`)
+Collect the affected SBX version, task/run id, canonical structured error code
+and the smallest reproduction. Do not include API keys, provider credentials,
+GitHub tokens or Secret contents.

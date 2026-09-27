@@ -1,124 +1,75 @@
 ---
-title: Provider support
-description: Support matrix, status, and per-provider notes.
+title: AI providers
+description: Connect provider logins and let SBX schedule verified accounts.
 ---
 
-## Support matrix (v0.1.1)
+SBX runs **official provider CLIs** under subscriptions you already own. A
+provider is usable only when its runtime is available and at least one account
+has passed the cloud verification probe.
 
-| Provider | Status | CLI | Auth | Multi-turn | Cancel | Multi-account | Evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **Codex** | Stable | `@openai/codex` 0.153.0 | ChatGPT (`.codex/auth.json`) | ✅ | ✅ | ✅ | Real-account Modal E2E; authentication deferred (external token reauth needed) |
-| **Devin** | Experimental | 3000.10.21 | `.local/share/devin/credentials.toml` | ✅ | ✅ | ✅ | Verified in production; two turns, cancel, zero credential leaks |
-| **Antigravity** | Experimental | `agy` 1.2.3+ | `.gemini/antigravity-cli/antigravity-oauth-token` | ✅ | ✅ | ✅ | Real-account gate verified; 4×1-slot fleet, failover, no leaks |
-| **Grok** | Experimental | `grok` 1.0.24+ | `.grok/auth.json` | ✅ | ✅ | ✅ | Real-account gate verified; auto distribution, failover, reaper |
-| **OpenCode** | Experimental | `opencode-ai` 1.18.29 | `.local/share/opencode/auth.json` | ✅ | ✅ | ✅ | Real-account gate verified; two turns, cancel, zero leaks |
-| **Claude** | Not supported | — | — | — | — | — | Experimental adapter merged but not registered (replay-only) |
+## Supported providers
 
-## Status definitions
+| Provider | Public status | Normal login path | Multi-turn | Multi-account |
+| --- | --- | --- | --- | --- |
+| Codex | Supported | `./sbx auth login --provider codex` | Yes | Yes |
+| Devin | Supported | `./sbx auth login --provider devin` | Yes | Yes |
+| Antigravity | Supported | `./sbx auth login --provider antigravity` | Yes | Yes |
+| Grok | Supported | `./sbx auth login --provider grok` | Yes | Yes |
+| OpenCode | Supported | `./sbx auth login --provider opencode` | Yes | Yes |
+| Claude | Experimental/advanced | explicit experimental path only | Adapter-dependent | Adapter-dependent |
 
-- **Stable** — production adapter + pinned CLI + real-account Modal E2E on release tag
-- **Experimental** — production code merged + some real-account evidence, but not complete release-gate matrix
-- **Preview** — production adapter/image/credentials merged, but no real-account evidence yet (fixture/replay only)
-- **Not supported** — no working production path in this tag
+Exact installed CLI versions are frozen per deployment; inspect them with
+`./sbx status` rather than copying version numbers from documentation.
 
-## Evidence policy
+The exact provider support tier, runtime distribution and built-in model defaults for this docs build are generated from `runtime.provider_runtime` at [`/provider-reference.json`](/provider-reference.json).
 
-Matrix rows cite only evidence that ran against **real accounts** on Modal. Credential gaps are recorded as deferred, not passes. The matrix is refreshed at every release.
-
-- `v0.1.1` — no new provider gates; carries over `v0.1.0-alpha` evidence
-- `v0.1.0-alpha` — all five providers (codex, devin, agy, grok, opencode) passed real-account gates; codex authentication is deferred (stale ChatGPT token, external, not a product failure)
-
-## Per-provider notes
-
-### Codex
-
-**Stable.** Native events are canonical (pass-through). Requires `codex login` locally.
-
-- **Resume:** `codex exec resume <thread_id>`
-- **Cancel:** SIGTERM the process
-- **Multi-account:** Via separate CLI logins and credential imports
-- **Known limitations:** Authentication deferred (external token reauth needed)
-
-### Devin
-
-**Experimental.** Driven over ACP (JSON-RPC) or direct CLI.
-
-- **Resume:** Native session / ACP session
-- **Cancel:** SIGTERM
-- **Multi-account:** Import multiple credential files with different `--label` values; set per-account concurrency with `--slots`
-- **Transport:** `SBX_DEVIN_TRANSPORT=acp` (default) or `cli`
-- **MCP support:** ✅ Yes (only provider with MCP)
-- **Env scrubbing:** `ACP_BACKEND`, `DEVIN_*`, `WINDSURF_*`
-- **Evidence:** Production verified; two turns, cancel, usage, zero leaks
-
-### Antigravity
-
-**Experimental.** Agy CLI (Google Gemini agent).
-
-- **Resume:** `--conversation <id>`
-- **Cancel:** SIGTERM
-- **Multi-account:** Import multiple accounts via `control.onboarding add --provider antigravity`
-- **Quirk:** Stale conversation IDs silently fork a new conversation; adapter detects and fails
-- **Evidence:** Fleet verified; 4×1-slot distribution, failover on auth_invalid, no leaks
-
-### Grok
-
-**Experimental.** XAI's reasoning agent.
-
-- **Resume:** `--resume <id>`
-- **Cancel:** SIGTERM
-- **Multi-account:** Import multiple accounts via `control.onboarding add --provider grok`
-- **Quirk:** No native `init` event; session ID is first stream marker
-- **Env scrubbing:** `GROK_*`, `XAI_*`
-- **Evidence:** Fleet verified; auto scheduling, exhaustion + failover, reaper reconciliation
-
-### OpenCode
-
-**Experimental** (promoted from Preview in v0.1.1). OpenCode CLI.
-
-- **Resume:** `--session <id>`
-- **Cancel:** SIGTERM
-- **Multi-account:** Import multiple accounts via `control.onboarding add --provider opencode`
-- **Evidence:** Production verified; two turns, cancel, usage, zero leaks
-
-### Claude
-
-**Not supported** (experimental adapter merged but not registered). Use `--experimental` flag for early testing only.
-
-## Provider CLI versions
-
-Pin versions in `runtime/packages.txt` or override at deploy time:
+## Connect an account
 
 ```bash
-export SBX_DEVIN_VERSION="3000.10.21"
-export SBX_CODEX_VERSION="latest"  # resolves npm dist-tag once
-uv run sbx deploy
+./sbx auth login --provider devin
+./sbx auth status
 ```
 
-The build host resolves `latest` once and freezes the version into `cli-versions.json`. Sandboxes never install `@latest` dynamically.
+`auth login` runs the provider's own login/OAuth flow, captures the credential
+it writes, stores it in the deployment, then runs a cloud verification probe.
+Only a verified account becomes schedulable.
 
-## Credential import
-
-Each provider has a login command and credential file:
-
-| Provider | Login | Credential file |
-| --- | --- | --- |
-| Codex | `codex login` | `~/.codex/auth.json` (via Modal Secret `sbx-codex-auth`) |
-| Devin | `devin` | `~/.local/share/devin/credentials.toml` |
-| Antigravity | `agy` (OAuth) | `~/.gemini/antigravity-cli/antigravity-oauth-token` |
-| Grok | `grok login` | `~/.grok/auth.json` |
-| OpenCode | `opencode auth login` | `~/.local/share/opencode/auth.json` |
-
-Import via CLI:
+To capture an existing provider login without signing in again:
 
 ```bash
-uv run python -m control.onboarding --modal add \
-  --provider devin \
-  --from ~/.local/share/devin/credentials.toml \
-  --label "devin-prod"
+./sbx auth import-existing --provider devin --from <credential-path>
 ```
 
-`sbx deploy` also seeds one account per selected provider, and
-`SBX_<PROVIDER>_ACCOUNTS` (a JSON list of `{"id", "slots"?, …}`) seeds a
-whole pool at deploy time. See [Accounts and credentials](/guides/accounts/)
-for both paths, slots and failover.
+Manual credential paths are an advanced migration tool, not the normal user
+flow.
+
+## Account selection
+
+Tasks default to automatic scheduling. SBX selects an eligible verified
+account with an available slot, taking cooldown/failover into account. Normal
+task callers do not need to know an account id.
+
+Pin `execution.provider`, `execution.account_id`, `model` or reasoning options
+only when reproducibility or policy requires it. The [Task guide](/guides/tasks/)
+shows the public request shape.
+
+## Reconnect and verify
+
+Use the same lifecycle from the console or CLI:
+
+```bash
+./sbx auth status
+./sbx auth verify --provider devin
+./sbx auth relink --provider devin
+./sbx auth logout --provider devin
+```
+
+Run `./sbx auth --help` / `./sbx auth <command> --help` for the exact flags
+supported by your installed version.
+
+## Provider-specific behavior
+
+Providers differ in their native session/resume protocol, but those details
+are normalized behind Task/Run. Keep provider-specific troubleshooting in
+[Provider notes](/integrations/provider-notes/) rather than encoding it into
+normal task payloads.

@@ -7,6 +7,7 @@ import starlightOpenAPI, { openAPISidebarGroups } from 'starlight-openapi';
 // Set DOCS_SITE_URL at build time to emit canonical URLs + sitemap.
 const site = process.env.DOCS_SITE_URL || undefined;
 
+
 // starlight-openapi only generates reference pages for the default locale,
 // but every localized link (sidebar, language picker, /zh-cn content pages)
 // prefixes the current locale — /zh-cn/reference/api/* would 404. Redirect
@@ -34,6 +35,8 @@ export default defineConfig({
 		'/operations/edge': '/self-hosting/edge',
 		'/operations/security': '/self-hosting/security',
 		'/operations/troubleshooting': '/troubleshooting',
+		'/latest': '/',
+		'/0.1': '/',
 		...zhApiRedirects,
 	},
 	integrations: [
@@ -60,7 +63,7 @@ export default defineConfig({
 				starlightOpenAPI([
 					{
 						base: 'reference/api',
-						// Derived from the frozen contract by scripts/prepare-openapi.mjs.
+						// Derived from the runtime OpenAPI contract; the frozen contract is a fallback.
 						schema: './.generated/api-v1.yaml',
 						sidebar: {
 							label: 'REST API (/v1)',
@@ -74,49 +77,49 @@ export default defineConfig({
 				{
 					label: 'Getting started',
 					translations: { 'zh-CN': '开始' },
-					items: ['getting-started/introduction', 'getting-started/quick-start'],
+					items: ['getting-started/introduction', 'getting-started/quick-start', 'concepts'],
 				},
 				{
-					label: 'Guides',
-					translations: { 'zh-CN': '使用指南' },
+					label: 'Use SBX',
+					translations: { 'zh-CN': '使用 SBX' },
 					items: [
 						'guides/tasks',
-						'guides/console',
-						'guides/agents-and-runs',
-						'guides/streaming',
 						'guides/repositories',
-						'guides/handoffs-and-artifacts',
-						'guides/workflows',
+						'guides/streaming',
+						'guides/recovery',
 						'guides/structured-output',
-						'guides/resources-and-compute',
-						'guides/accounts',
+						'guides/console',
+						'guides/examples',
 					],
 				},
 				{
-					label: 'Concepts',
-					translations: { 'zh-CN': '概念' },
-					link: '/concepts/',
-				},
-				{
-					label: 'API & SDK reference',
-					translations: { 'zh-CN': 'API 与 SDK 参考' },
+					label: 'API',
 					items: [
+						'api/overview',
+						'api/authentication',
+						'api/task-lifecycle',
+						'api/idempotency',
+						'api/pagination',
 						'reference/errors',
 						'reference/events',
-						'reference/python-client',
-						'reference/cli',
-						'reference/limits',
 						...openAPISidebarGroups,
+					],
+				},
+				{
+					label: 'Python SDK',
+					items: [
+						'sdk/python/quickstart',
+						'sdk/python/tasks',
+						'sdk/python/streaming',
+						'sdk/python/delivery',
+						'sdk/python/errors',
+						'reference/python-client',
 					],
 				},
 				{
 					label: 'Integrations',
 					translations: { 'zh-CN': '集成' },
-					items: [
-						'integrations/providers',
-						'integrations/github',
-						'integrations/provider-notes',
-					],
+					items: ['integrations/providers', 'integrations/github', 'integrations/modal'],
 				},
 				{
 					label: 'Self-hosting',
@@ -124,9 +127,11 @@ export default defineConfig({
 					items: [
 						'self-hosting/deploy',
 						'self-hosting/configuration',
+						'self-hosting/custom-domain',
 						'self-hosting/upgrade-and-uninstall',
-						'self-hosting/edge',
 						'self-hosting/security',
+						'self-hosting/state-and-backup',
+						'self-hosting/edge',
 					],
 				},
 				{
@@ -135,17 +140,35 @@ export default defineConfig({
 					link: '/troubleshooting/',
 				},
 				{
+					label: 'Reference',
+					items: ['reference/cli', 'reference/limits'],
+				},
+				{
 					label: 'For agents',
 					translations: { 'zh-CN': 'Agent 入口' },
 					items: [
 						'agents',
+						'agents/guide',
 						{ label: 'llms.txt', link: '/llms.txt', attrs: { target: '_blank' } },
+						{ label: 'llms-full.txt', link: '/llms-full.txt', attrs: { target: '_blank' } },
 						{ label: 'openapi.json', link: '/openapi.json', attrs: { target: '_blank' } },
+						{ label: 'version.json', link: '/version.json', attrs: { target: '_blank' } },
 					],
 				},
 				{
-					label: 'Project',
-					translations: { 'zh-CN': '项目' },
+					label: 'Advanced',
+					collapsed: true,
+					items: [
+						'guides/agents-and-runs',
+						'guides/handoffs-and-artifacts',
+						'guides/workflows',
+						'guides/resources-and-compute',
+						'guides/accounts',
+						'integrations/provider-notes',
+					],
+				},
+				{
+					label: 'Develop SBX',
 					items: ['project/contributing', 'project/changelog'],
 				},
 			],
