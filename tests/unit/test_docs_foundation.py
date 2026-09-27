@@ -149,8 +149,10 @@ def test_generated_docs_spec_has_no_tracker_language() -> None:
     import shutil
 
     node = shutil.which("node")
-    if node is None:
-        pytest.skip("node unavailable — generated artifacts are produced at docs build time")
+    if node is None or not (DOCS_SITE / "node_modules").exists():
+        pytest.skip(
+            "docs-site toolchain not installed — artifacts are generated at docs build time"
+        )
     proc = subprocess.run(
         [node, str(DOCS_SITE / "scripts" / "prepare-openapi.mjs")],
         cwd=DOCS_SITE,

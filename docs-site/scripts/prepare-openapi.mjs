@@ -202,3 +202,19 @@ for (const rel of ['public/openapi.json', 'public/zh-cn/openapi.json']) {
 	writeFileSync(jsonTarget, jsonBody);
 	console.log(`prepare-openapi: wrote ${jsonTarget}`);
 }
+
+// Hard gate: nothing the site publishes may carry internal tracker refs.
+const generatedBodies = [
+	readFileSync(target, 'utf8'),
+	...['public/openapi.json', 'public/zh-cn/openapi.json'].map((rel) =>
+		readFileSync(resolve(siteRoot, rel), 'utf8'),
+	),
+];
+for (const body of generatedBodies) {
+	const leaks = body.match(/\b[A-Z]{2,}-\d+\b/g);
+	if (leaks) {
+		throw new Error(
+			`prepare-openapi: internal tracker references leaked into the generated spec: ${[...new Set(leaks)].join(', ')}`,
+		);
+	}
+}
