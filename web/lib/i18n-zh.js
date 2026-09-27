@@ -882,5 +882,4 @@ export const ZH = {
   "Show run details": "显示运行详情",
   "Hide run details": "隐藏运行详情",
   "Copy command and output": "复制命令与输出",
->>>>>>> origin/main
 };
