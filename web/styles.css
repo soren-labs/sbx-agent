@@ -1645,10 +1645,11 @@ kbd {
   justify-content: center;
 }
 .jump-latest {
-  position: sticky;
-  bottom: 150px;
+  position: fixed;
+  bottom: 28px;
+  left: calc(50% + var(--sidebar-w) / 2);
+  transform: translateX(-50%);
   z-index: 6;
-  justify-self: center;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2835,5 +2836,11 @@ pre.diff {
   }
   .table-wrap .table td:not([data-label])::before {
     content: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .jump-latest {
+    left: 50%;
   }
 }
