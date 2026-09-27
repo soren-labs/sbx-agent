@@ -1,181 +1,100 @@
 ---
-title: Accounts and credentials
-description: Import provider logins as accounts, size their slots, and understand how the scheduler picks, cools down and fails over between them.
+title: Provider accounts
+sidebar:
+  label: Provider accounts
+
+description: Advanced account-pool behavior behind the normal Integrations → Connect provider flow.
 ---
 
-An **account** is one provider login — a subscription you already pay for —
-registered with the control plane. Agents run under an account: the
-scheduler picks one when the agent is created and mounts that account's
-credential into the agent's sandbox, and nowhere else.
+Most users should manage provider logins from **Integrations** or with
+`./sbx auth`. This page explains the account pool underneath that UI.
 
-The control plane keeps only account **metadata** (provider, label, status,
-slots, models). The credential itself is an opaque blob
-`{"provider": …, "files": {relpath: content}}` restored under the sandbox's
-`$HOME`; on Modal it lives in the `sbx-accounts` Dict and is materialized as a
-per-account Modal Secret named `sbx-acct-<id>`.
-
-## Accounts created at deploy time
-
-`sbx deploy` seeds one account per selected provider (`SBX_PROVIDERS`), so a
-fresh deployment can run agents immediately:
-
-| Provider | Default account id | Credential |
-| --- | --- | --- |
-| codex | `codex-1` | the shared `sbx-codex-auth` Secret (`CODEX_AUTH_JSON`) |
-| devin, antigravity, grok, opencode | `<provider>-1` | the account's `sbx-acct-<id>` Secret |
-
-Tune the seeded account per provider with `SBX_<PROVIDER>_ACCOUNT_ID`,
-`SBX_<PROVIDER>_SECRET_NAME`, `SBX_<PROVIDER>_SLOTS` and
-`SBX_<PROVIDER>_MODELS` (comma-separated). To seed a **pool** of several
-logins for one provider, set `SBX_<PROVIDER>_ACCOUNTS` to a JSON list:
+## Normal connection lifecycle
 
 ```bash
-export SBX_GROK_ACCOUNTS='[
-  {"id": "grok-1", "slots": 2},
-  {"id": "grok-2", "slots": 2, "label": "team grok"}
-]'
-uv run sbx deploy
+./sbx auth login --provider devin
+./sbx auth status
 ```
 
-Each entry takes `id` (required) and optionally `label`, `secret_name`
-(default `sbx-acct-<id>`), `slots` and `models`.
+`auth login` runs the provider's official login/OAuth flow, captures the
+credential it creates, registers an account in the control plane and verifies
+that credential from the cloud runtime. **Only verified/active accounts are
+schedulable.**
 
-## Connect a provider login
-
-The fastest path — from the console or the CLI — is the `sbx auth` flow,
-which runs the provider's own login and captures the credential it writes:
-
-- **Integrations → Connect provider** in the [console](/guides/console/)
-  offers a hosted login, or a local-pair ticket you complete on a machine
-  that is already logged in: `sbx auth pair <ticket>`.
-- `sbx auth login --provider devin` runs the provider's official CLI/OAuth
-  login locally, then captures and verifies the result.
-- `sbx auth import-existing --provider devin --from <file>` captures a
-  login that already exists on this machine — no token paste.
-
-`sbx auth status` lists what was found and each account's state;
-`verify`, `relink` and `logout` manage it afterwards. See the
-[CLI reference](/reference/cli/#sbx-auth).
-
-## Import an account
-
-For scripted or bulk imports, use the onboarding CLI directly. `--modal`
-targets your Modal deployment; without it the command manages a local
-control plane's file store.
+Later:
 
 ```bash
-uv run python -m control.onboarding --modal import \
-  --provider devin --from ~/.local/share/devin/credentials.toml \
-  --account-id devin-2 --label "devin team" --slots 2
+./sbx auth verify --provider devin
+./sbx auth relink --provider devin --relogin
+./sbx auth logout --provider devin
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `--provider` | `codex`, `devin`, `antigravity`, `grok` or `opencode` (required) |
-| `--from` | Credential file, directory or blob; `-` reads stdin (required) |
-| `--account-id` | Account id; generated when omitted |
-| `--label` | Display label |
-| `--slots` | Per-account slot count (`max_concurrent`), default `1` |
-| `--models` | Comma-separated models this account advertises |
-| `--allow-open-permissions` | Accept credential files readable by group or other |
+The Console uses the same lifecycle and canonical account state.
 
-The import validates the blob before storing it: unknown providers, a
-provider/blob mismatch, undeclared or escaping paths, symlinks and files
-readable by group or other are refused. Run `uv run sbx deploy` afterwards so
-the account's `sbx-acct-<id>` Secret is created. Credential file locations per
-provider are listed in [Providers](/integrations/providers/); `uv run sbx
-credentials` finds the ones on your machine.
+## Automatic scheduling
 
-Other onboarding commands: `providers`, `list [--provider P]`, `status ID`,
-`verify ID`, `refresh ID --from SRC` (replace the stored credential),
-`export ID --out PATH` (write it to a `0600` file), `disable ID` / `enable
-ID`, and `remove ID --yes` (refused while the account has running agents).
+A Task normally leaves `execution.account_id` unset/automatic. The scheduler
+chooses a verified account for the requested provider/model with an available
+slot. Rate-limited or invalid accounts are temporarily ineligible; another
+eligible account can take the work.
 
-### Over the API
+Pin an account id only when policy/reproducibility requires it.
 
-Admins can also register accounts over HTTP (the console's **Integrations →
-Accounts** view uses these calls):
+## Account state
 
-```http
-POST /v1/accounts
-Authorization: Bearer sbx_...
-Content-Type: application/json
+Account metadata includes provider, label, status, slot limit and discovered
+models/capabilities. Credential contents are never returned by the public API.
 
-{
-  "provider": "devin",
-  "label": "devin team",
-  "max_concurrent": 2,
-  "credential": {
-    "files": { ".local/share/devin/credentials.toml": "…file contents…" }
-  }
-}
-```
-
-The account id is generated (`acct-<provider>-<hex>`). Credential contents
-are never returned by any endpoint. `GET /v1/accounts`,
-`GET /v1/accounts/{id}` and `DELETE /v1/accounts/{id}` list, read and remove
-accounts; all account endpoints need the `admin` scope.
-
-## Verify an account
+Typical states are presented in product terms such as active/verified,
+needs-attention/cooling, disabled or invalid. Use:
 
 ```bash
-uv run python -m control.onboarding --modal verify devin-2 --probe auth
+./sbx auth status --provider devin
 ```
 
-`--probe auth` restores the credential in a throwaway sandbox and runs the
-provider CLI's own auth check, so the provider decides whether the login is
-still valid. `--probe sandbox` only proves the credential restores and the
-runner accepts it. Over the API, `POST /v1/accounts/{id}/verify` probes the
-stored credential in a throwaway sandbox: a failure marks the account
-`invalid`, a pass marks it `active`.
+or the Integrations page instead of reading backing stores directly.
 
-## How agents get an account
+## Multiple accounts
 
-With `"account_id": "auto"` (the default), the scheduler picks the
-least-recently-used `active` account of the requested provider that has a
-free slot. With a named account — `"execution": {"account_id": "devin-2"}`
-on a task, or `"agent": {"account_id": "devin-2"}` on a direct agent — it
-uses exactly that one or refuses.
+Connect/import more than one login for the same provider when you need
+additional subscription capacity or failover. Give each account its own slot
+budget; automatic scheduling selects among eligible accounts.
 
-| Response | When |
-| --- | --- |
-| `429 provider_exhausted` | `auto`: no account of the provider is `active` with a free slot. Carries `retry_after`. |
-| `409 account_unavailable` | Named account is missing, belongs to another provider, or is not `active`. |
-| `409 account_busy` | Named account has no free slot. |
-| `429 concurrency_limit` | The control plane's live-agent cap is reached ([Limits](/reference/limits/#concurrency)). |
+The exact account records are available to admins under `/v1/accounts`; normal
+Task clients should not depend on account ids.
 
-Slots free up when an agent is closed or reclaimed — an idle agent keeps its
-slot until then.
+## Import an existing login
 
-## Account status and failover
+If the provider is already logged in on the machine and you do not want to
+run its login flow again:
 
-| Status | Meaning |
-| --- | --- |
-| `active` | Schedulable. |
-| `cooling` | Temporarily skipped after a capacity failure; returns to `active` by itself when the cooldown ends. |
-| `invalid` | The provider rejected the login. Refresh the credential and verify again. |
-| `disabled` | Turned off by an operator (`onboarding disable`). |
+```bash
+./sbx auth import-existing --provider devin --from ~/.local/share/devin/credentials.toml
+```
 
-A run's structured error feeds back into its account:
+The path is provider-specific and is an advanced migration input, not a value
+normal Task callers need to know.
 
-- `rate_limited`, `quota_exhausted`, `provider_unavailable` or
-  `model_capacity` → `cooling` for the provider's `retry_after`, or 15
-  minutes (`SBX_ACCOUNT_COOLDOWN_S`, default `900`) when none is given;
-- `auth_invalid` → `invalid`;
-- runtime, control-plane and telemetry errors are recorded on the account
-  without changing its status.
+## Scripted/legacy onboarding
 
-Subsequent `auto` agents simply land on another account of the pool.
+The lower-level `control.onboarding` command and environment-based account
+preseeding remain available for fleet automation and compatibility. They
+operate on the same account/verification model but expose credential files,
+Secret names and account ids directly. Prefer `sbx auth` unless you are
+building operator automation that explicitly needs those internals.
 
-## Refreshed logins are written back
+Exact command flags for the installed version are generated in
+[`/cli-help.txt`](/cli-help.txt).
 
-Provider CLIs rotate OAuth tokens inside the sandbox. After each run (and
-once more when the agent closes) the control plane exports the CLI's
-credential files and, if they changed, commits them to the account and
-updates its Modal Secret in place — no redeploy. A newer credential is never
-overwritten by an older copy from a slower sandbox. Set
-`SBX_CRED_WRITEBACK=0` to turn write-back off.
+## Credential refresh
 
-To replace a login yourself, sign in again locally and run
-`onboarding refresh ID --from <file>`; a refresh that fails validation leaves
-the last good credential untouched.
+Providers that rotate OAuth state can write refreshed credential material
+inside the sandbox. SBX captures the provider's supported write-back and
+atomically updates the managed account credential. If a grant becomes invalid,
+relink the account; do not keep retrying Tasks against an unverified account.
+
+## Delete/disable
+
+Use `auth logout` or the admin account API/UI. Disabling/removing an account
+makes it ineligible for new scheduling; active work is handled according to
+the control-plane lifecycle rather than by editing credential files by hand.

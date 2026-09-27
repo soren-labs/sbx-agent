@@ -1,205 +1,85 @@
 ---
-title: Concepts
-description: Key terms — Task, Run, Revision, Delivery, Review — and the agent lifecycle.
+title: Core concepts
+description: The public Task → Run → Revision → Delivery → Review model, plus the lower-level objects beneath it.
 ---
 
 ## Task
 
-A **unit of work** you describe once — a prompt, an optional repository
-source, an execution choice and a delivery policy. Created by
-`POST /v1/tasks`, a task resolves onto a sandboxed agent and tracks the
-whole lifecycle: queue, runs, delivery, revisions and reviews.
+A **Task** is the user-facing unit of work. It contains a prompt and may also
+declare a source repository, execution preference, delivery target, metadata,
+structured-output contract or advanced resources.
 
-### Task statuses
-
-| Status | Meaning |
-| --- | --- |
-| `queued` | Accepted; waiting for a sandbox or account slot |
-| `running` | A run is in progress |
-| `delivering` | The run finished; a required delivery (push/PR) is pending |
-| `finished` | The work is done and required delivery has landed |
-| `delivery_failed` | The run finished but publishing failed — retry without re-running |
-| `error` | The latest run failed with a structured error |
-| `cancelled` | Cancelled by `POST /v1/tasks/{id}/cancel` |
-| `expired` | The run did not finish before its timeout |
-| `stored` | Closed for housekeeping; history is read-only |
-
-Terminal statuses — `finished`, `error`, `cancelled`, `expired`,
-`delivery_failed` — never change once written. See [Tasks](/guides/tasks/).
-
-## Revision
-
-A **durable run result** for a task working on a repository: one row pinning
-`repo`, `base_sha`, `head_sha` and the artifact carrying the diff.
-Revisions are numbered per task (`rev-…` or `latest`) and survive sandbox
-teardown. See [Repositories, revisions and delivery](/guides/repositories/).
-
-## Delivery
-
-**Where the work goes.** A task's `delivery` declares a work branch and an
-optional pull request (`{title, body, draft, target}`); `auto_publish` runs
-it after every finished run. A delivered revision records the pushed head
-sha and pull request — remote drift fails closed. Publishing on demand is
-`POST /v1/tasks/{id}/deliver`.
-
-## Review
-
-A **durable verdict** (`approve`, `request_changes`, `comment`) pinned to a
-revision's exact head sha. Reviews from the revision's own agent or run are
-recorded but never `independent`; a review turns `stale` when a newer
-revision materializes. Merging a delivered pull request
-(`POST /v1/tasks/{id}/merge`) requires a non-stale independent `approve`.
-
-## Agent
-
-A **long-lived stateful container** running an official provider CLI — the
-layer a task resolves onto. Created by `POST /v1/tasks` (implicitly) or
-`POST /v1/agents` (directly), an agent has a unique ID and persists across
-multiple turns until explicitly closed (`DELETE /v1/agents/{id}`).
-
-Each agent:
-- Runs in its own Modal Sandbox
-- Mounts a credential for one provider account
-- Maintains a native session across turns (e.g., Codex's `thread_id`)
-- Has a durable status: `creating`, `idle`, `running`, `closed`, `timed_out`, `lost`
-
-### Agent statuses
-
-| Status | Meaning |
-| --- | --- |
-| `creating` | Sandbox is launching (usually < 10 seconds) |
-| `idle` | Sandbox is alive and ready for the next run |
-| `running` | A run is in progress on this agent |
-| `closed` | Agent was explicitly closed (`DELETE /v1/agents/{id}`) |
-| `timed_out` | Agent was idle longer than `SBX_IDLE_TIMEOUT_S` (default 5 min) |
-| `lost` | The Modal Sandbox vanished (infrastructure failure) |
-
-:::note
-Terminal statuses (`closed`, `timed_out`, `lost`) never change once written. A closed agent's run history is read-only.
-:::
+Normal callers start here: `POST /v1/tasks` or `client.tasks.create(...)`.
+SBX resolves automatic choices — repository ref, provider, verified account,
+model and other defaults — and stores the resulting evidence on the task.
 
 ## Run
 
-A **single execution** on an agent, initiated by `POST /v1/agents/{id}/runs` or created implicitly by `POST /v1/agents`. Each run has a unique ID and a durable terminal state.
+A **Run** is one execution turn on the task's agent. The first run is created
+with the task; follow-ups create additional runs on the same agent and resume
+the provider's native session when supported.
 
-Runs stream canonical events (ISO 8601 timestamps, LF-delimited JSON) over SSE, with `Last-Event-ID` resumption if disconnected.
+Run state is durable. Use task polling for product state and the run's SSE
+stream when you need live events.
 
-### Run statuses
+## Revision
 
-| Status | Meaning |
-| --- | --- |
-| `CREATING` | Run is preparing (provisioning sandbox if needed) |
-| `RUNNING` | Provider CLI is executing the prompt |
-| `FINISHED` | Run completed successfully with output |
-| `ERROR` | Run failed with a structured error (auth, timeout, etc.) |
-| `CANCELLED` | Run was cancelled by `POST /v1/agents/{id}/runs/{runId}/cancel` |
-| `EXPIRED` | Run did not finish before the agent's timeout |
-| `UNKNOWN` | Outcome unknown (no persisted terminal state, sandbox lost) |
+A **Revision** is the durable code result of a repository run. It pins the
+repository, base commit, head commit and result artifact needed to inspect or
+redeliver the work after the live sandbox is gone.
 
-### Run errors
+Each later code-changing run can materialize a new revision.
 
-Every terminal `ERROR` or `EXPIRED` run includes structured `error`:
+## Delivery
 
-```json
-{
-  "code": "auth_invalid|rate_limited|quota_exhausted|timeout|cancelled|...",
-  "source": "provider|runtime|control|telemetry",
-  "message": "human-readable description",
-  "retryable": true,
-  "retry_after": 45
-}
-```
+**Delivery** publishes a revision: normally a work branch and optionally a
+pull request. It records the pushed head, PR metadata and merge result.
+Delivery can be automatic or explicitly triggered after the run.
 
-Error codes include: `auth_invalid`, `rate_limited`, `quota_exhausted`, `model_unavailable`, `model_capacity`, `provider_unavailable`, `runtime_error`, `event_parse_error`, `timeout`, `cancelled`, `contract_violation`.
+## Review
 
-## Provider
+A **Review** is a durable verdict (`approve`, `request_changes` or `comment`)
+pinned to a revision's exact head. If a newer revision changes the head, the
+old approval becomes stale. A review produced by the same agent/run as the
+revision is not considered independent for merge.
 
-An official coding agent vendor (Codex, Devin, Antigravity, Grok, OpenCode). sbx-browser drives each provider's official CLI inside the sandbox, never making API calls directly.
+## Integration
 
-### Supported providers
+An **Integration** is an external capability connected to the deployment:
 
-| Provider | Status | CLI | Multi-turn | Multi-account |
-| --- | --- | --- | --- | --- |
-| Codex | Stable | `@openai/codex` 0.153.0 | ✅ `codex exec resume` | ✅ `SBX_CODEX_ACCOUNTS` |
-| Devin | Experimental | Devin 3000.10.21 | ✅ ACP session | ✅ `SBX_DEVIN_ACCOUNTS` |
-| Antigravity | Experimental | `agy` 1.2.3+ | ✅ `--conversation` | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` |
-| Grok | Experimental | `grok` 1.0.24+ | ✅ `--resume` | ✅ `SBX_GROK_ACCOUNTS` |
-| OpenCode | Experimental | `opencode-ai` 1.18.29 | ✅ `--session` | ✅ `SBX_OPENCODE_ACCOUNTS` |
+- a verified provider account that can execute tasks;
+- a GitHub App installation that covers private repositories/PR operations;
+- Modal itself, which hosts the self-hosted control plane and sandboxes.
 
-Full evidence and per-provider notes: [Provider support](/integrations/providers/).
+The console presents these as connection state and next action rather than raw
+credential files.
 
-## Account
+## Provider and account
 
-A credential for one provider (e.g., your Codex account, your Devin subscription). Accounts are imported once and scheduled automatically across agents.
+A **Provider** identifies a supported coding-agent CLI/runtime. An **Account**
+is one verified login for that provider. Automatic scheduling picks an
+eligible account with a free slot; most callers should not pin account ids.
 
-- Each account has ID, provider, slots (max concurrent agents), and status (`active`, `cooling`, `invalid`, `disabled`).
-- `account_id: "auto"` picks the least-recently-used account that is active and has free slots.
-- On `auth_invalid` or `rate_limited`, an account enters cooldown and is skipped; the scheduler picks another account.
+## Lower-level objects
 
-## Sandbox
+These are real public/advanced objects but are not the normal starting point:
 
-A Modal Sandbox: the isolated VM where the provider CLI runs. One per agent, created on demand, with:
-- Durable `/work` directory (survives turndown and restore)
-- Ephemeral credential files injected at mode 0600
-- No Modal tokens or platform credentials
-- Lifecycle bounds: idle timeout (post-session), native sandbox timeout (mid-turn), hard timeout (4 h)
+- **Agent** — the live/resumable sandbox session underneath a task;
+- **Sandbox** — the isolated Modal execution environment;
+- **Workspace** — lower-level repository/git state for an agent;
+- **Artifact** — persisted package/diff/handoff material;
+- **Workflow** — durable binding/recovery metadata for multi-agent orchestration.
 
-The sandbox is the **only security boundary**. Provider CLI sandboxing is disabled because the VM provides containment.
+Use these surfaces only when the higher-level Task API does not express the
+advanced operation you need.
 
-## Workspace
+## Durable vs ephemeral
 
-A git repository state: base repo, ref, and sha. Agents operating on a workspace record the base checkout, make durable changes (via artifact patches or direct commits), and support review workflows.
+**Durable:** task/run terminal state, account metadata, revision/review data,
+workflow metadata and stored result artifacts.
 
-## Artifact
+**Ephemeral:** the live sandbox process tree, temporary provider home state,
+short-lived GitHub tokens and other execution-only material.
 
-A durable package tying a workspace state to an output checkpoint:
-
-- `manifest.json`: metadata (repo, base_sha, etc.)
-- `patch.diff`: incremental changes
-- `repo.bundle`: full bundle (for remote checkouts)
-- `files/`: individual file snapshots
-- SHA256 content hash for verification
-- Secret scan (fail-closed on leaked tokens)
-
-Used for cross-agent handoff via `handoff` (`{"artifact_id": "…"}` or `{"head_sha": "…"}`).
-
-## Workflow
-
-A logical grouping of agents and runs under one `workflow_id`. Persists across process restarts for recovery.
-
-- Agents in a workflow carry `metadata.workflow_id`
-- `GET /v1/workflows/{id}` reads durable progress
-- `DELETE /v1/workflows/{id}` is idempotent scoped cleanup
-- Recover with `SbxClient.recover(workflow_id)` after a crash
-
-## Durable vs. ephemeral
-
-| Durable (survives sandbox teardown, control-plane restart) | Ephemeral (sandbox-local, lost on close) |
-| --- | --- |
-| Run ledger (`FINISHED`, `ERROR`, `CANCELLED`, `EXPIRED`, structured error) | Event stream (`events.jsonl`) |
-| Session records (agent status, session_id) | Raw CLI output (`events.raw.jsonl`) |
-| Account registry (credential blobs, status, slots) | `$HOME` credential files |
-| Workflow bindings (agent metadata, run refs) | Worktree and agent workspace state |
-| Artifacts (packages, manifest, patches) | - |
-
-**Consequence:** Terminal run states never change once persisted. A vanished sandbox can make a run `UNKNOWN` but never silently upgrade it to `FINISHED`.
-
-## SSE & event streaming
-
-Runs stream events as **Server-Sent Events (SSE)**. Each event has:
-- **ID** — `events.jsonl` line number (use in `Last-Event-ID` header to resume)
-- **Type** — canonical event name (`turn.started`, `item.completed`, `sbx.turn_finished`, etc.)
-- **Data** — JSON payload
-
-Keepalive (`: keepalive`) fires every 15 seconds to detect stale connections. If disconnected, reconnect with `Last-Event-ID: <last-received-id>` and the stream resumes from the next event.
-
-On repeated disconnections, fall back to `GET /v1/agents/{id}/runs/{runId}` to read the durable ledger.
-
-## API key & scopes
-
-API keys are Bearer tokens (`Authorization: Bearer sbx_<key>`) with optional scopes:
-
-- `agents` (default) — create, read, cancel runs; list models
-- `admin` — manage accounts, API keys, and credential verification
-
-The control plane stores `sha256(key)` only; plaintext is shown once at creation.
+The durable contract is what lets clients recover after sandbox or
+control-plane restarts without guessing what happened.

@@ -197,12 +197,73 @@ def test_public_ia_sections_present() -> None:
     config = CONFIG.read_text(encoding="utf-8")
     for label in (
         "Getting started",
-        "Guides",
-        "Concepts",
-        "API & SDK reference",
+        "Use SBX",
+        "API",
+        "Python SDK",
         "Integrations",
         "Self-hosting",
         "Troubleshooting",
         "For agents",
+        "Advanced",
     ):
         assert f"label: '{label}'" in config, f"sidebar missing section {label}"
+
+
+def test_machine_entrypoints_present() -> None:
+    for rel in ("llms.txt", "llms-full.txt", "version.json"):
+        assert (PUBLIC / rel).exists(), f"public/{rel} missing"
+
+
+def test_version_manifest_matches_package() -> None:
+    import json
+
+    pkg = json.loads((DOCS_SITE / "package.json").read_text(encoding="utf-8"))
+    manifest = json.loads((PUBLIC / "version.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == pkg["version"]
+    assert manifest["api_version"] == "v1"
+
+
+def test_llms_full_contains_core_workflow() -> None:
+    text = (PUBLIC / "llms-full.txt").read_text(encoding="utf-8")
+    for needle in ("Task lifecycle", "Deterministic agent workflow", "Python SDK quickstart"):
+        assert needle in text
+
+
+def test_generated_machine_references_are_public_and_clean() -> None:
+    import json
+
+    for rel in (
+        "cli-help.txt",
+        "config-reference.json",
+        "provider-reference.json",
+        "llms-full.txt",
+        "version.json",
+    ):
+        path = PUBLIC / rel
+        assert path.exists(), f"public/{rel} missing"
+        assert "SOR-" not in path.read_text(encoding="utf-8"), f"tracker tag leaked into {rel}"
+    config = json.loads((PUBLIC / "config-reference.json").read_text(encoding="utf-8"))
+    assert any(row["field"] == "providers" and row["default"] == [] for row in config)
+    providers = json.loads((PUBLIC / "provider-reference.json").read_text(encoding="utf-8"))
+    assert {row["provider"] for row in providers} == {
+        "codex",
+        "devin",
+        "antigravity",
+        "grok",
+        "opencode",
+    }
+
+
+def test_canonical_docs_examples_exist() -> None:
+    root = ROOT / "examples" / "docs"
+    for name in (
+        "verify.py",
+        "create_task.py",
+        "watch_task.py",
+        "follow_up.py",
+        "deliver.py",
+        "review.py",
+        "merge.py",
+        "full_workflow.py",
+    ):
+        assert (root / name).exists(), f"missing canonical docs example {name}"

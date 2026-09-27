@@ -1,87 +1,85 @@
 ---
 title: sbx-browser
-description: Self-hosted orchestration for cloud coding agents. Run official provider CLIs in isolated Modal Sandboxes behind one REST API.
+description: Run coding-agent CLIs behind one task-oriented API on your own Modal workspace.
 template: splash
 hero:
-  tagline: Run the coding-agent CLIs you already pay for — Codex, Devin, Antigravity, Grok and OpenCode — behind one REST API, on your own Modal workspace.
+  tagline: Give SBX a coding task. It runs the provider CLI in an isolated sandbox, keeps the durable result, and can deliver it as a reviewed pull request.
   image:
     file: ../../assets/logo.svg
   actions:
-    - text: Quick start
-      link: /getting-started/quick-start/
+    - text: Use an existing SBX
+      link: /getting-started/quick-start/#use-an-existing-deployment
       icon: right-arrow
       variant: primary
+    - text: Self-host SBX
+      link: /self-hosting/deploy/
+      variant: secondary
     - text: REST API
       link: /reference/api/
-      variant: secondary
-    - text: GitHub
-      link: https://github.com/soren-labs/sbx-browser
-      icon: external
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## What you can do
+## Two ways to start
 
 <CardGrid>
-  <Card title="Multi-turn agents" icon="rocket">
-    Resume native provider sessions across turns with full history and durable state.
+  <Card title="Use an existing SBX" icon="rocket">
+    Bring a base URL and API key. Create a task, follow it, inspect changes,
+    deliver a pull request, record an independent review, and merge.
   </Card>
-  <Card title="Multi-account pools" icon="database">
-    Schedule across multiple provider accounts with LRU, slot limits, and automatic failover.
-  </Card>
-  <Card title="Git & pull requests" icon="code-branch">
-    Declare repos, auto-create PRs, review and merge with gated workflows and artifact handoff.
-  </Card>
-  <Card title="Structured output" icon="approve-check-circle">
-    Enforce JSON Schema contracts on agent outputs with strict or warn semantics.
-  </Card>
-  <Card title="SSE streaming" icon="open-book">
-    Watch canonical events in real time with `Last-Event-ID` reconnect and graceful fallback.
-  </Card>
-  <Card title="Artifacts & workflows" icon="puzzle">
-    Pin checkpoints, cross-agent handoff, recovery metadata, and durable ledger.
+  <Card title="Self-host SBX" icon="setting">
+    Clone the repository and run `./sbx deploy`. The control plane,
+    sandboxes and durable state live in your Modal workspace.
   </Card>
 </CardGrid>
 
-## How it works
+## Product model
 
-**1. Deploy once into your Modal workspace**
+The public workflow is deliberately small:
 
-Everything runs under your account: control plane, sandboxes, images, durable storage. One `sbx deploy` command creates the App, mounts your credentials as Secrets, and boots the control plane.
+1. **Task** — the goal, optional repository, execution preference and delivery target.
+2. **Run** — one execution turn; follow-ups reuse the same native provider session.
+3. **Revision** — the durable code result pinned to an exact repository head.
+4. **Delivery** — push a branch and optionally open/update a pull request.
+5. **Review** — a verdict pinned to the exact revision head.
+6. **Merge** — allowed only when the delivered head still matches a fresh independent approval.
 
-**2. Create a task with one API call**
+Provider accounts, sandboxes, artifacts and workflow bindings still exist,
+but they are implementation/advanced concepts rather than the primary way
+to use the product.
 
-`POST /v1/tasks` with a prompt, an optional repository and a delivery target. The control plane resolves the repo to an exact commit, picks a provider and account with a free slot, and starts the run.
+## What SBX handles
 
-**3. Watch, follow up, deliver**
+<CardGrid>
+  <Card title="Task execution" icon="open-book">
+    Resolve the source repository, select an eligible provider account, run
+    the task, queue follow-ups, cancel, retry, and keep terminal state.
+  </Card>
+  <Card title="Code delivery" icon="code-branch">
+    Materialize revisions, push branches, open pull requests, detect stale
+    reviews and enforce a review-gated merge.
+  </Card>
+  <Card title="Provider integrations" icon="database">
+    Connect official provider logins and schedule across verified accounts
+    with slot limits and failover.
+  </Card>
+  <Card title="GitHub integration" icon="external">
+    Install the SBX GitHub App once for the repositories you choose. SBX
+    mints short-lived installation tokens when a task needs them.
+  </Card>
+</CardGrid>
 
-Stream run events over SSE or poll the task ledger. Follow-up runs resume the provider's native session. When the task touched a repository, publish the revision as a branch or pull request, record a review, and merge.
+## What it is not
 
-## What it's not
+- **Not a model API.** Tasks run the official provider CLI under your subscription.
+- **Not a hosted account service.** Credentials stay under your deployment's control.
+- **Not a replacement for GitHub review.** SBX records its own exact-head review gate; GitHub remains the repository system of record.
 
-⚠️ **Read before deploying.** sbx-browser is orchestration for your own agents, not a hosted service.
+## Start here
 
-- **BYO Modal:** Every control plane and sandbox runs in *your* Modal workspace and costs you.
-- **BYO subscriptions:** Agents authenticate with *your* official provider accounts (Codex, Devin, etc.). sbx-browser does not resell, proxy, or convert quota—tasks execute inside the provider's own CLI.
-- **No quotas or accounts:** We do not store model weights, host user accounts, or call provider APIs directly. Your credentials live in your Modal workspace and are injected into your sandboxes only.
-
-## Status
-
-**v0.1.1 — Public alpha.** The `/v1` API may change before 1.0. All providers have been validated on real accounts during the release cycle; see the [provider matrix](/integrations/providers/) for evidence.
-
-| Provider | Status | Evidence |
-| --- | --- | --- |
-| Codex | Stable | Real-Modal gate PASS; two-turn concurrency test |
-| Devin | Experimental | Real-Modal gate PASS; two-turn, cancel, usage |
-| Antigravity | Experimental | Real-Modal fleet gate PASS; 50-run concurrency, cooldown failover |
-| Grok | Experimental | Real-Modal fleet gate PASS; auto distribution, stranded-running reaper |
-| OpenCode | Experimental | Real-Modal gate PASS; two-turn, cancel, usage |
-
-## Next steps
-
-- **[Getting started](/getting-started/introduction/):** Clone, configure, and deploy in 10 minutes.
-- **[Guides](/guides/tasks/):** Tasks, streaming, repositories, accounts, and workflows.
-- **[Self-hosting](/self-hosting/deploy/):** Deploy strategies, configuration, security, and troubleshooting.
-- **[For agents & LLMs](/agents/):** `llms.txt`, the OpenAPI spec, and SDK entry points for machine consumers.
+- [Quick start](/getting-started/quick-start/) — existing deployment or fresh self-host.
+- [Task lifecycle](/guides/tasks/) — create, monitor, follow up, cancel and retry.
+- [Repositories and delivery](/guides/repositories/) — revision → PR → review → merge.
+- [Python SDK](/sdk/python/quickstart/) — task-oriented client examples.
+- [For agents](/agents/) — deterministic machine-readable entry points.

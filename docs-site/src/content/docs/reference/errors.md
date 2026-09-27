@@ -161,7 +161,7 @@ POST /v1/agents/{id}/runs while a run is in progress
 
 **Fixes:**
 1. Close idle agents: `DELETE /v1/agents/{id}`
-2. Increase cap: `export SBX_MAX_CONCURRENT="16"; uv run sbx deploy`
+2. Increase cap: `export SBX_MAX_CONCURRENT="16"; ./sbx deploy`
 3. Wait and retry after `retry_after` seconds
 
 ### `429 provider_exhausted`

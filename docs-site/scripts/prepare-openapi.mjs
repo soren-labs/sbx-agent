@@ -50,25 +50,20 @@ const doc = loadSpec();
 
 doc.info.title = 'sbx-browser REST API';
 doc.info.description = [
-	'The public, versioned API of an sbx-browser control plane. Its shape follows the',
-	'Cursor Cloud Agents API: an **agent** is one isolated sandbox running an official',
-	'provider CLI, and a **run** is one turn of work on that agent. Creating an agent',
-	'immediately queues its first run; follow-ups are new runs on the same agent.',
+	'The public, versioned API of an SBX control plane. Normal clients describe development',
+	'work as a **Task**: prompt + optional repository + execution preference + delivery target.',
+	'SBX resolves automatic choices, creates the underlying agent/run, and keeps durable',
+	'Revision, Delivery and Review records after the live sandbox is gone.',
 	'',
-	'**Authentication** — send `Authorization: Bearer sbx_<key>`. The control plane stores',
-	'only `sha256(key)`. Keys carry the `agents` scope (default) and optionally `admin`,',
-	'which is required for accounts, API keys, account verification and GitHub App',
+	'**Authentication** — send `Authorization: Bearer sbx_<key>`. Keys carry the `agents`',
+	'scope by default and optionally `admin`, which is required for account/API-key/GitHub',
 	'administration.',
 	'',
-	'**Errors** — every non-2xx response has the body `{"error": {"code", "message",',
-	'"retry_after"?}}`. A failed run additionally carries a structured `error`',
-	'(`code`, `source`, `message`, `retryable`, `retry_after?`) on its durable record,',
-	'so callers can diagnose failures without parsing the event stream.',
+	'**Errors** — every non-2xx response uses the canonical `{error:{code,message,retryable,',
+	'action,retry_after?,details?}}` shape. Read the structured hints rather than parsing prose.',
 	'',
-	'**Streaming** — `GET /v1/agents/{id}/runs/{runId}/stream` is Server-Sent Events:',
-	'`id` is the 1-based line number in the sandbox event log, `event` is the event type',
-	'and `data` is the JSON event. A `: keepalive` comment is sent every 15 s and',
-	'`Last-Event-ID` resumes after a disconnect.',
+	'**Streaming** — live run events use `GET /v1/agents/{id}/runs/{runId}/stream`; durable',
+	'Task/Run state remains the source of truth after reconnects or sandbox teardown.',
 ].join('\n');
 
 // Every reader runs their own control plane; don't point samples at one deployment.

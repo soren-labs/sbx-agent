@@ -1,33 +1,27 @@
 ---
 title: For agents and LLMs
-description: Machine-readable entry points — llms.txt, the OpenAPI spec, and the Python SDK.
+description: Stable machine-readable entry points and a deterministic source-blind task workflow.
 ---
 
-If you are an agent (or building one), these are the stable machine-readable
-entry points. Humans should start at the [introduction](/getting-started/introduction/).
+An AI agent should be able to use SBX without reading the sbx-browser source
+repository. Start with these public resources:
 
-## Entry points
+| Resource | Purpose |
+| --- | --- |
+| [/agents/guide/](/agents/guide/) | Deterministic Task → PR → Review → Merge sequence |
+| [/llms.txt](/llms.txt) | Compact documentation map |
+| [/llms-full.txt](/llms-full.txt) | Concatenated high-value public docs for one-shot context |
+| [/openapi.json](/openapi.json) | Build-time public `/v1` OpenAPI 3.1 contract |
+| `GET {SBX_BASE_URL}/v1/openapi.json` | Contract served by the actual deployment |
+| [/reference/errors/](/reference/errors/) | Canonical error codes and retry hints |
 
-| Resource | Location | Contents |
-| --- | --- | --- |
-| `llms.txt` | [/llms.txt](/llms.txt) | Curated map of this documentation site |
-| OpenAPI spec | [/openapi.json](/openapi.json) | The public `/v1` contract, OpenAPI 3.1 |
-| Live spec | `GET {base_url}/v1/openapi.json` | The same spec served by a running control plane |
-| Python SDK | `sbx.sdk` in the [repo](https://github.com/soren-labs/sbx-browser) | Typed client for tasks, agents, runs, artifacts |
-| API reference | [/reference/api/](/reference/api/) | Interactive per-operation docs generated from the spec |
+## Agent rules
 
-The spec URL served by your own deployment is printed by `sbx deploy` and is
-always reachable at `/v1/openapi.json` on the control-plane origin.
-
-## Working with the API
-
-- Authenticate every call with `Authorization: Bearer sbx_<key>`.
-- Create work with `POST /v1/tasks`; poll `GET /v1/tasks/{id}` or the run
-  ledger, or stream a run over SSE (`Last-Event-ID` resumes cleanly).
-- Every non-2xx body is `{"error": {"code", "message", "retry_after"?}}`; the
-  codes are enumerated in the [error reference](/reference/errors/) and in the
-  spec's `x-canonical` block.
-
-The client ships as `sbx.sdk` in the `sbx` package; the SDK usage in the
-[Python client reference](/reference/python-client/) is exercised by the
-repository test suite.
+1. Prefer the high-level Task API/SDK.
+2. Preflight repository/delivery capability before committing expensive work.
+3. Use durable task/run/revision state as the source of truth after a timeout.
+4. Never invent undocumented endpoints from naming patterns.
+5. Do not bypass review/merge gates when the product reports a stale or
+   non-independent review.
+6. Treat provider/account/GitHub failures as integrations to repair, not as
+   reasons to rewrite the requested task silently.

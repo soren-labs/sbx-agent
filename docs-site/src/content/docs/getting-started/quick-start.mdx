@@ -1,238 +1,158 @@
 ---
 title: Quick start
-description: Run your first task — on an existing deployment, or self-hosted on your own Modal workspace.
+description: Run a real task on an existing SBX or deploy your own control plane first.
 ---
 
-import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
-
-There are two ways in:
-
-- **Use an existing deployment** — a teammate's or hosted control plane, like
-  `https://sbx.sorenforge.com`. You need a base URL and an `sbx_` API key.
-- **Self-host** — deploy your own control plane on your own Modal workspace
-  in about 10 minutes.
+import { Tabs, TabItem, Steps, Aside } from '@astrojs/starlight/components';
 
 <Tabs>
 <TabItem label="Use an existing deployment">
 
-## 1. Get an API key
+<a id="use-an-existing-deployment"></a>
 
-Ask the operator for an `sbx_` key, or mint one yourself if you can reach the
-console (**Settings → API keys**). Then:
+You need only two values from the operator:
 
 ```bash
-export SBX_BASE_URL=https://sbx.sorenforge.com
+export SBX_BASE_URL=https://sbx.example.com
 export SBX_API_KEY=sbx_...
 ```
 
-## 2. Run a task
+### 1. Verify the connection
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks" \
+curl -fsS "$SBX_BASE_URL/v1/me" \
+  -H "Authorization: Bearer $SBX_API_KEY"
+```
+
+A valid key returns its identity and scopes. If the call is rejected, fix the
+key before creating work.
+
+### 2. Preflight a repository task
+
+Preflight resolves the repository and checks capabilities without allocating a
+sandbox:
+
+```bash
+curl -fsS -X POST "$SBX_BASE_URL/v1/tasks/preflight" \
   -H "Authorization: Bearer $SBX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": {"text": "Write hello.txt containing hi"},
+    "prompt": {"text": "Fix the flaky date test"},
     "source": {"repo": "https://github.com/owner/repo"},
     "delivery": {"pull_request": {}}
   }'
 ```
 
-Or with the [Python SDK](/reference/python-client/):
+For a private GitHub repository the operator must have connected the
+[GitHub integration](/integrations/github/).
+
+### 3. Create and wait for the task
 
 ```python
 from sbx.sdk import SbxClient
 
 client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
 created = client.tasks.create(
-    "Write hello.txt containing hi",
+    "Fix the flaky date test and add a regression test",
     source={"repo": "https://github.com/owner/repo"},
     delivery={"pull_request": {}},
 )
+
 task = client.tasks.wait(created.task.id)
-print(task.status)
+print(task.id, task.status)
 ```
 
-## 3. Watch it in the console
+If you want live events, stream the current run:
 
-Open the deployment URL in a browser, or run `sbx open` from a machine with
-the CLI configured. The task page streams the run live and shows the
-delivered revision, its diff and the pull request.
+```python
+for event in client.runs.watch(created.agent.id, created.run.id):
+    print(event.type, event.data)
+```
+
+### 4. Deliver, review and merge
+
+A repository task produces durable revisions. Publish the latest revision,
+record an independent approval, then merge:
+
+```python
+revision = client.tasks.deliver(created.task.id)
+review = client.tasks.review(created.task.id, verdict="approve")
+merged = client.tasks.merge(created.task.id)
+print(merged.delivery)
+```
+
+The merge call fails closed if the approval is stale or not independent.
+See [Repositories, revisions and delivery](/guides/repositories/).
 
 </TabItem>
 <TabItem label="Self-host on Modal">
 
-## Prerequisites
-
-- Python ≥ 3.12
-- [uv](https://docs.astral.sh/uv/) (universal Python package manager)
-- git
-- A [Modal account](https://modal.com) (free tier works)
-- At least one provider CLI installed and logged in locally
-
-## 1. Clone and setup
+A fresh clone can deploy the platform before any provider is connected.
+`./sbx` bootstraps `uv` and a managed Python environment when needed.
 
 <Steps>
 
-1. Clone the repository:
+1. Clone and deploy:
+
    ```bash
    git clone https://github.com/soren-labs/sbx-browser.git
    cd sbx-browser
+   ./sbx deploy
    ```
 
-2. Install dependencies:
+   On an interactive terminal, `deploy` initializes config and opens Modal
+   authentication if no workspace login exists. A **zero-provider** platform
+   deployment is valid.
+
+2. Connect a provider:
+
    ```bash
-   uv sync
+   ./sbx auth login --provider devin
+   ./sbx auth status
    ```
 
-3. Authenticate with Modal:
-   ```bash
-   uv run modal token new
-   ```
-   This creates an interactive session. Alternatively, export `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in your environment (both required).
+   The command runs the provider's official login/OAuth flow, captures the
+   resulting credential, verifies it in the deployment and makes the account
+   schedulable only after verification succeeds.
 
-4. Initialize the config:
+3. Connect GitHub when you need private repositories or pull requests:
+
    ```bash
-   uv run sbx init --providers codex,devin
+   ./sbx github connect
    ```
-   This creates `~/.config/sbx/config.toml` and scans for installed provider CLIs. Change `--providers` to match what you have installed (comma-separated: `codex`, `devin`, `antigravity`, `grok`, `opencode`).
+
+   The first GitHub page is the official SBX GitHub App installation screen.
+   Choose an account/repositories and click **Install** once. No PAT, PEM or
+   per-deployment App registration is required for the default path.
+
+4. Verify and open the console:
+
+   ```bash
+   ./sbx doctor
+   ./sbx open
+   ```
+
+   `sbx deploy` writes the durable bootstrap admin key to
+   `~/.local/state/sbx/bootstrap.key` and records the deployment URL in local
+   state/config.
 
 </Steps>
 
-## 2. Connect provider accounts
+<Aside type="note">
+`sbx init`, manual credential import, PATs and deployment-owned GitHub Apps
+still exist for advanced/operator workflows. They are not required for the
+normal fresh-deploy path.
+</Aside>
 
-Each task runs a provider CLI inside a Modal sandbox, authenticated with a
-credential you capture once. The easiest path is `sbx auth`, which runs the
-provider's official login and imports the result:
-
-```bash
-uv run sbx auth login --provider devin
-```
-
-To reuse an existing login without re-authenticating:
-
-```bash
-uv run sbx auth import-existing --provider devin \
-  --from ~/.local/share/devin/credentials.toml
-```
-
-Common credential locations:
-
-| Provider | Login command | Credential file |
-| --- | --- | --- |
-| Codex | `codex login` | `~/.codex/auth.json` |
-| Devin | `devin` (interactive) | `~/.local/share/devin/credentials.toml` |
-| Antigravity | `agy` (OAuth) | `~/.gemini/antigravity-cli/antigravity-oauth-token` |
-| Grok | `grok login` | `~/.grok/auth.json` |
-| OpenCode | `opencode auth login` | `~/.local/share/opencode/auth.json` |
-
-`uv run sbx auth status` shows what was found and each account's state; see
-[Accounts and credentials](/guides/accounts/) for details.
-
-## 3. Deploy
-
-<Steps>
-
-1. Deploy the control plane and images:
-   ```bash
-   uv run sbx deploy
-   ```
-   This:
-   - Builds the runtime images (one per provider)
-   - Seeds the durable Dicts (sessions, runs, tasks, accounts, etc.)
-   - Creates the `sbx-control` Modal App
-   - Runs a sanity check against the live control plane
-
-   Output shows:
-   - `SBX_BASE_URL`: your control plane endpoint
-   - `sbx_<key>`: a new API key (written to `~/.local/state/sbx/bootstrap.key`, mode 0600)
-
-2. Verify the deployment:
-   ```bash
-   uv run sbx doctor
-   ```
-   Should report all systems green.
-
-</Steps>
-
-## 4. Run your first task
-
-<Steps>
-
-1. Export the API key and base URL:
-   ```bash
-   export SBX_BASE_URL=<printed by sbx deploy>
-   export SBX_API_KEY=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/sbx/bootstrap.key")
-   ```
-
-2. **Via curl:**
-   ```bash
-   curl -X POST "$SBX_BASE_URL/v1/tasks" \
-     -H "Authorization: Bearer $SBX_API_KEY" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "prompt": {"text": "Write hello.txt containing hi"},
-       "execution": {"provider": "codex"}
-     }'
-   ```
-
-3. **Via Python SDK:**
-   ```python
-   from sbx.sdk import SbxClient
-
-   client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
-   created = client.tasks.create(
-       "Write hello.txt containing hi",
-       execution={"provider": "codex"},
-   )
-
-   # Watch real-time events over SSE
-   for event in client.watch(created.agent.id, created.run.id):
-       print(f"{event.type}: {event.data}")
-   ```
-
-</Steps>
-
-## 5. Follow up and deliver
-
-Once a task is idle, send a follow-up to resume the same session:
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/{task-id}/runs" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": {"text": "Now make it executable (chmod +x hello.txt)"}}'
-```
-
-The run reuses the same sandbox and resumes the provider's native session
-(e.g. Codex's thread ID stays the same). When the task worked on a
-repository, publish the result with `POST /v1/tasks/{id}/delivery` — see
-[Repositories, revisions and delivery](/guides/repositories/).
-
-## 6. Open the console
-
-```bash
-uv run sbx open        # hands off already signed in
-```
-
-or serve the console locally against a fake backend (no Modal credentials
-needed):
-
-```bash
-make console-dev     # then open http://localhost:8790
-```
-
-`make console-dev` starts a real local `/v1` control plane with fake
-provider CLIs and a demo repository, serves the console, and prints a
-throwaway API key — paste it into the Connect screen. See
-[Web console](/guides/console/).
+Now use the same SDK or REST examples from the first tab.
 
 </TabItem>
 </Tabs>
 
 ## Next steps
 
-- **[Concepts](/concepts/):** Task, Run, Revision, Provider, Account and more.
-- **[Tasks](/guides/tasks/):** The full lifecycle — monitor, follow up, retry.
-- **[Accounts and credentials](/guides/accounts/):** Multi-account scheduling and credential refresh.
-- **[Repositories & delivery](/guides/repositories/):** Branches, pull requests, review and merge.
+- [Tasks](/guides/tasks/)
+- [Repositories and delivery](/guides/repositories/)
+- [Python SDK](/sdk/python/quickstart/)
+- [Provider integrations](/integrations/providers/)
+- [Self-hosting](/self-hosting/deploy/)

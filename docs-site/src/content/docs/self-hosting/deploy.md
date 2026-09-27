@@ -1,232 +1,133 @@
 ---
-title: Deploy
-description: Bootstrap, deploy, verify, and scale your control plane.
+title: Deploy SBX
+description: Fresh-clone deployment, provider/GitHub connection, verification and upgrade entry points.
 ---
 
-## One-shot deployment (recommended)
+## Fresh clone → healthy platform
 
-The `sbx` CLI handles the entire deployment:
+A normal self-hosted installation starts with one command:
 
 ```bash
-uv run sbx init --providers codex,devin      # check env, write config
-uv run sbx deploy                             # build, push, deploy
-uv run sbx doctor                             # verify all systems
+git clone https://github.com/soren-labs/sbx-browser.git
+cd sbx-browser
+./sbx deploy
 ```
 
-This is what happens under the hood:
+`./sbx` is the zero-bootstrap launcher. It finds or installs `uv`, uses a
+managed Python 3.12+ environment, and runs the CLI. On a real interactive
+terminal, `deploy` also opens Modal authentication when no workspace login is
+available.
+
+`sbx deploy` is idempotent. On a fresh clone it:
+
+- initializes the local config;
+- verifies Modal authentication;
+- creates the bootstrap API-key secret and durable stores;
+- deploys the control plane and same-origin console;
+- deploys provider runtimes that are already configured;
+- verifies the live `/v1/me` endpoint;
+- records the deployment URL and release/version evidence locally.
+
+A **zero-provider deployment is healthy**. Provider and GitHub connection are
+post-deploy product steps, not deployment prerequisites.
+
+## Connect integrations after deployment
+
+Provider:
+
+```bash
+./sbx auth login --provider devin
+./sbx auth status
+```
+
+GitHub (only when you need private repositories / PR delivery):
+
+```bash
+./sbx github connect
+```
+
+Then:
+
+```bash
+./sbx doctor
+./sbx open
+```
+
+The durable bootstrap admin key is stored at
+`~/.local/state/sbx/bootstrap.key` (mode `0600`). `sbx open` uses a one-time
+browser handoff so the long-lived key does not need to appear in a URL.
 
 ## What gets created
 
-| Resource | Name | Purpose |
-| --- | --- | --- |
-| **Modal App** | `sbx-control` (env: `SBX_MODAL_APP_NAME`) | FastAPI + reaper cron |
-| **Runtime images** | `sbx-runtime`, `sbx-runtime-devin`, etc. | Per-provider sandbox images |
-| **Dicts** | `sbx-sessions`, `sbx-runs`, `sbx-accounts`, `sbx-workflows`, `sbx-artifacts`, `sbx-workspaces` | Durable state |
-| **Secrets** | `sbx-codex-auth`, `sbx-basic-auth`, `sbx-v1-bootstrap`, `sbx-acct-<id>` | Credentials |
+Names can be overridden by configuration, but a deployment typically owns:
 
-## Step-by-step deployment
+- one Modal control-plane App;
+- per-provider runtime images as providers are enabled;
+- durable Dicts for tasks/runs/accounts/revisions/workspaces/workflows;
+- the bootstrap/admin Secret and per-account credential Secrets;
+- the web console served from the control-plane origin.
 
-<Steps>
+Inspect the resolved non-secret configuration with:
 
-1. **Check prerequisites:**
-   ```bash
-   uv run sbx init --providers codex,devin
-   ```
-   Verifies Python, uv, git, Modal auth, and scans for installed provider CLIs.
-
-2. **Import provider credentials:**
-   ```bash
-   modal secret create sbx-codex-auth \
-     CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
-   
-   uv run python -m control.onboarding --modal import \
-     --provider devin --from ~/.local/share/devin/credentials.toml \
-     --account-id devin-1
-   ```
-
-3. **Build runtime images:**
-   ```bash
-   # Done automatically by `sbx deploy`, or manually:
-   make image
-   make image-devin
-   ```
-
-4. **Deploy the control plane:**
-   ```bash
-   uv run sbx deploy
-   ```
-   Outputs:
-   - `SBX_BASE_URL` — control plane endpoint
-   - `sbx_<key>` — API key (shown once)
-
-5. **Verify deployment:**
-   ```bash
-   uv run sbx doctor
-   ```
-   Should show all systems green.
-
-</Steps>
+```bash
+./sbx config
+./sbx status
+```
 
 ## Configuration
 
-Customize deployment via `~/.config/sbx/config.toml` or environment variables:
+Most users should deploy the defaults first, then change only the settings
+they understand. `~/.config/sbx/config.toml` and documented `SBX_*`
+environment variables control names, concurrency, timeouts, account slots,
+resources and advanced integrations.
 
-```toml
-[deploy]
-providers = ["codex", "devin"]
-modal_app_name = "sbx-control"
-max_concurrent = 8
-idle_timeout_s = 300
-turn_max_seconds = 900
-sandbox_timeout_s = 14400
-```
+See [Configuration](/self-hosting/configuration/) for the full operator
+reference.
 
-Env overrides:
+## Upgrade
 
 ```bash
-export SBX_PROVIDERS="codex,devin"
-export SBX_MODAL_APP_NAME="my-sbx"
-export SBX_MAX_CONCURRENT="16"
-export SBX_DEVIN_SLOTS="4"
-uv run sbx deploy
+git pull --ff-only
+./sbx upgrade
+./sbx doctor
 ```
 
-## Scaling
+Upgrade preserves durable Modal Dict state and rebuilds/redeploys the runtime
+components. If you separately front the product with a statically bundled
+edge worker, redeploy that worker after upgrading so it serves the new
+Console bundle. See [Upgrade and uninstall](/self-hosting/upgrade-and-uninstall/).
 
-### Concurrency cap
+## Platform vs provider health
 
-`SBX_MAX_CONCURRENT` sets both live-agent caps — per API key (default 2)
-and across the control plane (default 8):
+Deployment health and provider health are intentionally separate:
 
-```bash
-export SBX_MAX_CONCURRENT="8"
-uv run sbx deploy
-```
+- the platform can be healthy with zero providers;
+- a missing/expired provider login makes that provider unavailable, not the
+  whole control plane unhealthy;
+- only verified accounts are eligible for scheduling.
 
-When the cap is hit, new creates return `429 concurrency_limit`. Remediation: close idle agents or increase the cap.
+Use `./sbx doctor` for platform checks and `./sbx auth status` for provider
+account state.
 
-### Per-account slots
+## Documentation site
 
-Limit concurrency per provider account:
-
-```bash
-export SBX_DEVIN_ACCOUNTS='[{"id":"devin-prod","slots":4}]'
-uv run sbx deploy
-```
-
-### Provider selection
-
-Deploy only the providers you need:
+The docs are a separate static Astro/Starlight site:
 
 ```bash
-export SBX_PROVIDERS="codex,devin"
-uv run sbx deploy
-```
-
-Unselected providers are not built or scheduled. The shared `sbx-codex-auth` Secret is required only when `codex` is enabled.
-
-## Upgrades
-
-Re-deploy to pick up code changes:
-
-```bash
-git pull
-uv sync
-uv run sbx upgrade
-```
-
-Upgrade preserves durable Dicts (runs, accounts, workflows, artifacts stay intact). Images are rebuilt, and the control plane restarts.
-
-## Manual deployment (advanced)
-
-For custom setups, manually build and deploy:
-
-```bash
-# Build images
-make image
-make image-devin
-
-# Create Secrets
-modal secret create sbx-codex-auth CODEX_AUTH_JSON="..."
-modal secret create sbx-v1-bootstrap ...
-modal secret create sbx-basic-auth ...
-
-# Deploy
-modal deploy -m control.modal_app
-```
-
-See the `Makefile` for the complete build pipeline.
-
-## Deploy the docs site
-
-This documentation site is plain static output (`docs-site/dist`). To host it
-on the same Modal workspace as the control plane:
-
-```bash
+make docs-check
 make docs-deploy
 ```
 
-That builds the site and deploys it as the `sbx-docs` Modal app, which serves
-`dist` over an `@modal.asgi_app` endpoint. The deploy prints a
-`https://sorenlab2026--sbx-docs-docs.modal.run`-style URL. To serve it under a
-custom domain (e.g. `docs.sorenforge.com`), point the domain at the printed
-URL in your DNS provider and, if the workspace requires it, configure the
-custom domain on the Modal app — then rebuild the site with the canonical URL
-so sitemap and canonical links are right:
-
-```bash
-DOCS_SITE_URL=https://docs.sorenforge.com make docs-deploy
-```
-
-Any static host works the same way — the site has no server-side logic beyond
-redirects and a `404.html`.
+Set `DOCS_SITE_URL=https://docs.example.com` when building the canonical
+production copy so canonical links and the sitemap use the final domain. See
+[Custom domains](/self-hosting/custom-domain/).
 
 ## Uninstall
 
 ```bash
-uv run sbx uninstall
+./sbx uninstall
 ```
 
-Stops the app and closes all sandboxes. By default, durable Dicts are preserved. To erase:
-
-```bash
-uv run sbx uninstall --purge-data
-uv run sbx uninstall --purge-credentials
-```
-
-Durable data (runs, artifacts, workflows) persists unless you explicitly purge.
-
-## Verification
-
-```bash
-uv run sbx doctor
-```
-
-Checks:
-- Modal authentication
-- Secrets and Dicts present
-- Control plane is running (checking `/v1/me`)
-- Provider auth probes pass
-- Sandbox creation works (`sbx smoke`)
-
-## Troubleshooting
-
-**Deploy fails at image build:**
-```
-Check that all provider CLIs are installed locally. Run:
-uv run sbx credentials --verify
-```
-
-**Sandbox creation timeout:**
-```
-Modal may be slow. Try again. If persistent, check the
-control-plane logs:
-modal app logs sbx-control --tail 100
-```
-
-**Control plane not responding:**
-```
-Check Modal app status:
-modal app list
-modal app logs sbx-control --tail 100
-```
+Use the purge flags only when you intentionally want to erase durable data or
+credentials. Review [Upgrade and uninstall](/self-hosting/upgrade-and-uninstall/)
+before destructive cleanup.

@@ -1,0 +1,392 @@
+sbx-browser CLI exact help
+Generated from the current argparse command model.
+
+===== sbx =====
+usage: sbx [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+           {init,credentials,config,status,deploy,doctor,smoke,upgrade,open,github,uninstall,auth}
+           ...
+
+Deploy and operate the sbx control plane on your own Modal workspace.
+
+positional arguments:
+  {init,credentials,config,status,deploy,doctor,smoke,upgrade,open,github,uninstall,auth}
+    init                check prerequisites and write config
+    credentials         scan selected providers' local credential files (never
+                        prints contents)
+    config              show resolved non-sensitive config
+    status              show deployment status
+    deploy              idempotent deploy of the control plane
+    doctor              verify the deployment end to end
+    smoke               run a minimal /v1 agent to terminal
+    upgrade             redeploy preserving durable stores
+    open                open the Console in a browser via a one-time grant
+                        handoff
+    github              GitHub integration: connect ( default one-click
+                        install)
+    uninstall           stop app and terminate sbx sandboxes
+    auth                provider auth:
+                        login/status/verify/relink/logout/import-existing
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+
+===== sbx deploy =====
+usage: sbx deploy [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                  [--versions-lock PATH]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --versions-lock PATH  replay a frozen CLI versions lock file (rollback to an
+                        earlier deployment's provider CLI versions;  )
+
+===== sbx doctor =====
+usage: sbx doctor [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                  [--verify] [--allow-open-permissions]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --verify              also run each provider CLI's own auth check on
+                        discovered credentials
+  --allow-open-permissions
+                        accept credential files readable by group/other
+
+===== sbx status =====
+usage: sbx status [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+
+===== sbx open =====
+usage: sbx open [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                [--base-url BASE_URL] [--print]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --base-url BASE_URL   control-plane URL (default: config api_base_url, else
+                        the deployed app URL)
+  --print               print the one-time Console URL instead of opening a
+                        browser
+
+===== sbx smoke =====
+usage: sbx smoke [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                 [--provider PROVIDER] [--prompt PROMPT] [--timeout TIMEOUT]
+                 [--poll POLL]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --provider PROVIDER   provider to smoke (default: first configured)
+  --prompt PROMPT       smoke prompt text
+  --timeout TIMEOUT     seconds to wait for terminal
+  --poll POLL           poll interval seconds
+
+===== sbx upgrade =====
+usage: sbx upgrade [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                   [--version VERSION] [--versions-lock PATH]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --version VERSION     version string to record (default: package version)
+  --versions-lock PATH  replay a frozen CLI versions lock file (rollback to an
+                        earlier deployment's provider CLI versions;  )
+
+===== sbx uninstall =====
+usage: sbx uninstall [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                     [--purge-data] [--purge-credentials]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --purge-data          also delete durable Dicts
+  --purge-credentials   also delete Modal Secrets and the local key file
+
+===== sbx config =====
+usage: sbx config [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+
+===== sbx init =====
+usage: sbx init [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                [--profile PROFILE] [--app-name APP_NAME]
+                [--base-url BASE_URL] [--providers PROVIDERS] [--verify]
+                [--allow-open-permissions] [--github | --no-github]
+                [--github-secret NAME]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --profile PROFILE     Modal profile name
+  --app-name APP_NAME   Modal app name
+  --base-url BASE_URL   public API base URL
+  --providers PROVIDERS
+                        comma-separated providers to build images for
+  --verify              also run each provider CLI's own auth check on
+                        discovered credentials
+  --allow-open-permissions
+                        accept credential files readable by group/other
+  --github, --no-github
+                        persist the GitHub auth bridge gate in config
+                        (github.ephemeral)
+  --github-secret NAME  persist the Modal Secret name holding GH_TOKEN for the
+                        GitHub bridge (github.secret_name; the token itself is
+                        never stored)
+
+===== sbx credentials =====
+usage: sbx credentials [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                       [--providers PROVIDERS] [--verify]
+                       [--allow-open-permissions]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --providers PROVIDERS
+                        comma-separated providers to scan (default:
+                        configured)
+  --verify              also run each provider CLI's own auth check on
+                        discovered credentials
+  --allow-open-permissions
+                        accept credential files readable by group/other
+
+===== sbx github =====
+usage: sbx github [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                  {connect} ...
+
+positional arguments:
+  {connect}
+    connect             open the official GitHub App installation page (one
+                        click, default)
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+
+===== sbx github connect =====
+usage: sbx github connect [-h] [--config CONFIG] [--state-dir STATE_DIR]
+                          [--json] [--base-url BASE_URL] [--print]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --base-url BASE_URL   control-plane URL (default: config api_base_url, else
+                        the deployed app URL)
+  --print               print the GitHub install URL instead of opening a
+                        browser
+
+===== sbx auth =====
+usage: sbx auth [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                {status,login,import-existing,verify,relink,pair,logout} ...
+
+positional arguments:
+  {status,login,import-existing,verify,relink,pair,logout}
+    status              local credential scan + per-account auth-session
+                        states
+    login               run the provider's official CLI/OAuth login, then
+                        capture + verify
+    import-existing     capture credential files a vendor login already wrote
+                        (no token paste)
+    verify              run the cloud auth probe; promotes the account on a
+                        pass (remote /v1 probe when a deployment is
+                        configured, else local)
+    relink              re-capture → refresh → verify; restores scheduler
+                        eligibility
+    pair                pair this host's provider login with a cloud connect
+                        session ( ): run the vendor login, post the
+                        captured blob
+    logout              sign out: drop credential material, flip to unverified
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+
+===== sbx auth status =====
+usage: sbx auth status [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                       [--provider PROVIDER]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --provider PROVIDER   limit to one provider
+
+===== sbx auth login =====
+usage: sbx auth login [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                      --provider PROVIDER [--account-id ACCOUNT_ID]
+                      [--label LABEL] [--slots SLOTS] [--models MODELS]
+                      [--no-verify] [--experimental]
+                      [--allow-open-permissions]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --provider PROVIDER   provider to authenticate
+  --account-id ACCOUNT_ID
+                        account id to create/relink
+  --label LABEL         account label
+  --slots SLOTS         max_concurrent
+  --models MODELS       comma-separated advertised models
+  --no-verify           skip the post-import verify
+  --experimental        allow experimental providers
+  --allow-open-permissions
+                        accept credential files readable by group/other
+
+===== sbx auth import-existing =====
+usage: sbx auth import-existing [-h] [--config CONFIG] [--state-dir STATE_DIR]
+                                [--json] --provider PROVIDER
+                                [--account-id ACCOUNT_ID] [--label LABEL]
+                                [--slots SLOTS] [--models MODELS]
+                                [--no-verify] [--experimental]
+                                [--allow-open-permissions] [--from SOURCE]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --provider PROVIDER   provider to authenticate
+  --account-id ACCOUNT_ID
+                        account id to create/relink
+  --label LABEL         account label
+  --slots SLOTS         max_concurrent
+  --models MODELS       comma-separated advertised models
+  --no-verify           skip the post-import verify
+  --experimental        allow experimental providers
+  --allow-open-permissions
+                        accept credential files readable by group/other
+  --from SOURCE         credential file/dir/blob to import (default: declared
+                        files under $HOME)
+
+===== sbx auth verify =====
+usage: sbx auth verify [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                       [--account-id ACCOUNT_ID] [--provider PROVIDER]
+                       [--local]
+                       [account_id]
+
+positional arguments:
+  account_id            account id to verify (e.g. acct-devin-...)
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --account-id ACCOUNT_ID
+                        act on one account
+  --provider PROVIDER   act on all accounts of a provider
+  --local               force the local sandbox probe instead of the remote
+                        /v1 verify
+
+===== sbx auth relink =====
+usage: sbx auth relink [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                       [--account-id ACCOUNT_ID] [--provider PROVIDER]
+                       [--from SOURCE] [--relogin] [--no-verify]
+                       [--allow-open-permissions]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --account-id ACCOUNT_ID
+                        act on one account
+  --provider PROVIDER   act on all accounts of a provider
+  --from SOURCE         credential file/dir/blob to re-capture (default:
+                        $HOME)
+  --relogin             run the official login flow first (grant is dead
+                        locally)
+  --no-verify           skip the post-relink verify
+  --allow-open-permissions
+                        accept credential files readable by group/other
+
+===== sbx auth pair =====
+usage: sbx auth pair [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                     [--base-url BASE_URL]
+                     ticket
+
+positional arguments:
+  ticket                single-use pair ticket from the Console connect
+                        session
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --base-url BASE_URL   deployment base URL (default: configured / deployed
+                        app URL)
+
+===== sbx auth logout =====
+usage: sbx auth logout [-h] [--config CONFIG] [--state-dir STATE_DIR] [--json]
+                       [--account-id ACCOUNT_ID] [--provider PROVIDER]
+                       [--local] [--keep-secret]
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       config file path (default: $SBX_CONFIG or XDG)
+  --state-dir STATE_DIR
+                        state dir (default: $SBX_STATE_DIR or XDG)
+  --json                machine-readable output
+  --account-id ACCOUNT_ID
+                        act on one account
+  --provider PROVIDER   act on all accounts of a provider
+  --local               also delete the provider's credential files under
+                        $HOME
+  --keep-secret         preserve the managed sbx-acct-<id> Secret
