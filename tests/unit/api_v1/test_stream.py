@@ -168,3 +168,23 @@ class TestRunStream:
                 assert resp.status_code == 200
                 first = next(resp.iter_lines())
                 assert first.startswith(":")
+
+    def test_closed_agent_replays_durable_transcript(self, client, auth, live_base) -> None:
+        agent = create_agent(client, auth)["agent"]
+        wait_run(client, auth, agent["id"], "run-1")
+        client.delete(f"/v1/agents/{agent['id']}", headers=auth)
+        with httpx.Client(base_url=live_base, timeout=10.0) as http:
+            events, _ = _read_events(
+                http, f"/v1/agents/{agent['id']}/runs/run-1/stream", auth, deadline_s=5.0
+            )
+        types = [e[1] for e in events]
+        assert "sbx.turn_finished" in types
+        assert "item.started" not in types
+        messages = [
+            e[2]["item"]
+            for e in events
+            if e[1] == "item.completed" and e[2]["item"]["type"] == "agent_message"
+        ]
+        assert messages
+        ids = [e[0] for e in events]
+        assert ids == sorted(ids)

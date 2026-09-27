@@ -39,6 +39,8 @@ CODEX_HOME = "/work/.codex"
 MODAL_APP_NAME = "sbx-control"
 SESSIONS_DICT_NAME = "sbx-sessions"
 RUNS_DICT_NAME = "sbx-runs"
+# Compacted per-run activity transcripts, replayed after sandbox teardown.
+RUN_ACTIVITY_DICT_NAME = "sbx-run-activity"
 ACCOUNTS_DICT_NAME = "sbx-accounts"
 WORKFLOWS_DICT_NAME = "sbx-workflows"
 CODEX_SECRET_NAME = "sbx-codex-auth"

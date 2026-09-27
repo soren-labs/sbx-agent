@@ -32,6 +32,26 @@ function inline(text) {
   return out;
 }
 
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+function cells(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+}
+
+function table(head, rows) {
+  return h(
+    "div",
+    { class: "md-table" },
+    h(
+      "table",
+      null,
+      h("thead", null, h("tr", null, cells(head).map((c) => h("th", null, inline(c))))),
+      h("tbody", null, rows.map((r) => h("tr", null, cells(r).map((c) => h("td", null, inline(c)))))),
+    ),
+  );
+}
+
 export function renderMarkdown(src) {
   const root = h("div", { class: "md" });
   const lines = String(src ?? "").replace(/\r\n?/g, "\n").split("\n");
@@ -48,6 +68,16 @@ export function renderMarkdown(src) {
       }
       i += 1;
       root.append(h("pre", { class: "md-code", dataset: { lang: fence[1] || null } }, h("code", null, body.join("\n"))));
+      continue;
+    }
+    if (TABLE_ROW.test(line) && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+      const rows = [];
+      i += 2;
+      while (i < lines.length && TABLE_ROW.test(lines[i])) {
+        rows.push(lines[i]);
+        i += 1;
+      }
+      root.append(table(line, rows));
       continue;
     }
     const heading = line.match(/^(#{1,4})\s+(.*)$/);
@@ -86,7 +116,8 @@ export function renderMarkdown(src) {
       !/^\s*```/.test(lines[i]) &&
       !/^(#{1,4})\s+/.test(lines[i]) &&
       !/^\s*([-*]|\d+[.)])\s+/.test(lines[i]) &&
-      !/^\s*>\s?/.test(lines[i])
+      !/^\s*>\s?/.test(lines[i]) &&
+      !(TABLE_ROW.test(lines[i]) && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]))
     ) {
       para.push(lines[i]);
       i += 1;

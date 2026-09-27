@@ -14,8 +14,8 @@ function readJson(key, fallback) {
 }
 
 /**
- * The run ledger does not store prompts, so prompts sent from this browser
- * are remembered locally (per agent/run) to show them in the conversation.
+ * Prompts sent from this browser, cached locally (per agent/run) so the
+ * conversation renders instantly before the run's ``prompt`` field loads.
  */
 export const prompts = {
   get(agentId, runId) {
@@ -64,3 +64,18 @@ export function setTheme(theme) {
   else localStorage.setItem(THEME_KEY, theme);
   applyTheme(theme);
 }
+
+const ASIDE_KEY = "sbx.console.agentAside";
+
+/** Agent page side panel; defaults open only on wide viewports. */
+export const asidePref = {
+  get() {
+    const v = localStorage.getItem(ASIDE_KEY);
+    if (v === "open") return true;
+    if (v === "closed") return false;
+    return window.matchMedia("(min-width: 1200px)").matches;
+  },
+  set(open) {
+    localStorage.setItem(ASIDE_KEY, open ? "open" : "closed");
+  },
+};

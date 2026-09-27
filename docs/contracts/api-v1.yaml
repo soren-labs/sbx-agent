@@ -3007,6 +3007,16 @@ components:
           type: string
           format: date-time
           nullable: true
+        prompt:
+          type: object
+          nullable: true
+          properties:
+            text:
+              type: string
+          description: |
+            The user prompt that opened this run, echoed from the durable
+            agent record so any client can render the conversation.
+            ``null`` when the prompt is unavailable.
         result:
           type: object
           nullable: true

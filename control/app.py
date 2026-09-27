@@ -27,6 +27,7 @@ from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
     DEFAULT_MODEL,
     MAX_CONCURRENT,
+    RUN_ACTIVITY_DICT_NAME,
     RUNS_DICT_NAME,
     SESSIONS_DICT_NAME,
     SSE_KEEPALIVE_S,
@@ -38,6 +39,7 @@ from control.config import (
     env_str,
     lifecycle_config,
 )
+from control.run_activity import FileRunActivityStore, InMemoryRunActivityStore, RunActivityStore
 from control.run_store import RunLedger, RunStore
 from control.sandbox_io import sandbox_env
 from control.service import (
@@ -151,6 +153,19 @@ def _select_run_store() -> RunStore:
     xdg = os.environ.get("XDG_STATE_HOME")
     base = Path(xdg) if xdg else Path.home() / ".local" / "state"
     return FileRunStore(base / "sbx-browser" / "runs")
+
+
+def _select_run_activity_store(run_store: RunStore) -> RunActivityStore:
+    """Durable run transcripts live beside the run ledger's backing store."""
+    if os.environ.get("SBX_BACKEND", "local") == "modal":
+        from control.run_activity import ModalDictRunActivityStore
+
+        return ModalDictRunActivityStore(env_str("SBX_RUN_ACTIVITY_DICT", RUN_ACTIVITY_DICT_NAME))
+    from control.run_store import FileRunStore
+
+    if isinstance(run_store, FileRunStore):
+        return FileRunActivityStore(run_store.root.parent / "run-activity")
+    return InMemoryRunActivityStore()
 
 
 def _xdg_state_dir(name: str) -> Path:
@@ -299,6 +314,7 @@ def create_app(
     run_store: RunStore | None = None,
     artifact_store: Any | None = None,
     workspace_store: Any | None = None,
+    run_activity_store: RunActivityStore | None = None,
     workflow_store: WorkflowStore | None = None,
     task_store: Any | None = None,
     revision_store: Any | None = None,
@@ -316,6 +332,7 @@ def create_app(
     backend = backend or _select_backend()
     store = store or _select_store()
     run_store = run_store or _select_run_store()
+    run_activity_store = run_activity_store or _select_run_activity_store(run_store)
     artifact_store = artifact_store or _select_artifact_store()
     workspace_store = workspace_store or _select_workspace_store()
     workflow_store = workflow_store or _select_workflow_store()
@@ -364,6 +381,8 @@ def create_app(
     app.state.plane = plane
     app.state.run_store = run_store
     app.state.run_ledger = plane.run_ledger
+    plane.run_activity = run_activity_store
+    app.state.run_activity = run_activity_store
     app.state.artifact_store = artifact_store
     app.state.workspace_store = workspace_store
     app.state.workspaces = workspaces

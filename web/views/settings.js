@@ -95,7 +95,7 @@ export function renderSettings() {
       card({
         title: t("Local data"),
         iconName: "trash",
-        body: h("p", { class: "muted" }, t("The console remembers prompts it sent (the API does not store them) and recently viewed workflows.")),
+        body: h("p", { class: "muted" }, t("The console caches prompts it sent and recently viewed workflows in this browser.")),
         footer: [
           button(t("Clear local data"), {
             variant: "danger",

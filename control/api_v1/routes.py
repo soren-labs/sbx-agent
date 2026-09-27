@@ -424,6 +424,8 @@ def _run_public(
     knobs default off so every existing call site keeps its shape.
     """
     run = _render_run(plane, pub, rec, n, cancelled, meta, run_states, record=record, state=state)
+    prompt = _run_prompt(rec, n)
+    run["prompt"] = {"text": prompt} if prompt else None
     if reporter is not None and scheduler is not None:
         reporter.report(
             scheduler=scheduler,
@@ -435,6 +437,16 @@ def _run_public(
             credential_fp=(getattr(rec, "sandbox_tags", None) or {}).get(TAG_CRED_RUN_FP),
         )
     return run
+
+
+def _run_prompt(rec: Any, n: int) -> str | None:
+    """The user message that opened run ``n``, from the durable session record."""
+    turn_id = f"turn-{n}"
+    for message in getattr(rec, "messages", None) or ():
+        if message.get("turn_id") == turn_id and message.get("role") == "user":
+            text = message.get("text")
+            return str(text) if text else None
+    return None
 
 
 def _render_run(
@@ -2428,6 +2440,16 @@ async def stream_run(
                 emit, current_turn = _belongs_to_run(obj, n, current_turn)
                 if emit and lineno >= start_line:
                     yield format_sse(lineno, obj)
+            if not lines:
+                # Sandbox gone: fall back to the transcript captured at turn end.
+                activity = getattr(request.app.state, "run_activity", None)
+                try:
+                    entries = activity.get(agent_id, n) if activity is not None else None
+                except Exception:
+                    entries = None
+                for entry in entries or ():
+                    if entry["id"] >= start_line:
+                        yield format_sse(entry["id"], entry["event"])
             while True:
                 await asyncio.sleep(keepalive_s)
                 yield ": keepalive\n\n"

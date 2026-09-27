@@ -21,6 +21,7 @@ from control.config import (
     TURN_MAX_SECONDS,
 )
 from control.credsync import TAG_CRED_BASE_FP
+from control.run_activity import RunActivityStore, compact_run_events
 from control.run_errors import run_error_for_run
 from control.run_store import (
     RunLedger,
@@ -28,7 +29,7 @@ from control.run_store import (
     outcome_from_turn_payload,
     run_error,
 )
-from control.sandbox_io import drain, read_json, sandbox_env, write_file
+from control.sandbox_io import drain, read_json, read_text, sandbox_env, write_file
 from control.store import SessionRecord, SessionStore, merge_usage
 
 Clock = Callable[[], datetime]
@@ -36,6 +37,24 @@ Clock = Callable[[], datetime]
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+TITLE_MAX_CHARS = 60
+
+
+def title_from_prompt(prompt: str | None) -> str | None:
+    """A short display title from the first non-empty line of a prompt."""
+    if not prompt:
+        return None
+    for line in prompt.splitlines():
+        words = line.strip().lstrip("#>*- ").split()
+        if not words:
+            continue
+        title = " ".join(words)
+        if len(title) > TITLE_MAX_CHARS:
+            title = title[: TITLE_MAX_CHARS - 1].rstrip() + "…"
+        return title
+    return None
 
 
 def iso(ts: datetime) -> str:
@@ -153,6 +172,9 @@ class ControlPlane:
         # means suspend/recovery is unavailable — suspended agents cannot
         # recover and an idle expiry falls back to ``timed_out``.
         self.checkpoints: Any = None
+        # Durable per-run activity transcripts, captured at turn end so the
+        # run stream stays replayable after sandbox teardown. None disables.
+        self.run_activity: RunActivityStore | None = None
         self._lock = threading.RLock()
         self._live: dict[str, LiveTurn] = {}
         # Per-session provider/account/model context for run records. Lost on
@@ -331,7 +353,7 @@ class ControlPlane:
                 self._first_turn_pending.add(session_id)
             rec = SessionRecord(
                 id=session_id,
-                title=title or "untitled",
+                title=title or title_from_prompt(first_prompt) or "untitled",
                 status="creating",
                 created_at=now,
                 updated_at=now,
@@ -1094,6 +1116,22 @@ class ControlPlane:
             pass
         self._finish_turn(session_id, turn_id, n)
 
+    def _capture_activity(self, handle: SandboxHandle | None, n: int) -> list[dict[str, Any]]:
+        if self.run_activity is None or handle is None:
+            return []
+        try:
+            return compact_run_events(read_text(self.backend, handle, "events.jsonl"), n)
+        except Exception:
+            return []
+
+    def _persist_activity(self, session_id: str, n: int, transcript: list[dict[str, Any]]) -> None:
+        if self.run_activity is None:
+            return
+        try:
+            self.run_activity.put(session_id, n, transcript)
+        except Exception:
+            pass
+
     def _finish_turn(self, session_id: str, turn_id: str, n: int) -> None:
         # Phase 1 (locked): snapshot the live handle only. Everything after
         # this — the backend evidence read and the contract verdict — runs
@@ -1111,6 +1149,7 @@ class ControlPlane:
                 # unreadable — the ledger persist below records it as
                 # ERROR, never success.
                 payload = None
+        transcript = self._capture_activity(handle, n)
         # Phase 2 (unlocked): judge the evidence. apply_output_contract is
         # pure and budget-bounded; the backstop keeps even an unforeseen
         # failure diagnosable instead of wedging the run open.
@@ -1248,6 +1287,8 @@ class ControlPlane:
                     structured_output=structured_output,
                     contract_result=contract_result,
                 )
+            if transcript:
+                self._persist_activity(session_id, n, transcript)
             if not eager:
                 # The in-process watcher releases its reconcile gate with
                 # the record settled; the eager path releases it after the
