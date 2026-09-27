@@ -869,4 +869,6 @@ export const ZH = {
   "Working — no revision yet": "进行中——暂无 revision",
   "Working on it": "正在处理",
   "Written by the producing agent — does not satisfy the merge gate": "由产生变更的 agent 提交——不满足合并门槛",
+  "default branch": "默认分支",
+  "Repository accepts owner/repo, a GitHub URL or a local path; private GitHub repos need the GitHub integration. Leave it empty for a plain sandbox task.": "仓库支持 owner/repo、GitHub URL 或本地路径；私有 GitHub 仓库需要先接入 GitHub 集成。留空则在普通沙箱中执行任务。",
 };

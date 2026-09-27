@@ -270,46 +270,35 @@ export function renderNewTask({ route, shell }) {
   });
   promptArea.value = f.prompt;
 
-  const promptHint = h("p", { class: "field-hint" }, t("⌘/Ctrl + Enter to submit."));
+  const promptHint = h("span", { class: "task-composer-hint" }, t("⌘/Ctrl + Enter to submit."));
   const promptError = h("p", { class: "field-error", hidden: true });
-  const taskCard = card({
-    title: t("Task"),
+  promptArea.classList.add("task-composer-input");
+  promptArea.rows = 4;
+  const autosize = () => {
+    promptArea.style.height = "auto";
+    promptArea.style.height = `${Math.min(promptArea.scrollHeight, 420)}px`;
+  };
+  promptArea.addEventListener("input", autosize);
+
+  // ------------------------------------------------------- repository
+  const repoInput = input("repo", { mono: true, placeholder: "owner/repo", "aria-label": t("Repository"), autocomplete: "off", spellcheck: "false" });
+  // The delivery choices unlock on a non-empty repo — re-render them per
+  // keystroke instead of waiting for a full section render.
+  repoInput.addEventListener("input", () => renderDelivery());
+  const refInput = input("ref", { mono: true, placeholder: t("default branch"), "aria-label": t("Starting point"), autocomplete: "off", spellcheck: "false" });
+
+  const detailsCard = card({
+    title: t("Details"),
     iconName: "message",
     body: h(
       "div",
       { class: "fields" },
-      h(
-        "div",
-        { class: "field" },
-        h("label", { class: "field-label", for: "f-prompt" }, t("What should the agent do?"), h("span", { class: "req", "aria-hidden": "true" }, " *")),
-        promptArea,
-        promptError,
-        promptHint,
-      ),
       field(t("Title"), input("name", { placeholder: t("Optional — a short title is generated from the prompt") }), { htmlFor: "f-name" }),
-    ),
-  });
-
-  // ------------------------------------------------------- repository
-  const repoInput = input("repo", { mono: true, placeholder: "owner/repo or https://github.com/owner/repo" });
-  // The delivery choices unlock on a non-empty repo — re-render them per
-  // keystroke instead of waiting for a full section render.
-  repoInput.addEventListener("input", () => renderDelivery());
-  const repoCard = card({
-    title: t("Repository"),
-    subtitle: t("Optional — needed when the task changes code."),
-    iconName: "branch",
-    body: h(
-      "div",
-      { class: "fields" },
-      field(t("Repository"), repoInput, {
-        htmlFor: "f-repo",
-        hint: t("Private GitHub repos need the GitHub integration. Leave empty for a plain sandbox task."),
-      }),
-      field(t("Starting point"), input("ref", { mono: true, placeholder: t("Default branch — or a branch, tag or commit") }), {
-        htmlFor: "f-ref",
-        hint: t("Blank uses the repository's default branch; the exact commit is resolved for you."),
-      }),
+      h(
+        "p",
+        { class: "field-hint" },
+        t("Repository accepts owner/repo, a GitHub URL or a local path; private GitHub repos need the GitHub integration. Leave it empty for a plain sandbox task."),
+      ),
     ),
   });
 
@@ -554,7 +543,6 @@ export function renderNewTask({ route, shell }) {
     ),
   );
 
-  const dynamicSections = h("div", { class: "stack" }, deliveryCard, advancedCard);
   function renderDynamic() {
     mount(aiBody, ...aiControls());
     renderDelivery();
@@ -602,9 +590,26 @@ export function renderNewTask({ route, shell }) {
 
   const submitBtn = button(t("Create task"), { variant: "primary", iconName: "zap", testid: "create-task", onClick: () => void submit() });
 
+  const composer = h(
+    "section",
+    { class: "task-composer", "data-testid": "task-composer" },
+    h("label", { class: "sr-only", for: "f-prompt" }, t("What should the agent do?")),
+    promptArea,
+    promptError,
+    h(
+      "div",
+      { class: "task-composer-bar" },
+      h("label", { class: "task-pill", title: t("Repository") }, icon("github", { size: 14 }), repoInput),
+      h("label", { class: "task-pill task-pill-ref", title: t("Starting point") }, icon("branch", { size: 14 }), refInput),
+      h("span", { class: "grow" }),
+      promptHint,
+      submitBtn,
+    ),
+  );
+
   const el = h(
     "div",
-    { class: "page page-narrow" },
+    { class: "page page-narrow page-new-task" },
     pageHeader({
       title: t("New task"),
       subtitle: t("Describe the outcome; the console resolves the repository, the agent and the delivery for you."),
@@ -615,13 +620,13 @@ export function renderNewTask({ route, shell }) {
       "div",
       { class: "stack" },
       errorSlot,
-      taskCard,
-      repoCard,
-      aiCard,
-      card({ title: t("Readiness"), subtitle: t("Live checks — repo access, ref resolution and account capacity."), iconName: "shield", body: preflightEl }),
-      dynamicSections,
+      composer,
+      preflightEl,
+      h("h2", { class: "section-label" }, t("Options")),
+      h("div", { class: "options-grid" }, aiCard, deliveryCard),
+      detailsCard,
+      advancedCard,
       previewDetails,
-      h("div", { class: "form-footer" }, h("a", { class: "btn", href: "#/tasks" }, t("Cancel")), submitBtn),
     ),
   );
 
@@ -647,6 +652,9 @@ export function renderNewTask({ route, shell }) {
       void runPreflight();
     }
   })();
-  queueMicrotask(() => promptArea.focus());
+  queueMicrotask(() => {
+    autosize();
+    promptArea.focus();
+  });
   return { el, title: t("New task") };
 }
