@@ -308,14 +308,17 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
     const main = el.closest(".main");
     return main && main.scrollHeight > main.clientHeight ? main : document.scrollingElement;
   };
+  // "Bottom" is the end of the conversation column (the composer), not the
+  // page: on narrow layouts the run-details aside stacks below it.
+  const viewBottom = (sc) => (sc === document.scrollingElement ? window.innerHeight : sc.getBoundingClientRect().bottom);
   const nearBottom = () => {
     const sc = scroller();
-    return !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight < FOLLOW_SLACK_PX;
+    return !sc || composerEl.getBoundingClientRect().bottom - viewBottom(sc) < FOLLOW_SLACK_PX;
   };
   let following = true;
   function scrollToLatest(behavior = "auto") {
     const sc = scroller();
-    if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior });
+    if (sc) sc.scrollBy({ top: composerEl.getBoundingClientRect().bottom - viewBottom(sc) + 16, behavior });
     following = true;
     jumpEl.hidden = true;
   }
