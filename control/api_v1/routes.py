@@ -2428,6 +2428,16 @@ async def stream_run(
                 emit, current_turn = _belongs_to_run(obj, n, current_turn)
                 if emit and lineno >= start_line:
                     yield format_sse(lineno, obj)
+            if not lines:
+                # Sandbox gone: fall back to the transcript captured at turn end.
+                activity = getattr(request.app.state, "run_activity", None)
+                try:
+                    entries = activity.get(agent_id, n) if activity is not None else None
+                except Exception:
+                    entries = None
+                for entry in entries or ():
+                    if entry["id"] >= start_line:
+                        yield format_sse(entry["id"], entry["event"])
             while True:
                 await asyncio.sleep(keepalive_s)
                 yield ": keepalive\n\n"
