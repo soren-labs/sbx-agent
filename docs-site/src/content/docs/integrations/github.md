@@ -67,8 +67,10 @@ exist. A local control plane (`SBX_BACKEND=local`) reads
 
 ### 3. Authorize repositories
 
-In the console, open **Admin → GitHub** and click **Connect GitHub**. GitHub
-opens in a new tab: pick the account and repositories, and GitHub redirects
+In the console, open **Integrations → GitHub** and click **Connect GitHub**
+— or run `sbx github connect`, which opens the same install page
+(`--print` shows the URL instead). GitHub opens in a new tab: pick the
+account and repositories, and GitHub redirects
 back to the console, which records the installation. If the redirect cannot
 reach the console, paste the `installation_id` from the redirect URL into the
 form on the same page.
@@ -138,34 +140,34 @@ uv run sbx deploy
 `sbx init` and `sbx doctor` include an advisory `github` check that reports
 which source exists and whether the bridge is armed — never the token.
 
-## Use it from an agent
+## Use it from a task
 
-Declare the private repository as the agent's workspace; add a `git` policy
-to let the agent publish a branch and open a pull request. The Python client
-has no `git` parameter, so send that body directly:
+Name the private repository as the task's `source` and declare where the
+result goes:
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/agents" \
+curl -X POST "$SBX_BASE_URL/v1/tasks" \
   -H "Authorization: Bearer $SBX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": {"text": "Add request logging to the API"},
-    "agent": {"provider": "codex"},
-    "workspace": {
-      "repo": "https://github.com/example/private-repo.git",
-      "base_ref": "main",
-      "base_sha": "<exact commit sha>"
-    },
-    "git": {"branch": "agent/logging", "push": true, "auto_create_pr": true}
+    "source": {"repo": "https://github.com/example/private-repo.git"},
+    "delivery": {
+      "branch": "agent/logging",
+      "pull_request": {"title": "Add request logging"}
+    }
   }'
 ```
 
-The sandbox clones the repository with the injected token. Nothing is pushed
-until you publish — `POST /v1/agents/{id}/git/publish`, or automatically
-after a successful run with `"auto_publish": true` — which pushes the work
-branch and, with `auto_create_pr`, opens the pull request. See
-[Repositories & git](/guides/repositories/) for the full policy and the
-review-gated merge.
+The sandbox clones the repository with the injected token. Publish on
+demand with `POST /v1/tasks/{id}/deliver`, or set
+`"delivery": {"auto_publish": true}` to push after every finished run. See
+[Repositories, revisions and delivery](/guides/repositories/) for revisions,
+reviews and the review-gated merge.
+
+The lower-level agent API (`POST /v1/agents` with `workspace` and a `git`
+policy) offers the same machinery for callers that pin an exact base commit
+themselves.
 
 ## Errors
 

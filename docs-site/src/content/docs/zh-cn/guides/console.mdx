@@ -1,32 +1,37 @@
 ---
 title: Web 控制台
-description: 在浏览器中创建 Agent、实时观看运行、评审与发布改动，并管理账号、密钥和 GitHub 授权。
+description: 在浏览器中创建并跟进任务、发布与评审改动，并连接 provider 账号与 GitHub。
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 import { Image } from 'astro:assets';
-import agents from '../../../../assets/console/agents.png';
+import home from '../../../../assets/console/home.png';
 import connect from '../../../../assets/console/connect.png';
-import newAgent from '../../../../assets/console/new-agent.png';
-import conversation from '../../../../assets/console/conversation.png';
-import runError from '../../../../assets/console/run-error.png';
-import workspace from '../../../../assets/console/workspace.png';
-import artifact from '../../../../assets/console/artifact.png';
-import workflow from '../../../../assets/console/workflow.png';
+import newTask from '../../../../assets/console/new-task.png';
+import task from '../../../../assets/console/task.png';
+import changes from '../../../../assets/console/changes.png';
+import deliveryFailed from '../../../../assets/console/delivery-failed.png';
+import staleReview from '../../../../assets/console/stale-review.png';
+import mobileTasks from '../../../../assets/console/mobile-tasks.png';
+import accounts from '../../../../assets/console/accounts.png';
 import capacity from '../../../../assets/console/capacity.png';
+import keyCreated from '../../../../assets/console/key-created.png';
 import zhLight from '../../../../assets/console/zh-light.png';
 
-import accounts from '../../../../assets/console/accounts.png';
-import keyCreated from '../../../../assets/console/key-created.png';
-
-Web 控制台是基于公开 `/v1` API 的单页应用。它做的每一件事都是一次普通的
-`/v1` 调用（带上你的 `sbx_` 密钥），所以控制台里能做的操作都可以写成脚本——
-「新建 Agent」页面甚至会实时展示即将发送的完整请求。
+Web 控制台是基于公开 `/v1` API 的单页应用，围绕[任务](/zh-cn/guides/tasks/)组织：
+描述要做的事，控制台会为你解析仓库、选择 Agent 并处理交付。控制台做的每件事
+都是一次普通的 `/v1` 调用（带上你的 `sbx_` 密钥），所以所有操作都可以写成脚本。
 
 控制台以静态文件形式放在 `web/` 目录（原生 ES 模块，无需构建），支持英文和
-简体中文，并跟随系统的浅色 / 深色主题。
+简体中文，跟随系统的浅色 / 深色主题，并适配手机宽度——导航会收成抽屉。
 
 ## 打开控制台
+
+最快的入口是 CLI：它签发一次性授权并直接以登录态打开控制台：
+
+```bash
+sbx open          # 或 `sbx open --print` 只打印地址
+```
 
 <Steps>
 
@@ -36,7 +41,7 @@ Web 控制台是基于公开 `/v1` API 的单页应用。它做的每一件事�
    `Authorization` 头。任何能提供 `web/` 并转发 `/v1/*` 的反向代理都可以。
 
 2. **用 API 密钥连接。** `sbx deploy` 会把一个 admin 密钥写入
-   `~/.local/state/sbx/bootstrap.key`；管理员可以在「管理 → API 密钥」中
+   `~/.local/state/sbx/bootstrap.key`；管理员可以在「设置 → API 密钥」中
    创建更多密钥。控制台会先用 `GET /v1/me` 校验密钥再保存。
 
 3. **选择密钥的保存方式。** 默认保存在 `sessionStorage`，关闭标签页即失效；
@@ -47,146 +52,159 @@ Web 控制台是基于公开 `/v1` API 的单页应用。它做的每一件事�
 
 <figure class="sbx-shot">
   <Image src={connect} alt="要求输入 sbx_ API 密钥的连接页面" />
+  <figcaption>每个浏览器标签页连接一次——或选择在此设备上记住密钥。</figcaption>
 </figure>
 
 <Aside type="tip" title="无需云账号即可试用">
 `make console-dev` 会用本地后端启动真实的控制面，配上模拟的 provider CLI
 和一个演示用 git 仓库，并打印访问地址和一次性密钥。提示词中包含 `hang`、
-`slow`、`fail` 或 `auth` 时会触发对应的模拟场景，方便查看各种运行状态。
+`slow`、`fail` 或 `auth` 时会触发对应的模拟场景，方便查看各种任务状态。
 </Aside>
 
-只有 `agents` 权限的密钥可以使用除「账号」「API 密钥」「GitHub」以外的
-全部功能，这三个页面会显示锁定提示。
+只有 `agents` 权限的密钥可以使用除「集成」和「设置」中账号与密钥管理之外的
+全部功能，这些页面会显示锁定提示。
 
-## Agent 列表
+## 首页
 
-「Agent」页面列出当前密钥创建的所有 Agent，实时统计运行中、空闲和已结束的
-数量以及预估的沙箱成本。可以按状态或 provider 筛选，按名称、ID 或模型搜索，
-或只看某个工作流；点击行上的工作流标签可跳转到该工作流的恢复视图。
+「首页」是起点：当前密钥下进行中、已完成和需要关注的任务实时计数、最近的
+任务列表，以及「新建任务」按钮。「任务」导航项会显示进行中任务的实时计数。
 
 <figure class="sbx-shot">
-  <Image src={agents} alt="Agent 列表：状态、provider、模型、工作流、token 与成本" />
+  <Image src={home} alt="首页：概览卡片与空的最近任务列表" />
+  <figcaption>首页：状态计数与首个任务的引导。</figcaption>
 </figure>
 
-## 新建 Agent
+## 任务列表
 
-「新建 Agent」是 `POST /v1/agents` 的表单，按需开启各个分区：
+「任务」列出当前密钥创建的所有任务——状态、provider、模型、仓库与创建时间，
+支持筛选和搜索。点击任意一条进入任务详情页。
 
-| 分区 | 设置内容 |
+<figure class="sbx-shot">
+  <Image src={mobileTasks} alt="手机宽度下的任务列表与打开的导航抽屉" />
+  <figcaption>控制台在手机宽度下完整可用。</figcaption>
+</figure>
+
+## 新建任务
+
+「新建任务」是 `POST /v1/tasks` 的表单，分为五个卡片：
+
+| 卡片 | 设置内容 |
 | --- | --- |
-| **任务** | 首次运行的提示词和可选名称。 |
-| **Agent** | provider、模型与账号（实时读取 `GET /v1/models` 及空闲账号数），以及该 provider 支持的推理强度。 |
-| **仓库** | `workspace`（仓库、基线 ref、精确的基线 sha），以及起点：基线 commit、产物、commit 或 PR ref。 |
-| **Git 策略** | 工作分支、推送、自动发布、创建 PR、评审门控合并；相互依赖的选项按顺序启用。 |
-| **结构化输出** | 最终消息必须满足的 JSON Schema，可选严格或警告模式。 |
-| **工作流** | `workflow_id`、`task_id`、`role` 与 `parent_task_id`。 |
-| **高级** | CPU 与内存的 `[请求, 上限]`、白名单内的 Secrets、MCP 服务器、空闲超时。 |
+| **任务** | 要 Agent 做什么（提示词）和可选标题。 |
+| **仓库** | `source.repo` 与 `source.ref`——起点会自动解析为精确 commit；留空则是普通沙箱任务。 |
+| **AI** | provider、模型、账号与推理强度——「自动」会挑选有空闲槽位的 provider 和账号；模型选项实时显示空闲账号数。 |
+| **结果** | 交付方式：「仅回复」「推送到分支」或「创建 PR」，以及分支名、PR 标题/目标与草稿开关。 |
+| **高级** | 工作流绑定、结构化输出契约（严格或警告）、CPU/内存、白名单内的 Modal Secret 与空闲超时。 |
 
-右侧「API 请求」面板随输入实时更新，可在 JSON、cURL、Python 之间切换。
-创建请求会携带 `Idempotency-Key`，重复点击也不会创建两个 Agent。
-
-<figure class="sbx-shot">
-  <Image src={newAgent} alt="新建 Agent 表单与实时 API 请求预览" />
-</figure>
-
-## 观看与引导运行
-
-Agent 的「对话」页按顺序展示每次运行：先是提示词，然后是实时推送的 provider
-过程——Agent 消息、带输出和退出码的命令、文件改动以及思考过程。标题行显示运行
-状态、耗时、模型和推理强度，底部显示 token 用量和执行账号。
+输入时会用 `POST /v1/tasks/preflight` 做就绪检查；检查失败会显示在提交按钮
+上方并阻止提交，直到通过。创建请求携带 `Idempotency-Key`，重复点击也不会
+创建两个任务。
 
 <figure class="sbx-shot">
-  <Image src={conversation} alt="一次已完成的运行：文件改动、命令、Agent 回复与用量面板" />
+  <Image src={newTask} alt="新建任务表单：任务与仓库卡片" />
+  <figcaption>表单与 `POST /v1/tasks` 的字段一一对应。</figcaption>
 </figure>
 
-- 在底部输入框**追问**：<kbd>Enter</kbd> 发送，<kbd>Shift</kbd>+<kbd>Enter</kbd>
-  换行。Agent 会保留沙箱并续用 provider 原生会话；「选项」可为单次运行附加输出契约。
-- 「取消运行」停止当前运行；「关闭 Agent」回收沙箱，历史记录变为只读。
-- 失败的运行会显示结构化错误：错误码、来源、是否值得重试以及下一步建议。
+## 观看与引导任务
+
+任务页展示目标、解析出的 provider/模型/仓库，以及实时状态——「排队中」
+「进行中」「可发布」「发布中…」「交付失败」「已完成」「失败」「已取消」
+或「已过期」。三个标签页：
+
+- **对话**——每次运行实时推送的过程：Agent 消息、带输出与退出码的命令、
+  文件改动与思考过程，以及用量面板（token、预估成本、沙箱时间）。
+- **变更**——revision 流水线（见下）。
+- **详情**——原始任务记录与各种 ID。
 
 <figure class="sbx-shot">
-  <Image src={runError} alt="失败的运行显示结构化错误" />
+  <Image src={task} alt="已完成任务：对话标签页与用量面板" />
+  <figcaption>运行过程实时推送；命令与文件改动可折叠。</figcaption>
 </figure>
 
-<Aside title="历史记录从哪里来">
-实时过程来自运行的事件流（SSE，断线后用 `Last-Event-ID` 续传）。事件流保存在
-沙箱中，因此 Agent 关闭后，控制台会改为展示持久化运行账本中的最终结果和错误。
-API 不保存提示词；控制台会记住从当前浏览器发出的提示词，其他客户端发起的运行
-会标注为「提示词来自其他客户端」。
-</Aside>
+- 在对话输入框**追问**：<kbd>Enter</kbd> 发送，<kbd>Shift</kbd>+<kbd>Enter</kbd>
+  换行。任务会保留沙箱并续用 provider 原生会话；任务忙碌时消息会排队。
+- **重试**会重新运行已完成/失败的任务，或重试失败的发布——按钮文案表明
+  将要做的操作（仅交付失败时显示「重试发布」）。
+- **取消**停止进行中的运行；关闭对话面板后任务历史变为只读。
 
-## 评审、发布与合并
+## 变更：revision、评审与合并
 
-使用仓库创建的 Agent 会有「工作区」页。变更流水线展示工作进度——基线、HEAD、
-已评审、已发布、已合并——并附上精确的 sha。
+「变更」标签页跟踪每个 revision 的流水线——Revision → 已交付 → 已评审 →
+已合并——附精确 sha、文件 diff、交付记录（分支与 PR）和已记录的评审。
 
 <figure class="sbx-shot">
-  <Image src={workspace} alt="工作区页：变更流水线、仓库记录与 Git 策略" />
+  <Image src={changes} alt="变更标签页：已交付 revision、diff 与流水线" />
+  <figcaption>每一步都钉在精确的 sha 上。</figcaption>
 </figure>
 
-- **锁定评审**：记录你评审过的 commit（默认当前 HEAD），可选在 PR 上发表评论——
-  永远不会作为 GitHub Approve。
-- **发布**：推送工作分支；若策略要求，同时创建 PR。
-- **合并**：评审锁定与当前 HEAD 一致前保持禁用；评审后若 HEAD 变化，需要重新评审。
-- **应用交接**：引入另一个 Agent 的产物、commit 或 PR。
-
-这些操作要求 Agent 处于空闲状态且沙箱存活。
-
-## 产物与交接
-
-「快照」会把工作区打包成持久产物——`patch.diff`、HEAD 移动时的 git bundle，
-以及所有收集到的文件及其 sha256——还可以先运行测试命令。产物在沙箱销毁后依然
-存在；在产物页面可以下载任意成员，或点击「交接给新 Agent」，自动带着仓库信息和
-该产物打开「新建 Agent」。
+- revision 就绪但未交付时显示「立即发布」；「查看改动」打开已交付的结果。
+- 「添加评审」把评审结论钉在 revision 的 HEAD 上。新的 revision 物化后，
+  之前的评审标记为**过时**——需要重新评审。
 
 <figure class="sbx-shot">
-  <Image src={artifact} alt="产物详情：来源 sha、载荷下载、测试与文件" />
+  <Image src={staleReview} alt="旧 revision 上的过时评审标记" />
+  <figcaption>评审钉在精确 HEAD 上；新 revision 会将其标记为过时。</figcaption>
 </figure>
 
-## 工作流
-
-带 `workflow_id` 创建的 Agent 会出现在「工作流」中。恢复视图完全基于持久化记录：
-进度、每个任务的角色、Agent 与最近一次运行，子任务缩进显示在父任务之下。
-「关闭工作流」只关闭你的密钥下绑定到该工作流的 Agent 并报告结果，可以放心重复执行。
+- 发布会失败时展示结构化交付错误，并提供「重试发布」——不会重新执行运行。
 
 <figure class="sbx-shot">
-  <Image src={workflow} alt="工作流恢复视图" />
+  <Image src={deliveryFailed} alt="交付失败的任务：错误信息与立即发布按钮" />
 </figure>
 
-## 容量
+## 集成
 
-「容量」页列出每个已启用 provider 提供的模型、每个模型有多少账号还有空闲槽位，以及该
-provider 支持的推理强度。admin 密钥还能看到每个账号的槽位占用。
+「集成」页是连接 provider 账号与 GitHub 的地方——见
+[账号](/zh-cn/guides/accounts/)与 [GitHub 集成](/zh-cn/integrations/github/)。
 
-<figure class="sbx-shot">
-  <Image src={capacity} alt="容量页面，每个 provider 一张卡片" />
-</figure>
-
-## 管理功能
-
-以下页面需要带 `admin` 权限的密钥：
-
-- **账号**：选择 provider CLI 登录时写入的凭证文件即可导入账号（对话框会提示各
-  provider 的文件路径）。文件直接发送到你的控制面，之后不会再显示。「校验」在一次性
-  沙箱中探测凭证，「移除」删除账号及其凭证。
-- **API 密钥**：创建带或不带 `admin` 的密钥。明文只显示一次，控制面只保存 sha256；
-  吊销当前使用的密钥会立即退出登录。
-- **GitHub**：显示是否已配置 GitHub App 以及每个安装覆盖的仓库。「连接 GitHub」会打开
-  App 的安装页面；把 App 的 Setup URL 设为控制台地址，GitHub 会跳转回控制台并自动记录
-  安装。「同步」从 GitHub 刷新，「吊销」移除安装。
+- **连接 provider** 提供 provider 的官方登录，或一个本地配对票据——在已登录
+  的机器上执行 `sbx auth pair <ticket>` 完成。「账号」视图列出每个账号的状态、
+  槽位占用与模型。
+- **GitHub** 显示是否已配置 GitHub App 以及每个安装覆盖的仓库；
+  `sbx github connect` 会打开 App 的安装页面。「同步」从 GitHub 刷新，
+  「吊销」移除安装。
 
 <figure class="sbx-shot">
   <Image src={accounts} alt="账号表：状态、槽位占用和模型" />
+</figure>
+
+## 设置
+
+- **API 密钥**：创建带或不带 `admin` 的密钥。明文只显示一次，控制面只保存
+  sha256；吊销当前使用的密钥会立即退出登录。
+- **容量**：每个已启用 provider 提供的模型、空闲账号数与支持的推理强度；
+  admin 密钥还能看到槽位占用。
+- **运行时**：控制面与 CLI 的版本信息。
+- **偏好**：语言、主题，以及清除本地记住的提示词。
+
+<figure class="sbx-shot">
+  <Image src={capacity} alt="容量页面，每个 provider 一张卡片" />
 </figure>
 
 <figure class="sbx-shot">
   <Image src={keyCreated} alt="新创建的 API 密钥，明文仅显示一次，带复制按钮" />
 </figure>
 
+## 高级页面
+
+侧边栏的「高级」区展示任务所解析到的底层资源——用于调试，以及任务界面
+未覆盖的流程。
+
+- **Agent**——当前密钥创建的所有 Agent，带实时状态、provider、模型、token
+  与成本；打开可查看其运行、工作区与 git 操作（即任务页展示的同一批记录，
+  只是更底层）。「新建 Agent」是 `POST /v1/agents` 的表单，包括精确
+  `base_sha` 与 handoff 起点——见 [Agent 与运行](/zh-cn/guides/agents-and-runs/)。
+- **工作流**——绑定 `workflow_id` 的 Agent 的恢复视图：进度、每个任务的
+  角色/Agent/最近一次运行、子任务缩进显示。「关闭工作流」只关闭你的密钥下
+  绑定到该工作流的 Agent。
+- **产物**——沙箱销毁后依然存在的持久快照（`patch.diff`、git bundle、带
+  sha256 的文件）。产物可按成员下载，也可交接给新 Agent——见
+  [产物与交接](/zh-cn/guides/handoffs-and-artifacts/)。
+
 ## 语言与主题
 
-侧边栏底部的按钮或「设置」页可以在英文与简体中文、跟随系统 / 浅色 / 深色主题之间
-切换；设置页还会显示连接信息，并可清除本地记住的提示词和工作流。
+侧边栏底部的按钮或「设置」页可以在英文与简体中文、跟随系统 / 浅色 / 深色
+主题之间切换。
 
 <figure class="sbx-shot">
   <Image src={zhLight} alt="简体中文、浅色主题下的控制台" />
@@ -194,8 +212,8 @@ provider 支持的推理强度。admin 密钥还能看到每个账号的槽位�
 
 ## 配置
 
-只要控制台与 `/v1` 同源部署，就不需要任何配置。如有需要，可以在 `app.js` 加载前用脚本
-设置两个可选的全局变量：
+只要控制台与 `/v1` 同源部署，就不需要任何配置。如有需要，可以在 `app.js`
+加载前用脚本设置两个可选的全局变量：
 
 | 全局变量 | 作用 |
 | --- | --- |
@@ -206,7 +224,7 @@ provider 支持的推理强度。admin 密钥还能看到每个账号的槽位�
 
 | 现象 | 排查方向 |
 | --- | --- |
-| 被带回「连接」页并提示密钥被拒绝 | 密钥已被吊销或输入有误，请在「API 密钥」中新建。 |
+| 被带回「连接」页并提示密钥被拒绝 | 密钥已被吊销或输入有误，请在「设置 → API 密钥」中新建。 |
 | 「无法连接到控制面」 | 控制台与 `/v1` 不同源，或地址有误，参见 [边缘部署](/zh-cn/self-hosting/edge/)。 |
 | 运行显示「正在重新连接事件流…」 | 事件流中断后控制台会自动续传；若放弃，仍会轮询运行记录直到结束。 |
 | 「提示词来自其他客户端」 | 该运行由其他客户端发起，API 不保存提示词文本。 |

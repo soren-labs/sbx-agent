@@ -1,231 +1,198 @@
 ---
-title: Repositories and git
-description: Start an agent on an exact commit, publish its work branch, open a pull request, and merge only after an exact-sha review.
+title: Repositories, revisions and delivery
+description: Run a task on a repository, get its changes as a revision, publish a branch or pull request, and merge only after an exact-sha review.
 ---
 
-An agent can work on a git repository. You pin the exact commit it starts
-from; the control plane clones it inside the sandbox, records every head the
-work moves through, and — if you allow it — pushes a work branch, opens a pull
-request and merges it after a review pinned to an exact sha.
+A [task](/guides/tasks/) can work on a git repository: the control plane
+clones it inside the task's sandbox, tracks every commit the work moves
+through, and delivers the result as a durable **revision** you can push to a
+branch, open as a pull request, review, and merge.
 
-Everything on this page is optional. Agents without a `workspace` simply work
-in an empty sandbox directory.
+Everything on this page is optional. A task without a `source` runs in a
+plain sandbox directory.
 
-## Declare a workspace
-
-Pass `workspace` when you create the agent. All three fields are required:
-
-| Field | Meaning |
-| --- | --- |
-| `repo` | What to clone inside the sandbox: any git URL the sandbox can reach, or a filesystem path. |
-| `base_ref` | The ref `base_sha` is expected to sit on, for example `main`. |
-| `base_sha` | The exact 40-hex commit run 1 must start from. |
+## Source: what to work on
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/agents" \
+curl -X POST "$SBX_BASE_URL/v1/tasks" \
   -H "Authorization: Bearer $SBX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": {"text": "Fix the flaky date test"},
-    "agent": {"provider": "codex"},
-    "workspace": {
-      "repo": "https://github.com/acme/api",
-      "base_ref": "main",
-      "base_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39"
-    }
+    "source": {"repo": "https://github.com/acme/api"}
   }'
 ```
 
-Before run 1 starts, the control plane clones `repo`, resolves `base_ref`,
-compares it with `base_sha` and checks the commit out. It never silently works
-on a different version: if the ref resolves elsewhere, run 1 fails with
-`base_sha_mismatch` (run `ERROR`, agent closed), and a ref or sha that does
-not exist fails with `checkout_failed`.
+| Field | Meaning |
+| --- | --- |
+| `repo` | Any git URL the sandbox can reach, or a filesystem path. `https://github.com/…` and `git@github.com:…` forms are canonicalized to the same repository. |
+| `ref` | `auto`/`HEAD`/absent → the repository's default branch. A branch or tag resolves to its sha; a 40-hex sha pins that commit. |
 
-The Python client passes the same dictionary through:
-
-```python
-from examples.sbx_client import SbxClient
-
-client = SbxClient()
-created = client.create(
-    "Fix the flaky date test",
-    provider="codex",
-    workspace={
-        "repo": "https://github.com/acme/api",
-        "base_ref": "main",
-        "base_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
-    },
-)
-```
+The control plane resolves the ref to an **exact commit** before the run
+starts — you never write `base_sha` yourself — and persists it on the task's
+`resolved` evidence. If the repo is unreachable or the ref does not exist,
+the task fails with `invalid_source` before a sandbox is allocated; run
+`POST /v1/tasks/preflight` to check resolution without committing.
 
 Public repositories and non-GitHub remotes need no credentials. Private
-github.com repositories need the GitHub integration — see
-[GitHub access](/integrations/github/).
+github.com repositories need the [GitHub integration](/integrations/github/).
 
-## Add a git policy
+## Delivery: where the result goes
 
-`git` declares what the agent may do with its work. It requires `workspace`.
+`delivery` declares what happens with the work once a run leaves commits:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `branch` | `sbx/<agent_id>` | Work branch, created on `base_sha` when the workspace is prepared. |
-| `push` | `false` | Allow publishing: pushing the work branch to the repository's remote. |
-| `auto_create_pr` | `false` | Open a pull request when publishing. Requires `push`. |
-| `auto_publish` | `false` | Publish automatically after every run that finishes successfully. Requires `push`. |
-| `merge` | `false` | Allow the merge endpoint. Requires `auto_create_pr`; merging still needs a review pin. |
-| `target` | `workspace.base_ref` | Base branch of the pull request. |
-| `draft` | `false` | Open the pull request as a draft. |
-| `title`, `body` | — | Pull request title and description. |
-
-A policy that breaks a dependency (for example `auto_create_pr` without
-`push`), an unknown field, or an unsafe ref name is rejected with
-`400 workspace_invalid` before any sandbox starts.
+| `branch` | derived `sbx/…` name | The work branch the revision publishes to. |
+| `auto_publish` | `false` | Push the work branch automatically after every run that finishes successfully. |
+| `pull_request` | — | Open a pull request on publish: `{title, body, draft, target}`; `target` defaults to the resolved base ref. |
 
 ```json
 {
-  "prompt": { "text": "Fix the flaky date test and open a pull request" },
-  "agent": { "provider": "codex" },
-  "workspace": {
-    "repo": "https://github.com/acme/api",
-    "base_ref": "main",
-    "base_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39"
-  },
-  "git": {
+  "prompt": {"text": "Fix the flaky date test"},
+  "source": {"repo": "https://github.com/acme/api"},
+  "delivery": {
     "branch": "sbx/flaky-date",
-    "push": true,
-    "auto_create_pr": true,
-    "auto_publish": true,
-    "merge": true,
-    "draft": true,
-    "title": "Fix flaky date test"
+    "pull_request": {"title": "Fix flaky date test", "draft": true}
   }
 }
 ```
 
-:::note
-The Python client's `create()` has no `git` argument. Send policies with any
-HTTP client, or through `client.http.post("/v1/agents", json=body)`, which
-reuses the client's base URL and key.
-:::
-
-## Read the workspace record
-
-`GET /v1/agents/{id}/workspace` returns the durable record. It stays readable
-after the sandbox is gone.
-
-| Field | Meaning |
-| --- | --- |
-| `repo`, `base_ref`, `base_sha` | What you declared. |
-| `workdir` | Checkout directory inside the sandbox work directory (`repo` by default). |
-| `checkout_sha` | The commit that was actually checked out. |
-| `head_sha` | The latest recorded head of the work. |
-| `reviewed_head_sha` | The commit a reviewer pinned, if any. |
-| `git`, `branch` | The resolved git policy and work branch. |
-| `pushed_head_sha` | The head the last publish pushed and verified on the remote. |
-| `pull_request` | Pull request metadata recorded by publish. |
-| `merge` | Merge metadata recorded by the merge endpoint. |
-| `publish_error` | The last publish failure, explicit or automatic. |
-| `created_at`, `updated_at` | Timestamps. |
-
-## Publish
-
-`POST /v1/agents/{id}/git/publish` (no body) executes the declared policy:
-
-1. Refresh the recorded head.
-2. Push `HEAD` to `refs/heads/<branch>` on the repository's remote.
-3. Verify that the remote branch resolves to exactly the pushed head — drift
-   fails closed with `repo_unavailable`.
-4. If `auto_create_pr` is set, open the pull request (or update it).
-
-`pushed_head_sha` and `pull_request` are saved on the workspace record, so a
-reviewer can pin exactly what was published. Pushing works with any remote the
-sandbox can reach, including a plain file path; opening a pull request needs
-the GitHub integration.
-
-With `auto_publish`, the same publish runs after every run that finishes
-successfully. It is best effort: a failure is saved as `publish_error` on the
-workspace record, and the run stays `FINISHED`.
-
-## Pin a review
-
-A reviewer — a person or another agent — pins the exact commit they signed off:
+With `auto_publish`, the publish step runs after every finished run. Without
+it, publish on demand:
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/agents/$AGENT_ID/workspace/review" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"head_sha": "9e1d7c0b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d", "comment": "Tests pass locally."}'
+curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/delivery" \
+  -H "Authorization: Bearer $SBX_API_KEY"
 ```
 
-- Omit `head_sha` to pin the recorded head. A value that disagrees with it is
-  `409 head_sha_mismatch`: a reviewed version is never silently mislabeled.
-- `comment` is optional and is posted on the recorded pull request as a
-  machine-readable comment. It needs the agent's live sandbox. It is never a
-  formal GitHub approval: every sandbox shares one GitHub identity, so the API
-  deliberately has no approve path.
+Publishing verifies the remote branch resolves to exactly the pushed head —
+drift fails closed with `repo_unavailable`. Pull requests need the GitHub
+integration; pushes work with any remote the sandbox can reach.
 
-In Python, `client.review_workspace(agent_id, head_sha=None)` pins a review
-(without a comment).
+The task's `delivery` view reports `required`/`pending`/`delivered`/`failed`
+plus the recorded `pushed_head_sha`, `pull_request` and `merge` metadata.
+A task whose required delivery did not land reports `delivery_failed`; retry
+with `POST /v1/tasks/{id}/retry` (`mode: "delivery"`) — the run does not
+re-execute.
+
+## Revisions
+
+Each run's result materializes into a durable **revision** — a content-row
+pinning `repo`, `base_sha`, `head_sha` and the artifact carrying the diff.
+Revisions survive the sandbox and are addressable per task:
+
+```bash
+curl "$SBX_BASE_URL/v1/tasks/$TASK_ID/revisions" \
+  -H "Authorization: Bearer $SBX_API_KEY"
+curl "$SBX_BASE_URL/v1/tasks/$TASK_ID/revisions/latest" \
+  -H "Authorization: Bearer $SBX_API_KEY"   # or rev-…, or the n counter
+```
+
+`status` is `ready` once materialized or `materialization_failed` when the
+changes could not be packaged (retry the task to re-materialize). The
+console's task page links each revision to its diff.
+
+## Reviews
+
+A **review** is a durable verdict pinned to a revision:
+
+```bash
+curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/reviews" \
+  -H "Authorization: Bearer $SBX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "verdict": "approve",
+    "revision": "latest",
+    "comment": "Tests pass locally."
+  }'
+```
+
+- `verdict` is `approve`, `request_changes` or `comment`; `findings` carries
+  structured per-file notes.
+- `reviewer` (`{identity, agent_id, run_id}`) defaults to the calling API
+  key. A review from the revision's own agent or run is recorded but never
+  counts as `independent`.
+- `reviewed_head_sha` pins the exact commit that was reviewed; a review
+  turns `stale` when a newer revision materializes — review again after new
+  commits.
+- `comment` posts a machine-readable comment on the delivered pull request.
+  It is deliberately never a formal GitHub approval.
+
+`GET /v1/tasks/{id}/reviews` lists them (`?revision=` filters).
 
 ## Merge
 
-`POST /v1/agents/{id}/git/merge` (no body) merges the recorded pull request
-only when all of these hold:
-
-- the policy has `merge: true` and publish has recorded a pull request;
-- a review is pinned — otherwise `409 review_required`;
-- the recorded pull request head and the remote pull request ref still equal
-  the pinned sha — otherwise `409 head_sha_mismatch`. Review again after new
-  commits.
-
-Merge metadata is saved as `workspace.merge`.
-
-Publish, merge and handoff change files, so they need the agent to be `idle`
-on a live sandbox: a running agent answers `409 turn_in_progress`, a closed
-one or one without a sandbox `409 session_not_runnable`.
-
-## Start a reviewer from a pull request
-
-To have a second agent review published work, create it on the same
-`workspace` with a `pull_request` handoff:
-
-```json
-{
-  "prompt": { "text": "Review this change for correctness and missing tests" },
-  "agent": { "provider": "devin" },
-  "workspace": {
-    "repo": "https://github.com/acme/api",
-    "base_ref": "main",
-    "base_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39"
-  },
-  "handoff": {
-    "pull_request": {
-      "ref": "refs/pull/42/head",
-      "head_sha": "9e1d7c0b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d"
-    }
-  }
-}
+```bash
+curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/merge" \
+  -H "Authorization: Bearer $SBX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "latest"}'
 ```
 
-`ref` may be `refs/pull/<n>/head`, `pull/<n>/head` or a branch name. It must
-resolve to exactly `head_sha`; a ref that moved since you pinned it fails with
-`head_sha_mismatch`. Other handoff sources — artifacts and plain commits — are
-covered in [Artifacts and handoffs](/guides/handoffs-and-artifacts/).
+Merge lands the delivered pull request only when **all** hold — otherwise it
+fails closed:
+
+- the revision was delivered and its pull request is recorded;
+- a non-stale **independent** `approve` review pins the revision's exact
+  `head_sha` — `404 revision_not_found` / `409 review_required`,
+  `review_stale` or `independence_violation` when not;
+- the remote pull request still points at that head.
+
+The merge commit sha is recorded on the revision's `delivery`.
+
+## The Python SDK
+
+```python
+from sbx.sdk import SbxClient
+
+client = SbxClient()
+created = client.tasks.create(
+    "Fix the flaky date test",
+    source={"repo": "https://github.com/acme/api"},
+    delivery={"pull_request": {"title": "Fix flaky date test"}},
+)
+task = client.tasks.wait(created.task.id)
+
+revision = client.tasks.revision(created.task.id)  # latest
+review = client.tasks.review(created.task.id, verdict="approve")
+merged = client.tasks.merge(created.task.id)  # gated on the review
+```
+
+## Lower-level: agent workspaces
+
+Tasks resolve onto the same machinery the agent API exposes directly:
+`GET /v1/agents/{id}/workspace` reads the durable workspace record (repo,
+refs, shas, resolved git policy, `pushed_head_sha`, `pull_request`, `merge`,
+`publish_error`), `POST /v1/agents/{id}/git/publish` and
+`POST /v1/agents/{id}/git/merge` drive it, and
+`POST /v1/agents/{id}/workspace/review` pins a review commit. Agents created
+via `POST /v1/agents` also accept an explicit `workspace` (`repo`, `base_ref`,
+`base_sha`) and `git` policy (`push`, `auto_create_pr`, `auto_publish`,
+`merge`, `target`, `draft`, `title`, `body`) for callers that need to pin an
+exact starting commit — see [Agents and runs](/guides/agents-and-runs/) and
+the [API reference](/reference/api/).
+
+Handoffs — starting an agent from an artifact, a commit or a pull-request
+ref — are covered in [Artifacts and handoffs](/guides/handoffs-and-artifacts/).
 
 ## Errors
 
-Workspace errors use the standard error envelope. `workspace_not_found` is
-`404`, `workspace_invalid` is `400`, and the others are `409`. When they
-happen while run 1 prepares the workspace, they are also stored on the run as
-a structured error with `source: "control"` and `retryable: false`.
-
 | Code | Meaning |
 | --- | --- |
-| `workspace_invalid` | Malformed declaration: invalid `git` policy, unsafe ref or workdir, or a `handoff` without `workspace` on create. |
-| `workspace_not_found` | The agent was created without a workspace. |
-| `repo_unavailable` | Clone, fetch, push or pull request failed: unreachable repository, missing GitHub access, or the remote resolved to a different sha than the one just pushed. |
-| `checkout_failed` | `base_ref` or `base_sha` does not resolve in the fresh clone. |
-| `base_sha_mismatch` | `base_ref` resolved to a different commit than `base_sha`, or a handed-off commit is not a descendant of the base. |
+| `invalid_source` | The task's `source.repo`/`ref` cannot be resolved. |
+| `workspace_invalid` | Malformed declaration: invalid git policy, unsafe ref or workdir. |
+| `workspace_not_found` | The agent has no repository. |
+| `repo_unavailable` | Clone, fetch, push or pull request failed: unreachable repository, missing GitHub access, or remote drift on push. |
+| `checkout_failed` | A ref or sha does not resolve in the fresh clone. |
+| `base_sha_mismatch` | The resolved ref disagrees with a pinned sha, or a handed-off commit is not a descendant of the base. |
 | `head_sha_mismatch` | A review or handoff head disagrees with the recorded head, or a pull request ref drifted from its pin. |
-| `review_required` | Merge was requested without a review pin. |
+| `review_required` | Merge was requested without a qualifying review. |
+| `review_stale` | The approving review predates the current revision head. |
+| `independence_violation` | Only the revision's own agent/run reviewed it — not mergeable. |
+| `revision_not_found` / `revision_not_ready` | Unknown ref, or the revision has not finished materializing. |
+| `merge_not_allowed` | The resolved delivery policy does not permit merging. |
+
+When they happen while a run prepares its workspace, these are also stored
+on the run as a structured error with `source: "control"` and
+`retryable: false`.

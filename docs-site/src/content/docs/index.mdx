@@ -51,13 +51,13 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Everything runs under your account: control plane, sandboxes, images, durable storage. One `sbx deploy` command creates the App, mounts your credentials as Secrets, and boots the control plane.
 
-**2. Create an agent with one API call**
+**2. Create a task with one API call**
 
-`POST /v1/agents` with provider (codex, devin, antigravity, grok, opencode), model, and account ID. A sandbox starts on the provider's image, the official CLI logs in, and run 1 begins immediately.
+`POST /v1/tasks` with a prompt, an optional repository and a delivery target. The control plane resolves the repo to an exact commit, picks a provider and account with a free slot, and starts the run.
 
-**3. Talk to your agent over SSE or REST**
+**3. Watch, follow up, deliver**
 
-Stream canonical events with `GET /v1/agents/{id}/runs/{runId}/stream`, or poll the ledger with GET. Follow-up turns are new runs on the same agent that resume the native session. Cancel, close, or pin artifacts anytime.
+Stream run events over SSE or poll the task ledger. Follow-up runs resume the provider's native session. When the task touched a repository, publish the revision as a branch or pull request, record a review, and merge.
 
 ## What it's not
 
@@ -82,6 +82,6 @@ Stream canonical events with `GET /v1/agents/{id}/runs/{runId}/stream`, or poll 
 ## Next steps
 
 - **[Getting started](/getting-started/introduction/):** Clone, configure, and deploy in 10 minutes.
-- **[Guides](/guides/agents-and-runs/):** Master agents, runs, streaming, repos, and workflows.
+- **[Guides](/guides/tasks/):** Tasks, streaming, repositories, accounts, and workflows.
 - **[Self-hosting](/self-hosting/deploy/):** Deploy strategies, configuration, security, and troubleshooting.
 - **[For agents & LLMs](/agents/):** `llms.txt`, the OpenAPI spec, and SDK entry points for machine consumers.

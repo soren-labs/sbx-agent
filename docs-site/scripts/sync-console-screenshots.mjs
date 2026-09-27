@@ -12,6 +12,7 @@ const to = join(root, 'docs-site', 'src', 'assets', 'console');
 // e2e artifact → docs asset name (referenced from guides/console.mdx).
 const MAP = {
 	'console_01_connect.png': 'connect.png',
+	'console_02_home_empty.png': 'home.png',
 	'console_03_new_agent.png': 'new-agent.png',
 	'console_04_conversation.png': 'conversation.png',
 	'console_06_run_error.png': 'run-error.png',
@@ -23,6 +24,12 @@ const MAP = {
 	'console_12_accounts.png': 'accounts.png',
 	'console_13_key_created.png': 'key-created.png',
 	'console_14_zh_light.png': 'zh-light.png',
+	'console_15_new_task.png': 'new-task.png',
+	'console_16_task.png': 'task.png',
+	'console_17_mobile_tasks.png': 'mobile-tasks.png',
+	'console_18_delivery_failed.png': 'delivery-failed.png',
+	'console_21_changes.png': 'changes.png',
+	'console_22_stale_review.png': 'stale-review.png',
 };
 
 const missing = Object.keys(MAP).filter((name) => !existsSync(join(from, name)));

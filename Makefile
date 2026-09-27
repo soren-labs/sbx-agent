@@ -1,4 +1,4 @@
-.PHONY: lint test test-e2e console-dev docs-dev docs-build docs-screenshots image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
+.PHONY: lint test test-e2e console-dev docs-dev docs-build docs-check docs-deploy docs-screenshots image image-devin image-antigravity image-grok image-opencode image-manifest deploy secrets test-e2e-modal
 
 export MODAL_PROFILE ?= sorenlab2026
 
@@ -42,6 +42,12 @@ docs-sync-errors:
 # Refresh the console guide's screenshots from the Playwright console suite.
 docs-screenshots: test-e2e
 	node docs-site/scripts/sync-console-screenshots.mjs
+
+# Deploy the built docs site as the `sbx-docs` Modal app (Modal credentials
+# required). Prints the *.modal.run URL; mapping a custom domain is a DNS /
+# workspace step documented in docs-site/src/content/docs/self-hosting/deploy.md.
+docs-deploy: docs-build
+	uv run modal deploy docs-site/modal_deploy.py
 
 # Named Image sbx-runtime (Modal credentials required). Equivalent: `python -m runtime.image`.
 image:

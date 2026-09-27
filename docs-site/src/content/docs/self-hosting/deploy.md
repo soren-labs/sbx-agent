@@ -157,6 +157,30 @@ modal deploy -m control.modal_app
 
 See the `Makefile` for the complete build pipeline.
 
+## Deploy the docs site
+
+This documentation site is plain static output (`docs-site/dist`). To host it
+on the same Modal workspace as the control plane:
+
+```bash
+make docs-deploy
+```
+
+That builds the site and deploys it as the `sbx-docs` Modal app, which serves
+`dist` over an `@modal.asgi_app` endpoint. The deploy prints a
+`https://sorenlab2026--sbx-docs-docs.modal.run`-style URL. To serve it under a
+custom domain (e.g. `docs.sorenforge.com`), point the domain at the printed
+URL in your DNS provider and, if the workspace requires it, configure the
+custom domain on the Modal app — then rebuild the site with the canonical URL
+so sitemap and canonical links are right:
+
+```bash
+DOCS_SITE_URL=https://docs.sorenforge.com make docs-deploy
+```
+
+Any static host works the same way — the site has no server-side logic beyond
+redirects and a `404.html`.
+
 ## Uninstall
 
 ```bash

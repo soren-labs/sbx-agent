@@ -1,11 +1,61 @@
 ---
 title: Concepts
-description: Key terms and the agent lifecycle.
+description: Key terms — Task, Run, Revision, Delivery, Review — and the agent lifecycle.
 ---
+
+## Task
+
+A **unit of work** you describe once — a prompt, an optional repository
+source, an execution choice and a delivery policy. Created by
+`POST /v1/tasks`, a task resolves onto a sandboxed agent and tracks the
+whole lifecycle: queue, runs, delivery, revisions and reviews.
+
+### Task statuses
+
+| Status | Meaning |
+| --- | --- |
+| `queued` | Accepted; waiting for a sandbox or account slot |
+| `running` | A run is in progress |
+| `delivering` | The run finished; a required delivery (push/PR) is pending |
+| `finished` | The work is done and required delivery has landed |
+| `delivery_failed` | The run finished but publishing failed — retry without re-running |
+| `error` | The latest run failed with a structured error |
+| `cancelled` | Cancelled by `POST /v1/tasks/{id}/cancel` |
+| `expired` | The run did not finish before its timeout |
+| `stored` | Closed for housekeeping; history is read-only |
+
+Terminal statuses — `finished`, `error`, `cancelled`, `expired`,
+`delivery_failed` — never change once written. See [Tasks](/guides/tasks/).
+
+## Revision
+
+A **durable run result** for a task working on a repository: one row pinning
+`repo`, `base_sha`, `head_sha` and the artifact carrying the diff.
+Revisions are numbered per task (`rev-…` or `latest`) and survive sandbox
+teardown. See [Repositories, revisions and delivery](/guides/repositories/).
+
+## Delivery
+
+**Where the work goes.** A task's `delivery` declares a work branch and an
+optional pull request (`{title, body, draft, target}`); `auto_publish` runs
+it after every finished run. A delivered revision records the pushed head
+sha and pull request — remote drift fails closed. Publishing on demand is
+`POST /v1/tasks/{id}/deliver`.
+
+## Review
+
+A **durable verdict** (`approve`, `request_changes`, `comment`) pinned to a
+revision's exact head sha. Reviews from the revision's own agent or run are
+recorded but never `independent`; a review turns `stale` when a newer
+revision materializes. Merging a delivered pull request
+(`POST /v1/tasks/{id}/merge`) requires a non-stale independent `approve`.
 
 ## Agent
 
-A **long-lived stateful container** running an official provider CLI. Created by `POST /v1/agents`, an agent has a unique ID and persists across multiple turns until explicitly closed (`DELETE /v1/agents/{id}`).
+A **long-lived stateful container** running an official provider CLI — the
+layer a task resolves onto. Created by `POST /v1/tasks` (implicitly) or
+`POST /v1/agents` (directly), an agent has a unique ID and persists across
+multiple turns until explicitly closed (`DELETE /v1/agents/{id}`).
 
 Each agent:
 - Runs in its own Modal Sandbox

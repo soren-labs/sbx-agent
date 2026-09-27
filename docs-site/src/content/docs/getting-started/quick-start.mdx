@@ -1,11 +1,66 @@
 ---
 title: Quick start
-description: Clone, authenticate, deploy, and run your first agent in 10 minutes.
+description: Run your first task — on an existing deployment, or self-hosted on your own Modal workspace.
 ---
 
-import { Steps, Aside } from '@astrojs/starlight/components';
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-This guide gets you from zero to one real agent run on your own Modal workspace.
+There are two ways in:
+
+- **Use an existing deployment** — a teammate's or hosted control plane, like
+  `https://sbx.sorenforge.com`. You need a base URL and an `sbx_` API key.
+- **Self-host** — deploy your own control plane on your own Modal workspace
+  in about 10 minutes.
+
+<Tabs>
+<TabItem label="Use an existing deployment">
+
+## 1. Get an API key
+
+Ask the operator for an `sbx_` key, or mint one yourself if you can reach the
+console (**Settings → API keys**). Then:
+
+```bash
+export SBX_BASE_URL=https://sbx.sorenforge.com
+export SBX_API_KEY=sbx_...
+```
+
+## 2. Run a task
+
+```bash
+curl -X POST "$SBX_BASE_URL/v1/tasks" \
+  -H "Authorization: Bearer $SBX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": {"text": "Write hello.txt containing hi"},
+    "source": {"repo": "https://github.com/owner/repo"},
+    "delivery": {"pull_request": {}}
+  }'
+```
+
+Or with the [Python SDK](/reference/python-client/):
+
+```python
+from sbx.sdk import SbxClient
+
+client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
+created = client.tasks.create(
+    "Write hello.txt containing hi",
+    source={"repo": "https://github.com/owner/repo"},
+    delivery={"pull_request": {}},
+)
+task = client.tasks.wait(created.task.id)
+print(task.status)
+```
+
+## 3. Watch it in the console
+
+Open the deployment URL in a browser, or run `sbx open` from a machine with
+the CLI configured. The task page streams the run live and shows the
+delivered revision, its diff and the pull request.
+
+</TabItem>
+<TabItem label="Self-host on Modal">
 
 ## Prerequisites
 
@@ -15,7 +70,7 @@ This guide gets you from zero to one real agent run on your own Modal workspace.
 - A [Modal account](https://modal.com) (free tier works)
 - At least one provider CLI installed and logged in locally
 
-## Step 1: Clone and setup
+## 1. Clone and setup
 
 <Steps>
 
@@ -23,7 +78,6 @@ This guide gets you from zero to one real agent run on your own Modal workspace.
    ```bash
    git clone https://github.com/soren-labs/sbx-browser.git
    cd sbx-browser
-   git checkout v0.1.1  # optional: pin to the release tag
    ```
 
 2. Install dependencies:
@@ -45,59 +99,37 @@ This guide gets you from zero to one real agent run on your own Modal workspace.
 
 </Steps>
 
-## Step 2: Discover and verify credentials
+## 2. Connect provider accounts
 
-<Steps>
+Each task runs a provider CLI inside a Modal sandbox, authenticated with a
+credential you capture once. The easiest path is `sbx auth`, which runs the
+provider's official login and imports the result:
 
-1. Verify that the provider CLIs are logged in:
-   ```bash
-   uv run sbx credentials --verify
-   ```
-   Should report each provider as `verified` or `auth_invalid`. If `not_found`, run the provider's login command:
+```bash
+uv run sbx auth login --provider devin
+```
 
-   | Provider | Login command |
-   | --- | --- |
-   | Codex | `codex login` |
-   | Devin | `devin` (interactive) |
-   | Antigravity | `agy` (OAuth) |
-   | Grok | `grok login` |
-   | OpenCode | `opencode auth login` |
+To reuse an existing login without re-authenticating:
 
-</Steps>
+```bash
+uv run sbx auth import-existing --provider devin \
+  --from ~/.local/share/devin/credentials.toml
+```
 
-## Step 3: Import credentials into Modal
+Common credential locations:
 
-For each provider, import the credential file from `$HOME` into your Modal workspace as a Secret or account:
+| Provider | Login command | Credential file |
+| --- | --- | --- |
+| Codex | `codex login` | `~/.codex/auth.json` |
+| Devin | `devin` (interactive) | `~/.local/share/devin/credentials.toml` |
+| Antigravity | `agy` (OAuth) | `~/.gemini/antigravity-cli/antigravity-oauth-token` |
+| Grok | `grok login` | `~/.grok/auth.json` |
+| OpenCode | `opencode auth login` | `~/.local/share/opencode/auth.json` |
 
-<Steps>
+`uv run sbx auth status` shows what was found and each account's state; see
+[Accounts and credentials](/guides/accounts/) for details.
 
-1. **Codex** — shared credential Secret:
-   ```bash
-   modal secret create sbx-codex-auth \
-     CODEX_AUTH_JSON="$(cat ~/.codex/auth.json)"
-   ```
-
-2. **Other providers** — account-scoped imports:
-   ```bash
-   uv run python -m control.onboarding --modal import \
-     --provider devin --from ~/.local/share/devin/credentials.toml \
-     --account-id devin-1
-   ```
-   Repeat for each provider and account you want to use:
-   - Devin: `~/.local/share/devin/credentials.toml`
-   - Antigravity: `~/.gemini/antigravity-cli/antigravity-oauth-token`
-   - Grok: `~/.grok/auth.json`
-   - OpenCode: `~/.local/share/opencode/auth.json`
-
-3. Verify the import (optional but recommended):
-   ```bash
-   uv run python -m control.onboarding --modal verify \
-     devin-1 --probe auth
-   ```
-
-</Steps>
-
-## Step 4: Deploy
+## 3. Deploy
 
 <Steps>
 
@@ -107,7 +139,7 @@ For each provider, import the credential file from `$HOME` into your Modal works
    ```
    This:
    - Builds the runtime images (one per provider)
-   - Seeds the durable Dicts (sessions, runs, accounts, etc.)
+   - Seeds the durable Dicts (sessions, runs, tasks, accounts, etc.)
    - Creates the `sbx-control` Modal App
    - Runs a sanity check against the live control plane
 
@@ -123,7 +155,7 @@ For each provider, import the credential file from `$HOME` into your Modal works
 
 </Steps>
 
-## Step 5: Run your first agent
+## 4. Run your first task
 
 <Steps>
 
@@ -135,86 +167,72 @@ For each provider, import the credential file from `$HOME` into your Modal works
 
 2. **Via curl:**
    ```bash
-   curl -X POST "$SBX_BASE_URL/v1/agents" \
+   curl -X POST "$SBX_BASE_URL/v1/tasks" \
      -H "Authorization: Bearer $SBX_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{
        "prompt": {"text": "Write hello.txt containing hi"},
-       "agent": {
-         "provider": "codex",
-         "account_id": "auto"
-       }
+       "execution": {"provider": "codex"}
      }'
    ```
 
-3. **Via Python client:**
+3. **Via Python SDK:**
    ```python
-   from examples.sbx_client import SbxClient
-   import os
+   from sbx.sdk import SbxClient
 
-   client = SbxClient(
-       base_url=os.getenv("SBX_BASE_URL"),
-       api_key=os.getenv("SBX_API_KEY"),
+   client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
+   created = client.tasks.create(
+       "Write hello.txt containing hi",
+       execution={"provider": "codex"},
    )
-
-   # Create the agent (returns {"agent": {...}, "run": {...}})
-   created = client.create_agent(
-       text="Write hello.txt containing hi",
-       provider="codex",
-   )
-   agent, run = created["agent"], created["run"]
 
    # Watch real-time events over SSE
-   for event in client.watch(agent["id"], run["id"]):
+   for event in client.watch(created.agent.id, created.run.id):
        print(f"{event.type}: {event.data}")
-   ```
-
-   Or, shorthand:
-   ```bash
-   python examples/sbx_client.py "Write hello.txt containing hi"
    ```
 
 </Steps>
 
-## Step 6: Follow-up turns (optional)
+## 5. Follow up and deliver
 
-Once an agent is idle, create a follow-up run on the same agent to resume the native session:
+Once a task is idle, send a follow-up to resume the same session:
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/agents/{agent-id}/runs" \
+curl -X POST "$SBX_BASE_URL/v1/tasks/{task-id}/runs" \
   -H "Authorization: Bearer $SBX_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "prompt": {"text": "Now make it executable (chmod +x hello.txt)"}
-  }'
+  -d '{"prompt": {"text": "Now make it executable (chmod +x hello.txt)"}}'
 ```
 
-The run reuses the same sandbox, the same credential, and resumes the provider's native session (e.g., Codex's thread ID stays the same).
+The run reuses the same sandbox and resumes the provider's native session
+(e.g. Codex's thread ID stays the same). When the task worked on a
+repository, publish the result with `POST /v1/tasks/{id}/delivery` — see
+[Repositories, revisions and delivery](/guides/repositories/).
 
-## Web console (optional)
+## 6. Open the console
 
-The web console provides a visual dashboard for managing agents and runs:
-
-**Cloud deployment:**
 ```bash
-# If you deployed with the edge Worker, open:
-https://sbx.sorenforge.com
+uv run sbx open        # hands off already signed in
 ```
 
-**Local development:**
+or serve the console locally against a fake backend (no Modal credentials
+needed):
+
 ```bash
-# Serve the console against a local control plane (no Modal credentials needed)
-make console-dev
-
-# Then open:
-http://localhost:8790
+make console-dev     # then open http://localhost:8790
 ```
 
-`make console-dev` starts a real local `/v1` control plane with fake provider CLIs, serves the console, and prints a throwaway API key — paste it into the Connect screen.
+`make console-dev` starts a real local `/v1` control plane with fake
+provider CLIs and a demo repository, serves the console, and prints a
+throwaway API key — paste it into the Connect screen. See
+[Web console](/guides/console/).
+
+</TabItem>
+</Tabs>
 
 ## Next steps
 
-- **[Concepts](/concepts/):** Agent, Run, Provider, Account, Workflow, and more.
-- **[Streaming](/guides/streaming/):** Watch real-time events over SSE with automatic reconnect.
+- **[Concepts](/concepts/):** Task, Run, Revision, Provider, Account and more.
+- **[Tasks](/guides/tasks/):** The full lifecycle — monitor, follow up, retry.
 - **[Accounts and credentials](/guides/accounts/):** Multi-account scheduling and credential refresh.
-- **[Repositories & PRs](/guides/repositories/):** Declare git policy and auto-create pull requests.
+- **[Repositories & delivery](/guides/repositories/):** Branches, pull requests, review and merge.

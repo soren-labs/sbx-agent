@@ -40,9 +40,26 @@ uv run sbx deploy
 Each entry takes `id` (required) and optionally `label`, `secret_name`
 (default `sbx-acct-<id>`), `slots` and `models`.
 
+## Connect a provider login
+
+The fastest path — from the console or the CLI — is the `sbx auth` flow,
+which runs the provider's own login and captures the credential it writes:
+
+- **Integrations → Connect provider** in the [console](/guides/console/)
+  offers a hosted login, or a local-pair ticket you complete on a machine
+  that is already logged in: `sbx auth pair <ticket>`.
+- `sbx auth login --provider devin` runs the provider's official CLI/OAuth
+  login locally, then captures and verifies the result.
+- `sbx auth import-existing --provider devin --from <file>` captures a
+  login that already exists on this machine — no token paste.
+
+`sbx auth status` lists what was found and each account's state;
+`verify`, `relink` and `logout` manage it afterwards. See the
+[CLI reference](/reference/cli/#sbx-auth).
+
 ## Import an account
 
-Import a provider login from your machine with the onboarding CLI. `--modal`
+For scripted or bulk imports, use the onboarding CLI directly. `--modal`
 targets your Modal deployment; without it the command manages a local
 control plane's file store.
 
@@ -76,8 +93,8 @@ ID`, and `remove ID --yes` (refused while the account has running agents).
 
 ### Over the API
 
-Admins can also register accounts over HTTP (the console's **Admin →
-Accounts** page uses these calls):
+Admins can also register accounts over HTTP (the console's **Integrations →
+Accounts** view uses these calls):
 
 ```http
 POST /v1/accounts
@@ -116,7 +133,8 @@ stored credential in a throwaway sandbox: a failure marks the account
 
 With `"account_id": "auto"` (the default), the scheduler picks the
 least-recently-used `active` account of the requested provider that has a
-free slot. With a named account — `"agent": {"account_id": "devin-2"}` — it
+free slot. With a named account — `"execution": {"account_id": "devin-2"}`
+on a task, or `"agent": {"account_id": "devin-2"}` on a direct agent — it
 uses exactly that one or refuses.
 
 | Response | When |

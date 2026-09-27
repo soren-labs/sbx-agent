@@ -1,46 +1,55 @@
 ---
 title: Web console
-description: Create agents, watch runs live, review and publish changes, and administer accounts, keys and GitHub access from the browser.
+description: Create and follow tasks, publish and review changes, and connect providers, accounts and GitHub from the browser.
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 import { Image } from 'astro:assets';
-import agents from '../../../assets/console/agents.png';
+import home from '../../../assets/console/home.png';
 import connect from '../../../assets/console/connect.png';
-import newAgent from '../../../assets/console/new-agent.png';
-import conversation from '../../../assets/console/conversation.png';
-import runError from '../../../assets/console/run-error.png';
-import workspace from '../../../assets/console/workspace.png';
-import artifact from '../../../assets/console/artifact.png';
-import workflow from '../../../assets/console/workflow.png';
-import capacity from '../../../assets/console/capacity.png';
+import newTask from '../../../assets/console/new-task.png';
+import task from '../../../assets/console/task.png';
+import changes from '../../../assets/console/changes.png';
+import deliveryFailed from '../../../assets/console/delivery-failed.png';
+import staleReview from '../../../assets/console/stale-review.png';
+import mobileTasks from '../../../assets/console/mobile-tasks.png';
 import accounts from '../../../assets/console/accounts.png';
+import capacity from '../../../assets/console/capacity.png';
 import keyCreated from '../../../assets/console/key-created.png';
 import zhLight from '../../../assets/console/zh-light.png';
 
-The web console is a single-page app for the public `/v1` API. Everything it
-does is an ordinary `/v1` call with your `sbx_` key, so anything you can do in
-the console you can also script — the **New agent** page even shows the exact
-request it is about to send.
+The web console is a single-page app for the public `/v1` API, organized
+around [tasks](/guides/tasks/): describe the work, and the console resolves
+the repository, the agent and the delivery for you. Everything it does is an
+ordinary `/v1` call with your `sbx_` key, so anything you can do in the
+console you can also script.
 
 It ships as static files in `web/` (plain ES modules, no build step), speaks
-English and Simplified Chinese, and follows your system's light or dark theme.
+English and Simplified Chinese, follows your system's light or dark theme,
+and works at phone widths — the navigation collapses into a drawer.
 
 ## Open the console
+
+The fastest way in is the CLI, which mints a one-time grant and hands off
+already signed in:
+
+```bash
+sbx open          # or `sbx open --print` to get the URL only
+```
 
 <Steps>
 
 1. **Serve `web/` on the same origin as `/v1`.** The control plane does not
    send CORS headers, so the browser must reach the console and `/v1` through
-   one origin. The optional [Cloudflare edge](/self-hosting/edge/) does exactly
-   this: it serves `web/` as static assets and forwards `/v1/*` with your
-   `Authorization` header untouched. Any reverse proxy that serves `web/` and
-   forwards `/v1/*` works the same way.
+   one origin. The optional [Cloudflare edge](/self-hosting/edge/) does
+   exactly this: it serves `web/` as static assets and forwards `/v1/*` with
+   your `Authorization` header untouched. Any reverse proxy that serves
+   `web/` and forwards `/v1/*` works the same way.
 
 2. **Connect with an API key.** `sbx deploy` writes an admin key to
    `~/.local/state/sbx/bootstrap.key`; admins can mint more under
-   **Admin → API keys**. The console checks the key with `GET /v1/me` before
-   saving it.
+   **Settings → API keys**. The console checks the key with `GET /v1/me`
+   before saving it.
 
 3. **Choose how long the key is kept.** By default it lives in
    `sessionStorage` and is forgotten when the tab closes. **Remember on this
@@ -58,173 +67,172 @@ English and Simplified Chinese, and follows your system's light or dark theme.
 `make console-dev` starts the real control plane with a local backend, fake
 provider CLIs and a demo git repository, then prints a URL and a throwaway
 key. Prompts containing `hang`, `slow`, `fail` or `auth` trigger the matching
-fake scenario, so you can see every run state.
+fake scenario, so you can see every task state.
 </Aside>
 
-Keys without the `admin` scope can use everything except **Accounts**,
-**API keys** and **GitHub**, which show a lock instead.
+Keys without the `admin` scope can use everything except the account and
+key-management surfaces under **Integrations** and **Settings**, which show a
+lock instead.
 
-## Agents
+## Home
 
-The **Agents** page lists every agent your key created, with live counts of
-running, idle and ended agents and the estimated sandbox cost. Filter by state
-or provider, search by name, id or model, or narrow to one workflow. A workflow
-chip on a row jumps to that workflow's recovery view.
+**Home** is the launchpad: live counts of active, finished and
+needs-attention tasks on this key, a recent-tasks list, and a **New task**
+button. The **Tasks** nav item carries a live count of in-flight work.
 
 <figure class="sbx-shot">
-  <Image src={agents} alt="Agents list with status badges, provider, model, workflow, tokens and cost" />
-  <figcaption>Agents refresh every few seconds while the page is visible.</figcaption>
+  <Image src={home} alt="Home with summary cards and an empty recent-tasks list" />
+  <figcaption>Home: status counts and the first-task call to action.</figcaption>
 </figure>
 
-## Create an agent
+## Tasks
 
-**New agent** is a form for `POST /v1/agents`, split into sections you switch
-on only when you need them:
+**Tasks** lists every task your key created — status, provider, model,
+repository and age — and lets you filter or search. Open one for its detail
+page.
 
-| Section | What it sets |
+<figure class="sbx-shot">
+  <Image src={mobileTasks} alt="The tasks list at a phone width with the nav drawer open" />
+  <figcaption>The console is fully usable at phone widths.</figcaption>
+</figure>
+
+## Create a task
+
+**New task** is the `POST /v1/tasks` form, in five cards:
+
+| Card | What it sets |
 | --- | --- |
-| **Task** | The prompt for run 1 and an optional name. |
-| **Agent** | Provider, model and account — pulled live from `GET /v1/models` with free-account counts — plus reasoning effort, limited to the levels that provider supports. |
-| **Repository** | `workspace` (repo, base ref, exact base sha) and where to start from: the base commit, an artifact, a commit, or a pull request ref. |
-| **Git policy** | Work branch, push, auto-publish, pull request, review-gated merge. Options that depend on each other are enabled in order. |
-| **Structured output** | A JSON Schema the final message must satisfy, enforced strictly or as a warning. |
-| **Workflow** | `workflow_id`, `task_id`, `role` and `parent_task_id`. |
-| **Advanced** | CPU and memory `[request, limit]`, allow-listed secrets, MCP servers, idle timeout. |
+| **Task** | What the agent should do (the prompt) and an optional title. |
+| **Repository** | `source.repo` and `source.ref` — the starting point resolves to an exact commit for you. Leave empty for a plain sandbox task. |
+| **AI** | Provider, model, account and reasoning effort — `Automatic` picks a provider and account with a free slot. Model choices show live free-account counts. |
+| **Result** | Delivery: **Report only**, **Push to a branch** or **Open a pull request**, with branch name, PR title/target and draft toggle. |
+| **Advanced** | Workflow binding, a structured-output contract (strict or warn), CPU/memory, allow-listed Modal secrets and idle timeout. |
 
-The **API request** panel updates as you type and switches between JSON, cURL
-and Python. The console sends an `Idempotency-Key` with the create call, so a
-double click never starts two agents.
+A readiness check runs `POST /v1/tasks/preflight` as you type; a failing
+check is shown above the submit button and blocks submission until it
+passes. The console sends an `Idempotency-Key` with the create call, so a
+double click never starts two tasks.
 
 <figure class="sbx-shot">
-  <Image src={newAgent} alt="New agent form next to the live API request preview" />
-  <figcaption>What you fill in is exactly what gets sent.</figcaption>
+  <Image src={newTask} alt="The new-task form with Task and Repository cards" />
+  <figcaption>The form mirrors `POST /v1/tasks` field for field.</figcaption>
 </figure>
 
-## Watch and steer runs
+## Watch and steer a task
 
-An agent's **Conversation** tab shows its runs in order. Each run lists the
-prompt, then the provider's activity as it streams: agent messages, commands
-with their output and exit code, file changes, and reasoning. The header
-shows the run status, duration, model and effort; the footer shows token usage
-and the account that ran it.
+A task page shows the goal, the resolved provider/model/repository, and a
+live status — **Queued**, **Working on it**, **Ready to publish**,
+**Publishing…**, **Delivery failed**, **Finished**, **Failed**,
+**Cancelled** or **Expired**. Three tabs:
+
+- **Conversation** — each run's streamed activity: agent messages, commands
+  with output and exit codes, file changes and reasoning, plus a usage panel
+  (tokens, estimated cost, sandbox time).
+- **Changes** — the revision timeline (see below).
+- **Details** — the raw task record and identifiers.
 
 <figure class="sbx-shot">
-  <Image src={conversation} alt="A finished run with a file change, a command and the agent's reply, next to the usage panel" />
-  <figcaption>Commands and file changes collapse; click one to see its output.</figcaption>
+  <Image src={task} alt="A finished task with the conversation tab and usage panel" />
+  <figcaption>Runs stream live; commands and file changes collapse.</figcaption>
 </figure>
 
-- **Follow up** from the box at the bottom: <kbd>Enter</kbd> sends,
-  <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a line. The agent keeps its sandbox
-  and resumes the provider's native session. **Options** attaches an output
-  contract to just that run.
-- **Cancel run** stops the active run; **Close agent** reclaims the sandbox
-  and leaves the history read-only.
-- A failed run shows its structured error — code, source, whether a retry can
-  help, and what to do next.
+- **Follow up** from the conversation box: <kbd>Enter</kbd> sends,
+  <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a line. The task keeps its sandbox
+  and resumes the provider's native session; a busy task queues the message.
+- **Retry** re-runs a finished/failed task or retries a failed publish —
+  the button is labelled for what it will do (**Retry publish** when only
+  delivery failed).
+- **Cancel** stops the in-flight run. Closing the conversation panel leaves
+  the task's history read-only.
+
+## Changes: revisions, review and merge
+
+The **Changes** tab tracks each revision's pipeline — Revision → Delivered →
+Reviewed → Merged — with the exact shas, the file diff, the delivery record
+(branch and pull request) and recorded reviews.
 
 <figure class="sbx-shot">
-  <Image src={runError} alt="A failed run showing the structured run error with code, source and retryable" />
-  <figcaption>Failures come from the durable run record, not from guessing at the stream.</figcaption>
-</figure>
-
-<Aside title="Where the history comes from">
-Live activity is read from the run's event stream (SSE, resumed with
-`Last-Event-ID` after a drop). The stream lives in the sandbox, so once an
-agent is closed the console shows each run's final result and error from the
-durable run ledger instead. The API does not store prompts; the console
-remembers the prompts sent from this browser and marks the others as sent
-elsewhere.
-</Aside>
-
-## Review, publish and merge
-
-The **Workspace** tab appears for agents created with a repository. The change
-pipeline shows how far the work has come — base, head, reviewed, published,
-merged — with the exact shas.
-
-<figure class="sbx-shot">
-  <Image src={workspace} alt="Workspace tab with the change pipeline, repository record and git policy" />
+  <Image src={changes} alt="The changes tab with a delivered revision, diff and pipeline" />
   <figcaption>Every step is pinned to an exact sha.</figcaption>
 </figure>
 
-- **Pin review** records the commit you reviewed (default: the current head)
-  and can post a comment on the pull request — never a GitHub approval.
-- **Publish** pushes the work branch and, if the policy says so, opens the
-  pull request.
-- **Merge** stays disabled until the review pin matches the current head. If
-  the head moves after a review, review again.
-- **Apply handoff** brings in another agent's artifact, commit or pull
-  request.
-
-These actions need the agent to be idle with a live sandbox.
-
-## Artifacts and handoffs
-
-**Snapshot** (on an agent with a repository) packages the workspace into a
-durable artifact — `patch.diff`, a git bundle when the head moved, and every
-collected file with its sha256 — optionally running a test command first.
-Artifacts outlive the sandbox. From an artifact's page you can download any
-member or **Hand off to a new agent**, which opens **New agent** with the
-repository and the artifact prefilled.
+- **Publish now** appears when a revision is ready but not delivered;
+  **Review changes** opens the delivered result.
+- **Add review** records a verdict pinned to the revision's head. A review
+  turns **Stale** when a newer revision materializes — review again.
 
 <figure class="sbx-shot">
-  <Image src={artifact} alt="Artifact detail with source shas, payload downloads, tests and files" />
+  <Image src={staleReview} alt="A stale review marker on an older revision" />
+  <figcaption>Reviews pin an exact head; a newer revision marks them stale.</figcaption>
 </figure>
 
-## Workflows
-
-Agents created with a `workflow_id` show up under **Workflows**. The recovery
-view is built from durable records only: progress, each task with its role,
-agent and latest run, and child tasks indented under their parent. **Close
-workflow** closes exactly the agents bound to that workflow under your key and
-reports what it did. It is safe to repeat.
+- A publish that fails surfaces the structured delivery error and offers
+  **Retry publish** — the run is not re-executed.
 
 <figure class="sbx-shot">
-  <Image src={workflow} alt="Workflow recovery view with progress and tasks" />
+  <Image src={deliveryFailed} alt="A delivery-failed task with the error and a publish-now action" />
 </figure>
 
-## Capacity
+## Integrations
 
-**Capacity** lists the models each enabled provider advertises, how many
-accounts have a free slot for each, and which reasoning efforts the provider
-honours. Admin keys also see every account's slot usage.
+**Integrations** is where provider accounts and GitHub get connected — see
+[Accounts](/guides/accounts/) and
+[GitHub integration](/integrations/github/).
 
-<figure class="sbx-shot">
-  <Image src={capacity} alt="Capacity page with one card per provider" />
-</figure>
-
-## Administration
-
-These pages need a key with the `admin` scope.
-
-- **Accounts** — import a provider login by choosing the credential file its
-  CLI writes (the dialog suggests the path for each provider). Files go
-  straight to your control plane and are never shown again. **Verify** probes
-  a credential in a throwaway sandbox; **Remove** deletes the account and its
-  credential.
-- **API keys** — create keys with or without `admin`. The plaintext is shown
-  exactly once; the control plane keeps only its sha256. Revoking the key you
-  are using signs you out.
-- **GitHub** — shows whether a GitHub App is configured and which repositories
-  each installation covers. **Connect GitHub** opens the App's install page;
-  set the App's Setup URL to the console's address so GitHub returns you to
-  the console, which then records the installation. **Sync** refreshes from
-  GitHub, **Revoke** removes an installation.
+- **Connect provider** offers the provider's hosted login, or a local-pair
+  ticket you complete on a machine that is already logged in with
+  `sbx auth pair <ticket>`. The **Accounts** view lists every account's
+  status, slot usage and models.
+- **GitHub** shows whether a GitHub App is configured and which repositories
+  each installation covers; `sbx github connect` opens the App's install
+  page. **Sync** refreshes from GitHub, **Revoke** removes an installation.
 
 <figure class="sbx-shot">
   <Image src={accounts} alt="Accounts table with status, slot usage and models" />
+</figure>
+
+## Settings
+
+- **API keys** — create keys with or without `admin`. The plaintext is shown
+  exactly once; the control plane keeps only its sha256. Revoking the key
+  you are using signs you out.
+- **Capacity** — the models each enabled provider advertises, free-account
+  counts and supported reasoning efforts; admin keys also see slot usage.
+- **Runtime** — control-plane and CLI version details.
+- Preferences — language, theme, and clearing locally remembered prompts.
+
+<figure class="sbx-shot">
+  <Image src={capacity} alt="Capacity page with one card per provider" />
 </figure>
 
 <figure class="sbx-shot">
   <Image src={keyCreated} alt="A newly created API key shown once with a copy button" />
 </figure>
 
+## Advanced pages
+
+The sidebar's **Advanced** section exposes the layer tasks resolve onto —
+useful for debugging and for flows the task surface does not cover.
+
+- **Agents** — every agent your key created, with live status, provider,
+  model, tokens and cost; open one for its runs, workspace and git actions
+  (the same records a task page renders, at the lower level). **New agent**
+  is the `POST /v1/agents` form, including an exact-`base_sha` pin and
+  handoff starting points — see
+  [Agents and runs](/guides/agents-and-runs/).
+- **Workflows** — the recovery view for agents bound to a `workflow_id`:
+  progress, each task's role/agent/latest run, child tasks under parents.
+  **Close workflow** closes exactly that workflow's agents under your key.
+- **Artifacts** — durable snapshots (`patch.diff`, git bundle, collected
+  files with sha256) that outlive the sandbox. An artifact can be downloaded
+  member by member or handed off to a new agent — see
+  [Artifacts and handoffs](/guides/handoffs-and-artifacts/).
+
 ## Language and theme
 
 Use the buttons at the bottom of the sidebar, or **Settings**, to switch
 between English and Simplified Chinese and between system, light and dark
-themes. Settings also shows the connection and clears locally remembered
-prompts and workflows.
+themes.
 
 <figure class="sbx-shot">
   <Image src={zhLight} alt="The console in Simplified Chinese with the light theme" />
@@ -244,7 +252,7 @@ optional globals can be set in a script before `app.js` loads:
 
 | Symptom | What to check |
 | --- | --- |
-| Sent back to **Connect** with "key was rejected" | The key was revoked or mistyped. Create a new one under **API keys**. |
+| Sent back to **Connect** with "key was rejected" | The key was revoked or mistyped. Create a new one under **Settings → API keys**. |
 | "Could not reach the control plane" | The console and `/v1` are not on the same origin, or the URL is wrong. See [Edge](/self-hosting/edge/). |
 | A run says "Reconnecting to the stream…" | The event stream dropped; the console resumes it. If it gives up, the run record is still polled until it finishes. |
 | "Prompt sent outside this browser" | The run was started by another client; the API does not store prompt text. |

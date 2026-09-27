@@ -83,7 +83,7 @@ The server resumes from event 6 (the next one after `id: 5`).
 ## Python client example
 
 ```python
-from examples.sbx_client import SbxClient
+from sbx.sdk import SbxClient
 
 client = SbxClient(api_key="sbx_...", base_url="$SBX_BASE_URL")
 

@@ -88,7 +88,7 @@ curl -X POST "$SBX_BASE_URL/v1/agents" \
    ```bash
    modal app logs sbx-control --tail 50
    ```
-4. **Sandbox lost** — the run will eventually expire and return `UNKNOWN`. Retry on a fresh agent.
+4. **Sandbox lost** — the run will eventually expire and return `UNKNOWN`. For a task, `POST /v1/tasks/{id}/retry` re-runs it on a fresh sandbox; for a bare agent, retry on a fresh one.
 
 ### `ERROR: event_parse_error` — event stream corrupted
 
@@ -105,11 +105,11 @@ export SBX_TURN_MAX_SECONDS="1800"  # 30 min instead of 15
 uv run sbx deploy
 ```
 
-Or request more compute:
+Or request more compute on the task:
 
 ```json
 {
-  "prompt": "...",
+  "prompt": {"text": "..."},
   "compute": {
     "cpu": [2, 4],
     "memory_mib": [2048, 16384]
@@ -124,11 +124,14 @@ Or request more compute:
 **Fix:** Verify the credential:
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/accounts/{id}/verify" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
+uv run sbx auth verify --account-id devin-1
+# or: curl -X POST "$SBX_BASE_URL/v1/accounts/{id}/verify" \
+#   -H "Authorization: Bearer $SBX_API_KEY"
 ```
 
-If `auth_invalid`, re-import the credential:
+If `auth_invalid`, sign in again and refresh the stored credential — the
+shortest path is `sbx auth relink` (re-capture → refresh → verify). The
+explicit form:
 
 ```bash
 # Re-login with the provider locally
