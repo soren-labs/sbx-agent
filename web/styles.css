@@ -1095,6 +1095,11 @@ kbd {
   margin-bottom: 18px;
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 .tab {
   display: inline-flex;
@@ -1584,18 +1589,85 @@ kbd {
 }
 
 /* ------------------------------------------------------ agent detail */
+.page-agent {
+  max-width: none;
+  padding: 18px 28px 0;
+}
+.page-agent .page-header {
+  margin-bottom: 12px;
+}
+.page-agent .tabs {
+  margin-bottom: 0;
+}
 .agent-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 288px;
   align-items: start;
-  gap: 20px;
+  gap: 24px;
+}
+.agent-layout.is-aside-collapsed {
+  grid-template-columns: minmax(0, 1fr) 36px;
+}
+.conversation-col {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: 920px;
+  min-height: calc(100vh - 170px);
+  grid-template-rows: auto auto 1fr;
+  margin: 0 auto;
+  padding-top: 20px;
+}
+.conversation-col > .composer {
+  align-self: end;
 }
 .agent-aside {
   position: sticky;
-  top: 20px;
+  top: 16px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+  padding-top: 20px;
+}
+.aside-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.aside-rail {
+  display: flex;
+  justify-content: center;
+}
+.jump-latest {
+  position: fixed;
+  bottom: 28px;
+  left: calc(50% + var(--sidebar-w) / 2);
+  transform: translateX(-50%);
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.jump-latest:hover {
+  color: var(--text);
+}
+.jump-latest[hidden] {
+  display: none;
 }
 .aside-card .kv {
   grid-template-columns: minmax(90px, max-content) minmax(0, 1fr);
@@ -1718,6 +1790,24 @@ kbd {
   padding: 0;
   background: none;
 }
+.md-table {
+  overflow-x: auto;
+}
+.md table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.md th,
+.md td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.md th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
 .md blockquote {
   padding-left: 12px;
   border-left: 3px solid var(--border-strong);
@@ -1727,7 +1817,105 @@ kbd {
 .activity {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
+  gap: 10px;
+}
+.worklog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.worklog > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 13px;
+  user-select: none;
+}
+.worklog > summary::-webkit-details-marker {
+  display: none;
+}
+.worklog > summary .chev {
+  flex: none;
+  color: var(--text-3);
+  transition: transform 0.12s;
+}
+.worklog[open] > summary .chev {
+  transform: rotate(90deg);
+}
+.worklog[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+.worklog-summary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.worklog-title {
+  color: var(--text);
+  font-weight: 600;
+}
+.worklog-meta {
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.worklog-meta::before {
+  margin-right: 8px;
+  content: "·";
+}
+.worklog-current {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worklog-items {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 4px 0;
+}
+.worklog-items > .tool {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.worklog-items > .tool + .tool {
+  border-top: 1px solid var(--border);
+}
+.worklog-items > .tool > summary:hover {
+  background: var(--surface-2);
+}
+.tool-state {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-3);
+}
+.tool-state.is-ok {
+  color: var(--tone-green-fg);
+}
+.terminal-wrap {
+  position: relative;
+}
+.terminal-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.terminal-wrap:hover .terminal-actions,
+.terminal-actions:focus-within {
+  opacity: 1;
+}
+.terminal-actions .btn {
+  background: var(--surface-3);
 }
 .tool {
   border: 1px solid var(--border);
@@ -1738,7 +1926,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
+  padding: 7px 14px;
   list-style: none;
   cursor: pointer;
 }
@@ -1777,7 +1965,7 @@ kbd {
 .terminal {
   margin: 0;
   padding: 10px 12px;
-  max-height: 360px;
+  max-height: 420px;
   overflow: auto;
   border-radius: var(--radius-sm);
   background: var(--terminal-bg);
@@ -2648,5 +2836,11 @@ pre.diff {
   }
   .table-wrap .table td:not([data-label])::before {
     content: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .jump-latest {
+    left: 50%;
   }
 }
