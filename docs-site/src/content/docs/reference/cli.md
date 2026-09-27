@@ -139,6 +139,64 @@ uv run sbx upgrade
 
 Rebuilds images and restarts the control plane; preserves durable data.
 
+### sbx open
+
+Open the web console in a browser:
+
+```bash
+uv run sbx open
+uv run sbx open --print   # print the URL instead of launching a browser
+```
+
+Mints a one-time grant and hands off to the Console already signed in — no
+copying API keys into the UI.
+
+**Flags:**
+- `--base-url URL` — control-plane URL (default: configured `api_base_url`, else the deployed app URL)
+- `--print` — print the one-time Console URL instead of opening a browser
+- `--json` — JSON output
+
+### sbx github connect
+
+Connect the GitHub integration:
+
+```bash
+uv run sbx github connect
+uv run sbx github connect --print   # print the install URL
+```
+
+Opens the official GitHub App installation page (one click). The GitHub App
+is the default bridge — a PAT (`github-secret`) works as a fallback; see
+[GitHub integration](/integrations/github/).
+
+**Flags:**
+- `--base-url URL` — control-plane URL (default: configured / deployed URL)
+- `--print` — print the GitHub install URL instead of opening a browser
+- `--json` — JSON output
+
+### sbx auth
+
+Manage provider account authentication (login, capture, verify):
+
+```bash
+uv run sbx auth status
+uv run sbx auth login --provider devin
+uv run sbx auth pair <ticket>
+```
+
+| Command | Purpose |
+| --- | --- |
+| `status` | Local credential scan + per-account auth-session states (`--provider` filters) |
+| `login --provider P` | Run the provider's official CLI/OAuth login, then capture and verify |
+| `import-existing` | Capture credential files a vendor login already wrote — no token paste (`--from`, `--account-id`, `--slots`, `--models`, `--no-verify`, `--experimental`) |
+| `verify ACCOUNT_ID` | Run the cloud auth probe; promotes the account on success (`--local` forces the sandbox probe) |
+| `relink` | Re-capture → refresh → verify; restores scheduler eligibility after a dead grant (`--from`, `--login` runs the official login first, `--no-verify`) |
+| `pair TICKET` | Pair this host's provider login with a cloud connect session from the Console (`--base-url` overrides the target) |
+| `logout` | Sign out: drop credential material, flip the account to unverified (`--delete-files` also removes the provider's files under `$HOME`, `--keep-secret` preserves the managed Modal Secret) |
+
+This is the same flow the Console's **Integrations → Connect provider**
+page drives; `sbx auth pair <ticket>` is the local-pairing path it offers.
+
 ### sbx uninstall
 
 Stop and remove the deployment:

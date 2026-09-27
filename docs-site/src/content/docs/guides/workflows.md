@@ -123,7 +123,7 @@ stay readable.
 `DELETE /v1/agents/{id}` and returns the closed records.
 
 ```python
-from examples.sbx_client import SbxClient
+from sbx.sdk import SbxClient
 
 WORKFLOW = "release-42"
 

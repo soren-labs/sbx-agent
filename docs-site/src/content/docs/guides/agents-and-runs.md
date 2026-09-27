@@ -1,7 +1,17 @@
 ---
 title: Agents and runs
-description: Create agents, queue runs, stream events, and track usage.
+description: The lower-level surface under tasks — create agents directly, queue runs, stream events, and track usage.
 ---
+
+Most callers should use [tasks](/guides/tasks/): `POST /v1/tasks` resolves
+the repository, provider, account and delivery for you and tracks the work
+as one unit. The agent API on this page is the layer underneath — tasks
+still expose their agent (`task.agent_id`), and every task run is an agent
+run you can stream and cancel.
+
+Use `POST /v1/agents` directly when you need to pin an exact base commit
+(`workspace.base_sha`), drive a [handoff](/guides/handoffs-and-artifacts/),
+or manage the sandbox lifecycle yourself.
 
 ## Creating an agent
 
@@ -224,9 +234,9 @@ Authorization: Bearer sbx_<key>
 ## Python client example
 
 ```python
-from examples.sbx_client import SbxClient
+from sbx.sdk import SbxClient
 
-client = SbxClient(api_key="sbx_...", base_url="$SBX_BASE_URL")
+client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
 
 # Create agent
 result = client.create_agent(

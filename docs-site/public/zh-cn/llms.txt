@@ -1,26 +1,30 @@
 # sbx-browser
 
-> Self-hosted orchestration for cloud coding agents: run official provider CLIs (Codex, Devin, Antigravity, Grok, OpenCode) in isolated Modal Sandboxes behind one REST API.
+> Self-hosted orchestration for cloud coding agents: describe a task, and sbx-browser runs an official provider CLI (Codex, Devin, Antigravity, Grok, OpenCode) in an isolated Modal Sandbox behind one REST API.
 
 Self-hosted under your own Modal workspace and your own provider subscriptions; not a hosted service.
 
 ## Getting started
 
 - [Introduction](/getting-started/introduction/): what sbx-browser is and when to use it
-- [Quick start](/getting-started/quick-start/): clone, init, deploy, first agent in ~10 minutes
+- [Quick start](/getting-started/quick-start/): use an existing deployment or self-host, first task in ~10 minutes
 
 ## Guides
 
-- [Console](/guides/console/): web console for tasks, agents, and review
-- [Agents and runs](/guides/agents-and-runs/): lifecycle, follow-up turns, cancel/close
-- [Streaming](/guides/streaming/): SSE events, Last-Event-ID resume
-- [Repositories](/guides/repositories/): workspace contract, git delivery, PRs
-- [Workflows](/guides/workflows/): gated pipelines and recovery
+- [Tasks](/guides/tasks/): create, monitor, follow up, cancel and retry
+- [Repositories & delivery](/guides/repositories/): revisions, branches, pull requests, review-gated merge
+- [Console](/guides/console/): web console for tasks, review, accounts and keys
 - [Accounts](/guides/accounts/): provider accounts, slots, failover
+- [Streaming](/guides/streaming/): SSE events, Last-Event-ID resume
+- [Structured output](/guides/structured-output/): JSON Schema contracts on run results
+- [Agents and runs](/guides/agents-and-runs/): the lower-level surface under tasks
+- [Workflows](/guides/workflows/): gated pipelines and recovery
+- [Artifacts & handoffs](/guides/handoffs-and-artifacts/): checkpoints and cross-agent handoff
+- [Resources & compute](/guides/resources-and-compute/): CPU/memory, secrets, MCP servers
 
 ## Concepts
 
-- [Concepts](/concepts/): agent, run, provider, account, workflow, artifact
+- [Concepts](/concepts/): task, run, revision, delivery, review, agent, provider, account, workflow, artifact
 
 ## Reference
 

@@ -143,7 +143,7 @@ the artifact's head. That makes chains work: the artifact B produces has as its
 ## Example: implement, then review in another provider
 
 ```python
-from examples.sbx_client import SbxClient
+from sbx.sdk import SbxClient
 
 REPO = {
     "repo": "https://github.com/acme/api",

@@ -51,13 +51,13 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 一切都运行在你的账户下：control plane、sandbox、镜像、持久存储。一条 `sbx deploy` 命令创建 App，挂载凭证为 Secret，启动 control plane。
 
-**2. 用一个 API 调用创建 agent**
+**2. 用一个 API 调用创建任务**
 
-`POST /v1/agents` 指定 provider（codex、devin、antigravity、grok、opencode）、model 和 account ID。Sandbox 在 provider 镜像上启动，官方 CLI 登录，run 1 立即开始。
+`POST /v1/tasks` 带上提示词、可选的仓库与交付目标。控制面会把仓库解析为精确 commit，挑选有空闲槽位的 provider 与账号并启动运行。
 
-**3. 通过 SSE 或 REST 与 agent 通信**
+**3. 观看、追问、交付**
 
-用 `GET /v1/agents/{id}/runs/{runId}/stream` 流式传输规范事件，或用 GET 轮询账本。后续轮是同一 agent 上的新 run，恢复原生 session。随时取消、关闭或固定 artifact。
+用 SSE 流式观看运行事件，或轮询任务账本。后续运行会续用 provider 原生会话。任务改了仓库时，可以把 revision 发布为分支或 PR、记录评审并合并。
 
 ## 不是什么
 
@@ -82,5 +82,5 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 ## 后续步骤
 
 - **[快速开始](/zh-cn/getting-started/quick-start/)：** 克隆、配置、部署（10 分钟）。
-- **[指南](/zh-cn/guides/agents-and-runs/)：** 掌握 agent、run、流、repo 和 workflow。
+- **[指南](/zh-cn/guides/tasks/)：** 任务、流式、仓库、账号与工作流。
 - **[运维](/zh-cn/self-hosting/deploy/)：** 部署策略、配置、安全和故障排查。

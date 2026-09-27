@@ -80,6 +80,7 @@ export default defineConfig({
 					label: 'Guides',
 					translations: { 'zh-CN': '使用指南' },
 					items: [
+						'guides/tasks',
 						'guides/console',
 						'guides/agents-and-runs',
 						'guides/streaming',
