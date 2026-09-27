@@ -38,6 +38,24 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+TITLE_MAX_CHARS = 60
+
+
+def title_from_prompt(prompt: str | None) -> str | None:
+    """A short display title from the first non-empty line of a prompt."""
+    if not prompt:
+        return None
+    for line in prompt.splitlines():
+        words = line.strip().lstrip("#>*- ").split()
+        if not words:
+            continue
+        title = " ".join(words)
+        if len(title) > TITLE_MAX_CHARS:
+            title = title[: TITLE_MAX_CHARS - 1].rstrip() + "…"
+        return title
+    return None
+
+
 def iso(ts: datetime) -> str:
     return ts.isoformat()
 
@@ -331,7 +349,7 @@ class ControlPlane:
                 self._first_turn_pending.add(session_id)
             rec = SessionRecord(
                 id=session_id,
-                title=title or "untitled",
+                title=title or title_from_prompt(first_prompt) or "untitled",
                 status="creating",
                 created_at=now,
                 updated_at=now,

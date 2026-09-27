@@ -424,6 +424,8 @@ def _run_public(
     knobs default off so every existing call site keeps its shape.
     """
     run = _render_run(plane, pub, rec, n, cancelled, meta, run_states, record=record, state=state)
+    prompt = _run_prompt(rec, n)
+    run["prompt"] = {"text": prompt} if prompt else None
     if reporter is not None and scheduler is not None:
         reporter.report(
             scheduler=scheduler,
@@ -435,6 +437,16 @@ def _run_public(
             credential_fp=(getattr(rec, "sandbox_tags", None) or {}).get(TAG_CRED_RUN_FP),
         )
     return run
+
+
+def _run_prompt(rec: Any, n: int) -> str | None:
+    """The user message that opened run ``n``, from the durable session record."""
+    turn_id = f"turn-{n}"
+    for message in getattr(rec, "messages", None) or ():
+        if message.get("turn_id") == turn_id and message.get("role") == "user":
+            text = message.get("text")
+            return str(text) if text else None
+    return None
 
 
 def _render_run(

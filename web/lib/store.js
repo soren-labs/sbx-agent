@@ -14,8 +14,8 @@ function readJson(key, fallback) {
 }
 
 /**
- * The run ledger does not store prompts, so prompts sent from this browser
- * are remembered locally (per agent/run) to show them in the conversation.
+ * Prompts sent from this browser, cached locally (per agent/run) so the
+ * conversation renders instantly before the run's ``prompt`` field loads.
  */
 export const prompts = {
   get(agentId, runId) {

@@ -122,3 +122,29 @@ class TestCancel:
         agent = create_agent(client, auth)["agent"]
         run = wait_run(client, auth, agent["id"], "run-1")
         assert run["status"] == "ERROR"
+
+
+class TestRunPrompt:
+    def test_runs_echo_their_prompt(self, client, auth) -> None:
+        agent = create_agent(client, auth)["agent"]
+        run = wait_run(client, auth, agent["id"], "run-1")
+        assert run["prompt"] == {"text": "Create hello.txt in the workspace."}
+        client.post(
+            f"/v1/agents/{agent['id']}/runs",
+            json={"prompt": {"text": "append a line"}},
+            headers=auth,
+        )
+        wait_run(client, auth, agent["id"], "run-2")
+        runs = client.get(f"/v1/agents/{agent['id']}/runs", headers=auth).json()["runs"]
+        assert [r["prompt"]["text"] for r in runs] == [
+            "Create hello.txt in the workspace.",
+            "append a line",
+        ]
+
+    def test_unnamed_agent_is_titled_from_prompt(self, client, auth) -> None:
+        agent = create_agent(client, auth, prompt={"text": "\n## Fix the login bug\nDetails"})
+        assert agent["agent"]["name"] == "Fix the login bug"
+
+    def test_explicit_name_wins(self, client, auth) -> None:
+        agent = create_agent(client, auth, name="nightly")["agent"]
+        assert agent["name"] == "nightly"

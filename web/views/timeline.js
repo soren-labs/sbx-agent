@@ -271,12 +271,12 @@ export function createRunBlock({ agentId, provider, run, agentLive, onLoadActivi
   }
 
   function renderPrompt() {
-    const text = prompts.get(agentId, state.run.id);
+    const text = state.run.prompt?.text || prompts.get(agentId, state.run.id);
     mount(
       promptEl,
       text
         ? h("div", { class: "msg msg-user", "data-testid": "user-message" }, text)
-        : h("div", { class: "msg-user-missing", title: t("The control plane does not store prompts; this browser only remembers prompts it sent.") }, t("Prompt sent outside this browser")),
+        : h("div", { class: "msg-user-missing", title: t("This run predates prompt recording, or its prompt is no longer available.") }, t("Prompt unavailable")),
     );
   }
 
