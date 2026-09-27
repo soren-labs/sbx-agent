@@ -111,6 +111,18 @@ def test_canonicalize_remote_and_local() -> None:
     assert tasks.canonicalize_repo("/srv/repo").kind == "local"
 
 
+def test_canonicalize_github_shorthand(tmp_path, monkeypatch) -> None:
+    for raw in ("Pallets/ItsDangerous", "github.com/pallets/itsdangerous.git"):
+        repo = tasks.canonicalize_repo(raw)
+        assert repo.kind == "github"
+        assert repo.slug == "pallets/itsdangerous"
+        assert repo.canonical == "https://github.com/pallets/itsdangerous"
+    (tmp_path / "owner" / "repo").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    assert tasks.canonicalize_repo("owner/repo").kind == "local"
+    assert tasks.canonicalize_repo("a/b/c").kind == "local"
+
+
 def test_canonicalize_rejects_empty_and_secret_leaks() -> None:
     with pytest.raises(tasks.TaskRefusal):
         tasks.canonicalize_repo("   ")

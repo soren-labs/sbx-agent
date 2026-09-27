@@ -123,10 +123,18 @@ class CanonicalRepo:
     slug: str | None = None  # owner/repo — github kind only
 
 
+# ``owner/repo`` or ``github.com/owner/repo`` without a scheme. Only taken as
+# GitHub when no such local path exists, so relative local repos still work.
+_GITHUB_SHORTHAND_RE = re.compile(
+    r"^(?:(?:www\.)?github\.com/)?([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/([A-Za-z0-9._-]+?)(?:\.git)?/?$"
+)
+
+
 def canonicalize_repo(repo: Any) -> CanonicalRepo:
     """Normalize a caller-supplied repo address for persistence + probing.
 
-    github.com https/ssh forms collapse to the canonical https URL;
+    github.com https/ssh forms and the ``owner/repo`` shorthand collapse to
+    the canonical https URL;
     userinfo is always stripped — credential material must never persist
     on the task record. Everything else (other hosts, ``file://``, plain
     paths) is kept verbatim so ``git clone`` semantics are unchanged.
@@ -148,6 +156,10 @@ def canonicalize_repo(repo: Any) -> CanonicalRepo:
     if slug is not None:
         # GitHub owner/repo names are case-insensitive — fold to lower.
         slug = slug.lower()
+        return CanonicalRepo(canonical=f"https://github.com/{slug}", kind="github", slug=slug)
+    shorthand = _GITHUB_SHORTHAND_RE.match(candidate)
+    if shorthand is not None and not os.path.exists(candidate):
+        slug = f"{shorthand.group(1)}/{shorthand.group(2)}".lower()
         return CanonicalRepo(canonical=f"https://github.com/{slug}", kind="github", slug=slug)
     if candidate.startswith("file://"):
         return CanonicalRepo(canonical=candidate, kind="local")
