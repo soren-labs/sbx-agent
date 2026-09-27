@@ -12,36 +12,98 @@ All errors follow this shape:
   "error": {
     "code": "error_code",
     "message": "human-readable message",
+    "retryable": false,
+    "action": "fix_request",
     "retry_after": 45
   }
 }
 ```
 
-### Client errors (4xx)
+`retry_after` is present only on retryable throttling/conflict errors.
 
-| Status | Code | Meaning | Fix |
-| --- | --- | --- | --- |
-| 400 | `invalid_provider` | Malformed request or unsupported provider | Check request body, provider name, model ID |
-| 400 | `invalid_resource` | Unknown secret, MCP, or out-of-bounds compute | Check `SBX_RESOURCE_SECRETS`, `SBX_MCP_REGISTRY`, compute bounds |
-| 400 | `invalid_output_contract` | Output contract schema invalid | Fix JSON Schema; use allowed keywords only |
-| 401 | `unauthorized` | Missing or invalid API key | Check `Authorization: Bearer sbx_<key>` |
-| 403 | `forbidden` | API key lacks required scope | Use an `admin` scope key for accounts/verify endpoints |
-| 404 | `not_found` | Agent, run, or artifact doesn't exist | Check ID spelling |
-| 409 | `turn_in_progress` | Agent is already running a turn | Wait for the current run to finish |
-| 409 | `session_not_runnable` | Agent is closed/timed out | Open a new agent or use handoff |
-| 409 | `account_unavailable` | Named account is missing, wrong provider, or not active | Check account ID and status, or use `account_id: "auto"` |
-| 409 | `account_busy` | Named account has no free slots | Wait or use another account |
-| 409 | `review_required` | Merge requires review approval on current head | Request review or disable gating |
-| 409 | `artifact_secret` | Artifact collection failed due to secret material | Remove `.env`, `auth.json`, etc. |
-| 429 | `concurrency_limit` | Live-agent cap reached — per API key or across the control plane (`SBX_MAX_CONCURRENT`) | Close idle agents or raise the cap |
-| 429 | `provider_exhausted` | `account_id: "auto"` found no `active` account of the provider with a free slot | Wait `retry_after`, close idle agents, or add accounts |
+Every response body also carries `retryable` (safe to resend unchanged) and
+`action` (a stable client hint). The full catalog below is generated from the
+runtime source of truth — update it with
+`uv run python docs-site/scripts/sync_error_reference.py`.
 
-### Server errors (5xx)
+<!-- BEGIN GENERATED: http-error-catalog -->
 
-| Status | Code | Meaning | Action |
-| --- | --- | --- | --- |
-| 500 | (internal error) | Control-plane bug or infrastructure issue | Check `modal app logs sbx-control --tail 100`; retry later |
-| 503 | (service unavailable) | Modal infrastructure down | Retry later |
+Every code the API can emit, generated from the runtime catalog.
+
+| Status | Code | Retryable | Client action | Description |
+| --- | --- | --- | --- | --- |
+| 400 | `account_exists` | no | `fix_request` | an account with that id already exists |
+| 400 | `artifact_invalid` | no | `fix_request` | artifact request is invalid |
+| 400 | `base_sha_mismatch` | no | `fix_request` | declared base sha does not match |
+| 400 | `checksum_mismatch` | no | `fix_request` | declared checksum does not match |
+| 400 | `connect_failed` | yes | `retry` | connect attempt failed |
+| 400 | `github_app_invalid` | no | `fix_request` | github app request is malformed |
+| 400 | `head_sha_mismatch` | no | `fix_request` | declared head sha does not match |
+| 400 | `invalid_account_id` | no | `fix_request` | account id is not a safe identifier |
+| 400 | `invalid_blob` | no | `fix_request` | credential blob is malformed |
+| 400 | `invalid_compute` | no | `fix_request` | compute selection is invalid |
+| 400 | `invalid_output_contract` | no | `fix_request` | output contract is unusable |
+| 400 | `invalid_provider` | no | `fix_request` | provider id is not a catalog provider |
+| 400 | `invalid_request` | no | `fix_request` | request is malformed |
+| 400 | `invalid_resource` | no | `fix_request` | resource ref is unknown or disallowed |
+| 400 | `invalid_scope` | no | `fix_request` | api-key scope is not a known scope |
+| 400 | `invalid_source` | no | `fix_request` | source declaration is invalid |
+| 400 | `provider_mismatch` | no | `fix_request` | account belongs to another provider |
+| 400 | `schema_mismatch` | no | `fix_request` | credential does not match provider schema |
+| 400 | `unknown_provider` | no | `fix_request` | provider has no onboarding descriptor |
+| 400 | `unsafe_path` | no | `fix_request` | credential path is unsafe |
+| 400 | `unsupported` | no | `fix_request` | requested capability is unsupported |
+| 400 | `workspace_invalid` | no | `fix_request` | workspace declaration is invalid |
+| 401 | `grant_invalid` | no | `authenticate` | grant is invalid, expired, or used |
+| 401 | `pair_invalid` | no | `authenticate` | pair ticket is invalid or expired |
+| 401 | `unauthorized` | no | `authenticate` | missing or invalid API key |
+| 403 | `forbidden` | no | `authenticate` | key lacks the required scope |
+| 403 | `github_app_state` | no | `authenticate` | authorize/manifest state expired |
+| 404 | `account_not_found` | no | `lookup` | account does not exist |
+| 404 | `artifact_not_found` | no | `lookup` | artifact does not exist |
+| 404 | `delivery_not_found` | no | `lookup` | delivery record does not exist |
+| 404 | `not_found` | no | `lookup` | referenced resource does not exist |
+| 404 | `revision_not_found` | no | `lookup` | revision does not exist |
+| 404 | `session_not_found` | no | `lookup` | connect session does not exist |
+| 404 | `workspace_not_found` | no | `lookup` | workspace record does not exist |
+| 409 | `account_busy` | yes | `wait` | named account has no free slot |
+| 409 | `account_unavailable` | yes | `wait` | named account is not active |
+| 409 | `artifact_secret` | no | `fix_request` | artifact contains secrets |
+| 409 | `delivery_failed` | yes | `retry` | delivery attempt failed |
+| 409 | `github_app_configured` | no | `configure` | a github app is already configured |
+| 409 | `idempotency_conflict` | no | `fix_request` | key replayed with a different body |
+| 409 | `idempotency_in_progress` | yes | `wait` | keyed request still in flight |
+| 409 | `independence_violation` | no | `fix_request` | reviewer not independent of author |
+| 409 | `merge_not_allowed` | no | `fix_request` | delivered pull request is not mergeable (e.g. draft or blocked) |
+| 409 | `review_required` | no | `fix_request` | an approving review is required first |
+| 409 | `review_stale` | no | `fix_request` | review targets an outdated revision |
+| 409 | `revision_not_ready` | yes | `wait` | revision is not ready yet |
+| 409 | `session_active` | yes | `wait` | connect session is already running |
+| 409 | `session_not_runnable` | yes | `wait` | agent is not in a runnable state |
+| 409 | `task_active` | yes | `wait` | task has a run in flight |
+| 409 | `task_not_retryable` | no | `fix_request` | task has nothing to retry |
+| 409 | `turn_in_progress` | yes | `wait` | a run is already in progress |
+| 409 | `workspace_unavailable` | yes | `retry` | workspace service is unavailable |
+| 429 | `concurrency_limit` | yes | `retry` | global concurrency cap reached |
+| 429 | `provider_exhausted` | yes | `retry` | no free account for the provider pick |
+| 500 | `internal` | yes | `retry` | internal error |
+| 502 | `checkout_failed` | yes | `retry` | repo checkout failed |
+| 502 | `github_app_upstream` | yes | `retry` | a github api call failed |
+| 502 | `repo_unavailable` | yes | `retry` | repository could not be reached |
+| 503 | `github_app_unconfigured` | no | `configure` | no github app identity configured |
+| 503 | `unavailable` | yes | `retry` | required service is unavailable |
+
+`Client action` is the stable machine-readable hint sent in every error body: `authenticate`, `lookup`, `fix_request`, `wait`, `retry`, `configure`.
+
+<!-- END GENERATED: http-error-catalog -->
+
+Common fixes by status:
+
+- **401/403** — supply `Authorization: Bearer sbx_<key>`; admin-only endpoints
+  also need the `admin` key scope.
+- **404** — verify the resource id spelling.
+- **409 `wait`** — the named object is busy; retry after it settles.
+- **429** — honor `retry_after`, close idle agents, or add accounts.
 
 ## Run error codes
 

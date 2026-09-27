@@ -66,7 +66,7 @@ The import validates the blob before storing it: unknown providers, a
 provider/blob mismatch, undeclared or escaping paths, symlinks and files
 readable by group or other are refused. Run `uv run sbx deploy` afterwards so
 the account's `sbx-acct-<id>` Secret is created. Credential file locations per
-provider are listed in [Providers](/providers/overview/); `uv run sbx
+provider are listed in [Providers](/integrations/providers/); `uv run sbx
 credentials` finds the ones on your machine.
 
 Other onboarding commands: `providers`, `list [--provider P]`, `status ID`,

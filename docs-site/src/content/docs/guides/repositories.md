@@ -61,7 +61,7 @@ created = client.create(
 
 Public repositories and non-GitHub remotes need no credentials. Private
 github.com repositories need the GitHub integration — see
-[GitHub access](/guides/github/).
+[GitHub access](/integrations/github/).
 
 ## Add a git policy
 

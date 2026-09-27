@@ -1,0 +1,33 @@
+---
+title: For agents and LLMs
+description: Machine-readable entry points — llms.txt, the OpenAPI spec, and the Python SDK.
+---
+
+If you are an agent (or building one), these are the stable machine-readable
+entry points. Humans should start at the [introduction](/getting-started/introduction/).
+
+## Entry points
+
+| Resource | Location | Contents |
+| --- | --- | --- |
+| `llms.txt` | [/llms.txt](/llms.txt) | Curated map of this documentation site |
+| OpenAPI spec | [/openapi.json](/openapi.json) | The public `/v1` contract, OpenAPI 3.1 |
+| Live spec | `GET {base_url}/v1/openapi.json` | The same spec served by a running control plane |
+| Python SDK | `sbx.sdk` in the [repo](https://github.com/soren-labs/sbx-browser) | Typed client for tasks, agents, runs, artifacts |
+| API reference | [/reference/api/](/reference/api/) | Interactive per-operation docs generated from the spec |
+
+The spec URL served by your own deployment is printed by `sbx deploy` and is
+always reachable at `/v1/openapi.json` on the control-plane origin.
+
+## Working with the API
+
+- Authenticate every call with `Authorization: Bearer sbx_<key>`.
+- Create work with `POST /v1/tasks`; poll `GET /v1/tasks/{id}` or the run
+  ledger, or stream a run over SSE (`Last-Event-ID` resumes cleanly).
+- Every non-2xx body is `{"error": {"code", "message", "retry_after"?}}`; the
+  codes are enumerated in the [error reference](/reference/errors/) and in the
+  spec's `x-canonical` block.
+
+The runnable client example is `examples/sbx_client.py`; the SDK usage in the
+[Python client reference](/reference/python-client/) is exercised by the
+repository test suite.

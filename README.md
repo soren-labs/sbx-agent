@@ -38,20 +38,33 @@ CLI, under that provider's terms.
 ## Documentation
 
 The documentation website lives in [`docs-site/`](docs-site/) (Astro
-Starlight, with the REST reference generated from the frozen OpenAPI
-contract). Build it with `make docs-build`, or preview it with
+Starlight, with the REST reference generated from the runtime OpenAPI spec
+that `GET /v1/openapi.json` serves). Build it with `make docs-build`, check
+links and structure with `make docs-check`, or preview it with
 `make docs-dev`. Good entry points:
 
-- **Start here** — introduction, quick start, core concepts
+- **Getting started** — introduction and quick start
   ([`getting-started/`](docs-site/src/content/docs/getting-started/))
 - **Guides** — web console, agents & runs, streaming, repositories & git,
-  handoffs & artifacts, workflows, structured output, accounts, GitHub
+  handoffs & artifacts, workflows, structured output, accounts
   ([`guides/`](docs-site/src/content/docs/guides/))
-- **Operate** — deploy, configuration, upgrade, edge, security,
-  troubleshooting ([`operations/`](docs-site/src/content/docs/operations/))
-- **Reference** — errors, events, Python client, CLI, limits, and the REST
-  API from [`docs/contracts/api-v1.yaml`](docs/contracts/api-v1.yaml)
+- **Concepts** — key terms and the agent lifecycle
+  ([`concepts/`](docs-site/src/content/docs/concepts/))
+- **API & SDK reference** — errors, events, Python client, CLI, limits, and
+  the interactive REST API reference
   ([`reference/`](docs-site/src/content/docs/reference/))
+- **Integrations** — provider matrix and GitHub access
+  ([`integrations/`](docs-site/src/content/docs/integrations/))
+- **Self-hosting** — deploy, configuration, upgrade, edge, security
+  ([`self-hosting/`](docs-site/src/content/docs/self-hosting/))
+- **Troubleshooting** — common problems and fixes
+  ([`troubleshooting/`](docs-site/src/content/docs/troubleshooting/))
+- **For agents** — `llms.txt` and `openapi.json` entry points
+  ([`agents/`](docs-site/src/content/docs/agents/))
+
+The error-code table in `reference/errors.md` is generated from
+`control/api_v1/error_catalog.py`; refresh it with `make docs-sync-errors`
+(CI fails if it drifts).
 
 ## Quick start
 

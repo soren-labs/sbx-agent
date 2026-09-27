@@ -76,7 +76,7 @@ An official coding agent vendor (Codex, Devin, Antigravity, Grok, OpenCode). sbx
 | Grok | Experimental | `grok` 1.0.24+ | ✅ `--resume` | ✅ `SBX_GROK_ACCOUNTS` |
 | OpenCode | Experimental | `opencode-ai` 1.18.29 | ✅ `--session` | ✅ `SBX_OPENCODE_ACCOUNTS` |
 
-Full evidence and per-provider notes: [Provider support](/providers/overview/).
+Full evidence and per-provider notes: [Provider support](/integrations/providers/).
 
 ## Account
 

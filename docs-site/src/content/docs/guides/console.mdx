@@ -32,7 +32,7 @@ English and Simplified Chinese, and follows your system's light or dark theme.
 
 1. **Serve `web/` on the same origin as `/v1`.** The control plane does not
    send CORS headers, so the browser must reach the console and `/v1` through
-   one origin. The optional [Cloudflare edge](/operations/edge/) does exactly
+   one origin. The optional [Cloudflare edge](/self-hosting/edge/) does exactly
    this: it serves `web/` as static assets and forwards `/v1/*` with your
    `Authorization` header untouched. Any reverse proxy that serves `web/` and
    forwards `/v1/*` works the same way.
@@ -245,6 +245,6 @@ optional globals can be set in a script before `app.js` loads:
 | Symptom | What to check |
 | --- | --- |
 | Sent back to **Connect** with "key was rejected" | The key was revoked or mistyped. Create a new one under **API keys**. |
-| "Could not reach the control plane" | The console and `/v1` are not on the same origin, or the URL is wrong. See [Edge](/operations/edge/). |
+| "Could not reach the control plane" | The console and `/v1` are not on the same origin, or the URL is wrong. See [Edge](/self-hosting/edge/). |
 | A run says "Reconnecting to the stream…" | The event stream dropped; the console resumes it. If it gives up, the run record is still polled until it finishes. |
 | "Prompt sent outside this browser" | The run was started by another client; the API does not store prompt text. |

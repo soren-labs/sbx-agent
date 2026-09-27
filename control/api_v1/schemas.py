@@ -37,7 +37,7 @@ _COMMIT_SHA = r"^[0-9a-f]{40}$"
 
 
 class WorkspaceDecl(BaseModel):
-    """SOR-83 workspace declaration on agent create (``api-v1.yaml``)."""
+    """Workspace declaration on agent create (``api-v1.yaml``)."""
 
     repo: str = Field(min_length=1)
     base_ref: str = Field(min_length=1)
@@ -45,14 +45,14 @@ class WorkspaceDecl(BaseModel):
 
 
 class GitPolicy(BaseModel):
-    """SOR-128 git collaboration policy on agent create (``api-v1.yaml``).
+    """Git collaboration policy on agent create (``api-v1.yaml``).
 
     Optional — requires a ``workspace`` declaration. ``branch`` is the work
     branch the workspace materializes and publishes under (default
     ``sbx/<agent_id>``); ``push`` allows the publish endpoint to push it to
     the repo's remote; ``auto_create_pr`` (requires ``push``) opens a pull
     request to ``target`` (default ``workspace.base_ref``) on publish.
-    ``auto_publish`` (requires ``push``, SOR-178) publishes automatically
+    ``auto_publish`` (requires ``push``) publishes automatically
     when a run finishes successfully; ``merge`` (requires
     ``auto_create_pr``) allows the merge endpoint — which still refuses
     without an independent exact-sha review pin. Ref-name safety and the
@@ -74,7 +74,7 @@ class GitPolicy(BaseModel):
 
 
 class PullRequestRef(BaseModel):
-    """SOR-128 reviewer handoff reference: a remote ref + pinned head.
+    """Reviewer handoff reference: a remote ref + pinned head.
 
     ``ref`` is fetched from the workspace repo's origin (``refs/pull/<n>/head``,
     ``pull/<n>/head``, or a branch name); ``head_sha`` pins the exact commit
@@ -88,12 +88,11 @@ class PullRequestRef(BaseModel):
 
 
 class HandoffRef(BaseModel):
-    """SOR-83/SOR-128/SOR-225 cross-agent handoff reference: exactly one of
-    the ref fields.
+    """Cross-agent handoff reference: exactly one of the ref fields.
 
     ``artifact_id`` consumes a durable artifact package; ``head_sha`` checks
     out an exact commit in the declared repo; ``pull_request`` fetches a
-    remote ref pinned to an exact head (SOR-128 reviewer start). SOR-225:
+    remote ref pinned to an exact head — the reviewer-start guarantee.
     ``task_id`` hands off the task's durable revision (``revision`` selects
     it — ``"latest"`` by default, else ``rev-…`` id or sequence ``n``), and
     ``pr_url`` resolves a GitHub pull URL to its ref + head without a
@@ -112,7 +111,7 @@ class HandoffRef(BaseModel):
 
 
 class WorkflowMetadata(BaseModel):
-    """Caller workflow binding for an agent (SOR-84 C1).
+    """Caller workflow binding for an agent.
 
     ``task_id`` names the task inside ``workflow_id``; ``role`` is a
     free-form label (``worker`` / ``reviewer`` / ...); ``parent_task_id``
@@ -126,7 +125,7 @@ class WorkflowMetadata(BaseModel):
 
 
 class OutputContract(BaseModel):
-    """SOR-130: optional JSON Schema output contract for a run.
+    """Optional JSON Schema output contract for a run.
 
     ``schema`` is the JSON Schema the run's final output must satisfy (the
     runner's deterministic validator subset — unsupported keywords are
@@ -145,7 +144,7 @@ class OutputContract(BaseModel):
 
 
 class SessionCompute(BaseModel):
-    """SOR-181 per-agent sandbox compute sizing (``api-v1.yaml``).
+    """Per-agent sandbox compute sizing (``api-v1.yaml``).
 
     Independent of ``resources`` (credential/config refs) — ``cpu`` is a
     Modal core count or ``[min, max]`` request/limit pair,
@@ -164,7 +163,7 @@ class SessionCompute(BaseModel):
 
 
 class SessionResources(BaseModel):
-    """SOR-129 per-agent resource refs on agent create (``api-v1.yaml``).
+    """Per-agent resource refs on agent create (``api-v1.yaml``).
 
     ``secrets`` names Modal Secrets to attach to this agent's sandbox only
     (allowlist-validated — never account credential Secrets); ``mcp`` names
@@ -219,7 +218,7 @@ class ReviewWorkspaceRequest(BaseModel):
     ``head_sha`` pins the exact commit reviewed; omitted means "the recorded
     head". A mismatch with the recorded head is ``head_sha_mismatch``.
 
-    ``comment`` (SOR-128) additionally posts a machine-readable *comment*
+    ``comment`` additionally posts a machine-readable *comment*
     on the workspace's recorded pull request — deliberately never a formal
     GitHub review approval (all sandboxes share one GitHub identity, so an
     approval would read as the author approving their own work). Commenting
@@ -244,7 +243,7 @@ class CreateApiKeyRequest(BaseModel):
 
 
 class ConsoleGrantExchangeRequest(BaseModel):
-    """SOR-211: the one-time ticket the Console redeems for a minted key
+    """The one-time ticket the Console redeems for a minted key
     after the ``sbx open`` browser-admin handoff."""
 
     model_config = ConfigDict(extra="forbid")
@@ -252,7 +251,7 @@ class ConsoleGrantExchangeRequest(BaseModel):
 
 
 class GitHubAppAuthorizeCallbackRequest(BaseModel):
-    """SOR-177: the browser-side install completion — ``state`` is the
+    """The browser-side install completion — ``state`` is the
     single-use capability issued by the authorize step (the redirect itself
     cannot carry a Bearer key)."""
 
@@ -262,7 +261,7 @@ class GitHubAppAuthorizeCallbackRequest(BaseModel):
 
 
 class GitHubAppManifestRequest(BaseModel):
-    """SOR-220 zero-config: begin the GitHub App Manifest registration.
+    """Begin the zero-config GitHub App Manifest registration.
 
     ``name``/``org`` are optional: the manifest names the per-deployment
     app ``sbx-<rand>`` by default and registers it under the signed-in
@@ -275,7 +274,7 @@ class GitHubAppManifestRequest(BaseModel):
 
 
 class GitHubAppManifestCompleteRequest(BaseModel):
-    """SOR-220: exchange the manifest conversion ``code`` + the pending
+    """Exchange the manifest conversion ``code`` + the pending
     ``state`` (single-use capability — the browser redirect carries no
     Bearer key)."""
 
@@ -285,7 +284,7 @@ class GitHubAppManifestCompleteRequest(BaseModel):
 
 
 class AuthConnectRequest(BaseModel):
-    """SOR-214: begin a provider-connect auth session.
+    """Begin a provider-connect auth session.
 
     ``account_id`` set → relink an existing account in place; omitted →
     create a new account from the captured credential.
@@ -300,7 +299,7 @@ class AuthConnectRequest(BaseModel):
 
 
 class PairCompleteRequest(BaseModel):
-    """SOR-214: the local-pair completion — the one-time ``ticket`` is the
+    """The local-pair completion — the one-time ``ticket`` is the
     credential (same threat model as the console grant exchange); the
     ``credential`` blob is validated against the provider's declared file
     schema before the ticket is consumed."""

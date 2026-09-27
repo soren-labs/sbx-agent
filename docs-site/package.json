@@ -8,12 +8,15 @@
     "prepare-openapi": "node scripts/prepare-openapi.mjs",
     "dev": "npm run prepare-openapi && astro dev",
     "build": "npm run prepare-openapi && astro build",
+    "check": "npm run prepare-openapi && astro build && node scripts/check-links.mjs",
+    "check:links": "node scripts/check-links.mjs",
     "preview": "astro preview",
     "astro": "astro"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.42.3",
     "astro": "^7.3.4",
+    "github-slugger": "^2.0.0",
     "js-yaml": "^4.3.2",
     "sharp": "^0.35.4",
     "starlight-openapi": "^0.26.2"

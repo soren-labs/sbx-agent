@@ -107,7 +107,7 @@ are echoed as `resources` on the agent record.
 | Sandbox timeout | 14400 s (4 h) | `SBX_SANDBOX_TIMEOUT_S` | Hard cap on a sandbox's lifetime. |
 
 These are deployment-wide settings — see
-[Configuration](/operations/configuration/). `idle_timeout_s` on the create
+[Configuration](/self-hosting/configuration/). `idle_timeout_s` on the create
 request (integer ≥ 1) is accepted and stored with the agent, but idle agents
 are currently reclaimed using the deployment-wide idle retention.
 
