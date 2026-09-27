@@ -2839,6 +2839,132 @@ pre.diff {
   }
 }
 
+/* ---------------------------------------------------------- new task */
+.page-new-task .page-header {
+  margin-bottom: 16px;
+}
+.task-composer {
+  display: grid;
+  gap: 10px;
+  padding: 14px 14px 12px 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+.task-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px var(--focus),
+    var(--shadow);
+}
+.task-composer-input.textarea {
+  min-height: 112px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 15px;
+  line-height: 1.55;
+  resize: none;
+}
+.task-composer-input.textarea:focus {
+  border: 0;
+  box-shadow: none;
+}
+.task-composer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.task-composer-bar .grow {
+  flex: 1;
+}
+.task-composer-hint {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.task-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+.task-pill:focus-within {
+  border-color: var(--accent);
+  color: var(--text-2);
+}
+.task-pill .input {
+  width: 220px;
+  height: 30px;
+  padding: 0 6px 0 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12.5px;
+}
+.task-pill .input:focus {
+  box-shadow: none;
+}
+.task-pill-ref .input {
+  width: 130px;
+}
+.page-new-task .readiness {
+  padding: 0 4px;
+}
+.page-new-task .readiness > .muted {
+  margin: 0;
+  font-size: 12.5px;
+}
+.page-new-task .check-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.page-new-task .check {
+  font-size: 12.5px;
+}
+.page-new-task .resolved-line {
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+.section-label {
+  margin: 10px 2px -4px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.options-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+.options-grid .choice-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 760px) {
+  .options-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .task-pill,
+  .task-pill .input {
+    width: 100%;
+  }
+}
+
 @media (max-width: 860px) {
   .jump-latest {
     left: 50%;
