@@ -403,8 +403,9 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
       const run = created?.run ?? created;
       composerState.text = "";
       prompts.set(agentId, run.id, text);
-      state.runs.push(run);
+      if (!state.runs.some((r) => r.id === run.id)) state.runs.push(run);
       syncConversation();
+      blocks.get(run.id)?.prompt(text);
       openRunStream(run.id);
       shell?.bumpLive();
       queueMicrotask(() => scrollToLatest("smooth"));
