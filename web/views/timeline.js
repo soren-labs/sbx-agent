@@ -45,12 +45,23 @@ function toolDetails({ key, kindIcon, kindLabel, summary, status, body, testid, 
 }
 
 function itemStatus(item) {
-  if (item.status === "in_progress") return h("span", { class: "subtle", title: t("In progress") }, icon("loader", { size: 14, className: "spin" }));
+  if (item.status === "in_progress") return h("span", { class: "tool-state", title: t("In progress") }, icon("loader", { size: 14, className: "spin" }));
   if (item.type === "command_execution" && item.exit_code != null) {
-    return badge(`exit ${item.exit_code}`, { tone: item.exit_code === 0 ? "green" : "red", mono: true });
+    return item.exit_code === 0
+      ? h("span", { class: "tool-state is-ok", title: "exit 0" }, icon("check", { size: 14 }))
+      : badge(`exit ${item.exit_code}`, { tone: "red", mono: true });
   }
   if (item.status === "failed") return badge(t("failed"), { tone: "red" });
   return null;
+}
+
+/** Tool-ish items fold into the run's work log; messages and errors stay inline. */
+function isWorkItem(item) {
+  return item.type !== "agent_message" && item.type !== "error";
+}
+
+function isFailedItem(item) {
+  return item.status === "failed" || (item.type === "command_execution" && item.exit_code != null && item.exit_code !== 0);
 }
 
 function renderItem(item, key, provider, wasOpen) {
@@ -73,11 +84,16 @@ function renderItem(item, key, provider, wasOpen) {
         status: itemStatus(item),
         open: wasOpen,
         body: h(
-          "pre",
-          { class: "terminal", "data-testid": "command-output" },
-          h("span", { class: "prompt" }, "$ "),
-          cmd,
-          item.aggregated_output ? `\n${item.aggregated_output}` : item.status === "in_progress" ? "" : `\n${t("(no output)")}`,
+          "div",
+          { class: "terminal-wrap" },
+          h(
+            "pre",
+            { class: "terminal", "data-testid": "command-output" },
+            h("span", { class: "prompt" }, "$ "),
+            cmd,
+            item.aggregated_output ? `\n${item.aggregated_output}` : item.status === "in_progress" ? "" : `\n${t("(no output)")}`,
+          ),
+          h("div", { class: "terminal-actions" }, copyButton(() => `$ ${cmd}\n${item.aggregated_output || ""}`, { title: t("Copy command and output") })),
         ),
       });
     }
@@ -199,7 +215,7 @@ function errorPanel(run) {
   );
 }
 
-export function createRunBlock({ agentId, provider, run, agentLive, onLoadActivity }) {
+export function createRunBlock({ agentId, provider, run, agentLive, expanded = true, onLoadActivity, onActivity }) {
   const state = {
     run,
     items: new Map(),
@@ -209,7 +225,12 @@ export function createRunBlock({ agentId, provider, run, agentLive, onLoadActivi
     streamState: "idle",
     activityLoaded: false,
     agentLive,
+    expanded,
   };
+  // Consecutive work items (commands, file edits, thinking) share one
+  // collapsible work log; an agent message closes the current log.
+  const groups = [];
+  let openGroup = null;
   const n = runNumber(run.id);
 
   const headerEl = h("div", { class: "run-divider" });
@@ -385,6 +406,48 @@ export function createRunBlock({ agentId, provider, run, agentLive, onLoadActivi
     renderRaw();
   }
 
+  function newGroup() {
+    const group = { items: new Set(), userToggled: false };
+    group.summaryEl = h("span", { class: "worklog-summary" });
+    group.listEl = h("div", { class: "worklog-items" });
+    group.el = h(
+      "details",
+      {
+        class: "worklog",
+        "data-testid": "worklog",
+        open: state.expanded || isRunLive(state.run.status) || null,
+      },
+      h("summary", null, icon("chevronRight", { size: 14, className: "chev" }), group.summaryEl),
+      group.listEl,
+    );
+    group.el.addEventListener("click", (ev) => {
+      if (ev.target.closest("summary")?.parentElement === group.el) group.userToggled = true;
+    });
+    groups.push(group);
+    activityEl.append(group.el);
+    return group;
+  }
+
+  function renderGroupSummary(group) {
+    const items = [...group.items].map((key) => state.items.get(key)?.item).filter(Boolean);
+    const count = (type) => items.filter((i) => i.type === type).length;
+    const commands = count("command_execution");
+    const files = items.filter((i) => i.type === "file_change").reduce((n, i) => n + (Array.isArray(i.changes) ? i.changes.length : 1), 0);
+    const failed = items.filter(isFailedItem).length;
+    const running = items.some((i) => i.status === "in_progress");
+    const current = running ? [...items].reverse().find((i) => i.status === "in_progress") : null;
+    mount(
+      group.summaryEl,
+      running ? icon("loader", { size: 14, className: "spin" }) : icon("terminal", { size: 14 }),
+      h("span", { class: "worklog-title" }, running ? t("Working") : t("Worked")),
+      h("span", { class: "worklog-meta" }, t("{n} steps", { n: items.length })),
+      commands ? h("span", { class: "worklog-meta" }, t("{n} commands", { n: commands })) : null,
+      files ? h("span", { class: "worklog-meta" }, t("{n} files", { n: files })) : null,
+      failed ? badge(t("{n} failed", { n: failed }), { tone: "red" }) : null,
+      current?.type === "command_execution" ? h("span", { class: "worklog-current mono" }, displayCommand(current.command)) : null,
+    );
+  }
+
   function upsertItem(item) {
     if (!item) return;
     const id = item.id || `anon-${state.items.size}`;
@@ -393,9 +456,25 @@ export function createRunBlock({ agentId, provider, run, agentLive, onLoadActivi
     const merged = { ...(prev?.item || {}), ...item };
     const wasOpen = prev?.node?.open;
     const node = renderItem(merged, key, provider, wasOpen);
-    if (prev?.node) prev.node.replaceWith(node);
-    else activityEl.append(node);
-    state.items.set(key, { item: merged, node });
+    let group = prev?.group ?? null;
+    if (prev?.node) {
+      prev.node.replaceWith(node);
+    } else if (isWorkItem(merged)) {
+      group = openGroup || (openGroup = newGroup());
+      group.items.add(key);
+      group.listEl.append(node);
+    } else {
+      openGroup = null;
+      activityEl.append(node);
+    }
+    state.items.set(key, { item: merged, node, group });
+    if (group) renderGroupSummary(group);
+    onActivity?.();
+  }
+
+  function setExpanded(value) {
+    state.expanded = value;
+    for (const group of groups) if (!group.userToggled) group.el.open = value || isRunLive(state.run.status);
   }
 
   function notice(tone, title, body) {
@@ -415,9 +494,12 @@ export function createRunBlock({ agentId, provider, run, agentLive, onLoadActivi
       return state.items.size > 0;
     },
     update(next) {
+      const wasLive = isRunLive(state.run.status);
       state.run = next;
       renderAll();
+      if (wasLive && !isRunLive(next.status)) setExpanded(state.expanded);
     },
+    setExpanded,
     setAgentLive(live) {
       if (state.agentLive === live) return;
       state.agentLive = live;

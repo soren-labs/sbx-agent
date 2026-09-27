@@ -64,3 +64,18 @@ export function setTheme(theme) {
   else localStorage.setItem(THEME_KEY, theme);
   applyTheme(theme);
 }
+
+const ASIDE_KEY = "sbx.console.agentAside";
+
+/** Agent page side panel; defaults open only on wide viewports. */
+export const asidePref = {
+  get() {
+    const v = localStorage.getItem(ASIDE_KEY);
+    if (v === "open") return true;
+    if (v === "closed") return false;
+    return window.matchMedia("(min-width: 1200px)").matches;
+  },
+  set(open) {
+    localStorage.setItem(ASIDE_KEY, open ? "open" : "closed");
+  },
+};

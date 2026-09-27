@@ -6,7 +6,7 @@ import { t } from "../lib/i18n.js";
 import { icon } from "../lib/icons.js";
 import { href, navigate } from "../lib/router.js";
 import { openStream } from "../lib/sse.js";
-import { prompts } from "../lib/store.js";
+import { asidePref, prompts } from "../lib/store.js";
 import {
   actionButton,
   badge,
@@ -37,6 +37,7 @@ import { createRunBlock } from "./timeline.js";
 import { renderWorkspaceTab } from "./workspace.js";
 
 const AUTO_ACTIVITY_RUNS = 3;
+const FOLLOW_SLACK_PX = 160;
 
 export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, getTask, extraDetails }) {
   const agentId = agentIdOverride || route.params.id;
@@ -63,7 +64,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
   const headerEl = h("div");
   const tabsEl = h("div");
   const bodyEl = h("div");
-  const el = h("div", { class: "page page-wide", "data-testid": "agent-view" }, headerEl, tabsEl, bodyEl);
+  const el = h("div", { class: ["page", "page-wide", !embedded && "page-agent"], "data-testid": "agent-view" }, headerEl, tabsEl, bodyEl);
 
   // ---------------------------------------------------------- data
   const activeRun = () => state.runs.find((r) => isRunLive(r.status));
@@ -292,6 +293,50 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
   const composerEl = h("div", { class: "composer" });
   const asideEl = h("aside", { class: "agent-aside" });
   const composerState = { text: "", useContract: false, schema: '{\n  "type": "object"\n}', enforcement: "strict", optionsOpen: false };
+  const layoutEl = h("div", { class: ["agent-layout", !asidePref.get() && "is-aside-collapsed"] });
+  const jumpEl = h(
+    "button",
+    { type: "button", class: "jump-latest", hidden: true, "data-testid": "jump-latest", onClick: () => scrollToLatest("smooth") },
+    icon("chevronDown", { size: 14 }),
+    t("Jump to latest"),
+  );
+
+  // ---------------------------------------------------- follow live
+  const scroller = () => el.closest(".main") || document.scrollingElement;
+  const nearBottom = () => {
+    const sc = scroller();
+    return !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight < FOLLOW_SLACK_PX;
+  };
+  let following = true;
+  function scrollToLatest(behavior = "auto") {
+    const sc = scroller();
+    if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior });
+    following = true;
+    jumpEl.hidden = true;
+  }
+  function onScroll() {
+    following = nearBottom();
+    jumpEl.hidden = following || !activeRun();
+  }
+  let scrollBound = null;
+  function bindScroll() {
+    const sc = scroller();
+    if (!sc || scrollBound === sc) return;
+    scrollBound?.removeEventListener("scroll", onScroll);
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    scrollBound = sc;
+  }
+  function onActivity() {
+    if (tab !== "conversation") return;
+    if (following && activeRun()) requestAnimationFrame(() => scrollToLatest());
+    else jumpEl.hidden = following || !activeRun();
+  }
+
+  function toggleAside() {
+    const open = layoutEl.classList.toggle("is-aside-collapsed") === false;
+    asidePref.set(open);
+    renderAside();
+  }
 
   function syncConversation() {
     if (!state.agent) return;
@@ -301,15 +346,19 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
     } else if (conversationEl.querySelector(".empty")) {
       mount(conversationEl);
     }
+    const lastId = state.runs[state.runs.length - 1]?.id;
     state.runs.forEach((run, idx) => {
       let block = blocks.get(run.id);
       if (!block) {
+        for (const other of blocks.values()) other.setExpanded(false);
         block = createRunBlock({
           agentId,
           provider: state.agent.provider,
           run,
           agentLive,
+          expanded: run.id === lastId,
           onLoadActivity: (runId) => openRunStream(runId),
+          onActivity,
         });
         blocks.set(run.id, block);
         conversationEl.append(block.el);
@@ -358,7 +407,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
       syncConversation();
       openRunStream(run.id);
       shell?.bumpLive();
-      queueMicrotask(() => blocks.get(run.id)?.el.scrollIntoView({ block: "start", behavior: "smooth" }));
+      queueMicrotask(() => scrollToLatest("smooth"));
     } catch (err) {
       toastError(err, t("Could not send"));
     } finally {
@@ -472,8 +521,22 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
     if (!a) return;
     const u = state.usage?.usage ?? a.usage;
     const stat = (label, value) => h("div", { class: "stat" }, h("span", { class: "stat-label" }, label), h("span", { class: "stat-value" }, value));
+    const collapsed = layoutEl.classList.contains("is-aside-collapsed");
+    const toggle = button("", {
+      variant: "ghost",
+      size: "sm",
+      iconName: collapsed ? "info" : "x",
+      title: collapsed ? t("Show run details") : t("Hide run details"),
+      testid: "aside-toggle",
+      onClick: toggleAside,
+    });
+    if (collapsed) {
+      mount(asideEl, h("div", { class: "aside-rail" }, toggle));
+      return;
+    }
     mount(
       asideEl,
+      h("div", { class: "aside-head" }, h("span", null, t("Run details")), toggle),
       card({
         title: t("Usage"),
         iconName: "zap",
@@ -575,8 +638,13 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
       return;
     }
     if (tab === "conversation") {
-      mount(bodyEl, h("div", { class: "agent-layout" }, h("div", null, conversationEl, composerEl), asideEl));
+      mount(layoutEl, h("div", { class: "conversation-col" }, conversationEl, jumpEl, composerEl), asideEl);
+      mount(bodyEl, layoutEl);
       syncConversation();
+      queueMicrotask(() => {
+        bindScroll();
+        if (activeRun()) scrollToLatest();
+      });
     } else if (tab === "changes" && embedded) {
       if (!changesView) changesView = renderTaskChanges({ taskId, getTask });
       mount(bodyEl, changesView.el);
@@ -658,6 +726,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
     dispose() {
       disposed = true;
       poll.stop();
+      scrollBound?.removeEventListener("scroll", onScroll);
       for (const id of [...streams.keys()]) closeStream(id);
       for (const block of blocks.values()) block.destroy();
     },
