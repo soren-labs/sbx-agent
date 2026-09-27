@@ -302,7 +302,12 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
   );
 
   // ---------------------------------------------------- follow live
-  const scroller = () => el.closest(".main") || document.scrollingElement;
+  // The shell's `.main` scrolls on desktop, the document does on narrow or
+  // zoomed viewports; follow whichever one actually overflows.
+  const scroller = () => {
+    const main = el.closest(".main");
+    return main && main.scrollHeight > main.clientHeight ? main : document.scrollingElement;
+  };
   const nearBottom = () => {
     const sc = scroller();
     return !sc || sc.scrollHeight - sc.scrollTop - sc.clientHeight < FOLLOW_SLACK_PX;
@@ -320,11 +325,17 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
   }
   let scrollBound = null;
   function bindScroll() {
-    const sc = scroller();
-    if (!sc || scrollBound === sc) return;
+    const main = el.closest(".main");
+    if (!main || scrollBound === main) return;
+    unbindScroll();
+    main.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    scrollBound = main;
+  }
+  function unbindScroll() {
     scrollBound?.removeEventListener("scroll", onScroll);
-    sc.addEventListener("scroll", onScroll, { passive: true });
-    scrollBound = sc;
+    window.removeEventListener("scroll", onScroll);
+    scrollBound = null;
   }
   function onActivity() {
     if (tab !== "conversation") return;
@@ -727,7 +738,7 @@ export function renderAgent({ route, shell, agentId: agentIdOverride, taskId, ge
     dispose() {
       disposed = true;
       poll.stop();
-      scrollBound?.removeEventListener("scroll", onScroll);
+      unbindScroll();
       for (const id of [...streams.keys()]) closeStream(id);
       for (const block of blocks.values()) block.destroy();
     },
