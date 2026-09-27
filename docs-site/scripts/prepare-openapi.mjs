@@ -92,16 +92,34 @@ if (runError) {
 	].join('\n');
 }
 
-// Internal ticket tags ("(SOR-83)", "SOR-179: …") mean nothing to API readers.
-const TICKET_PAREN =
-	/\s*\((?:SOR-\d+(?:\/[A-Za-z0-9-]+)?)(?:\s*[,/]\s*SOR-\d+(?:\/[A-Za-z0-9-]+)?)*\)/g;
-const TICKET_LEAD = /\bSOR-\d+(?:\/[A-Za-z0-9-]+)?(?:\s*\([^)]*\))?:?\s+/g;
+// Internal ticket tags ("(SOR-83)", "SOR-179: …", "SOR-83/SOR-128") mean
+// nothing to API readers. One general pass strips every token form, then a
+// tidy pass removes the punctuation a stripped token orphaned.
+const TICKET =
+	/\b(?:pre-|post-)?SOR-\d+(?:\/[A-Za-z0-9-]+)*(?:\s*[A-Z]\d+)?(?:\s*[,;/]\s*SOR-\d+(?:\/[A-Za-z0-9-]+)*)*/g;
 
 function clean(text) {
-	const out = text
-		.replace(TICKET_PAREN, '')
+	let out = text
 		.replace(/predating SOR-\d+/g, 'created before this field existed')
-		.replace(TICKET_LEAD, '');
+		.replace(TICKET, '')
+		// brackets emptied or left with stray separators: "(SOR-83)" → "()",
+		// "(SOR-83; paginated SOR-201)" → "(; paginated )", "(, x" → "(x"
+		.replace(/[([{（]\s*[,;:/—–-]+\s*/g, (m) => m[0])
+		.replace(/\s*[,;:/—–-]+\s*[)\]}）]/g, (m) => m.slice(-1))
+		.replace(/[([{（]\s*[)\]}）]/g, '')
+		// "( x" / "x )" spacing inside surviving brackets
+		.replace(/[([{（]\s+/g, (m) => m[0])
+		.replace(/\s+[)\]}）]/g, (m) => m.slice(-1))
+		// sentence punctuation orphaned by a stripped lead tag: ". : x" → ". X"
+		.replace(/([.。!?？])\s*[,;:：；、—–-]+\s*([a-z])?/g, (m, p, c) =>
+			c ? `${p} ${c.toUpperCase()}` : `${p} `,
+		)
+		// orphaned separators at the start of a line: "SOR-220, step 2" → ", step 2" → "step 2"
+		.replace(/(^|\n)[ \t]*[,;:：；、—–-]+\s*/g, '$1')
+		.replace(/ +([.,;:!?。，；：！？])/g, '$1')
+		.replace(/[ \t]+\n/g, '\n')
+		.replace(/ {2,}/g, ' ')
+		.trim();
 	return out.charAt(0).toUpperCase() + out.slice(1);
 }
 
@@ -116,8 +134,7 @@ function walk(node) {
 		}
 	}
 }
-walk(doc.paths);
-walk(doc.components);
+walk(doc);
 
 // The frozen contract has one dangling ref (`#/components/schemas/AgentId`
 // under `…/runs/{runId}` where only `components/parameters/AgentId` exists).

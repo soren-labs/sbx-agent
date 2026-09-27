@@ -1158,7 +1158,7 @@ def create_agent(
     revisions: Any = Depends(get_revisions),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    """Create an agent and queue its first run (SOR-82 A2).
+    """Create an agent and queue its first run.
 
     Returns as soon as the session record + a ``CREATING`` run-1 exist;
     sandbox cold start / ``runner init`` / first-turn dispatch run on a
@@ -1166,7 +1166,7 @@ def create_agent(
     ``Idempotency-Key`` with the same body replays the original response;
     a different body under a used key is a 409 ``idempotency_conflict``.
 
-    SOR-83: ``workspace`` declares the checkout the run must start on;
+    ``workspace`` declares the checkout the run must start on;
     ``handoff`` makes run-1 start from a referenced artifact or commit.
     """
     workspace, handoff, git = _validate_workspace_decl(
@@ -1552,7 +1552,7 @@ def agents_summary(
     Applies the same record-level filters as the list route but skips the
     per-agent payload build and the all-bindings scan: one store pass.
     ``version`` pins ``{total}:{max updated_at}`` so clients only refetch
-    the expensive page when the set actually changed (SOR-202).
+    the expensive page when the set actually changed.
     """
     records = plane.store.list_all()
     if workflow_id is not None:
@@ -1627,7 +1627,7 @@ def get_workflow(
     key: ApiKey = Depends(agents_key),
     workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
-    """Workflow query / recover read (SOR-84).
+    """Workflow query / recover read.
 
     Agents + latest runs + progress for ``(caller key id, workflow_id)``,
     served from persisted records only — cheap enough to poll while a fresh
@@ -1706,7 +1706,7 @@ def review_workspace(
     disagrees with it is an explicit ``head_sha_mismatch``, never a silent
     mislabel.
 
-    ``comment`` (SOR-128) additionally posts a machine-readable comment on
+    ``comment`` additionally posts a machine-readable comment on
     the workspace's recorded pull request — never a formal review approval
     under the shared GitHub identity. Commenting requires the agent's live
     sandbox.
@@ -1735,7 +1735,7 @@ def publish_git(
     plane: Any = Depends(get_plane),
     workspaces: Any = Depends(get_workspaces),
 ) -> dict[str, Any]:
-    """Execute the agent's declared git policy (SOR-128).
+    """Execute the agent's declared git policy.
 
     Refreshes the recorded head, pushes the work branch to the workspace
     repo's remote, verifies the remote head (drift fails closed), and —
@@ -1759,7 +1759,7 @@ def merge_git(
     plane: Any = Depends(get_plane),
     workspaces: Any = Depends(get_workspaces),
 ) -> dict[str, Any]:
-    """Merge the recorded pull request — review-gated (SOR-178).
+    """Merge the recorded pull request — review-gated.
 
     Requires the policy's ``merge`` flag, a recorded pull request, and an
     independent exact-sha review pin (``reviewed_head_sha`` set via
@@ -1792,8 +1792,8 @@ def apply_handoff(
 
     ``artifact_id`` applies a durable artifact package; ``head_sha`` checks
     out an exact commit; ``pull_request`` fetches a remote ref pinned to an
-    exact head (SOR-128 — drift fails closed). SOR-225 adds caller-friendly
-    forms: ``task_id`` + ``revision`` (default ``"latest"``) hands off the
+    exact head — drift fails closed. Caller-friendly forms: ``task_id`` +
+    ``revision`` (default ``"latest"``) hands off the
     task's durable revision artifact, and ``pr_url`` resolves a GitHub pull
     URL to its ref + head server-side. All validate against the workspace's
     recorded head before touching the workdir — a gap is an explicit
@@ -1970,7 +1970,7 @@ def list_artifacts(
 
     ``?agent_id=`` filters by producer through the durable per-agent
     index — the query reads one index document plus the page's manifests,
-    never scans the whole store (SOR-201). ``?limit=`` pages the result
+    never scans the whole store. ``?limit=`` pages the result
     and ``next_cursor`` resumes it; omit both for the full listing.
     """
     if limit is not None and not 1 <= limit <= ARTIFACTS_PAGE_MAX:
@@ -2527,7 +2527,7 @@ def list_models(
     registry: AccountRegistry = Depends(get_registry),
     capabilities: Any = Depends(get_capabilities),
 ) -> dict[str, Any]:
-    """Advertised models come from the capability catalog (SOR-204): live
+    """Advertised models come from the capability catalog: live
     CLI discovery per account with TTL + stale-last-good, falling back to
     declared/env/static models until the first probe lands."""
     return {"models": _capability_rows(registry, capabilities)}
@@ -2660,7 +2660,7 @@ def list_providers(
     registry: AccountRegistry = Depends(get_registry),
     runtime: Any = Depends(get_runtime_store),
 ) -> dict[str, Any]:
-    """Provider catalog + runtime readiness + account connection (SOR-221).
+    """Provider catalog + runtime readiness + account connection.
 
     Lists every supported provider regardless of deployment selection or
     account presence — ``connected`` is never inferred from config, and
@@ -2677,7 +2677,7 @@ def refresh_models(
     registry: AccountRegistry = Depends(get_registry),
     capabilities: Any = Depends(get_capabilities),
 ) -> dict[str, Any]:
-    """Synchronous capability refresh (SOR-204).
+    """Synchronous capability refresh.
 
     Re-probes the matching accounts' provider CLIs and returns the updated
     catalog rows. Failed probes keep serving last-good data marked
@@ -2813,7 +2813,7 @@ def verify_account(
     else the local registry blob via ``SBX_ACCOUNT_CREDENTIAL`` /
     ``SBX_ACCOUNT_ID`` (restored under ``$SBX_WORK/home``). A non-zero init
     marks the account ``invalid``. When the plane exposes no usable backend
-    the probe cannot run — the verified-only lifecycle (SOR-216) keeps the
+    the probe cannot run — the verified-only lifecycle keeps the
     current status and only records ``probe_unavailable``; the account is
     never promoted without evidence.
     """
@@ -2833,7 +2833,7 @@ def account_credential_lifecycle(
     key: ApiKey = Depends(admin_key),
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
-    """Non-secret credential lifecycle metadata (SOR-176).
+    """Non-secret credential lifecycle metadata.
 
     States: ``healthy`` / ``access_expiring`` / ``refreshing`` /
     ``healthy_refreshed`` / ``reauth_required`` / ``revoked``.
@@ -2852,7 +2852,7 @@ def refresh_account_credential(
     plane: Any = Depends(get_plane),
     registry: AccountRegistry = Depends(get_registry),
 ) -> dict[str, Any]:
-    """Run one synchronous credential refresh through the worker path (SOR-176).
+    """Run one synchronous credential refresh through the worker path.
 
     Reuses the app's background refresher when the plane has one; otherwise
     builds an ad-hoc refresher over the plane's backend. Returns the refresh
@@ -3047,7 +3047,7 @@ def github_install_begin(
     ``github.com/apps/<public-sbx-app>/installations/new`` page via the
     hosted Sorenforge broker — the signed state binds the flow to this
     deployment's own ``/v1/github/install/callback``. ``app`` mode (local
-    App configured) keeps the SOR-177 authorize flow. The first GitHub page
+    App configured) keeps the authorize flow. The first GitHub page
     the user sees is always the App *installation* page — never
     ``settings/apps/new``.
     """
@@ -3092,7 +3092,7 @@ def github_app_begin_manifest(
     key: ApiKey = Depends(admin_key),
     app: Any = Depends(get_github_app),
 ) -> dict[str, Any]:
-    """SOR-220 zero-config, step 1: the App manifest + the URL to POST it.
+    """Zero-config registration, step 1 — the App manifest + the URL to POST it.
 
     The Console auto-submits ``manifest`` to ``manifest_url`` as a form
     post — GitHub's supported App Manifest registration flow — and GitHub
@@ -3113,8 +3113,8 @@ def github_app_manifest_callback(
     state: str = "",
     app: Any = Depends(get_github_app),
 ) -> Response:
-    """SOR-220, step 2 (browser redirect target): exchange ``code`` and
-    register the deployment-scoped App, then bounce the browser back to
+    """Zero-config registration, step 2 (browser redirect target): exchange
+    ``code`` and register the deployment-scoped App, then bounce the browser back to
     the Console GitHub view — unauthenticated by design (the one-time
     ``state`` issued by step 1 is the credential)."""
     try:

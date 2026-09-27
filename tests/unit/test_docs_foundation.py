@@ -120,11 +120,63 @@ def test_run_error_table_matches_canonical_codes() -> None:
     assert not bad_sources, f"non-canonical sources: {sorted(bad_sources)}"
 
 
+_TRACKER_RE = re.compile(r"\b[A-Z]{2,}-\d+\b")
+
+
 @pytest.mark.parametrize("page", DOC_FILES, ids=lambda p: str(p.relative_to(CONTENT)))
 def test_no_internal_tracker_language(page: Path) -> None:
     text = page.read_text(encoding="utf-8")
-    hits = re.findall(r"\b[A-Z]{2,}-\d+\b", text)
+    hits = _TRACKER_RE.findall(text)
     assert not hits, f"{page.name}: tracker references {sorted(set(hits))}"
+
+
+def test_runtime_spec_has_no_tracker_language() -> None:
+    """The spec the control plane serves must not leak tracker refs."""
+    import json
+
+    from control.api_v1 import router
+    from control.api_v1.openapi import build_v1_openapi
+
+    text = json.dumps(build_v1_openapi(router))
+    hits = _TRACKER_RE.findall(text)
+    assert not hits, f"runtime OpenAPI leaks tracker references {sorted(set(hits))}"
+
+
+def test_generated_docs_spec_has_no_tracker_language() -> None:
+    """prepare-openapi.mjs output (.generated yaml + public openapi.json copies)
+    must carry zero tracker refs — this is the copy the public site builds
+    from, including when it falls back to the frozen contract."""
+    import shutil
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node unavailable — generated artifacts are produced at docs build time")
+    proc = subprocess.run(
+        [node, str(DOCS_SITE / "scripts" / "prepare-openapi.mjs")],
+        cwd=DOCS_SITE,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    for rel in (
+        ".generated/api-v1.yaml",
+        "public/openapi.json",
+        "public/zh-cn/openapi.json",
+    ):
+        artifact = DOCS_SITE / rel
+        hits = _TRACKER_RE.findall(artifact.read_text(encoding="utf-8"))
+        assert not hits, f"{rel}: tracker references {sorted(set(hits))}"
+
+
+@pytest.mark.parametrize(
+    "asset",
+    sorted(p for p in PUBLIC.rglob("*") if p.suffix in (".txt", ".md") and p.is_file()),
+    ids=lambda p: str(p.relative_to(PUBLIC)),
+)
+def test_public_text_assets_have_no_tracker_language(asset: Path) -> None:
+    text = asset.read_text(encoding="utf-8")
+    hits = _TRACKER_RE.findall(text)
+    assert not hits, f"{asset.name}: tracker references {sorted(set(hits))}"
 
 
 def test_llms_txt_links_resolve() -> None:
