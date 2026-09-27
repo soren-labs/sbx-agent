@@ -187,7 +187,7 @@ Common credential locations:
    )
 
    # Watch real-time events over SSE
-   for event in client.tasks.watch(created.task.id):
+   for event in client.watch(created.agent.id, created.run.id):
        print(f"{event.type}: {event.data}")
    ```
 
