@@ -344,7 +344,7 @@ export function createRunBlock({ agentId, provider, run, agentLive, expanded = t
     const r = state.run;
     const refs = (r.artifact_refs || []).filter(Boolean);
     const artifactRefs = refs.filter((x) => x.startsWith("artifact://"));
-    const needsActivity = !state.activityLoaded && !isRunLive(r.status) && state.agentLive && !state.items.size;
+    const needsActivity = !state.activityLoaded && !isRunLive(r.status) && !state.items.size;
     mount(
       tailEl,
       errorPanel(r),
@@ -362,8 +362,8 @@ export function createRunBlock({ agentId, provider, run, agentLive, expanded = t
       needsActivity
         ? h("div", null, button(t("Show activity"), { size: "sm", variant: "ghost", iconName: "terminal", testid: "load-activity", onClick: () => onLoadActivity?.(state.run.id) }))
         : null,
-      !state.agentLive && !state.items.size && !isRunLive(r.status)
-        ? h("p", { class: "subtle", style: "font-size:12.5px" }, t("The activity log lived in the sandbox and is gone; the result above comes from the durable run ledger."))
+      state.activityLoaded && !state.agentLive && !state.items.size && !isRunLive(r.status)
+        ? h("p", { class: "subtle", style: "font-size:12.5px" }, t("No activity transcript was kept for this run; the result above comes from the durable run ledger."))
         : null,
     );
   }

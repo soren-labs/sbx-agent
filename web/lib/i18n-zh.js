@@ -463,7 +463,7 @@ export const ZH = {
   "Tests": "测试",
   "The API key is missing, wrong, or revoked.": "API 密钥缺失、错误或已被吊销。",
   "The account and its stored credential are deleted. Agents already running keep their sandbox until they end.": "账号及其保存的凭证将被删除。正在运行的 Agent 会保留沙箱直到结束。",
-  "The activity log lived in the sandbox and is gone; the result above comes from the durable run ledger.": "过程日志保存在沙箱中，现已随沙箱销毁；上方结果来自持久化的运行账本。",
+  "No activity transcript was kept for this run; the result above comes from the durable run ledger.": "此运行没有保留活动记录；上方结果来自持久化的运行账本。",
   "The agent must be idle with a live sandbox. Integrity and base checks fail closed.": "Agent 必须空闲且沙箱存活。完整性和基线校验失败时会拒绝执行。",
   "The artifact does not exist.": "产物不存在。",
   "The artifact failed its integrity check.": "产物完整性校验失败。",
