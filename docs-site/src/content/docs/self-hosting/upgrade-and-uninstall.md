@@ -29,6 +29,11 @@ To upgrade to a new sbx-browser version:
 
 `sbx upgrade` rebuilds images, updates the control plane, and restarts the Modal App — but does not touch durable Dicts. All runs, accounts, workflows, and artifacts persist.
 
+Two things do **not** survive an upgrade:
+
+- **Runtime-minted API keys.** Keys created via `POST /v1/api-keys` or the console are held in memory and cleared on restart. The bootstrap admin key (`~/.local/state/sbx/bootstrap.key`, backed by the `sbx-v1-bootstrap` Secret) persists — use it to re-mint.
+- **The edge console.** If you serve the console through the Cloudflare worker (`deploy/sbx-edge`), its static copy of `web/` is bundled at deploy time and goes stale. Redeploy it after upgrading: `cd deploy/sbx-edge && wrangler deploy`.
+
 ### Rollback
 
 To rollback provider CLI versions:
@@ -99,7 +104,9 @@ modal secret delete sbx-acct-devin-1
 
 ### API key rotation
 
-Create a new key and revoke the old one:
+Minted keys don't survive a control-plane restart, so rotation is mostly an
+in-memory concern — redeploying clears every minted key at once. To rotate
+without a restart, create a new key and revoke the old one:
 
 ```bash
 # Create new key

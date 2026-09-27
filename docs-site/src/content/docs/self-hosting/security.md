@@ -63,6 +63,12 @@ Bearer token `Authorization: Bearer sbx_<key>`:
 - Server stores `sha256(key)` only
 - Scopes: `agents` (default) or `admin`
 
+Keys minted through `POST /v1/api-keys` or the console live in the control
+plane's memory: a redeploy or container restart clears them. The durable
+credential is the bootstrap admin key that `sbx deploy` writes to
+`~/.local/state/sbx/bootstrap.key` (backed by the `sbx-v1-bootstrap` Secret) —
+use it to mint keys again after an upgrade.
+
 ### `/api/*` (internal API, legacy)
 
 HTTP Basic Auth (one shared deployment credential):

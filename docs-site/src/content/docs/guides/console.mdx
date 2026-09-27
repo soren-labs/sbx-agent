@@ -252,7 +252,7 @@ optional globals can be set in a script before `app.js` loads:
 
 | Symptom | What to check |
 | --- | --- |
-| Sent back to **Connect** with "key was rejected" | The key was revoked or mistyped. Create a new one under **Settings → API keys**. |
+| Sent back to **Connect** with "key was rejected" | The key was revoked or mistyped — or the control plane restarted: keys minted at runtime are held in memory and cleared on restart (the deploy-time bootstrap key is the durable one). Mint a new one under **Settings → API keys**. |
 | "Could not reach the control plane" | The console and `/v1` are not on the same origin, or the URL is wrong. See [Edge](/self-hosting/edge/). |
 | A run says "Reconnecting to the stream…" | The event stream dropped; the console resumes it. If it gives up, the run record is still polled until it finishes. |
 | "Prompt sent outside this browser" | The run was started by another client; the API does not store prompt text. |
