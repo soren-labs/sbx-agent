@@ -1,4 +1,5 @@
 import type {
+  DeliverInput,
   ErrorKind,
   IntegrationStatus,
   ModelInfo,
@@ -6,6 +7,9 @@ import type {
   ProviderInfo,
   Session,
   SessionChange,
+  SessionChangesDiff,
+  SessionDeliverResult,
+  SessionFileDiff,
   SessionPhase,
   ActivityItem,
   Turn,
@@ -81,14 +85,30 @@ export interface SessionApi {
   /** Retry the failed step — a failed delivery re-publishes, a terminal
    * run verdict re-runs the (optionally overridden) prompt. */
   retrySession(sessionId: string, prompt?: string): Promise<Session>;
-  /** Publish the session's materialized changes (POST .../deliver). */
-  deliverSession(sessionId: string): Promise<Session>;
+  /**
+   * Deliver the session's materialized changes as a pull request
+   * (POST .../deliver). Synchronous — resolves with the refreshed session
+   * and the delivered revision (its delivery record carries the PR).
+   * Safe to repeat: delivering again updates the same work branch/PR,
+   * never reruns the provider task.
+   */
+  deliverSession(
+    sessionId: string,
+    input?: DeliverInput,
+  ): Promise<SessionDeliverResult>;
   listProviders(): Promise<ProviderInfo[]>;
   listModels(): Promise<ModelInfo[]>;
   getIntegrations(): Promise<IntegrationStatus>;
   /** Step 1 of Connect GitHub — returns the install URL to open. */
   beginGithubAuthorize(): Promise<{ url: string }>;
   listChanges(sessionId: string): Promise<SessionChange[]>;
+  /**
+   * File-level view of the latest ready revision (GET .../changes/diff):
+   * file list + per-file stats — compact, no diff bodies.
+   */
+  listChangesDiff(sessionId: string): Promise<SessionChangesDiff>;
+  /** Lazy per-file diff text (GET .../changes/diff?path=). */
+  getFileDiff(sessionId: string, path: string): Promise<SessionFileDiff>;
   /** Subscribe to the session-scoped event stream. Returns an unsubscribe. */
   subscribe(sessionId: string, handlers: SessionEventHandlers): () => void;
 }

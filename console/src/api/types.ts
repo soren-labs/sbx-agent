@@ -144,9 +144,23 @@ export interface SessionDelivery {
   /** pending | delivered | failed — wire DeliveryView.status. */
   status?: string;
   branch?: string;
+  /** Head sha the delivery last pushed — stale-PR detection. */
+  pushedHeadSha?: string;
   prUrl?: string;
   prNumber?: number;
   prState?: string;
+  prHeadSha?: string;
+  prBase?: string;
+  /** Wire DeliveryView.error — {code,message} or a plain message. */
+  error?: { code?: string; message?: string } | string;
+}
+
+/** The wire ``changes`` view (ChangesView) — where the produced work lives. */
+export interface SessionChangeInfo {
+  status: string;
+  baseSha?: string;
+  headSha?: string;
+  branch?: string;
 }
 
 export interface Session {
@@ -165,6 +179,8 @@ export interface Session {
   compute: ComputeSpec | null;
   idleTimeoutS: number | null;
   delivery: SessionDelivery | null;
+  /** Workspace change state (base/head shas live here for Details). */
+  changes?: SessionChangeInfo | null;
   createdAt: string;
   updatedAt: string;
   usage: Usage | null;
@@ -221,15 +237,65 @@ export interface SessionChange {
   /** Revision sequence number when the row is a revision. */
   n?: number;
   status?: string;
+  /** The revision's delivery lifecycle (pending|delivered|failed). */
+  deliveryStatus?: string;
   summary: string;
   ts: string;
   branch?: string;
   headSha?: string;
   url?: string;
+  /** PR number when the row's delivery produced one. */
+  prNumber?: number;
   ref?: string;
   path?: string;
   changeType?: "added" | "modified" | "deleted";
   error?: string;
+}
+
+export type ChangeFileStatus = "added" | "modified" | "deleted" | "renamed";
+
+/** One file row of a revision's parsed patch (GET .../changes/diff). */
+export interface SessionDiffFile {
+  path: string;
+  status: ChangeFileStatus;
+  additions: number;
+  deletions: number;
+  /** Present on a rename — the previous path. */
+  oldPath?: string;
+  /** Unified diff body — only populated by the per-file lazy fetch. */
+  diff?: string | null;
+}
+
+/** Parsed patch summary — file list + totals, no diff bodies. */
+export interface SessionChangesDiff {
+  n: number;
+  baseSha?: string;
+  headSha?: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  files: SessionDiffFile[];
+}
+
+/** A single file's diff section, fetched lazily (?path=). */
+export interface SessionFileDiff extends SessionDiffFile {
+  diff: string;
+}
+
+/** Explicit POST .../deliver input — the console's "Create pull request". */
+export interface DeliverInput {
+  /** PR title — defaults to the session title server-side. */
+  title?: string;
+  /** Open as a draft pull request. */
+  draft?: boolean;
+  /** PR base branch — defaults to the session's repo ref. */
+  target?: string;
+}
+
+/** POST .../deliver result — refreshed session + the delivered revision. */
+export interface SessionDeliverResult {
+  session: Session;
+  revision: SessionChange;
 }
 
 export interface IntegrationStatus {

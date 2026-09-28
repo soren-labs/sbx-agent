@@ -51,8 +51,16 @@ describe("SessionDetailPage", () => {
     expect(screen.getByTestId("tab-changes")).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("tab-changes"));
     const panel = await screen.findByTestId("changes-panel");
-    expect(panel).toHaveTextContent("revision 1");
+    // summary line + file list
+    expect(await screen.findByTestId("changes-summary")).toHaveTextContent(
+      "3 files changed",
+    );
+    expect(await screen.findByTestId("file-list")).toHaveTextContent(
+      "control/api_v2/routes.py",
+    );
+    // delivered PR card links out to GitHub
     expect(panel.querySelector('a[href*="pull/97"]')).toBeInTheDocument();
+    expect(panel).toHaveTextContent("Pull request ready");
   });
 
   it("hides the Changes tab when the session has none", async () => {

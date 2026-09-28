@@ -1,15 +1,28 @@
 import { ApiError } from "./client";
 import type { SessionApi, SessionEventHandlers } from "./client";
-import { CHANGES, CREATE_SCRIPT, INTEGRATIONS, MODELS, PROVIDERS, SESSIONS } from "./fixtures";
+import {
+  CHANGES,
+  CREATE_SCRIPT,
+  DIFFS,
+  FILE_DIFFS,
+  INTEGRATIONS,
+  MODELS,
+  PROVIDERS,
+  SESSIONS,
+} from "./fixtures";
 import { normalizeEvent } from "./normalize";
 import type {
   ActivityItem,
+  DeliverInput,
   IntegrationStatus,
   ModelInfo,
   NewSessionInput,
   ProviderInfo,
   Session,
   SessionChange,
+  SessionChangesDiff,
+  SessionDeliverResult,
+  SessionFileDiff,
   SessionPhase,
   Turn,
 } from "./types";
@@ -22,6 +35,7 @@ export type MockScenario =
   | "github_required"
   | "create_fails"
   | "followup_fails"
+  | "deliver_fails"
   | "stream_drops";
 
 interface HandlerEntry {
@@ -49,6 +63,11 @@ const SCENARIO_ERRORS: Record<string, ApiError> = {
     "github_required",
     "Connect GitHub to run sessions against a repository",
     { httpStatus: 503, subcode: "github_app_unconfigured", retryable: false },
+  ),
+  deliver_fails: new ApiError(
+    "session_failed",
+    "Delivery failed — the remote rejected the push",
+    { httpStatus: 502, subcode: "push_failed", retryable: true },
   ),
   create_fails: new ApiError(
     "session_failed",
@@ -106,6 +125,8 @@ export class FixtureSessionApi implements SessionApi {
 
   private sessions = new Map<string, Session>();
   private changes = new Map<string, SessionChange[]>();
+  private diffs = new Map<string, SessionChangesDiff>();
+  private fileDiffs = new Map<string, Record<string, string>>();
   private handlers = new Set<HandlerEntry>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private seq = 1000;
@@ -113,6 +134,8 @@ export class FixtureSessionApi implements SessionApi {
   constructor(seed: Session[] = SESSIONS) {
     for (const s of seed) this.sessions.set(s.id, clone(s));
     for (const [k, v] of Object.entries(CHANGES)) this.changes.set(k, clone(v));
+    for (const [k, v] of Object.entries(DIFFS)) this.diffs.set(k, clone(v));
+    for (const [k, v] of Object.entries(FILE_DIFFS)) this.fileDiffs.set(k, clone(v));
   }
 
   private wait<T>(v: T, ms = this.latencyMs): Promise<T> {
@@ -455,7 +478,16 @@ export class FixtureSessionApi implements SessionApi {
     return this.wait(session, 60);
   }
 
-  async deliverSession(sessionId: string): Promise<Session> {
+  /**
+   * Fixture deliver: the console always sends a pull_request override, so
+   * a (re)delivery lands on the same work branch/PR — a repeated deliver
+   * is "PR updated", never a second PR. Mirrors the sync wire result
+   * `{session, revision}`.
+   */
+  async deliverSession(
+    sessionId: string,
+    input?: DeliverInput,
+  ): Promise<SessionDeliverResult> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new ApiError("not_found", "Session not found", {
@@ -463,30 +495,66 @@ export class FixtureSessionApi implements SessionApi {
         subcode: "not_found",
       });
     }
+    if (this.scenario === "deliver_fails") {
+      throw SCENARIO_ERRORS.deliver_fails;
+    }
+    if (this.scenario === "github_required") {
+      throw SCENARIO_ERRORS.github_required;
+    }
     if (!session.hasChanges && !session.delivery) {
       throw new ApiError("conflict", "No changes to deliver", {
         httpStatus: 409,
         subcode: "revision_not_ready",
       });
     }
-    const n = (this.changes.get(sessionId) ?? [])
-        .filter((c) => c.kind === "revision")
-        .length + 1;
+    const rows = this.changes.get(sessionId) ?? [];
+    const existing = [...rows].reverse().find((c) => c.kind === "revision");
+    const headSha =
+      this.diffs.get(sessionId)?.headSha ?? session.changes?.headSha ?? "";
+    const branch = session.delivery?.branch ?? `sbx/${sessionId}-1`;
+    // The console always delivers as a pull request — find-or-create on the
+    // same work branch, so re-delivery carries the existing number.
+    const prNumber = session.delivery?.prNumber ?? 97;
+    const prUrl =
+      session.delivery?.prUrl ??
+      `https://github.com/${session.repo?.name ?? "soren-labs/sbx-browser"}/pull/${prNumber}`;
     const change: SessionChange = {
-      id: `rev-${n}`,
+      id: existing?.id ?? `rev-${(existing?.n ?? 0) + 1}`,
       kind: "revision",
-      n,
-      status: "delivered",
-      summary: `revision ${n}`,
+      n: existing?.n ?? 1,
+      status: "ready",
+      deliveryStatus: "delivered",
+      summary: `revision ${existing?.n ?? 1}`,
       ts: new Date().toISOString(),
-      branch: session.delivery?.branch ?? `sbx/${sessionId}-1`,
+      branch,
+      headSha,
+      url: prUrl,
+      prNumber,
     };
-    this.changes.set(sessionId, [...(this.changes.get(sessionId) ?? []), change]);
+    if (existing) {
+      this.changes.set(
+        sessionId,
+        rows.map((c) => (c.id === existing.id ? change : c)),
+      );
+    } else {
+      this.changes.set(sessionId, [...rows, change]);
+    }
     session.hasChanges = true;
-    if (session.delivery) session.delivery.status = "delivered";
-    else session.delivery = { mode: "branch", status: "delivered", branch: change.branch };
+    if (session.changes) session.changes.branch = branch;
+    session.delivery = {
+      mode: input?.draft ? "draft_pr" : "pr",
+      status: "delivered",
+      branch,
+      pushedHeadSha: headSha,
+      prUrl,
+      prNumber,
+      prState: "open",
+      prHeadSha: headSha,
+      prBase: session.repo?.ref ?? "main",
+    };
     this.update(session);
-    return this.wait(session, 60);
+    const next = await this.wait(session, 60);
+    return { session: next, revision: clone(change) };
   }
 
   async listProviders(): Promise<ProviderInfo[]> {
@@ -498,7 +566,13 @@ export class FixtureSessionApi implements SessionApi {
   }
 
   async getIntegrations(): Promise<IntegrationStatus> {
-    return this.wait(clone(INTEGRATIONS));
+    const data = clone(INTEGRATIONS);
+    if (this.scenario === "github_required") {
+      // GitHub installable but not connected — the Changes tab shows the
+      // Connect GitHub card instead of a deliver action.
+      data.github = { ...data.github, connected: false, accounts: [] };
+    }
+    return this.wait(data);
   }
 
   async beginGithubAuthorize(): Promise<{ url: string }> {
@@ -507,6 +581,33 @@ export class FixtureSessionApi implements SessionApi {
 
   async listChanges(sessionId: string): Promise<SessionChange[]> {
     return this.wait(clone(this.changes.get(sessionId) ?? []));
+  }
+
+  async listChangesDiff(sessionId: string): Promise<SessionChangesDiff> {
+    const diff = this.diffs.get(sessionId);
+    if (!diff) {
+      throw new ApiError("not_found", "no materialized revision to diff", {
+        httpStatus: 404,
+        subcode: "revision_not_found",
+      });
+    }
+    return this.wait(clone(diff));
+  }
+
+  async getFileDiff(
+    sessionId: string,
+    path: string,
+  ): Promise<SessionFileDiff> {
+    const diff = this.diffs.get(sessionId);
+    const file = diff?.files.find((f) => f.path === path);
+    const body = this.fileDiffs.get(sessionId)?.[path];
+    if (!file || body == null) {
+      throw new ApiError("not_found", `no diff for file ${path}`, {
+        httpStatus: 404,
+        subcode: "not_found",
+      });
+    }
+    return this.wait({ ...clone(file), diff: body });
   }
 
   subscribe(sessionId: string, handlers: SessionEventHandlers): () => void {

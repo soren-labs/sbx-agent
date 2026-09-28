@@ -3,15 +3,18 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { ApiError, isApiError } from "../api";
 import type {
   ActivityItem,
+  DeliverInput,
   Session,
   SessionChange,
+  SessionDeliverResult,
   Turn,
 } from "../api/types";
+import { ChangesPanel } from "../components/ChangesPanel";
 import { Conversation, ActivityTimeline } from "../components/Conversation";
 import { ErrorNotice, ReconnectBanner } from "../components/ErrorNotice";
 import { FollowUp } from "../components/FollowUp";
 import { Spinner } from "../components/icons";
-import { ChangesPanel, SessionMeta } from "../components/SessionMeta";
+import { SessionMeta } from "../components/SessionMeta";
 import { ProviderBadge, StatusPill } from "../components/StatusPill";
 import { useI18n } from "../i18n";
 import { useApi } from "../state/api";
@@ -232,6 +235,23 @@ export function SessionDetailPage() {
     }
   };
 
+  /** POST /deliver — the deliver push+PR leg is synchronous server-side;
+   * errors bubble so the Changes panel can render its failed state. */
+  const deliver = useCallback(
+    async (input?: DeliverInput): Promise<SessionDeliverResult> => {
+      setBusy(true);
+      try {
+        const res = await api.deliverSession(id, input);
+        setSession((s) => (s ? mergeSessionMeta(s, res.session) : res.session));
+        setChanges(await api.listChanges(id).catch(() => changes));
+        return res;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [api, id, changes],
+  );
+
   if (loading) {
     return <div className="empty"><Spinner /> {t("common.loading")}</div>;
   }
@@ -255,7 +275,8 @@ export function SessionDetailPage() {
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: "conversation", label: t("session.conversation") },
     { key: "activity", label: t("session.activity") },
-    ...(session.hasChanges || changes.length > 0 || session.delivery
+    ...(session.repo &&
+    (session.hasChanges || changes.length > 0 || session.delivery)
       ? [{ key: "changes" as Tab, label: t("session.changes"), badge: changes.length }]
       : []),
   ];
@@ -282,16 +303,22 @@ export function SessionDetailPage() {
             {t("session.retry")}
           </button>
         )}
-        {session.hasChanges && session.delivery?.status !== "delivered" && (
-          <button
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={() => void act(() => api.deliverSession(id))}
-            data-testid="deliver-btn"
-          >
-            {busy ? t("session.delivering") : t("session.deliver")}
-          </button>
-        )}
+        {session.repo &&
+          session.hasChanges &&
+          session.delivery?.status !== "delivered" && (
+            <button
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() =>
+                void deliver({ title: session.title, target: session.repo?.ref }).catch((e) =>
+                  setError(isApiError(e) ? e : null),
+                )
+              }
+              data-testid="deliver-btn"
+            >
+              {busy ? t("session.delivering") : t("session.deliver")}
+            </button>
+          )}
       </div>
 
       {live && (
@@ -334,7 +361,13 @@ export function SessionDetailPage() {
           </div>
           {tab === "conversation" && <Conversation turns={session.turns} />}
           {tab === "activity" && <ActivityTimeline turns={session.turns} extra={feed} />}
-          {tab === "changes" && <ChangesPanel changes={changes} />}
+          {tab === "changes" && (
+            <ChangesPanel
+              session={session}
+              changes={changes}
+              onDeliver={deliver}
+            />
+          )}
           <div ref={bottomRef} />
           <FollowUp
             phase={session.phase}
@@ -342,7 +375,10 @@ export function SessionDetailPage() {
             onStop={runningLike ? () => void act(() => api.stopSession(id)) : undefined}
           />
         </div>
-        <SessionMeta session={session} />
+        <SessionMeta
+          session={session}
+          revisionN={[...changes].reverse().find((c) => c.kind === "revision")?.n}
+        />
       </div>
     </div>
   );

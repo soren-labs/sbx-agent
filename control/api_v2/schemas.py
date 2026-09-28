@@ -317,6 +317,33 @@ class SessionChangesResponse(BaseModel):
     revisions: list[RevisionView] = []
 
 
+class ChangesDiffFile(BaseModel):
+    """One file inside a revision's patch — the Changes-tab file row.
+
+    ``diff`` carries that file's unified-diff section and is only present
+    when a single ``path`` is requested — the list view stays compact so
+    big diffs are never embedded in a first view."""
+
+    path: str
+    status: Literal["added", "modified", "deleted", "renamed"]
+    additions: int = 0
+    deletions: int = 0
+    old_path: str | None = None
+    diff: str | None = None
+
+
+class SessionChangesDiffResponse(BaseModel):
+    """Parsed patch of a revision — file list + lazy per-file diff."""
+
+    n: int
+    base_sha: str | None = None
+    head_sha: str | None = None
+    files_changed: int
+    additions: int
+    deletions: int
+    files: list[ChangesDiffFile] = []
+
+
 class SessionDeliverResponse(BaseModel):
     session: SessionView
     revision: RevisionView | None = None
