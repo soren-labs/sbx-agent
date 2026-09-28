@@ -2583,6 +2583,60 @@ def _image_name_for(provider: str, default: str) -> str:
     return env_str(f"SBX_IMAGE_{provider.upper()}", default)
 
 
+def _connection_detail(accounts: list[Account], schedulable: int, status: str) -> str:
+    """Why a provider's connection is not serving work (SOR-258).
+
+    The blocker names *what kind* of problem it is — capacity (busy),
+    credential lifecycle (needs login / verify / re-enable), or a
+    transient refresh lane (cooling) — so a ``degraded`` connection never
+    silently folds all of them together.
+    """
+    if status == "connected":
+        return ""
+    if status == "not_connected":
+        return "no accounts registered"
+    if any(account.status == "active" for account in accounts):
+        return "every active account is at capacity"
+    if any(account.status == "cooling" for account in accounts):
+        return "accounts are cooling (credential refresh pending)"
+    if all(account.status == "disabled" for account in accounts):
+        return "all accounts disabled"
+    return "accounts need login or verification"
+
+
+def _provider_readiness(
+    *,
+    enabled: bool,
+    runtime_status: str,
+    accounts: list[Account],
+    schedulable: int,
+) -> str:
+    """Fold runtime + connection into the normalized readiness vocabulary.
+
+    ``disabled`` is strictly the deployment-time gate (provider not in
+    ``SBX_PROVIDERS``) — never inferred from login or capacity state.
+    ``unhealthy`` is runtime evidence failing (``degraded``) or accounts
+    cooling. ``needs_login`` is a credential/verification problem;
+    ``busy`` is verified capacity fully consumed — the two never share a
+    state (SOR-258).
+    """
+    if not enabled:
+        return "disabled"
+    if runtime_status == "degraded":
+        return "unhealthy"
+    if schedulable:
+        return "ready"
+    if not accounts:
+        return "needs_login"
+    if any(account.status == "active" for account in accounts):
+        return "busy"
+    if any(account.status == "cooling" for account in accounts):
+        return "unhealthy"
+    if all(account.status == "disabled" for account in accounts):
+        return "disabled"
+    return "needs_login"
+
+
 def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, Any]]:
     """The three-way split (SOR-212/SOR-215): catalog / runtime / connection.
 
@@ -2600,6 +2654,11 @@ def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, An
     **Connection** — live account state only: ``not_connected`` when no
     account exists, ``connected`` when at least one is schedulable,
     ``degraded`` when accounts exist but none can take work.
+
+    **Readiness** (SOR-258) — the normalized single answer
+    (``ready``/``needs_login``/``busy``/``disabled``/``unhealthy``) folded
+    from the layers above, with the dominant blocker in
+    ``connection.detail`` when the provider cannot serve.
     """
     from runtime.provider_runtime import provider_runtime_specs
 
@@ -2649,6 +2708,12 @@ def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, An
                 "provider": rspec.provider,
                 "support": rspec.support,
                 "status": "available",
+                "readiness": _provider_readiness(
+                    enabled=is_enabled,
+                    runtime_status=runtime_status,
+                    accounts=accounts,
+                    schedulable=schedulable,
+                ),
                 "distribution": {
                     "kind": rspec.install_kind,
                     "local_assisted": rspec.local_assisted,
@@ -2656,6 +2721,7 @@ def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, An
                 "cli": rspec.cli,
                 "cli_path": rspec.cli_path,
                 "credential_files": list(rspec.credential_files),
+                "optional_credential_files": list(rspec.optional_credential_files),
                 "default_models": list(rspec.default_models),
                 "runtime": {
                     "enabled": is_enabled,
@@ -2669,6 +2735,7 @@ def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, An
                     "status": connection_status,
                     "accounts_total": len(accounts),
                     "accounts_available": schedulable,
+                    "detail": _connection_detail(accounts, schedulable, connection_status),
                 },
                 "summary": rspec.summary,
             }
