@@ -1583,7 +1583,9 @@ class FileTaskStore:
 
     def list(self, owner: str | None = None) -> list[TaskRecord]:
         try:
-            paths = sorted(self._root.glob("task_*.json"))
+            # Records may use non-``task_`` id namespaces (V2 ``sess_``);
+            # anything that isn't a task record fails decode and is skipped.
+            paths = sorted(self._root.glob("*.json"))
         except OSError:
             return []
         out: list[TaskRecord] = []

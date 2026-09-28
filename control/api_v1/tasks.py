@@ -702,8 +702,14 @@ def _create_task_once(
     idempotency_key: str | None,
     idempotency_fingerprint: str | None,
     on_provisioned: Any = None,
+    new_id: Any = None,
 ) -> dict[str, Any]:
-    """Resolve → validate → reserve → launch, then persist the record."""
+    """Resolve → validate → reserve → launch, then persist the record.
+
+    ``new_id`` mints the record id (default ``task_…``); the V2 session
+    facade passes its own ``sess_…`` minter so sessions and tasks share
+    the durable store without sharing the id namespace.
+    """
     resolution = _resolve(
         body,
         registry=registry,
@@ -768,7 +774,7 @@ def _create_task_once(
                 continue
             raise
         task = TaskRecord(
-            id=taskmod.new_task_id(),
+            id=(new_id or taskmod.new_task_id)(),
             owner=key.id,
             status="queued",
             request=_spec(body),
