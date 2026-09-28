@@ -66,7 +66,11 @@ def is_session_id(value: str | None) -> bool:
 def map_session_status(aggregate: str, reason: str | None = None) -> tuple[str, str]:
     """``(status, phase)`` for a V1 aggregate status + reason."""
     status = _STATUS_MAP.get(aggregate, "failed")
-    phase = "provisioning" if reason == "awaiting_dispatch" else _PHASE_MAP.get(aggregate, "failed")
+    phase = (
+        "provisioning"
+        if aggregate == "queued" and reason == "awaiting_dispatch"
+        else _PHASE_MAP.get(aggregate, "failed")
+    )
     return status, phase
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -36,6 +37,7 @@ from control.api_v1.deps import (
     get_v1_state,
     get_workflow_service,
 )
+from control.api_v1.error_catalog import spec_for
 from control.api_v1.errors import V1ApiError, not_found
 from control.api_v1.lifecycle import RUN_TERMINAL, RunStateStore, request_fingerprint
 from control.api_v1.schemas import Prompt
@@ -65,6 +67,7 @@ from control.api_v2.schemas import (
     SessionRetryRequest,
     SessionRetryResponse,
 )
+from control.config import TERMINAL_STATUSES
 from control.ports import AccountRegistry, ApiKey, Scheduler
 from control.sandbox_io import read_text, sandbox_env
 from control.service import format_sse
@@ -142,7 +145,7 @@ def _view(
         ws=ws,
         aggregate_status=status,
         aggregate_reason=reason,
-        error=latest_run_error(runs_v1),
+        error=latest_run_error(runs_v1) or _dispatch_error(record),
         usage=extras["usage"],
         cost_estimate_usd=extras["cost_estimate_usd"],
         turns=extras["turns"],
@@ -222,6 +225,121 @@ def _to_task_request(body: CreateSessionRequest) -> _tasks.CreateTaskRequest:
 
 
 # ---------------------------------------------------------------------------
+# bounded-ACK machinery (SOR-265)
+# ---------------------------------------------------------------------------
+
+_ACK_BUDGET_ENV = "SBX_V2_ACK_BUDGET_S"
+_DEFAULT_ACK_BUDGET_S = 0.5
+
+_PRE_BIND_CANCELLED: set[str] = set()
+"""Session ids cancelled before the create worker bound an agent. The
+worker re-checks after binding and cancels the just-landed agent so the
+cancel always wins (SOR-265)."""
+
+
+def _ack_budget(request: Request) -> float:
+    """How long a mutating route may wait for its worker before answering
+    with an optimistic view. ``app.state.v2_ack_budget_s`` overrides the env
+    var for tests; both default to ``_DEFAULT_ACK_BUDGET_S``."""
+    override = getattr(request.app.state, "v2_ack_budget_s", None)
+    if override is not None:
+        return max(0.0, float(override))
+    try:
+        return max(0.0, float(os.environ.get(_ACK_BUDGET_ENV, _DEFAULT_ACK_BUDGET_S)))
+    except ValueError:
+        return _DEFAULT_ACK_BUDGET_S
+
+
+def _run_with_budget(fn: Any, budget_s: float) -> tuple[bool, dict[str, Any]]:
+    """Run ``fn`` on a daemon thread and wait up to ``budget_s``.
+
+    Returns ``(completed, box)`` — ``box['result']``/``box['error']`` hold
+    the outcome when ``completed``. The thread keeps running after a
+    timeout: the request path never serializes on resolve/provision/sandbox
+    work, only on this bounded wait.
+    """
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def _go() -> None:
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — surfaced to the route
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=_go, daemon=True, name="sbx-v2-ack").start()
+    return done.wait(max(0.0, budget_s)), box
+
+
+def _dispatch_error(record: TaskRecord) -> dict[str, Any] | None:
+    """Error detail left by a failed async dispatch (``dispatch_failed``
+    transition) — the session-level ``error`` for sessions that never got
+    an agent and therefore have no run error."""
+    for transition in reversed(record.transitions):
+        if transition.get("reason") == "dispatch_failed":
+            detail = transition.get("detail")
+            if isinstance(detail, dict):
+                return detail
+    return None
+
+
+def _mark_dispatch_failed(task_store: TaskStore, session_id: str, exc: BaseException) -> None:
+    """Persist a terminal dispatch failure on a not-yet-bound record.
+
+    Runs on the worker thread after ``_create_task_once`` raised: without
+    this the session would sit ``queued`` forever with no agent.
+    """
+    record = task_store.get(session_id)
+    if record is None or record.agent_id is not None or record.status in _tasks._TASK_TERMINAL:
+        return
+    if isinstance(exc, V1ApiError):
+        spec = spec_for(exc.code, exc.status_code)
+        detail: dict[str, Any] = {
+            "code": exc.code,
+            "message": exc.message,
+            "retryable": exc.retryable if exc.retryable is not None else spec.retryable,
+        }
+        if exc.retry_after is not None:
+            detail["retry_after"] = exc.retry_after
+    else:
+        detail = {"code": "internal", "message": str(exc) or type(exc).__name__, "retryable": True}
+    record.status = "error"
+    record.transitions.append(
+        {"status": "error", "reason": "dispatch_failed", "at": _iso_now(), "detail": detail}
+    )
+    record.updated_at = _iso_now()
+    try:
+        task_store.put(record)
+    except Exception:
+        pass
+
+
+def _optimistic_view(
+    record: TaskRecord,
+    *,
+    aggregate_status: str,
+    aggregate_reason: str,
+    task_store: TaskStore,
+    run_states: RunStateStore,
+    plane: Any,
+) -> dict[str, Any]:
+    """A session view built from the durable record only — no workspace
+    fetch, no settle writes, no sandbox access."""
+    return session_view(
+        record,
+        plane=plane,
+        task_store=task_store,
+        run_states=run_states,
+        ws=None,
+        aggregate_status=aggregate_status,
+        aggregate_reason=aggregate_reason,
+        error=_dispatch_error(record),
+    )
+
+
+# ---------------------------------------------------------------------------
 # routes
 # ---------------------------------------------------------------------------
 
@@ -229,6 +347,7 @@ def _to_task_request(body: CreateSessionRequest) -> _tasks.CreateTaskRequest:
 @router.post("/sessions", status_code=201, response_model=SessionResponse)
 def create_session(
     body: CreateSessionRequest,
+    request: Request,
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     registry: AccountRegistry = Depends(get_registry),
@@ -294,53 +413,125 @@ def create_session(
             return result
         owned = entry
 
+    # Persist the queued session up front: the public id exists at once and
+    # projects to queued/provisioning while resolve/reserve/provision runs
+    # off the request path (SOR-265). ``_create_task_once`` overwrites this
+    # record with the bound one (``new_id`` pins the id) when it lands.
+    record = TaskRecord(
+        id=new_session_id(),
+        owner=key.id,
+        status="queued",
+        request=_tasks._spec(v1_body),
+        resolved=None,
+        agent_id=None,
+        run_id=None,
+        created_at=_iso_now(),
+        updated_at=_iso_now(),
+        transitions=[{"status": "queued", "reason": "awaiting_dispatch", "at": _iso_now()}],
+        idempotency=(
+            {"key_id": key.id, "key": pin_key, "fingerprint": fingerprint} if pin_key else None
+        ),
+    )
+    task_store.put(record)
+
     on_provisioned = None
     if owned is not None:
         on_provisioned = lambda: v1.idempotency.settle(  # noqa: E731
             key.id, pin_key, owned
         )
-    try:
-        created = _tasks._create_task_once(
-            v1_body,
-            key,
-            plane,
-            registry,
-            scheduler,
-            v1,
-            run_states,
-            workflows,
-            reporter=reporter,
-            resources_registry=resources_registry,
-            capabilities=capabilities,
-            task_store=task_store,
-            resolver=resolver,
-            idempotency_key=pin_key,
-            idempotency_fingerprint=fingerprint,
-            on_provisioned=on_provisioned,
-            new_id=new_session_id,
-        )
-    except Exception:
+
+    def _dispatch() -> dict[str, Any]:
+        try:
+            created = _tasks._create_task_once(
+                v1_body,
+                key,
+                plane,
+                registry,
+                scheduler,
+                v1,
+                run_states,
+                workflows,
+                reporter=reporter,
+                resources_registry=resources_registry,
+                capabilities=capabilities,
+                task_store=task_store,
+                resolver=resolver,
+                idempotency_key=pin_key,
+                idempotency_fingerprint=fingerprint,
+                on_provisioned=on_provisioned,
+                new_id=lambda: record.id,
+            )
+        except Exception as exc:
+            _mark_dispatch_failed(task_store, record.id, exc)
+            raise
+        if record.id in _PRE_BIND_CANCELLED:
+            # A cancel landed while the agent was still being bound — the
+            # dispatch's last write wins the record, so cancel it again on
+            # the now-bound row.
+            try:
+                _tasks.cancel_task(
+                    record.id,
+                    key=key,
+                    plane=plane,
+                    v1=v1,
+                    run_states=run_states,
+                    workflows=workflows,
+                    scheduler=scheduler,
+                    reporter=reporter,
+                    task_store=task_store,
+                )
+            finally:
+                _PRE_BIND_CANCELLED.discard(record.id)
+        return created
+
+    done, box = _run_with_budget(_dispatch, _ack_budget(request))
+    if done and "error" in box:
         if owned is not None:
             v1.idempotency.abandon(key.id, pin_key, owned)
-        raise
-    record = task_store.get(created["task"]["id"])
-    result = {
-        "session": _view(
-            record,
-            plane=plane,
-            v1=v1,
-            run_states=run_states,
-            scheduler=scheduler,
-            reporter=reporter,
-            task_store=task_store,
-        )
-    }
-    if owned is not None:
+        raise box["error"]
+    fresh = task_store.get(record.id) or record
+    if fresh.agent_id is not None:
+        result = {
+            "session": _view(
+                fresh,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            )
+        }
+    elif fresh.status in _tasks._TASK_TERMINAL:
+        if owned is not None:
+            v1.idempotency.abandon(key.id, pin_key, owned)
+        result = {
+            "session": _optimistic_view(
+                fresh,
+                aggregate_status=fresh.status,
+                aggregate_reason="dispatch_failed",
+                task_store=task_store,
+                run_states=run_states,
+                plane=plane,
+            )
+        }
+    else:
+        result = {
+            "session": _optimistic_view(
+                fresh,
+                aggregate_status="queued",
+                aggregate_reason="awaiting_dispatch",
+                task_store=task_store,
+                run_states=run_states,
+                plane=plane,
+            )
+        }
+    if owned is not None and fresh.status not in _tasks._TASK_TERMINAL:
         v1.idempotency.complete(
             key.id,
             pin_key,
             owned,
-            agent_id=(created.get("task") or {}).get("agent_id"),
+            agent_id=fresh.agent_id or record.id,
             body=result,
         )
     return result
@@ -410,6 +601,7 @@ def get_session(
 def post_message(
     session_id: str,
     body: SessionMessageRequest,
+    request: Request,
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
@@ -420,40 +612,88 @@ def post_message(
     task_store: TaskStore = Depends(get_task_store),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    """Queue a follow-up turn; long provider work stays async (202)."""
-    _require_session(task_store, key, session_id)
-    result = _tasks.create_task_run(
-        session_id,
-        _tasks.CreateTaskRunRequest(prompt=Prompt(text=body.prompt), on_busy=body.on_busy),
-        key=key,
-        plane=plane,
-        v1=v1,
-        run_states=run_states,
-        scheduler=scheduler,
-        reporter=reporter,
-        workflows=workflows,
-        task_store=task_store,
-        idempotency_key=idempotency_key,
-    )
-    record = task_store.get(session_id)
-    run = run_view(result["run"]) if result.get("run") else None
-    return {
-        "session": _view(
-            record,
+    """Queue a follow-up turn; long provider work stays async (202).
+
+    SOR-265: ``create_task_run`` serializes ``reconcile_turn`` /
+    ``_dispatch_turn`` sandbox ops before returning, so it runs on a worker
+    under ``_ack_budget``. The cheap refusals (dead agent, terminal agent,
+    busy + ``on_busy=reject``) stay synchronous so the route never lies
+    202; a timeout answers ``message: null`` — accepted, allocation still
+    landing — which the schema already permits.
+    """
+    record = _require_session(task_store, key, session_id)
+    agent_id = record.agent_id
+    if agent_id is None:
+        raise V1ApiError(409, "session_not_runnable", "session is still provisioning")
+    rec = plane.get(agent_id)
+    if rec is None or rec.status in TERMINAL_STATUSES:
+        raise V1ApiError(409, "session_not_runnable", "session's agent is not runnable")
+    if body.on_busy == "reject" and (
+        rec.status == "running"
+        or rec.current_turn_id is not None
+        or agent_id in getattr(plane, "_first_turn_pending", ())
+    ):
+        raise V1ApiError(
+            409,
+            "turn_in_progress",
+            "turn_in_progress",
+            retry_after=plane.turn_max_seconds,
+        )
+
+    v1_body = _tasks.CreateTaskRunRequest(prompt=Prompt(text=body.prompt), on_busy=body.on_busy)
+
+    def _post() -> dict[str, Any]:
+        return _tasks.create_task_run(
+            session_id,
+            v1_body,
+            key=key,
             plane=plane,
             v1=v1,
             run_states=run_states,
             scheduler=scheduler,
             reporter=reporter,
+            workflows=workflows,
             task_store=task_store,
+            idempotency_key=idempotency_key,
+        )
+
+    done, box = _run_with_budget(_post, _ack_budget(request))
+    if done:
+        if "error" in box:
+            raise box["error"]
+        result = box["result"]
+        record_now = task_store.get(session_id) or record
+        run = run_view(result["run"]) if result.get("run") else None
+        return {
+            "session": _view(
+                record_now,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            ),
+            "message": ({"n": run["n"], "status": run["status"]} if run else None),
+        }
+    agg = record.status if record.status in ("running", "delivering") else "queued"
+    return {
+        "session": _optimistic_view(
+            record,
+            aggregate_status=agg,
+            aggregate_reason=("stored" if agg != "queued" else "queued_work"),
+            task_store=task_store,
+            run_states=run_states,
+            plane=plane,
         ),
-        "message": ({"n": run["n"], "status": run["status"]} if run else None),
+        "message": None,
     }
 
 
 @router.post("/sessions/{session_id}/cancel", response_model=SessionResponse)
 def cancel_session(
     session_id: str,
+    request: Request,
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
@@ -463,29 +703,57 @@ def cancel_session(
     reporter: Any = Depends(get_run_reporter),
     task_store: TaskStore = Depends(get_task_store),
 ) -> dict[str, Any]:
-    """Cancel outstanding work — queued turns drop, a running turn stops."""
-    _require_session(task_store, key, session_id)
-    _tasks.cancel_task(
-        session_id,
-        key=key,
-        plane=plane,
-        v1=v1,
-        run_states=run_states,
-        workflows=workflows,
-        scheduler=scheduler,
-        reporter=reporter,
-        task_store=task_store,
-    )
-    record = task_store.get(session_id)
-    return {
-        "session": _view(
-            record,
+    """Cancel outstanding work — queued turns drop, a running turn stops.
+
+    SOR-265: ``cancel_task`` can serialize a ``plane.stop`` (reconcile +
+    proc kill + stop-hook exec), so it runs on a worker under
+    ``_ack_budget``; a timeout answers cancelled-optimistically since the
+    worker still converges the record to ``cancelled``.
+    """
+    record = _require_session(task_store, key, session_id)
+    if record.agent_id is None and record.status not in _tasks._TASK_TERMINAL:
+        # Provisional bind may still land — make the dispatch worker's
+        # post-bind check cancel the agent it just created.
+        _PRE_BIND_CANCELLED.add(session_id)
+
+    def _cancel() -> dict[str, Any]:
+        return _tasks.cancel_task(
+            session_id,
+            key=key,
             plane=plane,
             v1=v1,
             run_states=run_states,
+            workflows=workflows,
             scheduler=scheduler,
             reporter=reporter,
             task_store=task_store,
+        )
+
+    done, box = _run_with_budget(_cancel, _ack_budget(request))
+    if done:
+        if "error" in box:
+            raise box["error"]
+        record_now = task_store.get(session_id) or record
+        return {
+            "session": _view(
+                record_now,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            )
+        }
+    agg = record.status if record.status in _tasks._TASK_TERMINAL else "cancelled"
+    return {
+        "session": _optimistic_view(
+            record,
+            aggregate_status=agg,
+            aggregate_reason=("stored" if agg != "cancelled" else "task_cancelled"),
+            task_store=task_store,
+            run_states=run_states,
+            plane=plane,
         )
     }
 
@@ -682,6 +950,7 @@ async def stream_session_events(
         return None, current_turn
 
     async def gen() -> AsyncIterator[str]:
+        nonlocal agent_id
         proc: Any = None
         current_turn = 0
         try:
@@ -691,14 +960,24 @@ async def stream_session_events(
             next_ka = time.monotonic() + keepalive_s
             # Wait out the provisioning window: the sandbox appears once the
             # background worker binds it; a terminal/gone session exits to
-            # the replay path below.
+            # the replay path below. SOR-265: the record may still be unbound
+            # at connect time — re-read it until an agent lands.
             while handle is None or poll is None or not poll.alive:
-                rec_now = plane.get(agent_id) if agent_id else None
-                if (
-                    agent_id is None
-                    or rec_now is None
-                    or rec_now.status in ("closed", "timed_out", "lost")
-                ):
+                if agent_id is None:
+                    fresh = task_store.get(session_id) or record
+                    if fresh.status in _tasks._TASK_TERMINAL:
+                        break
+                    agent_id = fresh.agent_id
+                    if agent_id is None:
+                        now = time.monotonic()
+                        if now >= next_ka:
+                            yield ": keepalive\n\n"
+                            next_ka = now + keepalive_s
+                        await asyncio.sleep(0.05)
+                        handle, poll = _live_handle()
+                        continue
+                rec_now = plane.get(agent_id)
+                if rec_now is None or rec_now.status in ("closed", "timed_out", "lost"):
                     break
                 statuses = _tasks._run_statuses_for(agent_id, run_states, plane)
                 if statuses and all(s in RUN_TERMINAL for _, s in statuses):
