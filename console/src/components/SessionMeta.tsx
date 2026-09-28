@@ -1,5 +1,6 @@
-import type { Session, SessionChange } from "../api/types";
+import type { Session } from "../api/types";
 import { useI18n } from "../i18n";
+import { shortSha } from "./ChangesPanel";
 
 function fmtDate(isoStr: string): string {
   const d = new Date(isoStr);
@@ -22,7 +23,14 @@ function Kv({ k, v }: { k: string; v: React.ReactNode }) {
 }
 
 /** Compact Details / Usage / Runtime rail for the session page. */
-export function SessionMeta({ session }: { session: Session }) {
+export function SessionMeta({
+  session,
+  revisionN,
+}: {
+  session: Session;
+  /** Latest revision sequence — the Changes tab's "revision id". */
+  revisionN?: number;
+}) {
   const { t } = useI18n();
   return (
     <div className="detail-rail" data-testid="session-meta">
@@ -45,6 +53,31 @@ export function SessionMeta({ session }: { session: Session }) {
                 ) : (
                   session.repo.name
                 )
+              }
+            />
+          )}
+          {session.changes?.baseSha && (
+            <Kv
+              k={t("detail.base")}
+              v={<span className="mono">{shortSha(session.changes.baseSha)}</span>}
+            />
+          )}
+          {session.changes?.headSha && (
+            <Kv
+              k={t("detail.head")}
+              v={<span className="mono">{shortSha(session.changes.headSha)}</span>}
+            />
+          )}
+          {revisionN != null && (
+            <Kv k={t("detail.revision")} v={`#${revisionN}`} />
+          )}
+          {(session.changes?.branch || session.delivery?.branch) && (
+            <Kv
+              k={t("detail.branch")}
+              v={
+                <span className="mono">
+                  {session.delivery?.branch ?? session.changes?.branch}
+                </span>
               }
             />
           )}
@@ -113,37 +146,4 @@ export function SessionMeta({ session }: { session: Session }) {
   );
 }
 
-const CHANGE_ICON: Record<string, string> = {
-  added: "+",
-  modified: "~",
-  deleted: "-",
-  revision: "◈",
-  delivery: "⎇",
-};
 
-/** Changes tab content — revisions, file deltas, deliveries. */
-export function ChangesPanel({ changes }: { changes: SessionChange[] }) {
-  const { t } = useI18n();
-  if (changes.length === 0) {
-    return <div className="empty">{t("session.no_changes")}</div>;
-  }
-  return (
-    <div className="card" data-testid="changes-panel">
-      {changes.map((c) => (
-        <div className="change-row" key={c.id}>
-          <span className={`c-icon ${c.changeType ?? c.kind}`} aria-hidden="true">
-            {CHANGE_ICON[c.changeType ?? c.kind] ?? "•"}
-          </span>
-          <span className="grow">
-            {c.url ? (
-              <a href={c.url} target="_blank" rel="noreferrer">{c.summary}</a>
-            ) : (
-              c.summary
-            )}
-          </span>
-          <span className="faint small">{fmtDate(c.ts)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}

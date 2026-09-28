@@ -24,6 +24,7 @@ from control.api_v1 import routes as _routes
 from control.api_v1 import tasks as _tasks
 from control.api_v1.deps import (
     agents_key,
+    get_artifact_store,
     get_capabilities,
     get_plane,
     get_registry,
@@ -44,6 +45,7 @@ from control.api_v1.schemas import Prompt
 from control.api_v1.state import V1State
 from control.api_v2 import events as _events
 from control.api_v2 import router
+from control.api_v2.diff import parse_unified_diff
 from control.api_v2.projection import (
     is_session_id,
     latest_run_error,
@@ -56,6 +58,7 @@ from control.api_v2.projection import (
 )
 from control.api_v2.schemas import (
     CreateSessionRequest,
+    SessionChangesDiffResponse,
     SessionChangesResponse,
     SessionDeliverRequest,
     SessionDeliverResponse,
@@ -67,6 +70,7 @@ from control.api_v2.schemas import (
     SessionRetryRequest,
     SessionRetryResponse,
 )
+from control.artifacts import ArtifactError
 from control.config import TERMINAL_STATUSES
 from control.ports import AccountRegistry, ApiKey, Scheduler
 from control.sandbox_io import read_text, sandbox_env
@@ -835,6 +839,74 @@ def session_changes(
         "session": session,
         "changes": session["changes"],
         "revisions": [revision_view(r.public()) for r in rows],
+    }
+
+
+@router.get(
+    "/sessions/{session_id}/changes/diff",
+    response_model=SessionChangesDiffResponse,
+)
+def session_changes_diff(
+    session_id: str,
+    n: int | None = Query(default=None),
+    path: str | None = Query(default=None),
+    key: ApiKey = Depends(agents_key),
+    task_store: TaskStore = Depends(get_task_store),
+    revisions: Any = Depends(get_revisions),
+    artifacts: Any = Depends(get_artifact_store),
+) -> dict[str, Any]:
+    """The file-level view of a revision's durable patch — the Changes
+    tab's file list + per-file diff (SOR-259).
+
+    Serves the already-materialized ``patch.diff`` of the latest ready
+    revision (or revision ``n``): parsed per-file paths/status/+/- counts
+    by default, and one file's diff section when ``path`` is given so the
+    console can lazy-load diffs without embedding them in the first view.
+    """
+    record = _require_session(task_store, key, session_id)
+    rows = revisions.list(record.agent_id) if record.agent_id else []
+    ready = [r for r in rows if r.status == "ready"]
+    if n is not None:
+        rev = next((r for r in ready if r.n == n), None)
+    else:
+        rev = ready[-1] if ready else None
+    if rev is None or not rev.artifact_id:
+        raise V1ApiError(404, "revision_not_found", "no materialized revision to diff")
+    try:
+        patch = artifacts.read(rev.artifact_id, "patch.diff").decode("utf-8", "replace")
+    except ArtifactError as exc:
+        raise V1ApiError(
+            400, "artifact_invalid", "revision artifact is unavailable or corrupt"
+        ) from exc
+    files = parse_unified_diff(patch)
+    totals = {
+        "files_changed": len(files),
+        "additions": sum(f.additions for f in files),
+        "deletions": sum(f.deletions for f in files),
+    }
+    if path is not None:
+        files = [f for f in files if f.path == path]
+        if not files:
+            raise not_found(f"no diff for file {path!r}")
+        include_body = True
+    else:
+        include_body = False
+    return {
+        "n": rev.n,
+        "base_sha": rev.base_sha,
+        "head_sha": rev.head_sha,
+        **totals,
+        "files": [
+            {
+                "path": f.path,
+                "status": f.status,
+                "additions": f.additions,
+                "deletions": f.deletions,
+                "old_path": f.old_path,
+                "diff": f.body if include_body else None,
+            }
+            for f in files
+        ],
     }
 
 

@@ -469,6 +469,95 @@ describe("HttpSessionApi — V2 wire shapes", () => {
     expect(rows[1]).toMatchObject({ n: 1, status: "delivered", url: "https://github.com/a/b/pull/5" });
   });
 
+  it("listChangesDiff reads the parsed patch: file list, no bodies", async () => {
+    stubFetch((path) => {
+      expect(path).toBe(`/v2/sessions/${VIEW.id}/changes/diff`);
+      return okJson({
+        n: 1,
+        base_sha: "a".repeat(40),
+        head_sha: "b".repeat(40),
+        files_changed: 2,
+        additions: 7,
+        deletions: 1,
+        files: [
+          { path: "a.ts", status: "modified", additions: 5, deletions: 1, old_path: null, diff: null },
+          { path: "b.ts", status: "added", additions: 2, deletions: 0, old_path: null, diff: null },
+        ],
+      });
+    });
+    const api = new HttpSessionApi("https://cp.test");
+    const diff = await api.listChangesDiff(VIEW.id);
+    expect(diff).toMatchObject({
+      n: 1,
+      baseSha: "a".repeat(40),
+      headSha: "b".repeat(40),
+      filesChanged: 2,
+      additions: 7,
+      deletions: 1,
+    });
+    expect(diff.files[1]).toMatchObject({ path: "b.ts", status: "added" });
+    // stat rows carry no bodies — a body only comes back via ?path=
+    expect(diff.files.every((f) => f.diff == null)).toBe(true);
+  });
+
+  it("getFileDiff maps a 404 to a not_found ApiError", async () => {
+    stubFetch((path) => {
+      expect(path).toBe(
+        `/v2/sessions/${VIEW.id}/changes/diff?path=missing.ts`,
+      );
+      return okJson(
+        { error: { code: "not_found", message: "no diff for file missing.ts", retryable: false } },
+        404,
+      );
+    });
+    const api = new HttpSessionApi("https://cp.test");
+    await expect(api.getFileDiff(VIEW.id, "missing.ts")).rejects.toMatchObject({
+      kind: "not_found",
+    });
+  });
+
+  it("deliverSession POSTs {pull_request} and reads {session, revision}", async () => {
+    const fetchSpy = stubFetch((path, init) => {
+      expect(path).toBe(`/v2/sessions/${VIEW.id}/deliver`);
+      expect(init?.method).toBe("POST");
+      return okJson({
+        session: { ...VIEW, status: "finished", phase: "finished" },
+        revision: {
+          n: 1,
+          status: "ready",
+          head_sha: "b".repeat(40),
+          created_at: "2026-09-28T00:00:00Z",
+          updated_at: "2026-09-28T00:01:00Z",
+          delivery: {
+            required: true,
+            status: "delivered",
+            branch: "sbx/x-1",
+            pull_request: {
+              number: 5,
+              url: "https://github.com/a/b/pull/5",
+              state: "open",
+            },
+          },
+        },
+      });
+    });
+    const api = new HttpSessionApi("https://cp.test");
+    const res = await api.deliverSession(VIEW.id, {
+      title: "hello",
+      draft: true,
+    });
+    const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+    expect(body.pull_request).toEqual({ title: "hello", draft: true });
+    expect(res.revision).toMatchObject({
+      n: 1,
+      deliveryStatus: "delivered",
+      branch: "sbx/x-1",
+      prNumber: 5,
+      url: "https://github.com/a/b/pull/5",
+    });
+    expect(res.session.id).toBe(VIEW.id);
+  });
+
   it("error envelope maps canonical codes to kinds", async () => {
     stubFetch(() =>
       okJson(

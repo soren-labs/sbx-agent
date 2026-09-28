@@ -10,6 +10,7 @@ import {
 } from "./normalize";
 import type {
   ActivityItem,
+  DeliverInput,
   IntegrationStatus,
   ModelInfo,
   NewSessionInput,
@@ -17,6 +18,9 @@ import type {
   RepoRef,
   Session,
   SessionChange,
+  SessionChangesDiff,
+  SessionDeliverResult,
+  SessionFileDiff,
   SessionStatus,
   Turn,
   Usage,
@@ -39,6 +43,10 @@ const PATHS = {
   retry: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/retry`,
   deliver: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/deliver`,
   changes: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/changes`,
+  changesDiff: (id: string) =>
+    `/v2/sessions/${encodeURIComponent(id)}/changes/diff`,
+  fileDiff: (id: string, path: string) =>
+    `/v2/sessions/${encodeURIComponent(id)}/changes/diff?path=${encodeURIComponent(path)}`,
   events: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/events`,
   providers: "/v1/providers",
   models: "/v1/models",
@@ -112,9 +120,74 @@ function deliveryOf(raw: any): Session["delivery"] {
     mode,
     status: raw.status ?? undefined,
     branch: raw.branch ?? undefined,
+    pushedHeadSha: raw.pushed_head_sha ?? undefined,
     prUrl: pr?.url ?? undefined,
     prNumber: pr?.number != null ? Number(pr.number) : undefined,
     prState: pr?.state ?? undefined,
+    prHeadSha: pr?.head_sha ?? undefined,
+    prBase: pr?.base ?? undefined,
+    error:
+      raw.error != null
+        ? typeof raw.error === "string"
+          ? raw.error
+          : {
+              code: raw.error.code ?? undefined,
+              message: raw.error.message ?? undefined,
+            }
+        : undefined,
+  };
+}
+
+/** ChangesView → SessionChangeInfo (base/head shas for the Details rail). */
+function changesOf(raw: any): Session["changes"] {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    status: String(raw.status ?? "none"),
+    baseSha: raw.base_sha ?? undefined,
+    headSha: raw.head_sha ?? undefined,
+    branch: raw.branch ?? undefined,
+  };
+}
+
+/** RevisionView → SessionChange row (shared by listChanges + deliver). */
+function mapRevisionChange(raw: any): SessionChange {
+  const delivery = raw?.delivery ?? null;
+  const pr = delivery?.pull_request ?? null;
+  const err = raw?.error ?? delivery?.error ?? null;
+  return {
+    id: `rev-${raw?.n ?? 0}`,
+    kind: "revision",
+    n: raw?.n != null ? Number(raw.n) : undefined,
+    status: String(raw?.status ?? ""),
+    deliveryStatus: delivery?.status ?? undefined,
+    summary: `revision ${raw?.n ?? "?"}`,
+    ts: String(raw?.updated_at ?? raw?.created_at ?? ""),
+    branch: delivery?.branch ?? undefined,
+    headSha: raw?.head_sha ?? undefined,
+    url: pr?.url ?? undefined,
+    prNumber: pr?.number != null ? Number(pr.number) : undefined,
+    error:
+      err != null ? (typeof err === "string" ? err : (err.message ?? "")) : undefined,
+  };
+}
+
+/** changes/diff response → SessionChangesDiff (stats only, no bodies). */
+function mapChangesDiff(data: any): SessionChangesDiff {
+  const files = Array.isArray(data?.files) ? data.files : [];
+  return {
+    n: Number(data?.n ?? 0),
+    baseSha: data?.base_sha ?? undefined,
+    headSha: data?.head_sha ?? undefined,
+    filesChanged: Number(data?.files_changed ?? files.length),
+    additions: Number(data?.additions ?? 0),
+    deletions: Number(data?.deletions ?? 0),
+    files: files.map((f: any) => ({
+      path: String(f?.path ?? ""),
+      status: f?.status ?? "modified",
+      additions: Number(f?.additions ?? 0),
+      deletions: Number(f?.deletions ?? 0),
+      oldPath: f?.old_path ?? undefined,
+    })),
   };
 }
 
@@ -165,6 +238,7 @@ function mapSession(raw: any, runs?: Turn[]): Session {
     compute: null,
     idleTimeoutS: null,
     delivery: deliveryOf(raw?.delivery),
+    changes: changesOf(changes),
     createdAt: String(raw?.created_at ?? ""),
     updatedAt: String(raw?.updated_at ?? ""),
     usage: usageOf(raw?.usage),
@@ -382,9 +456,58 @@ export class HttpSessionApi implements SessionApi {
     return session;
   }
 
-  async deliverSession(sessionId: string): Promise<Session> {
-    const data = await this.request<any>("POST", PATHS.deliver(sessionId), {});
-    return mapSession(data?.session ?? {});
+  /**
+   * Explicit deliver (POST /v2/sessions/{id}/deliver). The console's only
+   * delivery action is pull-request creation, so the request always
+   * carries the pull_request override ({title, draft}); the synchronous
+   * response returns the refreshed session plus the delivered revision.
+   */
+  async deliverSession(
+    sessionId: string,
+    input?: DeliverInput,
+  ): Promise<SessionDeliverResult> {
+    const body: Record<string, any> = {
+      pull_request: {
+        title: input?.title ?? undefined,
+        draft: input?.draft ?? false,
+        target: input?.target ?? undefined,
+      },
+    };
+    const data = await this.request<any>("POST", PATHS.deliver(sessionId), body);
+    return {
+      session: mapSession(data?.session ?? {}),
+      revision: mapRevisionChange(data?.revision),
+    };
+  }
+
+  async listChangesDiff(sessionId: string): Promise<SessionChangesDiff> {
+    const data = await this.request<any>("GET", PATHS.changesDiff(sessionId));
+    return mapChangesDiff(data);
+  }
+
+  async getFileDiff(
+    sessionId: string,
+    path: string,
+  ): Promise<SessionFileDiff> {
+    const data = await this.request<any>(
+      "GET",
+      PATHS.fileDiff(sessionId, path),
+    );
+    const file = (Array.isArray(data?.files) ? data.files : [])[0];
+    if (!file || typeof file.diff !== "string") {
+      throw new ApiError("not_found", `no diff for file ${path}`, {
+        httpStatus: 404,
+        subcode: "not_found",
+      });
+    }
+    return {
+      path: String(file.path),
+      status: file.status ?? "modified",
+      additions: Number(file.additions ?? 0),
+      deletions: Number(file.deletions ?? 0),
+      oldPath: file.old_path ?? undefined,
+      diff: file.diff,
+    };
   }
 
   async listProviders(): Promise<ProviderInfo[]> {
@@ -502,20 +625,7 @@ export class HttpSessionApi implements SessionApi {
     }
     const revisions = Array.isArray(data?.revisions) ? data.revisions : [];
     for (const r of revisions) {
-      const delivery = r?.delivery ?? null;
-      const pr = delivery?.pull_request ?? null;
-      rows.push({
-        id: `rev-${r?.n ?? rows.length}`,
-        kind: "revision",
-        n: r?.n != null ? Number(r.n) : undefined,
-        status: String(r?.status ?? ""),
-        summary: `revision ${r?.n ?? "?"}`,
-        ts: String(r?.updated_at ?? r?.created_at ?? ""),
-        branch: delivery?.branch ?? undefined,
-        headSha: r?.head_sha ?? undefined,
-        url: pr?.url ?? undefined,
-        error: r?.error ?? delivery?.error ?? undefined,
-      });
+      rows.push(mapRevisionChange(r));
     }
     return rows;
   }
@@ -527,6 +637,7 @@ export class HttpSessionApi implements SessionApi {
    * line. Item rows dedupe via stable ``item-<id>`` ids — a completed frame
    * replaces its started placeholder.
    */
+
   subscribe(sessionId: string, handlers: SessionEventHandlers): () => void {
     let closed = false;
     let attempt = 0;
