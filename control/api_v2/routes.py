@@ -81,6 +81,10 @@ RUNS_FIRST_VIEW_MAX = 25
 """A session detail inlines at most this many recent runs — bounded first
 view, the SSE stream carries the full activity history."""
 
+_STATUS_POLL_S = 0.5
+"""SSE status-transition cadence — session.status frames emit on change,
+not just on connect, so clients see queued→running→finished live."""
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -989,13 +993,17 @@ async def stream_session_events(
     backend = getattr(plane, "backend", None)
     keepalive_s: float = getattr(request.app.state, "keepalive_s", 15.0)
 
-    def _status_frame() -> str:
+    def _status_bits() -> tuple[str, str, str]:
+        """Current (status, phase, frame) — polled so transitions stream live."""
         fresh = task_store.get(session_id) or record
         ws = _tasks._ws_record(plane, fresh.agent_id)
         status, reason = _tasks._aggregate_status(fresh, run_states, plane, ws)
         st, ph = map_session_status(status, reason)
         payload = {"type": "session.status", "status": st, "phase": ph}
-        return f"event: session.status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return st, ph, f"event: session.status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _status_frame() -> str:
+        return _status_bits()[2]
 
     def _live_handle() -> tuple[Any, Any]:
         if backend is None or agent_id is None:
@@ -1025,9 +1033,23 @@ async def stream_session_events(
         nonlocal agent_id
         proc: Any = None
         current_turn = 0
+        last_status: tuple[str, str] | None = None
+        next_status = 0.0
+
+        def _status_tick() -> str | None:
+            """A session.status frame only when the wire state changed."""
+            nonlocal last_status
+            st, ph, frame = _status_bits()
+            if (st, ph) == last_status:
+                return None
+            last_status = (st, ph)
+            return frame
+
         try:
             yield ": keepalive\n\n"
-            yield _status_frame()
+            st, ph, opening = _status_bits()
+            last_status = (st, ph)
+            yield opening
             handle, poll = _live_handle()
             next_ka = time.monotonic() + keepalive_s
             # Wait out the provisioning window: the sandbox appears once the
@@ -1055,6 +1077,11 @@ async def stream_session_events(
                 if statuses and all(s in RUN_TERMINAL for _, s in statuses):
                     break
                 now = time.monotonic()
+                if now >= next_status:
+                    next_status = now + _STATUS_POLL_S
+                    tick = _status_tick()
+                    if tick is not None:
+                        yield tick
                 if now >= next_ka:
                     yield ": keepalive\n\n"
                     next_ka = now + keepalive_s
@@ -1087,6 +1114,11 @@ async def stream_session_events(
                         kind, payload = line_q.get_nowait()
                     except queue.Empty:
                         now = time.monotonic()
+                        if now >= next_status:
+                            next_status = now + _STATUS_POLL_S
+                            tick = _status_tick()
+                            if tick is not None:
+                                yield tick
                         if now >= next_ka:
                             yield ": keepalive\n\n"
                             next_ka = now + keepalive_s
@@ -1157,10 +1189,19 @@ async def stream_session_events(
                     norm = _events.normalize(obj, current_turn)
                     if norm is not None:
                         yield format_sse(entry["id"], norm)
-            yield _status_frame()
+            tick = _status_tick()
+            yield tick if tick is not None else _status_frame()
             while True:
-                await asyncio.sleep(keepalive_s)
-                yield ": keepalive\n\n"
+                now = time.monotonic()
+                if now >= next_status:
+                    next_status = now + _STATUS_POLL_S
+                    tick = _status_tick()
+                    if tick is not None:
+                        yield tick
+                if now >= next_ka:
+                    yield ": keepalive\n\n"
+                    next_ka = now + keepalive_s
+                await asyncio.sleep(0.05)
         finally:
             if proc is not None:
                 try:

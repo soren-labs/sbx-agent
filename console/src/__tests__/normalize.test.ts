@@ -52,6 +52,14 @@ describe("normalizeTurnStatus", () => {
     expect(normalizeTurnStatus("cancelled")).toBe("cancelled");
     expect(normalizeTurnStatus("UNKNOWN")).toBe("queued");
   });
+
+  it("maps sbx.turn_finished terminal statuses", () => {
+    expect(normalizeTurnStatus("success")).toBe("finished");
+    expect(normalizeTurnStatus("codex_error")).toBe("failed");
+    expect(normalizeTurnStatus("timeout")).toBe("failed");
+    expect(normalizeTurnStatus("bad_json")).toBe("failed");
+    expect(normalizeTurnStatus("auth_invalid")).toBe("failed");
+  });
 });
 
 describe("toErrorKind", () => {

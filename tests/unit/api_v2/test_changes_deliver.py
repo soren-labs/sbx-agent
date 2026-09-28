@@ -148,6 +148,29 @@ class TestChangesAndDeliver:
         for key in ("id", "agent_id", "task_id", "run_id", "artifact_id"):
             assert key not in rev
 
+    def test_uncommitted_change_reports_ready(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        # Agents routinely leave uncommitted work — the patch revision must
+        # surface as ready changes even though HEAD never moved.
+        session = _make_session(client, auth, origin)
+        agent_id = _agent_id(credentialed, session["id"])
+        wait_idle(credentialed, agent_id)
+        (workdir(credentialed, agent_id) / "b.txt").write_text("two\n", encoding="utf-8")
+        resp = client.post(
+            f"/v2/sessions/{session['id']}/messages",
+            json={"prompt": "more work"},
+            headers=auth,
+        )
+        assert resp.status_code == 202, resp.text
+        wait_session(client, auth, session["id"], "finished")
+        data = client.get(f"/v2/sessions/{session['id']}/changes", headers=auth).json()
+        assert data["changes"]["status"] == "ready"
+        assert data["changes"]["head_sha"] == origin[1]  # HEAD never moved
+        assert len(data["revisions"]) == 1
+        diff = client.get(f"/v2/sessions/{session['id']}/changes/diff", headers=auth).json()
+        assert [f["path"] for f in diff["files"]] == ["b.txt"]
+
     def test_deliver_pushes_to_remote(
         self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
     ) -> None:

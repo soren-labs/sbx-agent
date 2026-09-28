@@ -103,9 +103,14 @@ function repoOf(raw: any): RepoRef | null {
   if (!raw || typeof raw !== "object") return null;
   const name = String(raw.repo ?? "");
   if (!name) return null;
+  // Only github.com repos get a web URL — local paths / other hosts render
+  // as plain text instead of a dead link.
+  const gh = /^[\w.-]+\/[\w.-]+$/.test(name)
+    ? name
+    : /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(name)?.[1];
   return {
     name,
-    url: `https://github.com/${name}`,
+    url: gh ? `https://github.com/${gh}` : undefined,
     ref: raw.ref ?? undefined,
     baseSha: raw.base_sha ?? undefined,
   };

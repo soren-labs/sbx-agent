@@ -226,7 +226,11 @@ export function ChangesPanel({ session, changes, onDeliver }: ChangesPanelProps)
     lastRev?.error ??
     null;
   const deliveredBranch =
-    !pr && d?.status === "delivered" && d.branch ? d.branch : null;
+    !pr && d?.status === "delivered" && d.branch
+      ? d.branch
+      : !pr && lastRev?.deliveryStatus === "delivered"
+        ? (lastRev.branch ?? null)
+        : null;
 
   return (
     <div data-testid="changes-panel">
@@ -331,7 +335,35 @@ export function ChangesPanel({ session, changes, onDeliver }: ChangesPanelProps)
           )}
 
           {!pr && !failedReason && !persistedFail &&
-            (github === false ? (
+            (deliveredBranch ? (
+              <div
+                className="card deliver-card delivered"
+                data-testid="deliver-card"
+              >
+                <div className="d-title">
+                  {t("deliver.pushed_branch", { branch: deliveredBranch })}
+                </div>
+                {github !== false && (
+                  <div className="d-actions">
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => void deliver()}
+                      data-testid="deliver-create"
+                    >
+                      {t("deliver.create_pr")}
+                    </button>
+                    <label className="draft-check">
+                      <input
+                        type="checkbox"
+                        checked={draft}
+                        onChange={(e) => setDraft(e.target.checked)}
+                      />
+                      {t("deliver.draft")}
+                    </label>
+                  </div>
+                )}
+              </div>
+            ) : github === false ? (
               <div className="card deliver-card" data-testid="deliver-card">
                 <div className="d-title">
                   <Icon name="github" size={15} />
@@ -351,11 +383,7 @@ export function ChangesPanel({ session, changes, onDeliver }: ChangesPanelProps)
               </div>
             ) : (
               <div className="card deliver-card" data-testid="deliver-card">
-                <div className="d-title">
-                  {deliveredBranch
-                    ? t("deliver.pushed_branch", { branch: deliveredBranch })
-                    : t("deliver.ready")}
-                </div>
+                <div className="d-title">{t("deliver.ready")}</div>
                 <div className="d-actions">
                   <button
                     className="btn btn-sm btn-primary"

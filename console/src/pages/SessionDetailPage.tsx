@@ -272,6 +272,11 @@ export function SessionDetailPage() {
 
   const live = session.phase === "queued" || session.phase === "starting";
   const runningLike = live || session.phase === "running";
+  // Undeclared deliveries live on the revision, not session.delivery.
+  const lastRev = [...changes].reverse().find((c) => c.kind === "revision");
+  const delivered =
+    session.delivery?.status === "delivered" ||
+    lastRev?.deliveryStatus === "delivered";
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: "conversation", label: t("session.conversation") },
     { key: "activity", label: t("session.activity") },
@@ -303,22 +308,20 @@ export function SessionDetailPage() {
             {t("session.retry")}
           </button>
         )}
-        {session.repo &&
-          session.hasChanges &&
-          session.delivery?.status !== "delivered" && (
-            <button
-              className="btn btn-sm"
-              disabled={busy}
-              onClick={() =>
-                void deliver({ title: session.title, target: session.repo?.ref }).catch((e) =>
-                  setError(isApiError(e) ? e : null),
-                )
-              }
-              data-testid="deliver-btn"
-            >
-              {busy ? t("session.delivering") : t("session.deliver")}
-            </button>
-          )}
+        {session.repo && session.hasChanges && !delivered && (
+          <button
+            className="btn btn-sm"
+            disabled={busy}
+            onClick={() =>
+              void deliver({ title: session.title, target: session.repo?.ref }).catch((e) =>
+                setError(isApiError(e) ? e : null),
+              )
+            }
+            data-testid="deliver-btn"
+          >
+            {busy ? t("session.delivering") : t("session.deliver")}
+          </button>
+        )}
       </div>
 
       {live && (

@@ -130,6 +130,38 @@ class TestSessionEvents:
             assert saw_keepalive
         client.post(f"/v2/sessions/{session['id']}/cancel", headers=auth)
 
+    def test_status_frames_emit_transitions(
+        self, client: TestClient, auth: dict[str, str], live_base: str, monkeypatch
+    ) -> None:
+        """session.status frames stream on transitions, not only at connect —
+        the console's live phase + terminal-settle logic keys off them."""
+        monkeypatch.setenv("FAKE_CODEX_SCENARIO", "slow")
+        monkeypatch.setenv("FAKE_CODEX_SLOW_SECONDS", "4")
+        session = create_session(client, auth)["session"]
+        url = f"/v2/sessions/{session['id']}/events"
+        statuses: list[str] = []
+        deadline = time.monotonic() + 15.0
+        with httpx.Client(base_url=live_base, timeout=15.0) as http:
+            with http.stream("GET", url, headers=auth) as resp:
+                assert resp.status_code == 200
+                for line in resp.iter_lines():
+                    if time.monotonic() > deadline:
+                        break
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload = json.loads(line[5:].strip())
+                    if payload.get("type") != "session.status":
+                        continue
+                    statuses.append(str(payload.get("status")))
+                    if payload.get("status") == "finished":
+                        break
+        # Connect-time frame says running/queued; the finished frame arrives
+        # live — no refetch, no reconnect.
+        assert statuses[0] in ("queued", "running")
+        assert statuses[-1] == "finished"
+        assert len(statuses) >= 2
+
     def test_closed_session_replays_transcript(
         self, client: TestClient, auth: dict[str, str], live_base: str, v1_env: V1Env
     ) -> None:

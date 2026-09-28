@@ -163,8 +163,13 @@ def changes_view(ws: dict[str, Any] | None) -> dict[str, Any] | None:
     revision = _tasks._revision_view(ws)
     if revision is None:
         return None
+    status = revision["status"]
+    # Uncommitted work materializes as a patch revision without moving HEAD —
+    # the recorded dirty flag is the honest signal that changes exist.
+    if status == "unchanged" and ws.get("dirty"):
+        status = "ready"
     return {
-        "status": revision["status"],
+        "status": status,
         "base_sha": revision.get("base_sha"),
         "head_sha": revision.get("head_sha"),
         "branch": ws.get("branch"),

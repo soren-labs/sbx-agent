@@ -55,7 +55,13 @@ _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
         "FAKE_OPENCODE_SLOW_SECONDS",
         "FAKE_OPENCODE_MODELS",
     ),
-    "devin": ("FAKE_DEVIN_SCENARIO", "FAKE_DEVIN_SLOW_SECONDS", "FAKE_DEVIN_MODELS"),
+    "devin": (
+        "DEVIN_BIN",
+        "SBX_DEVIN_TRANSPORT",
+        "FAKE_DEVIN_SCENARIO",
+        "FAKE_DEVIN_SLOW_SECONDS",
+        "FAKE_DEVIN_MODELS",
+    ),
 }
 
 _ACCOUNT_ID_ENV = "SBX_ACCOUNT_ID"
