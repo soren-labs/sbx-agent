@@ -100,6 +100,86 @@ def test_init_restores_token_blob(work: Path, agy_env: dict[str, str]) -> None:
     assert "SBX_ACCOUNT_CREDENTIAL" not in (work / "session.json").read_text(encoding="utf-8")
 
 
+def test_init_restored_token_only_runs_canonical_probe(
+    work: Path, agy_env: dict[str, str], repo_root: Path
+) -> None:
+    """SOR-258 regression: fresh HOME + token-only blob → ``agy models`` passes.
+
+    The canonical auth/model probe once failed on a token-only restore
+    ("account not eligible") because the CLI's onboarding marker was
+    missing. ``runner init`` now reconstructs the minimal completed state
+    during ``prepare_home``, so an SBX-restored account behaves like a
+    freshly logged-in one.
+    """
+    from control.onboarding import provider_auth_argv
+
+    fake = repo_root / "tests" / "fakes" / "fake_agy.py"
+    agy_env["AGY_BIN"] = str(fake)
+    agy_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(
+        {"provider": "antigravity", "files": {TOKEN_REL: TOKEN_JSON}}
+    )
+    init_agy(agy_env)
+
+    home = work / "home"
+    state = json.loads(
+        (home / ".gemini/antigravity-cli/cache/onboarding.json").read_text(encoding="utf-8")
+    )
+    assert state["onboardingComplete"] is True
+    # The probe runs against the restored HOME only — no SBX_* env.
+    probe = subprocess.run(
+        provider_auth_argv("antigravity", env={"AGY_BIN": str(fake)}),
+        env={"PATH": agy_env["PATH"], "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_canonical_probe_fails_on_raw_token_only_home(
+    work: Path, agy_env: dict[str, str], repo_root: Path
+) -> None:
+    """The pre-fix failure stays modeled: token restored without the
+    onboarding marker (and without ``prepare_home``) hits the eligibility
+    gate exactly like the real CLI on a bare token-only HOME."""
+    from control.onboarding import provider_auth_argv
+
+    fake = repo_root / "tests" / "fakes" / "fake_agy.py"
+    home = work / "home"
+    token = home / TOKEN_REL
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text(TOKEN_JSON, encoding="utf-8")
+    probe = subprocess.run(
+        provider_auth_argv("antigravity", env={"AGY_BIN": str(fake)}),
+        env={"PATH": agy_env["PATH"], "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert probe.returncode == 1
+    assert "not eligible" in probe.stderr
+
+
+def test_blob_carried_onboarding_state_restored_verbatim(
+    work: Path, agy_env: dict[str, str]
+) -> None:
+    """A bundle that already carries the marker wins over synthesis — the
+    file is recorded for export and written byte-for-byte."""
+    onboarding_rel = ".gemini/antigravity-cli/cache/onboarding.json"
+    state_json = '{"consumerOnboardingComplete": false, "onboardingComplete": true}\n'
+    agy_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(
+        {
+            "provider": "antigravity",
+            "files": {TOKEN_REL: TOKEN_JSON, onboarding_rel: state_json},
+        }
+    )
+    init_agy(agy_env)
+    restored = work / "home" / onboarding_rel
+    assert restored.read_text(encoding="utf-8") == state_json
+    session = load_json(work / "session.json")
+    assert set(session["credential_files"]) == {TOKEN_REL, onboarding_rel}
+
+
 def test_init_rejects_provider_mismatch(work: Path, agy_env: dict[str, str]) -> None:
     agy_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(
         {"provider": "codex", "files": {".codex/auth.json": "{}"}}

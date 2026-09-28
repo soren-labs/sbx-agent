@@ -653,9 +653,13 @@ def _pack_blob(provider: str, source: Path) -> dict[str, Any]:
     from runtime.runner.adapter import get_adapter
 
     try:
-        credential_files = tuple(get_adapter(provider).credential_files)
+        adapter = get_adapter(provider)
+        credential_files = tuple(adapter.credential_files)
+        # Optional companion state (e.g. agy's onboarding marker, SOR-258):
+        # captured when present, never required.
+        optional_files = tuple(getattr(adapter, "optional_credential_files", ()))
     except Exception:
-        credential_files = ()
+        credential_files, optional_files = (), ()
     if source.is_dir():
         if not credential_files:
             raise SystemExit(
@@ -664,13 +668,14 @@ def _pack_blob(provider: str, source: Path) -> dict[str, Any]:
             )
         files: dict[str, str] = {}
         missing: list[str] = []
-        for rel in credential_files:
+        for rel in (*credential_files, *optional_files):
             for candidate in (source / rel, source / Path(rel).name):
                 if candidate.is_file():
                     files[rel] = candidate.read_text(encoding="utf-8")
                     break
             else:
-                missing.append(rel)
+                if rel in credential_files:
+                    missing.append(rel)
         if missing:
             raise SystemExit(f"--from {source}: missing credential file(s): {', '.join(missing)}")
         return {_BLOB_PROVIDER: provider, _BLOB_FILES: files}

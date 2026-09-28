@@ -180,3 +180,115 @@ def test_requires_agents_scope(client: TestClient) -> None:
     resp = client.get("/v1/providers")
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
+
+
+# ---------------------------------------------------------------------------
+# SOR-258 normalized readiness: ready | needs_login | busy | disabled |
+# unhealthy — folded from the runtime + connection layers without conflating
+# deployment-disabled, login failure and capacity.
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_ready_with_schedulable_account(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    v1_env.app.state.runtime_store = InMemoryRuntimeStore((_record("codex", STATUS_READY),))
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["codex"]["readiness"] == "ready"
+    assert rows["codex"]["connection"]["detail"] == ""
+
+
+def test_readiness_needs_login_without_accounts(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["grok"]["readiness"] == "needs_login"
+    assert rows["grok"]["connection"]["detail"] == "no accounts registered"
+
+
+def test_readiness_needs_login_for_unverified_and_invalid(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    seed_account(v1_env, "acct-grok-1", provider="grok", status="unverified")
+    seed_account(v1_env, "acct-opc-1", provider="opencode", status="invalid")
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["grok"]["readiness"] == "needs_login"
+    assert rows["grok"]["connection"]["detail"] == "accounts need login or verification"
+    assert rows["opencode"]["readiness"] == "needs_login"
+
+
+def test_readiness_busy_distinct_from_needs_login(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    # Verified account whose only slot is taken: busy, not a credential gap.
+    v1_env.registry.set_running("acct-codex-1", 1)
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["codex"]["readiness"] == "busy"
+    assert rows["codex"]["connection"]["status"] == "degraded"
+    assert "capacity" in rows["codex"]["connection"]["detail"]
+
+
+def test_readiness_disabled_is_deploy_gate_not_login(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Deselected provider with a *valid* connected account still reports
+    # disabled — the deploy gate outranks connection state.
+    monkeypatch.setenv("SBX_PROVIDERS", "codex")
+    seed_account(v1_env, "acct-grok-1", provider="grok", status="active")
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["grok"]["readiness"] == "disabled"
+    assert rows["grok"]["runtime"]["enabled"] is False
+
+
+def test_readiness_unhealthy_on_degraded_runtime(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    seed_account(v1_env, "acct-grok-1", provider="grok", status="active")
+    v1_env.app.state.runtime_store = InMemoryRuntimeStore(
+        (_record("grok", STATUS_DEGRADED, detail="grok CLI not found"),)
+    )
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["grok"]["readiness"] == "unhealthy"
+    assert rows["grok"]["runtime"]["detail"] == "grok CLI not found"
+
+
+def test_readiness_unhealthy_on_cooling_account(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    seed_account(v1_env, "acct-grok-1", provider="grok", status="cooling")
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["grok"]["readiness"] == "unhealthy"
+    assert "cooling" in rows["grok"]["connection"]["detail"]
+
+
+def test_readiness_disabled_when_all_accounts_disabled(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    seed_account(v1_env, "acct-grok-1", provider="grok", status="disabled")
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["grok"]["readiness"] == "disabled"
+    assert rows["grok"]["runtime"]["enabled"] is True
+    assert rows["grok"]["connection"]["detail"] == "all accounts disabled"
+
+
+def test_readiness_values_within_normalized_set(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert {row["readiness"] for row in rows.values()} <= {
+        "ready",
+        "needs_login",
+        "busy",
+        "disabled",
+        "unhealthy",
+    }
+
+
+def test_catalog_lists_optional_credential_files(
+    client: TestClient, v1_env: V1Env, auth: dict[str, str]
+) -> None:
+    rows = _rows(client.get("/v1/providers", headers=auth).json())
+    assert rows["antigravity"]["optional_credential_files"] == [
+        ".gemini/antigravity-cli/cache/onboarding.json"
+    ]
+    assert rows["codex"]["optional_credential_files"] == []

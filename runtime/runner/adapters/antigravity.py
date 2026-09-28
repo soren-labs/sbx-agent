@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from runtime.runner.constants import NOOP_EVENT_TYPE
+from runtime.runner.credentials import write_secret_file
 from runtime.runner.effort import native_effort
 from runtime.runner.events import parse_event_line
 from runtime.runner.workspace import load_session, work_root
@@ -45,6 +46,19 @@ from runtime.runner.workspace import load_session, work_root
 Health = Literal["ok", "auth_invalid", "rate_limited", "unknown"]
 
 OAUTH_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
+ONBOARDING_STATE_REL = ".gemini/antigravity-cli/cache/onboarding.json"
+
+# The minimal non-secret state a completed OAuth onboarding leaves behind:
+# agy 1.2.x writes this stub at first run and flips the flags as the
+# onboarding flow finishes. A token restored without it hits the
+# eligibility gate and reports a misleading "account not eligible"
+# (SOR-258) — so when the credential blob did not carry the marker,
+# ``prepare_home`` writes the stable completed state.
+_MIN_ONBOARDING_STATE = (
+    '{\n  "consumerOnboardingComplete": true,\n'
+    '  "enterpriseOnboardingComplete": true,\n'
+    '  "onboardingComplete": true\n}\n'
+)
 
 _AUTH_NEEDLES = (
     "authentication required",
@@ -171,6 +185,7 @@ class AntigravityAdapter:
 
     provider = "antigravity"
     credential_files: tuple[str, ...] = (OAUTH_TOKEN_REL,)
+    optional_credential_files: tuple[str, ...] = (ONBOARDING_STATE_REL,)
 
     def __init__(self) -> None:
         self._item_seq = 0
@@ -186,8 +201,10 @@ class AntigravityAdapter:
         """Create ``~/.gemini/antigravity-cli`` (700); keep the token at 600.
 
         The credential blob restores ``antigravity-oauth-token`` before this
-        runs; ``prepare_home`` never writes its contents. Approval bypass is
-        argv-level (``--dangerously-skip-permissions``), so no CLI config
+        runs; ``prepare_home`` never writes its contents. When the blob did
+        not carry ``cache/onboarding.json`` the minimal completed marker is
+        synthesized here — a blob-carried file always wins. Approval bypass
+        is argv-level (``--dangerously-skip-permissions``), so no CLI config
         file is needed; ``model`` travels on argv, not in a config file.
         """
         gemini = home / ".gemini"
@@ -198,6 +215,9 @@ class AntigravityAdapter:
         token = cli_dir / "antigravity-oauth-token"
         if token.is_file():
             token.chmod(0o600)
+        onboarding = cli_dir / "cache" / "onboarding.json"
+        if not onboarding.exists():
+            write_secret_file(onboarding, _MIN_ONBOARDING_STATE.encode("utf-8"))
 
     def first_turn_argv(self, prompt: str, model: str) -> list[str]:
         argv = [*agy_bin_tokens(), "-p", prompt, "--output-format", "stream-json"]

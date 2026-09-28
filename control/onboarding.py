@@ -64,10 +64,16 @@ from control.ports import Account
 class ProviderDescriptor:
     """How one provider's credential is onboarded.
 
-    ``credential_files`` are the ``$HOME``-relative relpaths the blob may
+    ``credential_files`` are the ``$HOME``-relative relpaths the blob must
     carry — the same set the sandbox runner restores and
-    ``export-credentials`` writes back. ``content_kind`` selects the
-    per-file schema check applied on import/refresh.
+    ``export-credentials`` writes back. ``optional_credential_files`` are
+    relpaths the blob may additionally carry: non-secret CLI state that
+    materially affects whether the restored credential works (e.g. agy's
+    onboarding marker — SOR-258). Optional files validate when present
+    and are captured on import when present, but a blob without them
+    stays valid; the runner's ``prepare_home`` reconstructs their stable
+    equivalent at restore time. ``content_kind`` selects the per-file
+    schema check applied on import/refresh.
 
     ``support`` is the provider's Release 0.1 support tier exactly as
     published in ``docs/providers.md`` (``stable`` / ``experimental`` /
@@ -84,6 +90,7 @@ class ProviderDescriptor:
     content_kind: str  # "json" | "toml"
     default_models: tuple[str, ...]
     summary: str
+    optional_credential_files: tuple[str, ...] = ()  # blob may carry, needn't
 
 
 PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
@@ -110,6 +117,11 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
         support="experimental",
         experimental=False,
         credential_files=(".gemini/antigravity-cli/antigravity-oauth-token",),
+        # agy 1.2.x gates the eligibility check on this marker: a restored
+        # token without it fails `agy models` with a misleading "account
+        # not eligible" (SOR-258). Optional so legacy token-only blobs
+        # stay valid — ``prepare_home`` writes the stable equivalent.
+        optional_credential_files=(".gemini/antigravity-cli/cache/onboarding.json",),
         content_kind="json",
         default_models=("gemini-3.8-flash-low",),
         summary="Antigravity OAuth token",
@@ -398,7 +410,8 @@ def validate_credential_blob(
     files = blob.get("files")
     if not isinstance(files, dict) or not files:
         raise OnboardingError("invalid_blob", "credential blob needs a non-empty 'files' object")
-    declared = set(desc.credential_files)
+    required = set(desc.credential_files)
+    declared = required | set(desc.optional_credential_files)
     for relpath, value in files.items():
         _check_relpath(relpath)
         if relpath not in declared:
@@ -407,7 +420,7 @@ def validate_credential_blob(
                 f"undeclared credential path {relpath!r} for provider {provider!r}",
             )
         _check_content_schema(desc, str(relpath), _decode_content(value))
-    missing = declared - set(files)
+    missing = required - set(files)
     if require_full and missing:
         raise OnboardingError(
             "missing_credential_file",
@@ -483,9 +496,10 @@ def collect_credential_blob(
         raise OnboardingError("unsafe_path", f"credential source is a symlink: {path}")
     if path.is_dir():
         root = path.resolve()
+        required = set(desc.credential_files)
         files: dict[str, str | dict[str, str]] = {}
         missing: list[str] = []
-        for rel in desc.credential_files:
+        for rel in (*desc.credential_files, *desc.optional_credential_files):
             content: bytes | None = None
             for candidate in (path / rel, path / PurePosixPath(rel).name):
                 if candidate.exists() or candidate.is_symlink():
@@ -494,7 +508,8 @@ def collect_credential_blob(
                     )
                     break
             if content is None:
-                missing.append(rel)
+                if rel in required:
+                    missing.append(rel)
             else:
                 files[rel] = _store_entry(content)
         if missing:
@@ -1025,6 +1040,7 @@ class OnboardingService:
             "status": account.status,
             "support": desc.support if desc else "unknown",
             "credential_files": list(desc.credential_files) if desc else [],
+            "optional_credential_files": (list(desc.optional_credential_files) if desc else []),
             "credential_env": CREDENTIAL_ENV,
             "secret_name": account.secret_name,
             "models": list(account.models),
@@ -1217,6 +1233,7 @@ def main(argv: list[str] | None = None) -> int:
                     "provider": d.provider,
                     "support": d.support,
                     "credential_files": list(d.credential_files),
+                    "optional_credential_files": list(d.optional_credential_files),
                     "credential_env": CREDENTIAL_ENV,
                     "default_models": list(d.default_models),
                     "summary": d.summary,
