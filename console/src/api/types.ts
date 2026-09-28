@@ -1,11 +1,12 @@
 /**
  * V2 Session Console — product-level contract types.
  *
- * Product vocabulary is Session / Turn / Activity / Change. The backend
- * contract (docs/contracts/api-v1.yaml) speaks agent ≙ session, run ≙ turn;
- * all mapping lives in normalize.ts / http.ts so the UI never sees backend
- * nouns. Nothing here invents backend semantics — fields mirror the frozen
- * contract, renamed into product terms.
+ * Product vocabulary is Session / Turn / Activity / Change. The wire
+ * contract is the merged V2 Session API (``/v2/sessions*`` — SessionView /
+ * RunView / RevisionView projections, session-scoped SSE) plus the allowed
+ * V1 surfaces for providers, models and GitHub App state. All mapping lives
+ * in normalize.ts / http.ts so the UI never sees backend nouns. Nothing
+ * here invents backend semantics.
  */
 
 export type ProviderId = "codex" | "antigravity" | "grok" | "opencode" | "devin";
@@ -21,10 +22,9 @@ export type EffortLevel =
   | "max";
 
 /**
- * Product-level session lifecycle. The UI tracks queued → starting →
- * running ⇄ idle → ended/failed. Backend `creating` normalizes to
- * `starting`; `closed`/`timed_out`/`lost` normalize to `ended` with an
- * endReason; a terminal run error normalizes to `failed`.
+ * Product-level session lifecycle shown to users. Derived from the wire
+ * ``phase`` (provisioning|queued|running|delivering|finished|failed|cancelled):
+ * provisioning→starting, delivering→running, finished→idle, cancelled→ended.
  */
 export type SessionPhase =
   | "queued"
@@ -34,13 +34,22 @@ export type SessionPhase =
   | "ended"
   | "failed";
 
-export type SessionEndReason = "closed" | "timed_out" | "lost" | "failed" | null;
+/** The wire ``status`` — the only values a V2 client switches on. */
+export type SessionStatus =
+  | "queued"
+  | "running"
+  | "finished"
+  | "failed"
+  | "cancelled";
 
+export type SessionEndReason = "cancelled" | "failed" | null;
+
+/** Wire RunView.status / SessionStatus — turn-level lifecycle. */
 export type TurnStatus =
   | "queued"
   | "running"
   | "finished"
-  | "error"
+  | "failed"
   | "cancelled";
 
 export interface RepoRef {
@@ -48,6 +57,7 @@ export interface RepoRef {
   name: string;
   url?: string;
   ref?: string;
+  baseSha?: string;
 }
 
 export interface Usage {
@@ -59,7 +69,7 @@ export interface Usage {
 }
 
 export interface TurnError {
-  /** Canonical run_error_codes / error_subcodes value. */
+  /** Canonical error code (error_catalog / run error codes). */
   code: string;
   source?: "provider" | "runtime" | "control" | "telemetry";
   message: string;
@@ -77,11 +87,16 @@ export type ActivityKind =
   | "info"; // misc normalized notes (keepalives never reach here)
 
 export interface ActivityItem {
+  /** Stable id — item.* frames share the canonical item id so a
+   * completed row replaces its started placeholder (no duplicates). */
   id: string;
   /** Monotonic sequence for stable ordering (SSE line number). */
   seq: number;
   ts: string;
+  /** Turn the item belongs to — "turn-<n>" matching Turn.id, or null. */
   turnId: string | null;
+  /** Session-relative turn number the frame was annotated with. */
+  n?: number;
   kind: ActivityKind;
   role?: "user" | "assistant" | "system";
   text?: string;
@@ -89,14 +104,18 @@ export interface ActivityItem {
   command?: string;
   exitCode?: number;
   output?: string;
+  /** Single-path convenience (first of `changes`). */
   path?: string;
   changeType?: "added" | "modified" | "deleted";
+  /** Canonical file_change payload: every touched path + kind. */
+  changes?: { path: string; kind: string }[];
   error?: TurnError;
 }
 
 export interface Turn {
+  /** "turn-<n>" — the session-relative turn number as a stable key. */
   id: string;
-  /** 1-based conversation index. */
+  /** 1-based conversation index (the wire ``n``). */
   index: number;
   prompt: string;
   status: TurnStatus;
@@ -105,6 +124,11 @@ export interface Turn {
   finishedAt: string | null;
   result: string | null;
   error: TurnError | null;
+  usage?: Usage | null;
+  queuePosition?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
   activity: ActivityItem[];
 }
 
@@ -115,25 +139,38 @@ export interface ComputeSpec {
 
 export type DeliveryMode = "none" | "branch" | "pr" | "draft_pr";
 
+export interface SessionDelivery {
+  mode: DeliveryMode;
+  /** pending | delivered | failed — wire DeliveryView.status. */
+  status?: string;
+  branch?: string;
+  prUrl?: string;
+  prNumber?: number;
+  prState?: string;
+}
+
 export interface Session {
   id: string;
   title: string;
+  status: SessionStatus;
   phase: SessionPhase;
   endReason: SessionEndReason;
-  provider: ProviderId;
-  model: string;
+  prompt: string;
+  provider: ProviderId | string | null;
+  model: string | null;
   /** Human label only — raw account ids never reach the UI. */
   accountLabel: string | null;
   repo: RepoRef | null;
-  effort: EffortLevel | null;
+  effort: string | null;
   compute: ComputeSpec | null;
   idleTimeoutS: number | null;
-  delivery: { mode: DeliveryMode; target?: string } | null;
+  delivery: SessionDelivery | null;
   createdAt: string;
   updatedAt: string;
   usage: Usage | null;
   costUsd: number | null;
-  runtimeSeconds: number | null;
+  /** Number of turns the session has run (the wire ``turns`` count). */
+  turnCount: number;
   turns: Turn[];
   /** Last activity across all turns, for list previews. */
   lastActivityPreview: string | null;
@@ -141,34 +178,70 @@ export interface Session {
   error: TurnError | null;
 }
 
+/** Wire readiness vocabulary (SOR-258) folded from runtime + connection. */
+export type ProviderReadiness =
+  | "ready"
+  | "needs_login"
+  | "busy"
+  | "disabled"
+  | "unhealthy";
+
 export interface ProviderInfo {
-  id: ProviderId;
+  id: ProviderId | string;
   label: string;
+  support?: string;
+  readiness: ProviderReadiness | string;
+  /** Catalog ``default_models`` — what Auto may pick from. */
   models: string[];
-  efforts: EffortLevel[];
+  runtimeStatus: "ready" | "degraded" | "unknown" | "disabled" | string;
+  runtimeEnabled: boolean;
+  connectionStatus: "not_connected" | "connected" | "degraded" | string;
+  connectionDetail?: string;
   accountsTotal: number;
   accountsAvailable: number;
   needsLogin: boolean;
 }
 
+/** One /v1/models row — the only agents-scope surface listing account ids. */
+export interface ModelInfo {
+  provider: string;
+  model: string;
+  displayName?: string;
+  /** Real account id the model was discovered on (safe to submit). */
+  account?: string;
+  accountsAvailable: number;
+  availability?: "available" | "busy" | "unavailable" | string;
+  reasoningEfforts: EffortLevel[];
+  defaultEffort?: EffortLevel;
+}
+
 export interface SessionChange {
   id: string;
-  kind: "file" | "revision" | "delivery";
+  kind: "workspace" | "revision" | "delivery" | "file";
+  /** Revision sequence number when the row is a revision. */
+  n?: number;
+  status?: string;
   summary: string;
   ts: string;
+  branch?: string;
+  headSha?: string;
+  url?: string;
+  ref?: string;
   path?: string;
   changeType?: "added" | "modified" | "deleted";
-  ref?: string;
-  url?: string;
+  error?: string;
 }
 
 export interface IntegrationStatus {
   providers: ProviderInfo[];
   github: {
     configured: boolean;
+    installable: boolean;
     connected: boolean;
-    account?: string;
-    installUrl?: string;
+    /** account_login of each installation (metadata only). */
+    accounts: string[];
+    appSlug?: string;
+    source?: string;
   };
   runtime: { enabled: boolean; backend?: string };
 }
@@ -177,12 +250,15 @@ export interface IntegrationStatus {
 export interface NewSessionInput {
   prompt: string;
   repo?: string;
-  provider?: ProviderId | "auto";
+  repoRef?: string;
+  provider?: ProviderId | "auto" | string;
   model?: string;
   title?: string;
-  effort?: EffortLevel;
+  effort?: EffortLevel | string;
+  /** A real account id (from /v1/models) or "auto". */
   account?: string;
   delivery?: DeliveryMode;
+  /** PR base ref when delivery is pr/draft_pr. */
   deliveryTarget?: string;
   compute?: { cpu?: number; memoryMib?: number };
   secrets?: string[];

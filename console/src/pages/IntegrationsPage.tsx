@@ -1,10 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import { isApiError, type ApiError } from "../api";
-import type { IntegrationStatus } from "../api/types";
+import type { IntegrationStatus, ProviderInfo } from "../api/types";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Icon, Spinner } from "../components/icons";
 import { useI18n } from "../i18n";
 import { useApi } from "../state/api";
+import type { I18nKey } from "../i18n/en";
+
+function readinessPill(
+  p: ProviderInfo,
+  t: (k: I18nKey, v?: Record<string, string | number>) => string,
+) {
+  switch (p.readiness) {
+    case "ready":
+      return <span className="pill pill-idle">{t("integrations.connected")}</span>;
+    case "needs_login":
+      return <span className="pill pill-failed">{t("integrations.needs_login")}</span>;
+    case "busy":
+      return <span className="pill pill-running">{t("integrations.busy")}</span>;
+    case "disabled":
+      return <span className="pill pill-ended">{t("integrations.disabled")}</span>;
+    default:
+      return <span className="pill pill-ended">{t("integrations.unhealthy")}</span>;
+  }
+}
 
 export function IntegrationsPage() {
   const { t } = useI18n();
@@ -12,6 +31,7 @@ export function IntegrationsPage() {
   const [data, setData] = useState<IntegrationStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
+  const [connecting, setConnecting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -29,6 +49,21 @@ export function IntegrationsPage() {
     void load();
   }, [load]);
 
+  const connectGithub = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      // POST /v1/github/app/authorize → {authorize_url} — open the GitHub
+      // install/authorize flow in a new tab; the card refreshes on return.
+      const { url } = await api.beginGithubAuthorize();
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setError(isApiError(e) ? e : null);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   return (
     <div>
       <h1>{t("integrations.heading")}</h1>
@@ -43,13 +78,7 @@ export function IntegrationsPage() {
               <div className="int-card card" key={p.id}>
                 <div className="head">
                   <h2>{p.label}</h2>
-                  {p.needsLogin ? (
-                    <span className="pill pill-failed">{t("integrations.needs_login")}</span>
-                  ) : p.accountsAvailable > 0 ? (
-                    <span className="pill pill-idle">{t("integrations.connected")}</span>
-                  ) : (
-                    <span className="pill pill-ended">{t("integrations.not_connected")}</span>
-                  )}
+                  {readinessPill(p, t)}
                 </div>
                 <div className="muted small">
                   {t("integrations.accounts", {
@@ -62,16 +91,16 @@ export function IntegrationsPage() {
                     {p.models.join(" · ")}
                   </div>
                 )}
+                {p.runtimeStatus !== "ready" && (
+                  <div className="faint small" style={{ marginTop: 4 }}>
+                    {t("integrations.runtime_status", { status: p.runtimeStatus })}
+                  </div>
+                )}
                 {p.accountsTotal === 0 && (
                   <div className="faint small" style={{ marginTop: 6 }}>
                     {t("integrations.no_accounts")}
                   </div>
                 )}
-                <div style={{ marginTop: 10 }}>
-                  <button className="btn btn-sm" disabled={!p.needsLogin && p.accountsTotal > 0}>
-                    {p.needsLogin ? t("integrations.connect") : t("integrations.reconnect")}
-                  </button>
-                </div>
               </div>
             ))}
           </div>
@@ -88,20 +117,29 @@ export function IntegrationsPage() {
               )}
             </div>
             <div className="muted small">{t("integrations.github_body")}</div>
-            {data.github.account && (
+            {data.github.accounts.length > 0 && (
               <div className="small" style={{ marginTop: 4 }}>
-                <span className="mono">{data.github.account}</span>
+                {data.github.accounts.map((a) => (
+                  <span key={a} className="mono" style={{ marginRight: 8 }}>{a}</span>
+                ))}
               </div>
             )}
-            {!data.github.connected && (
+            {!data.github.configured && (
+              <div className="faint small" style={{ marginTop: 6 }}>
+                {t("integrations.github_unconfigured")}
+              </div>
+            )}
+            {data.github.installable && !data.github.connected && (
               <div style={{ marginTop: 10 }}>
-                {data.github.installUrl ? (
-                  <a className="btn btn-sm" href={data.github.installUrl}>
-                    {t("integrations.connect")}
-                  </a>
-                ) : (
-                  <button className="btn btn-sm">{t("integrations.connect")}</button>
-                )}
+                <button
+                  className="btn btn-sm"
+                  disabled={connecting}
+                  onClick={() => void connectGithub()}
+                  data-testid="github-connect"
+                >
+                  {connecting ? <Spinner size={12} /> : null}
+                  {t("integrations.connect_github")}
+                </button>
               </div>
             )}
           </div>

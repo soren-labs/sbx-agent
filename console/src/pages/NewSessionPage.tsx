@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { isApiError, type ApiError } from "../api";
-import type { NewSessionInput, ProviderInfo, Session } from "../api/types";
+import type { ModelInfo, NewSessionInput, ProviderInfo, Session } from "../api/types";
 import { Composer } from "../components/Composer";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Spinner } from "../components/icons";
@@ -15,6 +15,7 @@ export function NewSessionPage() {
   const api = useApi();
   const navigate = useNavigate();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [recent, setRecent] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -24,11 +25,13 @@ export function NewSessionPage() {
     setLoading(true);
     setError(null);
     try {
-      const [p, s] = await Promise.all([
+      const [p, m, s] = await Promise.all([
         api.listProviders().catch(() => []),
+        api.listModels().catch(() => []),
         api.listSessions(),
       ]);
       setProviders(p);
+      setModels(m);
       setRecent(s.slice(0, 6));
     } catch (e) {
       setError(isApiError(e) ? e : null);
@@ -57,6 +60,7 @@ export function NewSessionPage() {
     <div>
       <Composer
         providers={providers}
+        models={models}
         submitting={submitting}
         onSubmit={submit}
       />

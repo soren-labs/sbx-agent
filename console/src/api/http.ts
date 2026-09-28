@@ -1,451 +1,710 @@
-import { ApiError } from "./client";
-import type { SessionApi, SessionEventHandlers } from "./client";
+import { ApiError, type SessionApi, type SessionEventHandlers } from "./client";
 import {
   endReasonOf,
   normalizeEvent,
   normalizePhase,
   normalizeTurnStatus,
-  toApiError,
+  nextSeq,
   toErrorKind,
   toTurnError,
 } from "./normalize";
 import type {
+  ActivityItem,
   IntegrationStatus,
+  ModelInfo,
   NewSessionInput,
-  ProviderId,
   ProviderInfo,
+  RepoRef,
   Session,
   SessionChange,
+  SessionStatus,
   Turn,
   Usage,
 } from "./types";
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 /**
- * HTTP SessionApi over the frozen public contract.
- *
- * Route table is centralized here so the SOR-262 integration can retarget
- * the client (e.g. to session-named V2 routes) without touching UI code.
- * Today it maps the contract's agent≙session / run≙turn resources.
+ * HttpSessionApi — the real wire client for the merged V2 Session API
+ * (control/api_v2) plus the explicitly allowed V1 surfaces for providers,
+ * models and GitHub App state. Every path lives in PATHS so integration
+ * rewiring is a one-place change.
  */
 const PATHS = {
-  sessions: "/v1/agents",
-  session: (id: string) => `/v1/agents/${id}`,
-  runs: (id: string) => `/v1/agents/${id}/runs`,
-  runStream: (id: string, runId: string) =>
-    `/v1/agents/${id}/runs/${runId}/stream`,
-  cancelRun: (id: string, runId: string) =>
-    `/v1/agents/${id}/runs/${runId}/cancel`,
-  revisions: (id: string) => `/v1/agents/${id}/revisions`,
-  usage: (id: string) => `/v1/agents/${id}/usage`,
+  sessions: "/v2/sessions",
+  session: (id: string) => `/v2/sessions/${encodeURIComponent(id)}`,
+  messages: (id: string) =>
+    `/v2/sessions/${encodeURIComponent(id)}/messages`,
+  cancel: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/cancel`,
+  retry: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/retry`,
+  deliver: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/deliver`,
+  changes: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/changes`,
+  events: (id: string) => `/v2/sessions/${encodeURIComponent(id)}/events`,
   providers: "/v1/providers",
   models: "/v1/models",
   githubApp: "/v1/github/app",
-  authConnect: "/v1/auth/connect",
+  githubAuthorize: "/v1/github/app/authorize",
 } as const;
+
+const DEFAULT_BASE = (
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
+).replace(/\/+$/, "");
+
+const SSE_BACKOFF_MS = [1000, 2000, 5000, 10000, 15000] as const;
 
 const TOKEN_KEY = "sbx.console.token";
 
+/** Bearer token for live mode — a manual Settings field until SOR-262
+ * wires auth. Stored in localStorage only; never sent anywhere except the
+ * configured control plane. */
 export function getToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? "";
-}
-export function setToken(token: string) {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
-}
-
-function baseUrl(): string {
-  return (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
-}
-
-interface RawErrorBody {
-  error?:
-    | string
-    | {
-        code?: string;
-        message?: string;
-        retryable?: boolean;
-        retry_after?: number;
-      };
-  code?: number;
-  message?: string;
-}
-
-async function request<T>(
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<T> {
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-  };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  let res: Response;
   try {
-    res = await fetch(`${baseUrl()}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch (e) {
-    throw toApiError(e);
+    return localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
   }
-  if (!res.ok) {
-    let parsed: RawErrorBody = {};
-    try {
-      parsed = (await res.json()) as RawErrorBody;
-    } catch {
-      /* non-JSON error body */
-    }
-    const errField = parsed.error;
-    const subcode =
-      typeof errField === "string"
-        ? errField
-        : typeof errField === "object" && errField
-          ? (errField.code ?? "internal")
-          : "internal";
-    const message =
-      typeof errField === "object" && errField?.message
-        ? errField.message
-        : (parsed.message ?? `Request failed (${res.status})`);
-    throw new ApiError(toErrorKind(subcode, res.status), message, {
-      httpStatus: res.status,
-      subcode,
-      retryable:
-        typeof errField === "object" ? Boolean(errField?.retryable) : false,
-      retryAfter:
-        typeof errField === "object" && typeof errField.retry_after === "number"
-          ? errField.retry_after
-          : undefined,
-    });
-  }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
 }
 
-/* ---------- backend → product mapping ---------- */
+export function setToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode — ignore */
+  }
+}
 
-type Raw = Record<string, unknown>;
-const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
-const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
-
-function mapUsage(raw: unknown): Usage | null {
+function usageOf(raw: any): Usage | null {
   if (!raw || typeof raw !== "object") return null;
-  const u = raw as Raw;
   return {
-    inputTokens: num(u.input_tokens) ?? 0,
-    cachedInputTokens: num(u.cached_input_tokens) ?? 0,
-    outputTokens: num(u.output_tokens) ?? 0,
-    cacheWriteInputTokens: num(u.cache_write_input_tokens) ?? undefined,
-    reasoningOutputTokens: num(u.reasoning_output_tokens) ?? undefined,
+    inputTokens: Number(raw.input_tokens ?? 0),
+    cachedInputTokens: Number(raw.cached_input_tokens ?? 0),
+    outputTokens: Number(raw.output_tokens ?? 0),
+    cacheWriteInputTokens:
+      raw.cache_write_input_tokens != null
+        ? Number(raw.cache_write_input_tokens)
+        : undefined,
+    reasoningOutputTokens:
+      raw.reasoning_output_tokens != null
+        ? Number(raw.reasoning_output_tokens)
+        : undefined,
   };
 }
 
-function mapRepo(raw: unknown): Session["repo"] {
+function repoOf(raw: any): RepoRef | null {
   if (!raw || typeof raw !== "object") return null;
-  const w = raw as Raw;
-  const repo = str(w.repo) ?? str(w.repository) ?? str(w.url);
-  if (!repo) return null;
-  const name = repo.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
-  return { name, url: `https://github.com/${name}`, ref: str(w.ref) ?? str(w.base_ref) ?? undefined };
+  const name = String(raw.repo ?? "");
+  if (!name) return null;
+  return {
+    name,
+    url: `https://github.com/${name}`,
+    ref: raw.ref ?? undefined,
+    baseSha: raw.base_sha ?? undefined,
+  };
 }
 
-function mapRun(raw: Raw, index: number): Turn {
-  const prompt = raw.prompt as Raw | undefined;
-  const result = raw.result as Raw | undefined;
+function deliveryOf(raw: any): Session["delivery"] {
+  if (!raw || typeof raw !== "object") return null;
+  const pr = raw.pull_request ?? null;
+  const mode =
+    pr != null ? "pr" : raw.branch != null ? "branch" : "none";
   return {
-    id: str(raw.id) ?? `run-${index}`,
-    index,
-    prompt: str(prompt?.text) ?? "",
-    status: normalizeTurnStatus(str(raw.status)),
-    createdAt: str(raw.created_at) ?? new Date().toISOString(),
-    startedAt: str(raw.started_at),
-    finishedAt: str(raw.finished_at),
-    result: str(result?.text),
-    error: toTurnError(raw.error),
+    mode,
+    status: raw.status ?? undefined,
+    branch: raw.branch ?? undefined,
+    prUrl: pr?.url ?? undefined,
+    prNumber: pr?.number != null ? Number(pr.number) : undefined,
+    prState: pr?.state ?? undefined,
+  };
+}
+
+/** RunView → Turn. Wire fields: n, status, prompt, result, error, usage,
+ * provider, model, reasoning_effort, queue_position, created/started/
+ * finished_at. */
+function mapRun(raw: any): Turn {
+  const n = Number(raw?.n ?? 0);
+  return {
+    id: `turn-${n}`,
+    index: n,
+    prompt: String(raw?.prompt ?? ""),
+    status: normalizeTurnStatus(raw?.status),
+    createdAt: String(raw?.created_at ?? ""),
+    startedAt: raw?.started_at ?? null,
+    finishedAt: raw?.finished_at ?? null,
+    result: raw?.result ?? null,
+    error: toTurnError(raw?.error),
+    usage: usageOf(raw?.usage),
+    queuePosition: raw?.queue_position ?? null,
+    provider: raw?.provider ?? null,
+    model: raw?.model ?? null,
+    effort: raw?.reasoning_effort ?? null,
     activity: [],
   };
 }
 
-function mapSession(raw: Raw, runs: Turn[] = []): Session {
-  const status = str(raw.status);
-  const compute = raw.compute as Raw | undefined;
-  const error = toTurnError(raw.error);
-  const lastTurn = runs[runs.length - 1];
-  const phase = normalizePhase(status);
+/** SessionView → product Session. Runs are attached by the caller when a
+ * detail envelope is available. */
+function mapSession(raw: any, runs?: Turn[]): Session {
+  const status = String(raw?.status ?? "queued") as SessionStatus;
+  const exec = raw?.execution ?? null;
+  const changes = raw?.changes ?? null;
+  const turnsArr = runs ?? [];
+  const lastDone = [...turnsArr].reverse().find((t) => t.result);
   return {
-    id: str(raw.id) ?? "",
-    title:
-      str(raw.name) ??
-      str(raw.title) ??
-      (lastTurn?.prompt.split("\n")[0].slice(0, 80) || "Session"),
-    phase: phase === "ended" && error ? "failed" : phase,
-    endReason: endReasonOf(status),
-    provider: (str(raw.provider) ?? "codex") as ProviderId,
-    model: str(raw.model) ?? "auto",
-    accountLabel: str(raw.account_label) ?? null,
-    repo: mapRepo(raw.workspace ?? raw.repo),
-    effort: (str(raw.reasoning_effort) as Session["effort"]) ?? null,
-    compute:
-      compute && Array.isArray(compute.cpu) && Array.isArray(compute.memory_mib)
-        ? {
-            cpu: [Number(compute.cpu[0]), Number(compute.cpu[1])],
-            memoryMib: [
-              Number(compute.memory_mib[0]),
-              Number(compute.memory_mib[1]),
-            ],
-          }
-        : null,
-    idleTimeoutS: num(raw.idle_timeout_s),
-    delivery: null,
-    createdAt: str(raw.created_at) ?? new Date().toISOString(),
-    updatedAt: str(raw.updated_at) ?? new Date().toISOString(),
-    usage: mapUsage(raw.usage),
-    costUsd: num(raw.cost_estimate_usd),
-    runtimeSeconds: num(raw.sandbox_seconds),
-    turns: runs,
-    lastActivityPreview: null,
-    hasChanges: false,
-    error,
+    id: String(raw?.id ?? ""),
+    title: String(raw?.title ?? raw?.prompt ?? "").slice(0, 80),
+    status,
+    phase: normalizePhase(raw?.phase, status),
+    endReason: endReasonOf(raw?.phase, status),
+    prompt: String(raw?.prompt ?? ""),
+    provider: exec?.provider ?? null,
+    model: exec?.model ?? null,
+    accountLabel: null, // raw account ids never cross the API boundary
+    repo: repoOf(raw?.repository),
+    effort: exec?.reasoning_effort ?? null,
+    compute: null,
+    idleTimeoutS: null,
+    delivery: deliveryOf(raw?.delivery),
+    createdAt: String(raw?.created_at ?? ""),
+    updatedAt: String(raw?.updated_at ?? ""),
+    usage: usageOf(raw?.usage),
+    costUsd:
+      raw?.cost_estimate_usd != null ? Number(raw.cost_estimate_usd) : null,
+    turnCount: Number(raw?.turns ?? turnsArr.length ?? 0),
+    turns: turnsArr,
+    lastActivityPreview: lastDone?.result
+      ? lastDone.result.slice(0, 120)
+      : null,
+    hasChanges: changes?.status === "ready",
+    error: toTurnError(raw?.error),
   };
 }
 
-/* ---------- SSE over fetch (supports Authorization + Last-Event-ID) ---------- */
+/**
+ * Build the real CreateSessionRequest body (POST /v2/sessions). Pure —
+ * exported for contract tests. "auto" values are sent literally (the
+ * backend resolves them); only set fields are emitted.
+ */
+export function toCreateSessionRequest(input: NewSessionInput): Record<string, any> {
+  const req: Record<string, any> = { prompt: input.prompt };
+  if (input.title?.trim()) req.title = input.title.trim();
 
-function parseSseBlock(block: string): { id?: string; event?: string; data?: string } | null {
-  let id: string | undefined;
-  let event: string | undefined;
-  const dataLines: string[] = [];
-  for (const line of block.split("\n")) {
-    if (line.startsWith(":")) return null; // keepalive / comment
-    if (line.startsWith("id:")) id = line.slice(3).trim();
-    else if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  if (input.repo?.trim()) {
+    req.repository = { repo: input.repo.trim() };
+    if (input.repoRef?.trim()) req.repository.ref = input.repoRef.trim();
   }
-  return { id, event, data: dataLines.length ? dataLines.join("\n") : undefined };
+
+  const execution: Record<string, any> = {};
+  execution.provider =
+    input.provider && input.provider !== "auto" ? input.provider : "auto";
+  // Only real account ids (from /v1/models) or literal "auto" — the picker
+  // can no longer fabricate ids, but we still guard at the boundary.
+  if (input.account && input.account !== "auto") {
+    execution.account_id = input.account;
+  } else {
+    execution.account_id = "auto";
+  }
+  if (input.model && input.model !== "auto") execution.model = input.model;
+  else execution.model = "auto";
+  if (input.effort && input.effort !== "auto") {
+    execution.reasoning_effort = input.effort;
+  } else {
+    execution.reasoning_effort = "auto";
+  }
+  req.execution = execution;
+
+  if (input.delivery && input.delivery !== "none") {
+    const delivery: Record<string, any> = { auto_publish: true };
+    if (input.delivery === "pr" || input.delivery === "draft_pr") {
+      delivery.pull_request = {
+        draft: input.delivery === "draft_pr",
+        ...(input.deliveryTarget?.trim()
+          ? { target: input.deliveryTarget.trim() }
+          : {}),
+      };
+    }
+    req.delivery = delivery;
+  }
+
+  const advanced: Record<string, any> = {};
+  const resources: Record<string, any> = {};
+  if (input.secrets?.length) resources.secrets = input.secrets;
+  if (input.mcpServers?.length) resources.mcp = input.mcpServers;
+  if (Object.keys(resources).length) advanced.resources = resources;
+  if (input.compute) {
+    const compute: Record<string, any> = {};
+    if (typeof input.compute.cpu === "number") compute.cpu = input.compute.cpu;
+    if (typeof input.compute.memoryMib === "number") {
+      compute.memory_mib = input.compute.memoryMib;
+    }
+    if (Object.keys(compute).length) advanced.compute = compute;
+  }
+  if (typeof input.idleTimeoutS === "number" && input.idleTimeoutS > 0) {
+    advanced.idle_timeout_s = input.idleTimeoutS;
+  }
+  if (Object.keys(advanced).length) req.advanced = advanced;
+
+  return req;
 }
 
-/* ---------- client ---------- */
-
 export class HttpSessionApi implements SessionApi {
-  private async runsFor(sessionId: string): Promise<Turn[]> {
+  private readonly base: string;
+
+  constructor(base = DEFAULT_BASE) {
+    this.base = base;
+  }
+
+  private headers(): HeadersInit {
+    const h: Record<string, string> = { Accept: "application/json" };
+    const token = getToken().trim();
+    if (token) h.Authorization = `Bearer ${token}`;
+    return h;
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: HeadersInit,
+  ): Promise<T> {
+    let res: Response;
     try {
-      const raw = await request<unknown>("GET", PATHS.runs(sessionId));
-      const list = Array.isArray(raw)
-        ? raw
-        : ((raw as Raw)?.runs as unknown[]) ?? [];
-      return (list as Raw[]).map((r, i) => mapRun(r, i + 1));
+      res = await fetch(`${this.base}${path}`, {
+        method,
+        headers: {
+          ...this.headers(),
+          ...(body !== undefined
+            ? { "Content-Type": "application/json" }
+            : {}),
+          ...extraHeaders,
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        credentials: "omit",
+      });
     } catch {
-      return [];
+      throw new ApiError("network", "network request failed", {
+        subcode: "network",
+        retryable: true,
+      });
     }
+
+    if (!res.ok) {
+      // Wire error body: {error: {code, message, retryable, action}}.
+      let code = "internal";
+      let message = `${method} ${path} → ${res.status}`;
+      let retryable = false;
+      let retryAfter: number | undefined;
+      try {
+        const data = await res.json();
+        const err = data?.error;
+        if (err && typeof err === "object") {
+          if (err.code) code = String(err.code);
+          if (err.message) message = String(err.message);
+          retryable = Boolean(err.retryable);
+          if (typeof err.retry_after === "number") retryAfter = err.retry_after;
+        }
+      } catch {
+        /* non-JSON error body — keep defaults */
+      }
+      const retryAfterHeader = res.headers.get("retry-after");
+      if (retryAfter == null && retryAfterHeader) {
+        const parsed = Number(retryAfterHeader);
+        if (!Number.isNaN(parsed)) retryAfter = parsed;
+      }
+      throw new ApiError(toErrorKind(code, res.status), message, {
+        httpStatus: res.status,
+        subcode: code,
+        retryable,
+        retryAfter,
+      });
+    }
+    return (await res.json()) as T;
   }
 
   async listSessions(): Promise<Session[]> {
-    const raw = await request<unknown>("GET", PATHS.sessions);
-    const list = Array.isArray(raw)
-      ? raw
-      : ((raw as Raw)?.agents as unknown[]) ?? [];
-    return (list as Raw[]).map((a) => mapSession(a));
+    // Envelope: {sessions, total, limit, offset}
+    const data = await this.request<any>("GET", `${PATHS.sessions}?limit=100`);
+    const rows = Array.isArray(data?.sessions) ? data.sessions : [];
+    return rows.map((s: any) => mapSession(s));
   }
 
   async getSession(id: string): Promise<Session> {
-    const raw = (await request<Raw>("GET", PATHS.session(id))) as Raw;
-    const runs = await this.runsFor(id);
-    return mapSession(raw, runs);
+    // Detail envelope: {session, runs: RunView[], run_count, truncated}
+    const data = await this.request<any>("GET", PATHS.session(id));
+    const runs = Array.isArray(data?.runs) ? data.runs.map(mapRun) : [];
+    return mapSession(data?.session ?? {}, runs);
   }
 
   async createSession(input: NewSessionInput): Promise<Session> {
-    const body: Record<string, unknown> = {
-      prompt: { text: input.prompt },
-      agent: {
-        provider: input.provider && input.provider !== "auto" ? input.provider : "codex",
-        account_id: input.account ?? "auto",
-        model: input.model && input.model !== "auto" ? input.model : undefined,
-        reasoning_effort: input.effort,
-      },
-      name: input.title,
-      idle_timeout_s: input.idleTimeoutS,
-    };
-    if (input.repo) {
-      body.workspace = { repo: input.repo };
-    }
-    if (input.compute?.cpu || input.compute?.memoryMib) {
-      body.compute = {
-        cpu: input.compute.cpu,
-        memory_mib: input.compute.memoryMib,
-      };
-    }
-    const raw = (await request<Raw>(
+    // Envelope: {session: SessionView} — the id lives under `session`, never
+    // at the top level.
+    const data = await this.request<any>(
       "POST",
       PATHS.sessions,
-      body,
-    )) as Raw;
-    const id = str(raw.id) ?? str(raw.agent_id) ?? "";
-    // Optimistic shell; the caller navigates immediately and subscribes.
-    const session = mapSession(raw, [
-      {
-        id: str(raw.run_id) ?? `run-${id}-1`,
-        index: 1,
-        prompt: input.prompt,
-        status: "queued",
-        createdAt: new Date().toISOString(),
-        startedAt: null,
-        finishedAt: null,
-        result: null,
-        error: null,
-        activity: [],
-      },
-    ]);
-    if (!session.id) session.id = id;
-    session.phase = "queued";
-    return session;
+      toCreateSessionRequest(input),
+      { "Idempotency-Key": crypto.randomUUID() },
+    );
+    return mapSession(data?.session ?? {});
   }
 
   async sendFollowUp(
     sessionId: string,
     text: string,
-  ): Promise<{ turnId: string }> {
-    const raw = (await request<Raw>("POST", PATHS.runs(sessionId), {
-      prompt: { text },
-    })) as Raw;
-    return { turnId: str(raw.id) ?? str(raw.run_id) ?? "" };
+  ): Promise<{ session: Session; n: number | null }> {
+    // POST /v2/sessions/{id}/messages {prompt, on_busy} → 202 {session, message}
+    const data = await this.request<any>("POST", PATHS.messages(sessionId), {
+      prompt: text,
+      on_busy: "queue",
+    });
+    return {
+      session: mapSession(data?.session ?? {}),
+      n: data?.message?.n != null ? Number(data.message.n) : null,
+    };
   }
 
-  async stopSession(sessionId: string): Promise<void> {
-    const runs = await this.runsFor(sessionId);
-    const active = [...runs].reverse().find(
-      (t) => t.status === "running" || t.status === "queued",
-    );
-    if (!active) return;
-    await request("POST", PATHS.cancelRun(sessionId, active.id));
+  async stopSession(sessionId: string): Promise<Session> {
+    const data = await this.request<any>("POST", PATHS.cancel(sessionId));
+    return mapSession(data?.session ?? {});
   }
 
-  async closeSession(sessionId: string): Promise<Session> {
-    const raw = (await request<Raw>(
-      "DELETE",
-      PATHS.session(sessionId),
-    )) as Raw;
-    return mapSession(raw);
+  async retrySession(sessionId: string, prompt?: string): Promise<Session> {
+    // mode=delivery re-publishes a failed delivery; mode=run re-runs the
+    // failed turn. The backend picks the right thing when mode is omitted.
+    const data = await this.request<any>("POST", PATHS.retry(sessionId), {
+      mode: null,
+      ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+      on_busy: "queue",
+    });
+    const runs: Turn[] = [];
+    if (data?.run) runs.push(mapRun(data.run));
+    const session = mapSession(data?.session ?? {});
+    if (runs.length) session.turns = runs;
+    return session;
+  }
+
+  async deliverSession(sessionId: string): Promise<Session> {
+    const data = await this.request<any>("POST", PATHS.deliver(sessionId), {});
+    return mapSession(data?.session ?? {});
   }
 
   async listProviders(): Promise<ProviderInfo[]> {
-    const raw = await request<unknown>("GET", PATHS.providers);
-    const list = Array.isArray(raw) ? raw : ((raw as Raw)?.providers as unknown[]) ?? [];
-    return (list as Raw[]).map((p) => {
-      const status = str(p.status);
-      const models = Array.isArray(p.models)
-        ? (p.models as unknown[]).map((m) =>
-            typeof m === "string" ? m : str((m as Raw).id) ?? "",
-          )
-        : [];
+    // Envelope: {providers: Provider[]}; real fields: provider, status
+    // (constant "available"), readiness, default_models, cli, runtime{…},
+    // connection{status, accounts_total, accounts_available, detail}.
+    const data = await this.request<any>("GET", PATHS.providers);
+    const rows = Array.isArray(data?.providers) ? data.providers : [];
+    return rows.map((p: any): ProviderInfo => {
+      const conn = p?.connection ?? {};
+      const runtime = p?.runtime ?? {};
+      const readiness = String(p?.readiness ?? "disabled");
+      const runtimeStatus = String(runtime.status ?? "unknown");
       return {
-        id: (str(p.provider) ?? str(p.id) ?? "codex") as ProviderId,
-        label: str(p.label) ?? str(p.provider) ?? "Provider",
-        models,
-        efforts: [],
-        accountsTotal: num(p.accounts_total) ?? 0,
-        accountsAvailable: num(p.accounts_available) ?? 0,
-        needsLogin: status === "needs_login" || status === "unauthenticated",
+        id: String(p?.provider ?? ""),
+        label: String(p?.provider ?? "").replace(/^\w/, (c) => c.toUpperCase()),
+        support: p?.support ?? undefined,
+        readiness,
+        models: Array.isArray(p?.default_models)
+          ? p.default_models.map(String)
+          : [],
+        runtimeStatus,
+        runtimeEnabled: Boolean(runtime.enabled),
+        connectionStatus: String(conn.status ?? "not_connected"),
+        connectionDetail: conn.detail ?? undefined,
+        accountsTotal: Number(conn.accounts_total ?? 0),
+        accountsAvailable: Number(conn.accounts_available ?? 0),
+        needsLogin: readiness === "needs_login",
       };
     });
   }
 
-  async getIntegrations(): Promise<IntegrationStatus> {
-    const [providers, github] = await Promise.all([
-      this.listProviders(),
-      request<Raw>("GET", PATHS.githubApp).catch(() => null),
-    ]);
-    return {
-      providers,
-      github: {
-        configured: Boolean(github),
-        connected: Boolean(github && (github as Raw).installation),
-        account: str((github as Raw | null)?.account) ?? undefined,
-        installUrl: str((github as Raw | null)?.install_url) ?? undefined,
-      },
-      runtime: { enabled: true },
-    };
-  }
-
-  async listChanges(sessionId: string): Promise<SessionChange[]> {
-    const raw = await request<unknown>("GET", PATHS.revisions(sessionId)).catch(
-      () => [],
-    );
-    const list = Array.isArray(raw)
-      ? raw
-      : ((raw as Raw)?.revisions as unknown[]) ?? [];
-    return (list as Raw[]).map((r, i) => ({
-      id: str(r.id) ?? `rev-${i}`,
-      kind: "revision",
-      summary: str(r.summary) ?? str(r.ref) ?? `Revision ${i + 1}`,
-      ts: str(r.created_at) ?? "",
-      ref: str(r.ref) ?? undefined,
-      url: str(r.pr_url) ?? str(r.url) ?? undefined,
+  async listModels(): Promise<ModelInfo[]> {
+    // Envelope: {models: Model[]} — the only agents-scope surface exposing
+    // real account ids (row.account).
+    const data = await this.request<any>("GET", PATHS.models);
+    const rows = Array.isArray(data?.models) ? data.models : [];
+    return rows.map((m: any): ModelInfo => ({
+      provider: String(m?.provider ?? ""),
+      model: String(m?.model ?? ""),
+      displayName: m?.display_name ?? undefined,
+      account: m?.account != null ? String(m.account) : undefined,
+      accountsAvailable: Number(m?.accounts_available ?? 0),
+      availability: m?.availability ?? undefined,
+      reasoningEfforts: Array.isArray(m?.reasoning_efforts)
+        ? m.reasoning_efforts
+        : [],
+      defaultEffort: m?.default_effort ?? undefined,
     }));
   }
 
-  subscribe(sessionId: string, handlers: SessionEventHandlers): () => void {
-    const abort = new AbortController();
-    let lastEventId: string | null = null;
-    let retry = 0;
-
-    const connect = async () => {
-      while (!abort.signal.aborted) {
-        try {
-          const runs = await this.runsFor(sessionId);
-          const active = [...runs].reverse().find(
-            (t) => t.status === "running" || t.status === "queued",
-          ) ?? runs[runs.length - 1];
-          if (!active) return;
-          const headers: Record<string, string> = {
-            Accept: "text/event-stream",
-          };
-          const token = getToken();
-          if (token) headers.Authorization = `Bearer ${token}`;
-          if (lastEventId) headers["Last-Event-ID"] = lastEventId;
-          const res = await fetch(
-            `${baseUrl()}${PATHS.runStream(sessionId, active.id)}`,
-            { headers, signal: abort.signal },
-          );
-          if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
-          retry = 0;
-          handlers.onReconnect?.();
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buf = "";
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            let idx: number;
-            while ((idx = buf.indexOf("\n\n")) >= 0) {
-              const block = buf.slice(0, idx);
-              buf = buf.slice(idx + 2);
-              const frame = parseSseBlock(block);
-              if (!frame || frame.data === undefined) continue;
-              if (frame.id) lastEventId = frame.id;
-              let parsed: unknown;
-              try {
-                parsed = JSON.parse(frame.data);
-              } catch {
-                continue;
-              }
-              const item = normalizeEvent(parsed, frame.id);
-              if (item) handlers.onActivity?.(item);
-            }
-          }
-          throw new Error("stream ended");
-        } catch (e) {
-          if (abort.signal.aborted) return;
-          retry += 1;
-          const delay = Math.min(30_000, 500 * 2 ** retry);
-          handlers.onDisconnect?.(delay);
-          await new Promise((r) => setTimeout(r, delay));
+  async getIntegrations(): Promise<IntegrationStatus> {
+    const [providers, gh] = await Promise.all([
+      this.listProviders(),
+      this.request<any>("GET", PATHS.githubApp).catch((e) => {
+        // GitHub card should degrade gracefully, not 404 the page.
+        if (e instanceof ApiError && e.kind === "github_required") {
+          return { configured: false, installable: false, installations: [] };
         }
+        throw e;
+      }),
+    ]);
+    const installations = Array.isArray(gh?.installations) ? gh.installations : [];
+    const accounts = installations
+      .map((i: any) => i?.account_login)
+      .filter((a: unknown): a is string => typeof a === "string" && !!a);
+    return {
+      providers,
+      github: {
+        configured: Boolean(gh?.configured),
+        installable: Boolean(gh?.installable ?? gh?.configured),
+        connected: accounts.length > 0,
+        accounts,
+        appSlug: gh?.app_slug ?? undefined,
+        source: gh?.source ?? undefined,
+      },
+      runtime: {
+        enabled: providers.some((p) => p.runtimeEnabled),
+      },
+    };
+  }
+
+  async beginGithubAuthorize(): Promise<{ url: string }> {
+    // POST /v1/github/app/authorize → 201 {authorize_url, state, expires_at}
+    const data = await this.request<any>("POST", PATHS.githubAuthorize, {});
+    const url = data?.authorize_url;
+    if (typeof url !== "string" || !url) {
+      throw new ApiError("github_required", "no authorize_url in response", {
+        subcode: "github_app_invalid",
+      });
+    }
+    return { url };
+  }
+
+  async listChanges(sessionId: string): Promise<SessionChange[]> {
+    // Envelope: {session, changes: ChangesView|null, revisions: RevisionView[]}
+    const data = await this.request<any>("GET", PATHS.changes(sessionId));
+    const rows: SessionChange[] = [];
+    const changes = data?.changes ?? null;
+    if (changes && typeof changes === "object" && changes.status !== "none") {
+      const pr = changes.pull_request ?? null;
+      rows.push({
+        id: "workspace",
+        kind: "workspace",
+        status: String(changes.status ?? ""),
+        summary:
+          changes.status === "ready"
+            ? "workspace changes ready"
+            : "workspace unchanged",
+        ts: String(changes.updated_at ?? ""),
+        branch: changes.branch ?? undefined,
+        headSha: changes.head_sha ?? undefined,
+        url: pr?.url ?? undefined,
+      });
+    }
+    const revisions = Array.isArray(data?.revisions) ? data.revisions : [];
+    for (const r of revisions) {
+      const delivery = r?.delivery ?? null;
+      const pr = delivery?.pull_request ?? null;
+      rows.push({
+        id: `rev-${r?.n ?? rows.length}`,
+        kind: "revision",
+        n: r?.n != null ? Number(r.n) : undefined,
+        status: String(r?.status ?? ""),
+        summary: `revision ${r?.n ?? "?"}`,
+        ts: String(r?.updated_at ?? r?.created_at ?? ""),
+        branch: delivery?.branch ?? undefined,
+        headSha: r?.head_sha ?? undefined,
+        url: pr?.url ?? undefined,
+        error: r?.error ?? delivery?.error ?? undefined,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * Session-scoped SSE (GET /v2/sessions/{id}/events). The stream replays
+   * history then follows live, covers every turn (not just the run active
+   * at connect), and resumes with Last-Event-ID on the frame's ``id:``
+   * line. Item rows dedupe via stable ``item-<id>`` ids — a completed frame
+   * replaces its started placeholder.
+   */
+  subscribe(sessionId: string, handlers: SessionEventHandlers): () => void {
+    let closed = false;
+    let attempt = 0;
+    let lastEventId: string | null = null;
+    let abort: AbortController | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let sawDisconnect = false;
+
+    const emit = (item: ActivityItem | null) => {
+      if (item) handlers.onActivity?.(item);
+    };
+
+    const handleFrame = (frame: any) => {
+      const type = String(frame?.type ?? "");
+      switch (type) {
+        case "session.status": {
+          // Fresh on every connect (no id) — always apply.
+          const phase = normalizePhase(frame.phase, frame.status);
+          handlers.onPhase?.(phase);
+          emit({
+            id: `evt-status-${sessionId}-${String(frame.phase ?? frame.status ?? "x")}`,
+            seq: nextSeq(),
+            ts: new Date().toISOString(),
+            turnId: null,
+            kind: "status",
+            status: String(frame.phase ?? frame.status ?? ""),
+          });
+          // Terminal states: pull the final SessionView so usage/cost/
+          // delivery/error settle without a manual refresh.
+          const s = String(frame.status ?? "").toLowerCase();
+          if (s === "finished" || s === "failed" || s === "cancelled") {
+            void this.getSession(sessionId)
+              .then((sess) => handlers.onSession?.(sess))
+              .catch(() => undefined);
+          }
+          return;
+        }
+        case "session.meta": {
+          handlers.onMeta?.({
+            provider: frame.provider ?? null,
+            model: frame.model ?? null,
+          });
+          return;
+        }
+        case "turn.started":
+        case "turn.finished":
+        case "turn.completed":
+        case "turn.failed": {
+          const n = typeof frame.n === "number" ? frame.n : undefined;
+          if (n != null) {
+            handlers.onTurn?.({
+              id: `turn-${n}`,
+              index: n,
+              prompt: "",
+              status:
+                type === "turn.started"
+                  ? "running"
+                  : type === "turn.failed" ||
+                      String(frame.status ?? "") === "failed"
+                    ? "failed"
+                    : type === "turn.completed" ||
+                        String(frame.status ?? "") === "finished"
+                      ? "finished"
+                      : normalizeTurnStatus(frame.status),
+              createdAt: "",
+              startedAt: type === "turn.started" ? new Date().toISOString() : null,
+              finishedAt: type === "turn.started" ? null : new Date().toISOString(),
+              result: null,
+              error: toTurnError(frame.error),
+              usage: usageOf(frame.usage),
+              activity: [],
+            });
+          }
+          emit(normalizeEvent(frame, sessionId));
+          // Terminal session states arrive via session.status; a finished
+          // turn while session stays running keeps streaming.
+          return;
+        }
+        default:
+          emit(normalizeEvent(frame, sessionId));
       }
     };
-    void connect();
-    return () => abort.abort();
+
+    const open = async () => {
+      if (closed) return;
+      abort = new AbortController();
+      try {
+        const res = await fetch(`${this.base}${PATHS.events(sessionId)}`, {
+          headers: {
+            ...this.headers(),
+            Accept: "text/event-stream",
+            ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
+          },
+          credentials: "omit",
+          signal: abort.signal,
+        });
+        if (!res.ok) {
+          let code = "internal";
+          try {
+            const data = await res.clone().json();
+            if (data?.error?.code) code = String(data.error.code);
+          } catch {
+            /* ignore */
+          }
+          throw new ApiError(toErrorKind(code, res.status), `events → ${res.status}`, {
+            httpStatus: res.status,
+            subcode: code,
+            retryable: res.status >= 500,
+          });
+        }
+        attempt = 0;
+        if (sawDisconnect) {
+          sawDisconnect = false;
+          handlers.onReconnect?.();
+        }
+        const reader = res.body?.getReader();
+        if (!reader) throw new ApiError("network", "no event stream body");
+        const decoder = new TextDecoder();
+        let buf = "";
+        let frameLines: string[] = [];
+        let frameId: string | null = null;
+
+        const dispatch = () => {
+          const data = frameLines.join("\n");
+          frameLines = [];
+          if (frameId != null) lastEventId = frameId;
+          frameId = null;
+          if (!data) return;
+          try {
+            handleFrame(JSON.parse(data));
+          } catch {
+            /* malformed frame — skip */
+          }
+        };
+
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, idx).replace(/\r$/, "");
+            buf = buf.slice(idx + 1);
+            if (line === "") {
+              dispatch();
+            } else if (line.startsWith(":")) {
+              // keepalive — never surfaces as an activity row
+              continue;
+            } else if (line.startsWith("id:")) {
+              frameId = line.slice(3).trim();
+            } else if (line.startsWith("data:")) {
+              frameLines.push(line.slice(5).replace(/^ /, ""));
+            }
+          }
+        }
+        throw new ApiError("network", "event stream ended", {
+          subcode: "eof",
+          retryable: true,
+        });
+      } catch (e) {
+        if (closed) return;
+        if (e instanceof ApiError && e.httpStatus === 404) {
+          handlers.onError?.(e);
+          return; // session gone — don't retry
+        }
+        sawDisconnect = true;
+        const delay = SSE_BACKOFF_MS[Math.min(attempt, SSE_BACKOFF_MS.length - 1)];
+        attempt += 1;
+        handlers.onDisconnect?.(delay);
+        retryTimer = setTimeout(open, delay);
+      }
+    };
+
+    void open();
+    return () => {
+      closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      abort?.abort();
+    };
   }
 }

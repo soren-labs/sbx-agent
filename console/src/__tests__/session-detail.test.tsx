@@ -50,9 +50,9 @@ describe("SessionDetailPage", () => {
     await screen.findByTestId("conversation");
     expect(screen.getByTestId("tab-changes")).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("tab-changes"));
-    expect(await screen.findByTestId("changes-panel")).toHaveTextContent(
-      "control/service.py",
-    );
+    const panel = await screen.findByTestId("changes-panel");
+    expect(panel).toHaveTextContent("revision 1");
+    expect(panel.querySelector('a[href*="pull/97"]')).toBeInTheDocument();
   });
 
   it("hides the Changes tab when the session has none", async () => {
@@ -77,11 +77,23 @@ describe("SessionDetailPage", () => {
     await waitFor(() => expect(convo).toHaveTextContent("add docs too"));
   });
 
-  it("shows session failure as a product-level notice", async () => {
+  it("shows session failure as a product-level notice with retry", async () => {
     renderDetail(makeApi(), failed.id);
     const notice = await screen.findByTestId("error-notice");
     expect(notice).toHaveAttribute("data-kind", "session_failed");
     expect(notice).toHaveTextContent("rejected the stored credential");
+    expect(screen.getByTestId("retry-btn")).toBeInTheDocument();
+  });
+
+  it("retry on a failed session queues a new turn", async () => {
+    const api = makeApi();
+    api.autoAdvance = false;
+    renderDetail(api, failed.id);
+    await screen.findByTestId("retry-btn");
+    await userEvent.click(screen.getByTestId("retry-btn"));
+    await waitFor(() => expect(screen.getByTestId("pill-queued")).toBeInTheDocument());
+    const convo = screen.getByTestId("conversation");
+    expect(convo).toHaveTextContent("Turn 2");
   });
 
   it("replaces the composer with an ended notice on closed sessions", async () => {

@@ -1,279 +1,326 @@
 import type {
   ActivityItem,
   ErrorKind,
+  SessionEndReason,
   SessionPhase,
   TurnError,
   TurnStatus,
 } from "./types";
-import { ApiError } from "./client";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Backend → product normalization. All backend nouns (agent/run/item,
- * status enums, error subcodes) are translated here so components only
- * handle product vocabulary.
+ * Wire → product mapping. All V2 projection shapes (SessionView / RunView /
+ * RevisionView / SSE frames) are translated here so nothing else needs to
+ * know backend vocabulary.
  */
 
-const PHASE_MAP: Record<string, SessionPhase> = {
-  queued: "queued",
-  creating: "starting",
-  starting: "starting",
-  running: "running",
-  idle: "idle",
-  suspended: "idle",
-  closed: "ended",
-  timed_out: "ended",
-  lost: "ended",
-  failed: "failed",
-};
-
-export function normalizePhase(raw: string | undefined | null): SessionPhase {
-  if (!raw) return "queued";
-  return PHASE_MAP[raw] ?? "queued";
+/**
+ * Product phase from the wire ``phase`` (authoritative) or ``status``
+ * (fallback). V2 phases: provisioning|queued|running|delivering|finished|
+ * failed|cancelled. Unknown values never claim "queued" — they fall back to
+ * the status map, then a neutral "idle" (finished-but-silent is the least
+ * misleading label).
+ */
+export function normalizePhase(phase?: string | null, status?: string | null): SessionPhase {
+  const p = String(phase ?? "").toLowerCase();
+  switch (p) {
+    case "provisioning":
+      return "starting";
+    case "queued":
+      return "queued";
+    case "running":
+    case "delivering":
+      return "running";
+    case "finished":
+      return "idle";
+    case "cancelled":
+      return "ended";
+    case "failed":
+      return "failed";
+  }
+  const s = String(status ?? "").toLowerCase();
+  switch (s) {
+    case "queued":
+      return "queued";
+    case "running":
+      return "running";
+    case "finished":
+      return "idle";
+    case "cancelled":
+      return "ended";
+    case "failed":
+      return "failed";
+  }
+  return "idle";
 }
 
-export function endReasonOf(
-  raw: string | undefined | null,
-): "closed" | "timed_out" | "lost" | "failed" | null {
-  if (raw === "closed") return "closed";
-  if (raw === "timed_out") return "timed_out";
-  if (raw === "lost") return "lost";
-  if (raw === "failed") return "failed";
+export function endReasonOf(phase?: string | null, status?: string | null): SessionEndReason {
+  const p = String(phase ?? status ?? "").toLowerCase();
+  if (p === "cancelled") return "cancelled";
+  if (p === "failed") return "failed";
   return null;
 }
 
-const TURN_MAP: Record<string, TurnStatus> = {
-  CREATING: "queued",
-  QUEUED: "queued",
-  RUNNING: "running",
-  FINISHED: "finished",
-  ERROR: "error",
-  CANCELLED: "cancelled",
-  EXPIRED: "cancelled",
-  UNKNOWN: "error",
-};
-
-export function normalizeTurnStatus(raw: string | undefined | null): TurnStatus {
-  if (!raw) return "queued";
-  return TURN_MAP[raw.toUpperCase()] ?? "queued";
+export function normalizeTurnStatus(s: string | null | undefined): TurnStatus {
+  switch (String(s ?? "").toLowerCase()) {
+    case "queued":
+    case "creating":
+      return "queued";
+    case "running":
+      return "running";
+    case "finished":
+    case "succeeded":
+      return "finished";
+    case "failed":
+    case "error":
+    case "expired":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "queued";
+  }
 }
 
-/** Canonical subcode/run-error → product-level error kind. */
-export function toErrorKind(
-  subcode: string | undefined | null,
-  httpStatus?: number,
-): ErrorKind {
-  const code = (subcode ?? "").toLowerCase();
-  if (
-    code === "auth_invalid" ||
-    code === "provider_auth_required" ||
-    code === "account_unverified" ||
-    code === "connect_failed" ||
-    code === "grant_invalid"
-  ) {
-    return "provider_login";
+/** Map a canonical error code (error_catalog + run error codes) onto a
+ * product-level action kind. */
+export function toErrorKind(subcode: string, httpStatus = 0): ErrorKind {
+  switch (subcode) {
+    // provider account needs (re)login or credential repair
+    case "auth_invalid":
+    case "account_unverified":
+    case "schema_mismatch":
+    case "credential_expired":
+    case "token_expired":
+    case "reauth_required":
+    case "connect_failed":
+      return "provider_login";
+    // scheduler/busy states — actionable retry
+    case "account_busy":
+    case "account_unavailable":
+    case "provider_exhausted":
+    case "concurrency_limit":
+    case "model_unavailable":
+    case "rate_limited":
+      return "provider_busy";
+    // runtime cannot run right now
+    case "unavailable":
+    case "runtime_disabled":
+    case "workspace_unavailable":
+    case "provider_down":
+      return "runtime_disabled";
+    case "github_app_unconfigured":
+    case "github_app_upstream":
+      return "github_required";
+    case "session_not_runnable":
+    case "task_not_retryable":
+    case "delivery_failed":
+    case "checkout_failed":
+    case "repo_unavailable":
+    case "sandbox_lost":
+    case "timeout":
+      return "session_failed";
+    case "unauthorized":
+    case "forbidden":
+    case "grant_invalid":
+    case "pair_invalid":
+    case "github_app_state":
+      return "unauthorized";
+    case "not_found":
+    case "session_not_found":
+    case "revision_not_found":
+      return "not_found";
+    case "turn_in_progress":
+    case "task_active":
+    case "session_active":
+    case "idempotency_conflict":
+    case "idempotency_in_progress":
+      return "conflict";
+    default:
+      break;
   }
-  if (
-    code === "account_busy" ||
-    code === "account_unavailable" ||
-    code === "provider_exhausted" ||
-    code === "concurrency_limit" ||
-    code === "rate_limited" ||
-    code === "quota_exhausted" ||
-    code === "model_capacity" ||
-    code === "model_unavailable" ||
-    code === "provider_unavailable"
-  ) {
-    return "provider_busy";
-  }
-  if (
-    code === "runtime_disabled" ||
-    code === "runtime_unavailable" ||
-    code === "backend_disabled" ||
-    code === "runtime_error"
-  ) {
-    return "runtime_disabled";
-  }
-  if (
-    code === "github_required" ||
-    code === "github_app_unconfigured" ||
-    code === "git_required" ||
-    code === "github_app_invalid"
-  ) {
-    return "github_required";
-  }
-  if (code === "session_failed" || code === "session_not_runnable") {
-    return "session_failed";
-  }
-  if (code === "unauthorized" || httpStatus === 401) return "unauthorized";
-  if (code === "not_found" || httpStatus === 404) return "not_found";
-  if (
-    code === "turn_in_progress" ||
-    code === "idempotency_conflict" ||
-    httpStatus === 409
-  ) {
-    return "conflict";
-  }
-  if (code === "timeout" || code === "cancelled") return "session_failed";
-  if (code === "network" || code === "fetch_failed") return "network";
-  return httpStatus && httpStatus >= 500 ? "network" : "unknown";
+  if (httpStatus === 0) return "network";
+  if (httpStatus === 401 || httpStatus === 403) return "unauthorized";
+  if (httpStatus === 404) return "not_found";
+  if (httpStatus === 409) return "conflict";
+  return httpStatus >= 500 ? "runtime_disabled" : "unknown";
 }
 
-export function toApiError(
-  e: unknown,
-  fallbackMessage = "Request failed",
-): ApiError {
-  if (e instanceof ApiError) return e;
-  if (e instanceof TypeError) {
-    return new ApiError("network", "Cannot reach the control plane", {
-      subcode: "network",
-      retryable: true,
-    });
+export function toTurnError(raw: any): TurnError | null {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    return { code: "error", message: raw, retryable: false };
   }
-  return new ApiError(
-    "unknown",
-    e instanceof Error ? e.message : fallbackMessage,
-  );
-}
-
-export function toTurnError(raw: unknown): TurnError | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
   return {
-    code: typeof r.code === "string" ? r.code : "runtime_error",
-    source:
-      r.source === "provider" ||
-      r.source === "runtime" ||
-      r.source === "control" ||
-      r.source === "telemetry"
-        ? r.source
-        : undefined,
-    message: typeof r.message === "string" ? r.message : "Turn failed",
-    retryable: Boolean(r.retryable),
-    retryAfter: typeof r.retry_after === "number" ? r.retry_after : undefined,
+    code: String(raw.code ?? "error"),
+    source: raw.source ?? undefined,
+    message: String(raw.message ?? "unknown error"),
+    retryable: Boolean(raw.retryable),
+    retryAfter:
+      typeof raw.retry_after === "number"
+        ? raw.retry_after
+        : typeof raw.retryAfter === "number"
+          ? raw.retryAfter
+          : undefined,
   };
 }
 
+/** Stable per-session sequence for ActivityItem ordering across replays. */
+export function nextSeq(): number {
+  seq += 1;
+  return seq;
+}
+let seq = 0;
+
+const KIND_MAP: Record<string, string> = {
+  added: "added",
+  modified: "modified",
+  updated: "modified",
+  edited: "modified",
+  deleted: "deleted",
+  removed: "deleted",
+};
+
+function normalizeChangeKind(kind: unknown): "added" | "modified" | "deleted" {
+  return (KIND_MAP[String(kind ?? "").toLowerCase()] ?? "modified") as
+    | "added"
+    | "modified"
+    | "deleted";
+}
+
 /**
- * Normalize one raw stream event (canonical events.md / codex-style frame)
- * into an ActivityItem. Returns null for frames the UI should ignore
- * (keepalives, heartbeats, unrecognized envelopes).
+ * Normalize one V2 SSE frame into an ActivityItem, or null when the frame
+ * is session-level (handled separately by the subscriber). Handles the
+ * canonical item.* vocabulary plus turn.status frames.
+ *
+ * item frames share a stable id ``item-<item.id>`` so the page replaces the
+ * started placeholder when the completed frame arrives (no duplicate rows).
  */
-let seqCounter = 0;
-export function normalizeEvent(raw: unknown, idHint?: string): ActivityItem | null {
-  if (!raw || typeof raw !== "object") return null;
-  const frame = raw as Record<string, unknown>;
-  const type = typeof frame.type === "string" ? frame.type : "";
-  const ts =
-    typeof frame.ts === "string" ? frame.ts : new Date().toISOString();
-  const seq =
-    typeof frame.seq === "number"
-      ? frame.seq
-      : idHint && !Number.isNaN(Number(idHint))
-        ? Number(idHint)
-        : ++seqCounter;
-  const turnId = typeof frame.turn_id === "string" ? frame.turn_id : null;
-  const id =
-    (typeof frame.id === "string" ? frame.id : undefined) ??
-    `${type}-${seq}`;
-  const item = frame.item as Record<string, unknown> | undefined;
-  const itemType = typeof item?.type === "string" ? item.type : "";
+export function normalizeEvent(frame: any, sessionId: string): ActivityItem | null {
+  if (!frame || typeof frame !== "object") return null;
+  const type = String(frame.type ?? "");
+  const n: number | undefined =
+    typeof frame.n === "number" ? frame.n : undefined;
+  const turnId = n != null ? `turn-${n}` : null;
+  const ts = new Date().toISOString();
 
-  const base = { id, seq, ts, turnId };
+  // ---------- canonical item.* frames ----------
+  if (type === "item.started" || type === "item.updated" || type === "item.completed") {
+    const item = frame.item ?? {};
+    const itemId = item.id != null ? `item-${item.id}` : `evt-${sessionId}-${nextSeq()}`;
+    const itemStatus = String(item.status ?? "").toLowerCase();
+    const inFlight = type !== "item.completed" && itemStatus !== "completed";
 
-  switch (type) {
-    case "sbx.session_meta":
-      return { ...base, kind: "info", text: "session_meta" };
-    case "sbx.turn_started":
-    case "turn.started":
-      return { ...base, kind: "status", status: "running" };
-    case "sbx.turn_finished":
-    case "turn.completed":
-      return { ...base, kind: "status", status: "finished" };
-    case "turn.failed":
-    case "sbx.error":
-    case "error":
-      return {
-        ...base,
-        kind: "error",
-        error:
-          toTurnError(frame.error) ??
-          ({
-            code: "runtime_error",
-            message:
-              typeof frame.message === "string" ? frame.message : "Turn failed",
-            retryable: false,
-          } satisfies TurnError),
-      };
-    case "item.started":
-    case "item.updated":
-    case "item.completed":
-      if (!item) return null;
-      switch (itemType) {
-        case "agent_message":
-          return {
-            ...base,
-            kind: "message",
-            role: "assistant",
-            text: typeof item.text === "string" ? item.text : "",
-          };
-        case "reasoning":
-          return {
-            ...base,
-            kind: "reasoning",
-            text: typeof item.text === "string" ? item.text : "",
-          };
-        case "command_execution": {
-          const cmd = item.command ?? item.cmd;
-          return {
-            ...base,
-            kind: "command",
-            command: typeof cmd === "string" ? cmd : "",
-            exitCode:
-              typeof item.exit_code === "number" ? item.exit_code : undefined,
-            output:
-              typeof item.output === "string"
-                ? item.output
-                : typeof item.aggregated_output === "string"
-                  ? item.aggregated_output
-                  : undefined,
-          };
-        }
-        case "file_change":
-          return {
-            ...base,
-            kind: "file_change",
-            path: typeof item.path === "string" ? item.path : "",
-            changeType:
-              item.change_type === "added" ||
-              item.change_type === "modified" ||
-              item.change_type === "deleted"
-                ? item.change_type
-                : "modified",
-          };
-        case "error":
-          return {
-            ...base,
-            kind: "error",
-            error:
-              toTurnError(item.error) ??
-              ({
-                code: "runtime_error",
-                message:
-                  typeof item.message === "string"
-                    ? item.message
-                    : "Item failed",
-                retryable: false,
-              } satisfies TurnError),
-          };
-        default:
-          return { ...base, kind: "info", text: itemType || "item" };
+    switch (String(item.type ?? "")) {
+      case "agent_message":
+        // completed only — assistant text appended to the conversation.
+        return {
+          id: itemId, seq: nextSeq(), ts, turnId, n,
+          kind: "message", role: "assistant",
+          text: String(item.text ?? ""),
+          status: inFlight ? "running" : "finished",
+        };
+      case "reasoning":
+        return {
+          id: itemId, seq: nextSeq(), ts, turnId, n,
+          kind: "reasoning", role: "assistant",
+          text: String(item.text ?? ""),
+          status: inFlight ? "running" : "finished",
+        };
+      case "command_execution":
+        return {
+          id: itemId, seq: nextSeq(), ts, turnId, n,
+          kind: "command",
+          command: String(item.command ?? ""),
+          output: item.aggregated_output != null ? String(item.aggregated_output) : undefined,
+          exitCode: typeof item.exit_code === "number" ? item.exit_code : undefined,
+          status: inFlight ? "running" : itemStatus === "failed" ? "failed" : "finished",
+        };
+      case "file_change": {
+        // Canonical shape: changes:[{path,kind}] — a list, not a lone path.
+        const changes = Array.isArray(item.changes)
+          ? item.changes.map((c: any) => ({
+              path: String(c?.path ?? ""),
+              kind: String(c?.kind ?? "modified"),
+            })).filter((c: { path: string }) => c.path)
+          : [];
+        const first = changes[0];
+        return {
+          id: itemId, seq: nextSeq(), ts, turnId, n,
+          kind: "file_change",
+          path: first?.path,
+          changeType: first ? normalizeChangeKind(first.kind) : undefined,
+          changes,
+          status: inFlight ? "running" : "finished",
+        };
       }
-    default:
-      // status frames from V2 lifecycle (queued/starting/running)
-      if (type === "session.status" || type === "status") {
-        const status = typeof frame.status === "string" ? frame.status : "";
-        return status ? { ...base, kind: "status", status } : null;
-      }
-      return null;
+      case "error":
+        return {
+          id: itemId, seq: nextSeq(), ts, turnId, n,
+          kind: "error",
+          text: String(item.message ?? "error"),
+          status: "failed",
+        };
+      default:
+        // Unknown item types pass through as info — forward-compatible.
+        return {
+          id: itemId, seq: nextSeq(), ts, turnId, n,
+          kind: "info",
+          text: String(item.text ?? item.message ?? item.type ?? ""),
+          status: inFlight ? "running" : "finished",
+        };
+    }
   }
+
+  // ---------- turn-level frames ----------
+  if (type === "turn.started") {
+    return {
+      id: `evt-status-${sessionId}-turnstart-${n ?? nextSeq()}`,
+      seq: nextSeq(), ts, turnId, n,
+      kind: "status", status: "running",
+      text: `turn ${n ?? ""} started`.trim(),
+    };
+  }
+  if (type === "turn.finished") {
+    const ok = String(frame.status ?? "finished") === "finished";
+    return {
+      id: `evt-status-${sessionId}-turnfin-${n ?? nextSeq()}`,
+      seq: nextSeq(), ts, turnId, n,
+      kind: "status",
+      status: ok ? "finished" : "failed",
+      text: `turn ${n ?? ""} ${ok ? "finished" : "failed"}`.trim(),
+    };
+  }
+  if (type === "turn.failed") {
+    const err = toTurnError(frame.error);
+    return {
+      id: `evt-status-${sessionId}-turnfail-${n ?? nextSeq()}`,
+      seq: nextSeq(), ts, turnId, n,
+      kind: "error",
+      text: err?.message ?? String(frame.message ?? "turn failed"),
+      error: err ?? undefined,
+      status: "failed",
+    };
+  }
+  if (type === "turn.completed") {
+    return {
+      id: `evt-status-${sessionId}-turncomp-${n ?? nextSeq()}`,
+      seq: nextSeq(), ts, turnId, n,
+      kind: "status", status: "finished",
+      text: `turn ${n ?? ""} completed`.trim(),
+    };
+  }
+  if (type === "error") {
+    return {
+      id: `evt-err-${sessionId}-${nextSeq()}`,
+      seq: nextSeq(), ts, turnId, n,
+      kind: "error",
+      text: String(frame.message ?? "error"),
+      status: "failed",
+    };
+  }
+
+  // session.status / session.meta / unknown → not an ActivityItem.
+  return null;
 }

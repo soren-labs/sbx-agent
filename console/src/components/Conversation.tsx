@@ -35,14 +35,25 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
         </>
       );
       break;
-    case "file_change":
+    case "file_change": {
+      const rows =
+        item.changes && item.changes.length > 0
+          ? item.changes
+          : item.path
+            ? [{ path: item.path, kind: item.changeType ?? "modified" }]
+            : [];
       content = (
         <>
-          <span className={item.changeType}>{item.path}</span>
-          <span className="faint">{item.changeType}</span>
+          {rows.map((c) => (
+            <span key={c.path} style={{ marginRight: 8 }}>
+              <span className={c.kind}>{c.path}</span>{" "}
+              <span className="faint">{c.kind}</span>
+            </span>
+          ))}
         </>
       );
       break;
+    }
     case "error":
       content = (
         <>
@@ -66,12 +77,19 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
   );
 }
 
-/** Normalized Activity timeline — every event in order. */
-export function ActivityTimeline({ turns }: { turns: Turn[] }) {
+/** Normalized Activity timeline — every event in order, including
+ * session-level frames passed via ``extra``. */
+export function ActivityTimeline({
+  turns,
+  extra = [],
+}: {
+  turns: Turn[];
+  extra?: ActivityItem[];
+}) {
   const { t } = useI18n();
-  const items = turns
-    .flatMap((tn) => tn.activity)
-    .sort((a, b) => a.seq - b.seq);
+  const items = [...extra, ...turns.flatMap((tn) => tn.activity)].sort(
+    (a, b) => a.seq - b.seq,
+  );
   if (items.length === 0) {
     return <div className="empty">{t("session.no_activity")}</div>;
   }
@@ -122,7 +140,7 @@ export function Conversation({ turns }: { turns: Turn[] }) {
                 ))}
               </div>
             )}
-            {(finalMsg || turn.status === "running" || turn.status === "error") && (
+            {(finalMsg || turn.status === "running" || turn.status === "failed") && (
               <div className="msg">
                 <div className="avatar" aria-hidden="true">A</div>
                 <div className="body">

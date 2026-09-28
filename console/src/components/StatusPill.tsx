@@ -11,7 +11,7 @@ export function StatusPill({
   const { t } = useI18n();
   const label =
     phase === "ended" && endReason
-      ? t(`end.${endReason}` as "end.closed")
+      ? t(`end.${endReason}` as "end.cancelled")
       : t(`phase.${phase}` as "phase.idle");
   return (
     <span className={`pill pill-${phase}`} data-testid={`pill-${phase}`}>
@@ -29,14 +29,22 @@ const PROVIDER_COLORS: Record<string, string> = {
   devin: "#5b8af0",
 };
 
-export function ProviderBadge({ provider, model }: { provider: string; model?: string }) {
+export function ProviderBadge({
+  provider,
+  model,
+}: {
+  provider: string | null;
+  model?: string | null;
+}) {
+  const { t } = useI18n();
+  const name = provider ?? t("composer.auto");
   return (
     <span className="provider-badge" data-testid="provider-badge">
       <span
         className="swatch"
-        style={{ background: PROVIDER_COLORS[provider] ?? "var(--fg-faint)" }}
+        style={{ background: PROVIDER_COLORS[name] ?? "var(--fg-faint)" }}
       />
-      {provider}
+      {name}
       {model ? <span className="faint">/ {model}</span> : null}
     </span>
   );

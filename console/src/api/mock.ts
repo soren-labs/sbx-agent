@@ -1,10 +1,11 @@
 import { ApiError } from "./client";
 import type { SessionApi, SessionEventHandlers } from "./client";
-import { CHANGES, CREATE_SCRIPT, INTEGRATIONS, PROVIDERS, SESSIONS } from "./fixtures";
+import { CHANGES, CREATE_SCRIPT, INTEGRATIONS, MODELS, PROVIDERS, SESSIONS } from "./fixtures";
 import { normalizeEvent } from "./normalize";
 import type {
   ActivityItem,
   IntegrationStatus,
+  ModelInfo,
   NewSessionInput,
   ProviderInfo,
   Session,
@@ -47,25 +48,27 @@ const SCENARIO_ERRORS: Record<string, ApiError> = {
   github_required: new ApiError(
     "github_required",
     "Connect GitHub to run sessions against a repository",
-    { httpStatus: 400, subcode: "github_required", retryable: false },
+    { httpStatus: 503, subcode: "github_app_unconfigured", retryable: false },
   ),
   create_fails: new ApiError(
     "session_failed",
     "The session could not be started",
-    { httpStatus: 500, subcode: "session_failed", retryable: true },
+    { httpStatus: 500, subcode: "session_not_runnable", retryable: true },
   ),
   followup_fails: new ApiError(
-    "session_failed",
-    "The follow-up could not be delivered",
+    "conflict",
+    "A turn is already in progress — wait for it to finish",
     { httpStatus: 409, subcode: "turn_in_progress", retryable: true },
   ),
 };
 
+/** V2-shaped frames (annotated with ``n`` at emit time). */
 const FOLLOWUP_SCRIPT: Record<string, unknown>[] = [
   { type: "turn.started" },
   {
     type: "item.completed",
     item: {
+      id: "fu-1",
       type: "reasoning",
       text: "Re-reading the touched files to apply the follow-up…",
     },
@@ -73,20 +76,22 @@ const FOLLOWUP_SCRIPT: Record<string, unknown>[] = [
   {
     type: "item.completed",
     item: {
+      id: "fu-2",
       type: "command_execution",
       command: "uv run pytest tests/unit -q",
+      aggregated_output: "12 passed in 1.10s",
       exit_code: 0,
-      output: "12 passed in 1.10s",
     },
   },
   {
     type: "item.completed",
     item: {
+      id: "fu-3",
       type: "agent_message",
       text: "Applied the follow-up and re-ran the unit tests — all green.",
     },
   },
-  { type: "turn.completed" },
+  { type: "turn.finished", status: "finished" },
 ];
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -135,15 +140,34 @@ export class FixtureSessionApi implements SessionApi {
     this.emit(session.id, (h) => h.onSession?.(clone(session)));
   }
 
-  private setPhase(session: Session, phase: SessionPhase) {
+  private setPhase(session: Session, phase: SessionPhase, status?: Session["status"]) {
     session.phase = phase;
+    if (status) session.status = status;
+    else {
+      session.status =
+        phase === "queued"
+          ? "queued"
+          : phase === "running" || phase === "starting"
+            ? "running"
+            : phase === "idle"
+              ? "finished"
+              : phase === "ended"
+                ? "cancelled"
+                : phase === "failed"
+                  ? "failed"
+                  : session.status;
+    }
     this.update(session);
     this.emit(session.id, (h) => h.onPhase?.(phase));
   }
 
   private pushActivity(session: Session, item: ActivityItem) {
     const turn = session.turns.find((t) => t.id === item.turnId);
-    if (turn) turn.activity.push(item);
+    if (turn) {
+      const idx = turn.activity.findIndex((a) => a.id === item.id);
+      if (idx >= 0) turn.activity[idx] = item;
+      else turn.activity.push(item);
+    }
     session.lastActivityPreview =
       item.text ?? item.output ?? item.command ?? item.status ?? item.kind;
     this.update(session);
@@ -194,21 +218,16 @@ export class FixtureSessionApi implements SessionApi {
       throw SCENARIO_ERRORS.github_required;
     }
 
-    const id = `sess-${Math.random().toString(16).slice(2, 8)}`;
+    const id = `sess-${Math.random().toString(16).slice(2, 18)}`;
     const provider =
       input.provider && input.provider !== "auto" ? input.provider : "codex";
-    const providerInfo =
-      PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
+    const providerInfo = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0];
     const model =
-      input.model && input.model !== "auto"
-        ? input.model
-        : providerInfo.models[0];
+      input.model && input.model !== "auto" ? input.model : providerInfo.models[0];
     const title =
-      input.title?.trim() ||
-      input.prompt.split("\n")[0].slice(0, 80) ||
-      "New session";
+      input.title?.trim() || input.prompt.split("\n")[0].slice(0, 80) || "New session";
     const firstTurn: Turn = {
-      id: `turn-${id}-1`,
+      id: "turn-1",
       index: 1,
       prompt: input.prompt,
       status: "queued",
@@ -222,34 +241,40 @@ export class FixtureSessionApi implements SessionApi {
     const session: Session = {
       id,
       title,
+      status: "queued",
       phase: "queued",
       endReason: null,
+      prompt: input.prompt,
       provider,
       model,
-      accountLabel: `${provider}/auto`,
+      accountLabel: null,
       repo: input.repo
         ? {
             name: input.repo,
             url: `https://github.com/${input.repo.replace(/^https:\/\/github\.com\//, "")}`,
+            ref: input.repoRef,
           }
         : null,
       effort: input.effort ?? null,
       compute: input.compute
         ? {
             cpu: [input.compute.cpu ?? 1, input.compute.cpu ?? 2],
-            memoryMib: [
-              input.compute.memoryMib ?? 1024,
-              input.compute.memoryMib ?? 8192,
-            ],
+            memoryMib: [input.compute.memoryMib ?? 1024, input.compute.memoryMib ?? 8192],
           }
-        : { cpu: [1, 2], memoryMib: [1024, 8192] },
-      idleTimeoutS: input.idleTimeoutS ?? 1800,
-      delivery: { mode: input.delivery ?? "none", target: input.deliveryTarget },
+        : null,
+      idleTimeoutS: input.idleTimeoutS ?? null,
+      delivery: input.delivery && input.delivery !== "none"
+        ? {
+            mode: input.delivery,
+            status: "pending",
+            prState: input.delivery === "draft_pr" ? "draft" : undefined,
+          }
+        : null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       usage: null,
       costUsd: null,
-      runtimeSeconds: null,
+      turnCount: 1,
       turns: [firstTurn],
       lastActivityPreview: null,
       hasChanges: false,
@@ -269,8 +294,15 @@ export class FixtureSessionApi implements SessionApi {
         first.startedAt = new Date().toISOString();
         this.update(session);
         this.emit(session.id, (h) => h.onTurn?.(clone(first)));
+        this.emit(session.id, (h) =>
+          h.onMeta?.({ provider: session.provider, model: session.model }),
+        );
       }, offset + 200);
-      this.later(() => this.setPhase(session, "idle"), offset + 2600);
+      this.later(() => {
+        first.status = "finished";
+        first.finishedAt = new Date().toISOString();
+        this.setPhase(session, "idle", "finished");
+      }, offset + 2600);
     }
     return this.wait(session);
   }
@@ -278,7 +310,7 @@ export class FixtureSessionApi implements SessionApi {
   async sendFollowUp(
     sessionId: string,
     text: string,
-  ): Promise<{ turnId: string }> {
+  ): Promise<{ session: Session; n: number | null }> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new ApiError("not_found", "Session not found", {
@@ -298,9 +330,10 @@ export class FixtureSessionApi implements SessionApi {
       await this.wait(null);
       throw err;
     }
+    const n = session.turnCount + 1;
     const turn: Turn = {
-      id: `turn-${sessionId}-${session.turns.length + 1}`,
-      index: session.turns.length + 1,
+      id: `turn-${n}`,
+      index: n,
       prompt: text,
       status: "running",
       createdAt: new Date().toISOString(),
@@ -310,36 +343,41 @@ export class FixtureSessionApi implements SessionApi {
       error: null,
       activity: [],
     };
+    session.turnCount = n;
     session.turns.push(turn);
+    session.status = "running";
+    session.phase = "running";
     this.update(session);
     this.later(() => {
       this.emit(sessionId, (h) => h.onTurn?.(clone(turn)));
-      this.setPhase(session, "running");
+      this.emit(sessionId, (h) => h.onPhase?.("running"));
     }, 0);
 
     if (this.autoAdvance) {
       let i = 0;
       for (const raw of FOLLOWUP_SCRIPT) {
-        const frame = { ...raw, turn_id: turn.id };
+        const frame = { ...raw, n };
         this.later(() => {
-          const item = normalizeEvent(frame);
+          const item = normalizeEvent(frame, sessionId);
           if (item) {
             item.seq = ++this.seq;
             this.pushActivity(session, item);
           }
-          if (raw.type === "turn.completed") {
+          if (raw.type === "turn.finished") {
             turn.status = "finished";
             turn.finishedAt = new Date().toISOString();
-            this.setPhase(session, "idle");
+            turn.result =
+              "Applied the follow-up and re-ran the unit tests — all green.";
+            this.setPhase(session, "idle", "finished");
           }
         }, 400 + i * 450);
         i += 1;
       }
     }
-    return this.wait({ turnId: turn.id }, 60);
+    return this.wait({ session, n }, 60);
   }
 
-  async stopSession(sessionId: string): Promise<void> {
+  async stopSession(sessionId: string): Promise<Session> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new ApiError("not_found", "Session not found", {
@@ -354,12 +392,13 @@ export class FixtureSessionApi implements SessionApi {
       active.status = "cancelled";
       active.finishedAt = new Date().toISOString();
     }
-    if (session.phase === "running") session.phase = "idle";
+    this.setPhase(session, "ended", "cancelled");
+    session.endReason = "cancelled";
     this.update(session);
-    await this.wait(null, 40);
+    return this.wait(session, 40);
   }
 
-  async closeSession(sessionId: string): Promise<Session> {
+  async retrySession(sessionId: string, prompt?: string): Promise<Session> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new ApiError("not_found", "Session not found", {
@@ -367,19 +406,103 @@ export class FixtureSessionApi implements SessionApi {
         subcode: "not_found",
       });
     }
-    session.phase = "ended";
-    session.endReason = "closed";
+    if (session.phase !== "failed") {
+      throw new ApiError("conflict", "Nothing to retry", {
+        httpStatus: 409,
+        subcode: "task_not_retryable",
+      });
+    }
+    const n = session.turnCount + 1;
+    const turn: Turn = {
+      id: `turn-${n}`,
+      index: n,
+      prompt: prompt?.trim() || session.prompt,
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      finishedAt: null,
+      result: null,
+      error: null,
+      activity: [],
+    };
+    session.turnCount = n;
+    session.turns.push(turn);
+    session.error = null;
+    this.setPhase(session, "queued", "queued");
+    this.later(() => {
+      this.emit(sessionId, (h) => h.onTurn?.(clone(turn)));
+    }, 0);
+    if (this.autoAdvance) {
+      this.later(() => this.setPhase(session, "running", "running"), 500);
+      this.later(() => {
+        turn.status = "finished";
+        turn.finishedAt = new Date().toISOString();
+        turn.result = "Retry completed successfully.";
+        this.pushActivity(session, {
+          id: `fx-retry-${n}`,
+          seq: ++this.seq,
+          ts: new Date().toISOString(),
+          turnId: turn.id,
+          n,
+          kind: "message",
+          role: "assistant",
+          text: turn.result,
+          status: "finished",
+        });
+        this.setPhase(session, "idle", "finished");
+      }, 1400);
+    }
+    return this.wait(session, 60);
+  }
+
+  async deliverSession(sessionId: string): Promise<Session> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new ApiError("not_found", "Session not found", {
+        httpStatus: 404,
+        subcode: "not_found",
+      });
+    }
+    if (!session.hasChanges && !session.delivery) {
+      throw new ApiError("conflict", "No changes to deliver", {
+        httpStatus: 409,
+        subcode: "revision_not_ready",
+      });
+    }
+    const n = (this.changes.get(sessionId) ?? [])
+        .filter((c) => c.kind === "revision")
+        .length + 1;
+    const change: SessionChange = {
+      id: `rev-${n}`,
+      kind: "revision",
+      n,
+      status: "delivered",
+      summary: `revision ${n}`,
+      ts: new Date().toISOString(),
+      branch: session.delivery?.branch ?? `sbx/${sessionId}-1`,
+    };
+    this.changes.set(sessionId, [...(this.changes.get(sessionId) ?? []), change]);
+    session.hasChanges = true;
+    if (session.delivery) session.delivery.status = "delivered";
+    else session.delivery = { mode: "branch", status: "delivered", branch: change.branch };
     this.update(session);
-    this.emit(sessionId, (h) => h.onPhase?.("ended"));
-    return this.wait(session, 40);
+    return this.wait(session, 60);
   }
 
   async listProviders(): Promise<ProviderInfo[]> {
     return this.wait(clone(PROVIDERS));
   }
 
+  async listModels(): Promise<ModelInfo[]> {
+    return this.wait(clone(MODELS));
+  }
+
   async getIntegrations(): Promise<IntegrationStatus> {
     return this.wait(clone(INTEGRATIONS));
+  }
+
+  async beginGithubAuthorize(): Promise<{ url: string }> {
+    return this.wait({ url: "https://github.com/apps/sbx-browser/installations/new" }, 40);
   }
 
   async listChanges(sessionId: string): Promise<SessionChange[]> {

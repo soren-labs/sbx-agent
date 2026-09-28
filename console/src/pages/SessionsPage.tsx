@@ -47,7 +47,7 @@ export function SessionsPage() {
         (s) =>
           s.title.toLowerCase().includes(q) ||
           s.repo?.name.toLowerCase().includes(q) ||
-          s.provider.includes(q),
+          (s.provider ?? "").includes(q),
       );
     }
     return out;

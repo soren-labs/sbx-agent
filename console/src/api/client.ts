@@ -1,6 +1,7 @@
 import type {
   ErrorKind,
   IntegrationStatus,
+  ModelInfo,
   NewSessionInput,
   ProviderInfo,
   Session,
@@ -48,6 +49,8 @@ export interface SessionEventHandlers {
   onActivity?: (item: ActivityItem) => void;
   onTurn?: (turn: Turn) => void;
   onSession?: (session: Session) => void;
+  /** session.meta frame — effective provider/model once resolved. */
+  onMeta?: (meta: { provider?: string | null; model?: string | null }) => void;
   onError?: (error: ApiError) => void;
   /** Fired when a dropped stream is re-established. */
   onReconnect?: () => void;
@@ -64,13 +67,28 @@ export interface SessionApi {
    * events via subscribe().
    */
   createSession(input: NewSessionInput): Promise<Session>;
-  /** Submit a follow-up turn. 202-style accept; completion arrives via events. */
-  sendFollowUp(sessionId: string, text: string): Promise<{ turnId: string }>;
-  stopSession(sessionId: string): Promise<void>;
-  closeSession(sessionId: string): Promise<Session>;
+  /**
+   * Submit a follow-up turn (POST /v2/sessions/{id}/messages). Returns the
+   * refreshed session plus the queued turn number ``n`` when the message
+   * was accepted (null when it was only queued on the session record).
+   */
+  sendFollowUp(
+    sessionId: string,
+    text: string,
+  ): Promise<{ session: Session; n: number | null }>;
+  /** Cancel outstanding work (queued turns drop, running turn stops). */
+  stopSession(sessionId: string): Promise<Session>;
+  /** Retry the failed step — a failed delivery re-publishes, a terminal
+   * run verdict re-runs the (optionally overridden) prompt. */
+  retrySession(sessionId: string, prompt?: string): Promise<Session>;
+  /** Publish the session's materialized changes (POST .../deliver). */
+  deliverSession(sessionId: string): Promise<Session>;
   listProviders(): Promise<ProviderInfo[]>;
+  listModels(): Promise<ModelInfo[]>;
   getIntegrations(): Promise<IntegrationStatus>;
+  /** Step 1 of Connect GitHub — returns the install URL to open. */
+  beginGithubAuthorize(): Promise<{ url: string }>;
   listChanges(sessionId: string): Promise<SessionChange[]>;
-  /** Subscribe to the session's live event stream. Returns an unsubscribe. */
+  /** Subscribe to the session-scoped event stream. Returns an unsubscribe. */
   subscribe(sessionId: string, handlers: SessionEventHandlers): () => void;
 }

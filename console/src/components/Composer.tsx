@@ -3,6 +3,7 @@ import { isApiError, type ApiError } from "../api";
 import type {
   DeliveryMode,
   EffortLevel,
+  ModelInfo,
   NewSessionInput,
   ProviderInfo,
 } from "../api/types";
@@ -11,7 +12,7 @@ import { loadDefaults, type SessionDefaults } from "../state/prefs";
 import { ErrorNotice } from "./ErrorNotice";
 import { Icon, Spinner } from "./icons";
 
-const EFFORTS: EffortLevel[] = [
+const ALL_EFFORTS: EffortLevel[] = [
   "none",
   "minimal",
   "low",
@@ -23,6 +24,9 @@ const EFFORTS: EffortLevel[] = [
 
 export interface ComposerProps {
   providers: ProviderInfo[];
+  /** /v1/models rows — the source for real account ids and per-model
+   * effort options. Empty in fixture-less contexts. */
+  models?: ModelInfo[];
   submitting: boolean;
   defaults?: SessionDefaults;
   onSubmit: (input: NewSessionInput) => Promise<void> | void;
@@ -31,29 +35,30 @@ export interface ComposerProps {
 
 /**
  * New Session composer: prompt, repo, provider/model (Auto), Send.
- * Everything else lives behind the Advanced disclosure — no internal ids,
- * scheduler internals, or raw account ids are surfaced.
+ * Everything else lives behind the Advanced disclosure. The account picker
+ * only ever offers real account ids (from /v1/models rows for the chosen
+ * provider) plus literal "auto" — it cannot fabricate ids.
  */
 export function Composer({
   providers,
+  models: modelRows = [],
   submitting,
   defaults: defaultsProp,
   onSubmit,
   onError,
 }: ComposerProps) {
   const { t } = useI18n();
-  const defaults = useMemo(
-    () => defaultsProp ?? loadDefaults(),
-    [defaultsProp],
-  );
+  const defaults = useMemo(() => defaultsProp ?? loadDefaults(), [defaultsProp]);
   const [prompt, setPrompt] = useState("");
   const [repo, setRepo] = useState("");
+  const [repoRef, setRepoRef] = useState("");
   const [provider, setProvider] = useState<string>("auto");
   const [model, setModel] = useState<string>("auto");
   const [advOpen, setAdvOpen] = useState(false);
   const [effort, setEffort] = useState<string>(defaults.effort);
   const [account, setAccount] = useState("auto");
   const [delivery, setDelivery] = useState<DeliveryMode>(defaults.delivery);
+  const [deliveryTarget, setDeliveryTarget] = useState("");
   const [cpu, setCpu] = useState("");
   const [mem, setMem] = useState("");
   const [secrets, setSecrets] = useState("");
@@ -64,12 +69,42 @@ export function Composer({
   const [error, setError] = useState<ApiError | null>(null);
   const [validation, setValidation] = useState("");
 
-  const models = useMemo(() => {
+  const modelOptions = useMemo(() => {
     if (provider === "auto") {
       return [...new Set(providers.flatMap((p) => p.models))];
     }
     return providers.find((p) => p.id === provider)?.models ?? [];
   }, [provider, providers]);
+
+  /** Real account ids for the chosen provider — from /v1/models rows only.
+   * Never fabricated: absent rows mean the only option is Auto. */
+  const accountOptions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of modelRows) {
+      if ((provider === "auto" || m.provider === provider) && m.account) {
+        ids.add(m.account);
+      }
+    }
+    return [...ids].sort();
+  }, [modelRows, provider]);
+
+  /** Effort options for the selected model, or the full catalog on Auto. */
+  const effortOptions = useMemo(() => {
+    if (model !== "auto") {
+      const row = modelRows.find((m) => m.model === model);
+      if (row?.reasoningEfforts?.length) return row.reasoningEfforts;
+    }
+    if (provider !== "auto") {
+      const merged = new Set<EffortLevel>();
+      for (const m of modelRows) {
+        if (m.provider === provider) {
+          for (const e of m.reasoningEfforts ?? []) merged.add(e);
+        }
+      }
+      if (merged.size) return [...merged];
+    }
+    return ALL_EFFORTS;
+  }, [model, modelRows, provider]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -82,11 +117,16 @@ export function Composer({
     const input: NewSessionInput = {
       prompt: prompt.trim(),
       repo: repo.trim() || undefined,
+      repoRef: repoRef.trim() || undefined,
       provider: provider === "auto" ? "auto" : (provider as NewSessionInput["provider"]),
       model: model === "auto" ? undefined : model,
       effort: effort === "auto" ? undefined : (effort as EffortLevel),
       account: account === "auto" ? undefined : account,
       delivery,
+      deliveryTarget:
+        delivery === "pr" || delivery === "draft_pr"
+          ? deliveryTarget.trim() || undefined
+          : undefined,
       compute:
         cpu || mem
           ? {
@@ -146,6 +186,7 @@ export function Composer({
             onChange={(e) => {
               setProvider(e.target.value);
               setModel("auto");
+              setAccount("auto");
             }}
             disabled={submitting}
           >
@@ -167,7 +208,7 @@ export function Composer({
             disabled={submitting}
           >
             <option value="auto">{t("composer.auto")}</option>
-            {models.map((m) => (
+            {modelOptions.map((m) => (
               <option key={m} value={m}>
                 {m}
               </option>
@@ -176,11 +217,7 @@ export function Composer({
         </div>
       </div>
 
-      <details
-        className="adv-toggle advanced"
-        open={advOpen}
-        data-testid="advanced"
-      >
+      <details className="adv-toggle advanced" open={advOpen} data-testid="advanced">
         <summary onClick={(e) => { e.preventDefault(); setAdvOpen(!advOpen); }}>
           {t("composer.advanced")}
         </summary>
@@ -193,7 +230,7 @@ export function Composer({
               onChange={(e) => setEffort(e.target.value)}
             >
               <option value="auto">{t("composer.auto")}</option>
-              {EFFORTS.map((ef) => (
+              {effortOptions.map((ef) => (
                 <option key={ef} value={ef}>{ef}</option>
               ))}
             </select>
@@ -206,14 +243,11 @@ export function Composer({
               onChange={(e) => setAccount(e.target.value)}
             >
               <option value="auto">{t("composer.account_auto")}</option>
-              {providers
-                .flatMap((p) =>
-                  Array.from({ length: p.accountsTotal }, (_, i) => (
-                    <option key={`${p.id}-${i}`} value={`${p.id}/${i === 0 ? "main" : `acct-${i}`}`}>
-                      {p.label} / {i === 0 ? "main" : `acct-${i}`}
-                    </option>
-                  )),
-                )}
+              {accountOptions.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
             </select>
           </div>
           <div className="field">
@@ -229,6 +263,28 @@ export function Composer({
               <option value="draft_pr">{t("composer.delivery.draft_pr")}</option>
             </select>
           </div>
+          {(delivery === "pr" || delivery === "draft_pr") && (
+            <div className="field">
+              <label htmlFor="adv-delivery-target">{t("composer.delivery_target")}</label>
+              <input
+                id="adv-delivery-target"
+                value={deliveryTarget}
+                onChange={(e) => setDeliveryTarget(e.target.value)}
+                placeholder={t("composer.delivery_target_ph")}
+              />
+            </div>
+          )}
+          {repo.trim() && (
+            <div className="field">
+              <label htmlFor="adv-repo-ref">{t("composer.repo_ref")}</label>
+              <input
+                id="adv-repo-ref"
+                value={repoRef}
+                onChange={(e) => setRepoRef(e.target.value)}
+                placeholder={t("composer.repo_ref_ph")}
+              />
+            </div>
+          )}
           <div className="field">
             <label htmlFor="adv-idle">{t("composer.idle_timeout")}</label>
             <input
@@ -245,10 +301,11 @@ export function Composer({
             <input
               id="adv-cpu"
               type="number"
-              min={1}
+              min={0.5}
+              step={0.5}
               value={cpu}
               onChange={(e) => setCpu(e.target.value)}
-              placeholder="1–2"
+              placeholder="2"
             />
           </div>
           <div className="field">
@@ -259,7 +316,7 @@ export function Composer({
               min={256}
               value={mem}
               onChange={(e) => setMem(e.target.value)}
-              placeholder="1024–8192"
+              placeholder="4096"
             />
           </div>
           <div className="field span2">

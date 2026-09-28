@@ -2,13 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "../components/Composer";
-import { PROVIDERS } from "../api/fixtures";
+import { MODELS, PROVIDERS } from "../api/fixtures";
 import { makeApi, renderApp } from "../test/helpers";
 import type { NewSessionInput } from "../api/types";
 
 const setup = (onSubmit = vi.fn()) =>
   renderApp(
-    <Composer providers={PROVIDERS} submitting={false} onSubmit={onSubmit} />,
+    <Composer
+      providers={PROVIDERS}
+      models={MODELS}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
   );
 
 describe("Composer", () => {
@@ -109,6 +114,32 @@ describe("Composer", () => {
     const notice = await screen.findByTestId("error-notice");
     expect(notice).toHaveAttribute("data-kind", "provider_busy");
     expect(notice).toHaveTextContent("busy");
+  });
+
+  it("account picker only offers real ids or Auto — never fabricated", async () => {
+    const onSubmit = vi.fn();
+    setup(onSubmit);
+    await userEvent.selectOptions(screen.getByLabelText("Provider"), "codex");
+    await userEvent.click(screen.getByText("Advanced"));
+    const select = screen.getByLabelText("Account") as HTMLSelectElement;
+    const values = [...select.options].map((o) => o.value);
+    // Real codex account ids from /v1/models rows — no <provider>/main or
+    // <provider>/acct-N fabrications.
+    expect(values).toEqual(["auto", "codex-personal", "codex-work"]);
+    expect(values).not.toContain("codex/main");
+    expect(values.join()).not.toMatch(/acct-\d/);
+  });
+
+  it("selecting a real account id passes it through", async () => {
+    const onSubmit = vi.fn();
+    setup(onSubmit);
+    await userEvent.type(screen.getByTestId("composer-prompt"), "x");
+    await userEvent.selectOptions(screen.getByLabelText("Provider"), "codex");
+    await userEvent.click(screen.getByText("Advanced"));
+    await userEvent.selectOptions(screen.getByLabelText("Account"), "codex-work");
+    await userEvent.click(screen.getByTestId("composer-send"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ account: "codex-work" });
   });
 
   it("never renders raw account/scheduler internals", () => {

@@ -3,19 +3,13 @@ import { useI18n } from "../i18n";
 
 function fmtDate(isoStr: string): string {
   const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime()) || !isoStr) return "—";
   return d.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function fmtDuration(s: number | null): string {
-  if (s == null) return "—";
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 function Kv({ k, v }: { k: string; v: React.ReactNode }) {
@@ -59,6 +53,19 @@ export function SessionMeta({ session }: { session: Session }) {
             k={t("detail.delivery")}
             v={session.delivery?.mode ?? t("detail.none")}
           />
+          {session.delivery?.prUrl && (
+            <Kv
+              k={t("detail.pr")}
+              v={
+                <a href={session.delivery.prUrl} target="_blank" rel="noreferrer">
+                  {session.delivery.prNumber
+                    ? `#${session.delivery.prNumber}`
+                    : session.delivery.prUrl}
+                  {session.delivery.prState ? ` (${session.delivery.prState})` : ""}
+                </a>
+              }
+            />
+          )}
           <Kv
             k={t("detail.idle_timeout")}
             v={session.idleTimeoutS ? `${session.idleTimeoutS}s` : t("detail.none")}
@@ -97,10 +104,7 @@ export function SessionMeta({ session }: { session: Session }) {
                 : t("detail.none")
             }
           />
-          <Kv
-            k={t("detail.runtime_seconds")}
-            v={fmtDuration(session.runtimeSeconds)}
-          />
+          <Kv k={t("detail.turns")} v={session.turnCount} />
           <Kv k={t("detail.created")} v={fmtDate(session.createdAt)} />
           <Kv k={t("detail.updated")} v={fmtDate(session.updatedAt)} />
         </div>
