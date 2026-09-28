@@ -18,7 +18,10 @@ single declarative answer to "what does it take to run provider P":
 - **runtime env** — ``env_kind`` selects the HOME/XDG pinning the image and
   the control plane agree on.
 - **credential restore** — ``credential_files`` are the ``$HOME``-relative
-  relpaths the ``SBX_ACCOUNT_CREDENTIAL`` blob restores.
+  relpaths the ``SBX_ACCOUNT_CREDENTIAL`` blob must carry;
+  ``optional_credential_files`` are additional relpaths it may carry
+  (non-secret CLI state such as agy's onboarding marker — the runner
+  reconstructs their stable equivalent when absent, SOR-258).
 - **auth probe / model discovery** — ``auth_argv`` / ``models_argv`` are the
   argv tails each CLI answers with only the restored credential.
 
@@ -69,6 +72,7 @@ class ProviderRuntimeSpec:
     host_bin_default: str = ""  # default build-host CLI path (host-binary kind)
     env_kind: str = ENV_BASE  # ENV_BASE | ENV_HOME | ENV_XDG
     credential_files: tuple[str, ...] = ()
+    optional_credential_files: tuple[str, ...] = ()
     auth_argv: tuple[str, ...] = ()
     models_argv: tuple[str, ...] = ()
     default_models: tuple[str, ...] = ()
@@ -211,6 +215,7 @@ PROVIDER_RUNTIME_SPECS: tuple[ProviderRuntimeSpec, ...] = (
         host_bin_default="~/.local/bin/agy",
         env_kind=ENV_HOME,
         credential_files=(".gemini/antigravity-cli/antigravity-oauth-token",),
+        optional_credential_files=(".gemini/antigravity-cli/cache/onboarding.json",),
         auth_argv=("models",),
         models_argv=("models",),
         default_models=("gemini-3.8-flash-low",),

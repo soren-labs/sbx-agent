@@ -138,6 +138,8 @@ def login_flow(
     subcommand: tuple[str, ...],
     credential: Path,
     content: str,
+    *,
+    extra_files: dict[Path, str] | None = None,
 ) -> None:
     """Dispatch the provider's interactive login; no-op for other argv.
 
@@ -147,6 +149,10 @@ def login_flow(
     the hosted-lane output scraper, write the declared credential file
     with mode 0600 and schema-valid fake content, and exit 0. SOR-214
     drives this from Provider Connect / ``sbx auth pair``.
+
+    ``extra_files`` are non-secret companion files a real login also
+    writes (e.g. agy's ``cache/onboarding.json``, SOR-258) — same 0600
+    treatment so capture picks them up next to the credential.
     """
     if tuple(argv) != tuple(subcommand):
         return
@@ -155,6 +161,11 @@ def login_flow(
         sys.exit(0)
     print("Open https://sbx.invalid/device in your browser")
     print("Enter code FAKE-1234")
+    for path, text in (extra_files or {}).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
     credential.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:

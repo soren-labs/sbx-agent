@@ -70,6 +70,7 @@ def test_spec_parity_with_onboarding_probes() -> None:
         descriptor = descriptors[rspec.provider]
         assert descriptor.support == rspec.support
         assert tuple(descriptor.credential_files) == rspec.credential_files
+        assert tuple(descriptor.optional_credential_files) == rspec.optional_credential_files
 
 
 def test_spec_parity_with_default_models() -> None:

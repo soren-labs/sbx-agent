@@ -43,6 +43,7 @@ GROK_AUTH_REL = ".grok/auth.json"
 CODEX_AUTH_REL = ".codex/auth.json"
 DEVIN_TOML_REL = ".local/share/devin/credentials.toml"
 AGY_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
+AGY_ONBOARDING_REL = ".gemini/antigravity-cli/cache/onboarding.json"
 OPENCODE_AUTH_REL = ".local/share/opencode/auth.json"
 CLAUDE_CRED_REL = ".claude/.credentials.json"
 
@@ -276,6 +277,84 @@ class TestImportValidation:
             svc.add("grok", src, account_id="g1")
         # No active, credential-less account left for the scheduler to pick.
         assert _registry(svc).get("g1") is None
+
+
+class TestOptionalCredentialFiles:
+    """SOR-258: agy's onboarding marker is blob-carriable but never required.
+
+    The portable bundle keeps accepting legacy token-only records while a
+    directory capture picks up the completed onboarding state when the
+    real CLI wrote it — the runner reconstructs it deterministically when
+    the blob doesn't carry it.
+    """
+
+    def test_token_only_blob_stays_valid(self) -> None:
+        blob = {
+            "provider": "antigravity",
+            "files": {AGY_TOKEN_REL: '{"token": "REDACTED"}'},
+        }
+        assert validate_credential_blob("antigravity", blob) is blob
+
+    def test_blob_with_onboarding_state_validates(self) -> None:
+        blob = {
+            "provider": "antigravity",
+            "files": {
+                AGY_TOKEN_REL: '{"token": "REDACTED"}',
+                AGY_ONBOARDING_REL: '{"onboardingComplete": true}',
+            },
+        }
+        assert validate_credential_blob("antigravity", blob) is blob
+
+    def test_onboarding_without_token_is_missing(self) -> None:
+        blob = {
+            "provider": "antigravity",
+            "files": {AGY_ONBOARDING_REL: '{"onboardingComplete": true}'},
+        }
+        with pytest.raises(OnboardingError) as exc:
+            validate_credential_blob("antigravity", blob)
+        assert exc.value.code == "missing_credential_file"
+
+    def test_optional_file_schema_checked(self) -> None:
+        blob = {
+            "provider": "antigravity",
+            "files": {AGY_TOKEN_REL: '{"token": "x"}', AGY_ONBOARDING_REL: "not json"},
+        }
+        with pytest.raises(OnboardingError) as exc:
+            validate_credential_blob("antigravity", blob)
+        assert exc.value.code == "schema_mismatch"
+
+    def test_undeclared_path_still_rejected(self) -> None:
+        blob = {
+            "provider": "antigravity",
+            "files": {AGY_TOKEN_REL: "{}", ".gemini/antigravity-cli/history.db": "x"},
+        }
+        with pytest.raises(OnboardingError) as exc:
+            validate_credential_blob("antigravity", blob)
+        assert exc.value.code == "unsafe_path"
+
+    def test_dir_import_captures_onboarding_when_present(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        _write(home / AGY_TOKEN_REL, '{"token": "REDACTED"}')
+        _write(
+            home / AGY_ONBOARDING_REL,
+            '{\n  "consumerOnboardingComplete": true,\n  "onboardingComplete": true\n}\n',
+        )
+        blob = collect_credential_blob("antigravity", home)
+        assert set(blob["files"]) == {AGY_TOKEN_REL, AGY_ONBOARDING_REL}
+
+    def test_dir_import_token_only(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        _write(home / AGY_TOKEN_REL, '{"token": "REDACTED"}')
+        blob = collect_credential_blob("antigravity", home)
+        assert set(blob["files"]) == {AGY_TOKEN_REL}
+
+    def test_dir_import_never_requires_onboarding(self, tmp_path: Path) -> None:
+        # The token is the only file that can be missing and fail import.
+        home = tmp_path / "home"
+        _write(home / AGY_ONBOARDING_REL, '{"onboardingComplete": true}')
+        with pytest.raises(OnboardingError) as exc:
+            collect_credential_blob("antigravity", home)
+        assert exc.value.code == "missing_credential_file"
 
 
 class ScriptedProbe:

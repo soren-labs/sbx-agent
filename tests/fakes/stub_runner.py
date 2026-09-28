@@ -134,6 +134,14 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     credential_files = restore_credential_blob(root)
 
+    # Mirror runtime.runner.bootstrap: a non-codex provider's adapter
+    # prepares the restored HOME before any turn (e.g. agy's onboarding
+    # marker is synthesized when the blob didn't carry one, SOR-258).
+    if args.provider != "codex":
+        from runtime.runner.adapter import get_adapter
+
+        get_adapter(args.provider).prepare_home(sandbox_home(root), args.model)
+
     (home / "config.toml").write_text(
         (
             f'model = "{args.model}"\n'

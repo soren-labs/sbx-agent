@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 from runtime.runner.adapter import get_adapter
-from runtime.runner.adapters.antigravity import OAUTH_TOKEN_REL, AntigravityAdapter
+from runtime.runner.adapters.antigravity import (
+    OAUTH_TOKEN_REL,
+    ONBOARDING_STATE_REL,
+    AntigravityAdapter,
+)
 from runtime.runner.constants import NOOP_EVENT_TYPE
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -132,6 +136,31 @@ def test_prepare_home_without_token(tmp_path: Path) -> None:
     cli_dir = tmp_path / ".gemini" / "antigravity-cli"
     assert cli_dir.is_dir()
     assert not (cli_dir / "antigravity-oauth-token").exists()
+
+
+def test_prepare_home_synthesizes_onboarding_state(tmp_path: Path) -> None:
+    """SOR-258: a token-only restore gets the minimal completed marker.
+
+    agy 1.2.x gates its eligibility check on
+    ``cache/onboarding.json``; without it a valid restored token fails
+    ``agy models`` with a misleading "account not eligible".
+    """
+    AntigravityAdapter().prepare_home(tmp_path, MODEL)
+    state = tmp_path / ONBOARDING_STATE_REL
+    assert state.is_file()
+    data = json.loads(state.read_text(encoding="utf-8"))
+    assert data["onboardingComplete"] is True
+    assert stat.S_IMODE(state.stat().st_mode) == 0o600
+
+
+def test_prepare_home_preserves_restored_onboarding_state(tmp_path: Path) -> None:
+    """A blob-carried marker always wins — synthesis never clobbers it."""
+    restored = '{"consumerOnboardingComplete": false, "onboardingComplete": false}\n'
+    state = tmp_path / ONBOARDING_STATE_REL
+    state.parent.mkdir(parents=True)
+    state.write_text(restored, encoding="utf-8")
+    AntigravityAdapter().prepare_home(tmp_path, MODEL)
+    assert state.read_text(encoding="utf-8") == restored
 
 
 def test_translate_real_success_fixture() -> None:
