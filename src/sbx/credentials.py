@@ -191,10 +191,15 @@ def scan_provider(
             detail="not a supported provider — nothing to scan",
         )
     login = login_hint(provider)
+    optional = set(getattr(desc, "optional_files", ()))
 
     worst: tuple[int, str, str, str] | None = None  # severity, status, why, relpath
     for relpath in desc.credential_files:
         status, why = _file_status(desc, relpath, home, allow_open_permissions)
+        if status == "not_found" and relpath in optional:
+            # Optional companion state (SOR-258) is reconstructed on import
+            # and restore — its absence is not a finding.
+            continue
         rank = _SEVERITY[status]
         if worst is None or rank > worst[0]:
             worst = (rank, status, why, relpath)

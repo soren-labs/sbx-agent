@@ -138,6 +138,8 @@ def login_flow(
     subcommand: tuple[str, ...],
     credential: Path,
     content: str,
+    *,
+    companions: dict[Path, str] | None = None,
 ) -> None:
     """Dispatch the provider's interactive login; no-op for other argv.
 
@@ -147,6 +149,11 @@ def login_flow(
     the hosted-lane output scraper, write the declared credential file
     with mode 0600 and schema-valid fake content, and exit 0. SOR-214
     drives this from Provider Connect / ``sbx auth pair``.
+
+    ``companions`` (SOR-258) are extra non-secret state files a real
+    OAuth login writes beside the credential (antigravity's
+    ``cache/onboarding.json`` marker) — written 0600 alongside so
+    captures observe the same bundle a real login leaves behind.
     """
     if tuple(argv) != tuple(subcommand):
         return
@@ -159,6 +166,11 @@ def login_flow(
     fd = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(content)
+    for companion_path, companion_content in (companions or {}).items():
+        companion_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(companion_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(companion_content)
     print("Logged in")
     sys.exit(0)
 

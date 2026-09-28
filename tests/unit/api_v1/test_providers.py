@@ -170,6 +170,11 @@ def test_catalog_carries_spec_truth(
     assert rows["codex"]["distribution"]["kind"] == "npm"
     assert rows["codex"]["distribution"]["local_assisted"] is False
     assert rows["codex"]["credential_files"] == [".codex/auth.json"]
+    # SOR-258: the portable bundle advertises token + companion marker.
+    assert rows["antigravity"]["credential_files"] == [
+        ".gemini/antigravity-cli/antigravity-oauth-token",
+        ".gemini/antigravity-cli/cache/onboarding.json",
+    ]
     assert rows["grok"]["distribution"]["kind"] == "host-binary"
     assert rows["grok"]["distribution"]["local_assisted"] is True
     assert rows["devin"]["distribution"]["kind"] == "bundle"

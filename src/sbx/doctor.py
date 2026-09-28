@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 from control.config import ACTIVE_STATUSES
+from control.provider_readiness import provider_readiness
 
 from sbx.config import ResolvedConfig, key_path
 from sbx.credentials import cli_auth_check, scan_credentials
@@ -281,15 +282,36 @@ def _api_checks(
                 + (f" ({', '.join(sorted(names))})" if names else ""),
             )
         )
+        # SOR-258: fetch account detail once for the busy-vs-needs-login
+        # split; an admin-scoped key is the common case for `sbx doctor`,
+        # and a refusal simply keeps the busy convention.
+        statuses: dict[str, list[str]] | None = None
+        try:
+            with V1Client(config_base_url, token, transport=transport, timeout=10.0) as client:
+                account_rows = client.list_accounts().get("accounts") or []
+            statuses = {}
+            for a in account_rows:
+                if isinstance(a, Mapping):
+                    statuses.setdefault(str(a.get("provider")), []).append(
+                        str(a.get("status") or "")
+                    )
+        except ApiError:
+            statuses = None
         conn_bits = []
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
             conn = row.get("connection") or {}
             runtime = row.get("runtime") or {}
+            word = provider_readiness(
+                row,
+                account_statuses=(
+                    statuses.get(str(row.get("provider"))) if statuses is not None else None
+                ),
+            )
             conn_bits.append(
-                f"{row.get('provider', '?')}: "
-                f"{conn.get('status', '?')}/runtime:{runtime.get('status', '?')}"
+                f"{row.get('provider', '?')}: {word} "
+                f"({conn.get('status', '?')}/runtime:{runtime.get('status', '?')})"
             )
         checks.append(
             Check(

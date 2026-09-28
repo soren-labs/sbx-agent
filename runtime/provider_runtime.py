@@ -210,7 +210,13 @@ PROVIDER_RUNTIME_SPECS: tuple[ProviderRuntimeSpec, ...] = (
         host_bin_env="SBX_AGY_BIN",
         host_bin_default="~/.local/bin/agy",
         env_kind=ENV_HOME,
-        credential_files=(".gemini/antigravity-cli/antigravity-oauth-token",),
+        # Portable bundle (SOR-258): OAuth token plus the non-secret
+        # onboarding marker the 1.2.x CLI requires next to it.  The marker
+        # is optional in blobs — the adapter reconstructs it when absent.
+        credential_files=(
+            ".gemini/antigravity-cli/antigravity-oauth-token",
+            ".gemini/antigravity-cli/cache/onboarding.json",
+        ),
         auth_argv=("models",),
         models_argv=("models",),
         default_models=("gemini-3.8-flash-low",),

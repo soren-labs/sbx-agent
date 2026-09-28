@@ -7,6 +7,13 @@ content}}`` lives in the ``AccountStore`` credential slot (local file store
 ``0600`` or the ``modal.Dict sbx-accounts`` ``credential/<id>`` lane; deploy
 materializes ``sbx-acct-<id>`` Secrets).
 
+SOR-258: a provider's portable credential bundle may declare *optional*
+files — non-secret companion state the CLI needs next to the credential
+(antigravity's ``~/.gemini/antigravity-cli/cache/onboarding.json`` marker).
+A blob missing an optional file stays valid; ``complete_credential_blob``
+fills it with the deterministic ``synthesized_files`` content so every
+stored record and materialized Secret carries the full bundle.
+
 Flow (``python -m control.onboarding``)::
 
     providers            list supported provider descriptors
@@ -69,6 +76,15 @@ class ProviderDescriptor:
     ``export-credentials`` writes back. ``content_kind`` selects the
     per-file schema check applied on import/refresh.
 
+    ``optional_files`` (a subset of ``credential_files``) are bundle
+    members a valid blob may omit — non-secret companion state the CLI
+    needs but that can be reconstructed. ``synthesized_files`` pairs each
+    such relpath with the deterministic content
+    ``complete_credential_blob`` fills in (and the adapter's
+    ``prepare_home`` materializes) when a blob or restored ``$HOME`` lacks
+    it; ``required_files`` is what's left — the files a credential can
+    never ship without.
+
     ``support`` is the provider's Release 0.1 support tier exactly as
     published in ``docs/providers.md`` (``stable`` / ``experimental`` /
     ``preview`` / ``unsupported``) — user-facing output must never claim a
@@ -84,7 +100,34 @@ class ProviderDescriptor:
     content_kind: str  # "json" | "toml"
     default_models: tuple[str, ...]
     summary: str
+    optional_files: tuple[str, ...] = ()
+    synthesized_files: tuple[tuple[str, str], ...] = ()
 
+    @property
+    def required_files(self) -> tuple[str, ...]:
+        """Declared files a valid blob must carry (the portable credential)."""
+        optional = set(self.optional_files)
+        return tuple(path for path in self.credential_files if path not in optional)
+
+    @property
+    def synthesized(self) -> dict[str, str]:
+        """``relpath -> deterministic content`` for reconstructible files."""
+        return dict(self.synthesized_files)
+
+
+# Antigravity (``agy``) portable-auth relpaths — kept as literals here,
+# in the runner adapter, the runtime spec and the image manifest; the
+# parity tests pin them to the adapter's constants.
+AGY_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
+AGY_ONBOARDING_REL = ".gemini/antigravity-cli/cache/onboarding.json"
+# The non-secret onboarding marker a real OAuth login writes. Without it a
+# restored token fails on 1.2.x with "account not eligible"; this exact
+# document is what login leaves behind (reconstructed for token-only
+# blobs — no conversation/history state is ever carried).
+AGY_ONBOARDING_JSON = (
+    '{"consumerOnboardingComplete":true,"enterpriseOnboardingComplete":false,'
+    '"onboardingComplete":true}\n'
+)
 
 PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
     ProviderDescriptor(
@@ -109,7 +152,15 @@ PROVIDER_DESCRIPTORS: tuple[ProviderDescriptor, ...] = (
         provider="antigravity",
         support="experimental",
         experimental=False,
-        credential_files=(".gemini/antigravity-cli/antigravity-oauth-token",),
+        # The portable bundle (SOR-258): the OAuth token plus the non-secret
+        # onboarding marker the 1.2.x CLI insists on — a token alone makes a
+        # fresh HOME fail ``agy models`` with a misleading "account not
+        # eligible". The marker is optional in the blob: when absent it is
+        # reconstructed with the deterministic content below, identical to
+        # what a real OAuth login writes.
+        credential_files=(AGY_TOKEN_REL, AGY_ONBOARDING_REL),
+        optional_files=(AGY_ONBOARDING_REL,),
+        synthesized_files=((AGY_ONBOARDING_REL, AGY_ONBOARDING_JSON),),
         content_kind="json",
         default_models=("gemini-3.8-flash-low",),
         summary="Antigravity OAuth token",
@@ -383,8 +434,9 @@ def validate_credential_blob(
 
     Checks provider consistency, relpath safety, that every path is one the
     descriptor declares, and the per-provider content schema. ``require_full``
-    demands the complete declared file set (import/refresh both write a whole
-    credential set — a partial write would leave a mixed-generation blob).
+    demands the complete *required* file set — optional companion files may
+    be absent (they're reconstructed at materialization/restore), while
+    undeclared paths (history, conversations, unrelated cache) stay refused.
     """
     desc = descriptor_for(provider)
     if not isinstance(blob, dict):
@@ -407,13 +459,42 @@ def validate_credential_blob(
                 f"undeclared credential path {relpath!r} for provider {provider!r}",
             )
         _check_content_schema(desc, str(relpath), _decode_content(value))
-    missing = declared - set(files)
+    missing = set(desc.required_files) - set(files)
     if require_full and missing:
         raise OnboardingError(
             "missing_credential_file",
             f"credential blob missing file(s): {', '.join(sorted(missing))}",
         )
     return blob
+
+
+def complete_credential_blob(provider: str, blob: dict[str, Any]) -> dict[str, Any]:
+    """Fill deterministic optional files absent from ``blob`` (SOR-258).
+
+    Optional bundle members are non-secret companion state the CLI needs
+    next to the credential (antigravity's ``cache/onboarding.json``
+    marker). A blob missing them is valid but incomplete: completing it
+    here means every stored record, materialized Secret and write-back
+    carries the full portable bundle instead of relying on runtime repair
+    alone — the migration path for pre-SOR-258 token-only records.
+    """
+    try:
+        desc = descriptor_for(provider)
+    except OnboardingError:
+        return blob  # unknown provider — the caller's files stand as given
+    defaults = desc.synthesized
+    if not defaults or not isinstance(blob, dict):
+        return blob
+    files = blob.get("files")
+    if not isinstance(files, dict):
+        return blob
+    merged = dict(files)
+    for relpath, content in defaults.items():
+        if relpath in desc.credential_files:
+            merged.setdefault(relpath, content)
+    if merged == files:
+        return blob
+    return {**blob, "files": merged}
 
 
 def _looks_like_blob(data: Any) -> bool:
@@ -476,7 +557,7 @@ def collect_credential_blob(
             data = json.loads(text)
         except json.JSONDecodeError as exc:
             raise OnboardingError("invalid_blob", "stdin is not a credential blob JSON") from exc
-        return validate_credential_blob(provider, data)
+        return complete_credential_blob(provider, validate_credential_blob(provider, data))
 
     path = Path(source).expanduser()
     if path.is_symlink():
@@ -485,6 +566,7 @@ def collect_credential_blob(
         root = path.resolve()
         files: dict[str, str | dict[str, str]] = {}
         missing: list[str] = []
+        optional = set(desc.optional_files)
         for rel in desc.credential_files:
             content: bytes | None = None
             for candidate in (path / rel, path / PurePosixPath(rel).name):
@@ -494,7 +576,8 @@ def collect_credential_blob(
                     )
                     break
             if content is None:
-                missing.append(rel)
+                if rel not in optional:
+                    missing.append(rel)
             else:
                 files[rel] = _store_entry(content)
         if missing:
@@ -502,7 +585,9 @@ def collect_credential_blob(
                 "missing_credential_file",
                 f"--from {path}: missing credential file(s): {', '.join(missing)}",
             )
-        return validate_credential_blob(provider, {"provider": provider, "files": files})
+        return complete_credential_blob(
+            provider, validate_credential_blob(provider, {"provider": provider, "files": files})
+        )
 
     if not path.is_file():
         raise OnboardingError("invalid_source", f"--from {path}: not a file or directory")
@@ -513,16 +598,19 @@ def collect_credential_blob(
     except json.JSONDecodeError:
         data = None
     if _looks_like_blob(data):
-        return validate_credential_blob(provider, data)
-    if len(desc.credential_files) != 1:
+        return complete_credential_blob(provider, validate_credential_blob(provider, data))
+    if len(desc.required_files) != 1:
         raise OnboardingError(
             "invalid_source",
-            f"--from {path}: provider {provider!r} needs {len(desc.credential_files)} "
+            f"--from {path}: provider {provider!r} needs {len(desc.required_files)} "
             "credential files; pass the containing directory or a blob JSON",
         )
-    rel = desc.credential_files[0]
-    return validate_credential_blob(
-        provider, {"provider": provider, "files": {rel: _store_entry(raw)}}
+    rel = desc.required_files[0]
+    return complete_credential_blob(
+        provider,
+        validate_credential_blob(
+            provider, {"provider": provider, "files": {rel: _store_entry(raw)}}
+        ),
     )
 
 
@@ -791,7 +879,13 @@ class OnboardingService:
         try:
             self._secret_writer.refresh(
                 account.secret_name,
-                {CREDENTIAL_ENV: json.dumps(blob, ensure_ascii=False, separators=(",", ":"))},
+                {
+                    CREDENTIAL_ENV: json.dumps(
+                        complete_credential_blob(account.provider, blob),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                },
             )
         except Exception:
             return "failed"

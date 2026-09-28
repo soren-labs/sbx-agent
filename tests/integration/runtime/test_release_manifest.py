@@ -125,6 +125,11 @@ def test_manifest_credential_files_match_contract() -> None:
         assert manifest["providers"][provider]["credential_files"] == list(files)
     # Spot-check the contract relpaths (docs/contracts/filesystem.md).
     assert manifest["providers"]["codex"]["credential_files"] == [".codex/auth.json"]
+    # SOR-258: portable bundle = OAuth token + non-secret onboarding marker.
+    assert manifest["providers"]["antigravity"]["credential_files"] == [
+        ".gemini/antigravity-cli/antigravity-oauth-token",
+        ".gemini/antigravity-cli/cache/onboarding.json",
+    ]
     assert manifest["providers"]["devin"]["credential_files"] == [
         ".local/share/devin/credentials.toml"
     ]

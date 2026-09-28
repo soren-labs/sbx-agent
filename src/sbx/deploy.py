@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 from control.accounts import is_valid_account_id
+from control.onboarding import complete_credential_blob
 
 import sbx
 from sbx.config import (
@@ -507,7 +508,9 @@ def _materialize_account_secrets(cfg: BootstrapConfig, plane: Plane) -> StepResu
         if secret_name in existing:
             plane.delete_secret(secret_name)
             refreshed += 1
-        payload = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
+        payload = json.dumps(
+            complete_credential_blob(provider, blob), ensure_ascii=False, separators=(",", ":")
+        )
         plane.ensure_secret(secret_name, {"SBX_ACCOUNT_CREDENTIAL": payload})
         existing.add(secret_name)
         materialized += 1

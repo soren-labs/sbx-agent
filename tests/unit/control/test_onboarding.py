@@ -19,6 +19,7 @@ from control.accounts import (
 )
 from control.backend import LocalProcessBackend
 from control.onboarding import (
+    AGY_ONBOARDING_JSON,
     PROVIDER_AUTH_CHECKS,
     PROVIDER_DESCRIPTORS,
     OnboardingError,
@@ -29,6 +30,7 @@ from control.onboarding import (
     StaticCredentialProbe,
     classify_auth_output,
     collect_credential_blob,
+    complete_credential_blob,
     descriptor_for,
     provider_auth_argv,
     validate_credential_blob,
@@ -43,6 +45,7 @@ GROK_AUTH_REL = ".grok/auth.json"
 CODEX_AUTH_REL = ".codex/auth.json"
 DEVIN_TOML_REL = ".local/share/devin/credentials.toml"
 AGY_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
+AGY_ONBOARDING_REL = ".gemini/antigravity-cli/cache/onboarding.json"
 OPENCODE_AUTH_REL = ".local/share/opencode/auth.json"
 CLAUDE_CRED_REL = ".claude/.credentials.json"
 
@@ -96,9 +99,20 @@ class TestDescriptors:
         files = {d.provider: d.credential_files for d in PROVIDER_DESCRIPTORS}
         assert files["codex"] == (CODEX_AUTH_REL,)
         assert files["devin"] == (DEVIN_TOML_REL,)
-        assert files["antigravity"] == (AGY_TOKEN_REL,)
+        assert files["antigravity"] == (AGY_TOKEN_REL, AGY_ONBOARDING_REL)
         assert files["grok"] == (GROK_AUTH_REL,)
         assert files["opencode"] == (OPENCODE_AUTH_REL,)
+
+    def test_optional_and_required_files_split(self) -> None:
+        for desc in PROVIDER_DESCRIPTORS:
+            optional = set(desc.optional_files)
+            assert optional <= set(desc.credential_files)
+            assert set(desc.required_files) == set(desc.credential_files) - optional
+            assert set(desc.synthesized) <= optional
+        agy = descriptor_for("antigravity")
+        assert agy.required_files == (AGY_TOKEN_REL,)
+        assert agy.optional_files == (AGY_ONBOARDING_REL,)
+        assert agy.synthesized[AGY_ONBOARDING_REL] == AGY_ONBOARDING_JSON
 
     def test_unknown_provider(self) -> None:
         with pytest.raises(OnboardingError) as exc:
@@ -237,6 +251,86 @@ class TestImportValidation:
         with pytest.raises(OnboardingError) as exc:
             collect_credential_blob("devin", src)
         assert exc.value.code == "schema_mismatch"
+
+    def test_optional_companion_file_accepted(self, tmp_path: Path) -> None:
+        """SOR-258: a blob carrying the full portable bundle validates."""
+        blob = {
+            "provider": "antigravity",
+            "files": {
+                AGY_TOKEN_REL: '{"token": "x"}',
+                AGY_ONBOARDING_REL: '{"onboardingComplete": true}',
+            },
+        }
+        assert validate_credential_blob("antigravity", blob) is blob
+
+    def test_token_only_blob_still_valid(self) -> None:
+        """SOR-258 migration: pre-existing token-only records stay valid —
+        the optional marker may be absent (it is reconstructed later)."""
+        blob = {"provider": "antigravity", "files": {AGY_TOKEN_REL: '{"token": "x"}'}}
+        assert validate_credential_blob("antigravity", blob) is blob
+
+    def test_marker_without_token_is_missing_required(self) -> None:
+        blob = {
+            "provider": "antigravity",
+            "files": {AGY_ONBOARDING_REL: '{"onboardingComplete": true}'},
+        }
+        with pytest.raises(OnboardingError) as exc:
+            validate_credential_blob("antigravity", blob)
+        assert exc.value.code == "missing_credential_file"
+
+    def test_unrelated_gemini_state_still_rejected(self) -> None:
+        """SOR-258: nothing else under ~/.gemini is declared — history,
+        conversations and other cache never travel in the bundle."""
+        blob = {
+            "provider": "antigravity",
+            "files": {
+                AGY_TOKEN_REL: '{"token": "x"}',
+                ".gemini/antigravity-cli/history/chat.json": "{}",
+            },
+        }
+        with pytest.raises(OnboardingError) as exc:
+            validate_credential_blob("antigravity", blob)
+        assert exc.value.code == "unsafe_path"
+
+    def test_dir_import_token_only_completes_bundle(self, tmp_path: Path) -> None:
+        """SOR-258: a token-only dir import stores the completed bundle."""
+        src_dir = tmp_path / "agyhome"
+        _write(src_dir / AGY_TOKEN_REL, '{"token": "x"}')
+        blob = collect_credential_blob("antigravity", src_dir)
+        assert blob["files"][AGY_TOKEN_REL] == '{"token": "x"}'
+        assert blob["files"][AGY_ONBOARDING_REL] == AGY_ONBOARDING_JSON
+
+    def test_dir_import_captures_real_marker(self, tmp_path: Path) -> None:
+        """A login-written marker is imported verbatim — never overwritten
+        by the deterministic fallback."""
+        src_dir = tmp_path / "agyhome"
+        real_marker = '{"onboardingComplete":true,"otherFlag":1}'
+        _write(src_dir / AGY_TOKEN_REL, '{"token": "x"}')
+        _write(src_dir / AGY_ONBOARDING_REL, real_marker)
+        blob = collect_credential_blob("antigravity", src_dir)
+        assert blob["files"][AGY_ONBOARDING_REL] == real_marker
+
+    def test_single_file_import_maps_to_required_rel(self, tmp_path: Path) -> None:
+        """``--from token`` on a multi-file provider still maps the lone
+        required file, then completes the bundle."""
+        src = _write(tmp_path / "antigravity-oauth-token", '{"token": "x"}')
+        blob = collect_credential_blob("antigravity", src)
+        assert blob["files"][AGY_TOKEN_REL] == '{"token": "x"}'
+        assert blob["files"][AGY_ONBOARDING_REL] == AGY_ONBOARDING_JSON
+
+    def test_stdin_blob_completes_bundle(self) -> None:
+        blob = {"provider": "antigravity", "files": {AGY_TOKEN_REL: '{"token": "x"}'}}
+        out = collect_credential_blob("antigravity", "-", stdin_text=json.dumps(blob))
+        assert out["files"][AGY_ONBOARDING_REL] == AGY_ONBOARDING_JSON
+
+    def test_complete_credential_blob_idempotent(self) -> None:
+        token_only = {"provider": "antigravity", "files": {AGY_TOKEN_REL: '{"t":1}'}}
+        once = complete_credential_blob("antigravity", token_only)
+        assert once["files"][AGY_ONBOARDING_REL] == AGY_ONBOARDING_JSON
+        assert complete_credential_blob("antigravity", once) is once
+        # Unknown provider / non-dict inputs pass through untouched.
+        raw = {"provider": "custom", "files": {"x": "y"}}
+        assert complete_credential_blob("custom", raw) is raw
 
     def test_schema_rejects_non_object_json(self, tmp_path: Path) -> None:
         src = _write(tmp_path / "auth.json", '["a", "b"]')

@@ -46,6 +46,19 @@ Health = Literal["ok", "auth_invalid", "rate_limited", "unknown"]
 
 OAUTH_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
 
+# Non-secret onboarding marker the 1.2.x CLI requires next to the token —
+# without it a restored credential fails `agy models` with a misleading
+# "account not eligible".  Part of the portable auth bundle (SOR-258), but
+# optional in blobs: ``prepare_home`` reconstructs it with the exact
+# document an OAuth login writes when the restored HOME lacks it (legacy
+# token-only account records keep working).  Companion state only — no
+# history/conversation/cache data ever travels in the bundle.
+ONBOARDING_STATE_REL = ".gemini/antigravity-cli/cache/onboarding.json"
+ONBOARDING_STATE = (
+    '{"consumerOnboardingComplete":true,"enterpriseOnboardingComplete":false,'
+    '"onboardingComplete":true}\n'
+)
+
 _AUTH_NEEDLES = (
     "authentication required",
     "authentication failed",
@@ -170,7 +183,10 @@ class AntigravityAdapter:
     """Antigravity (``agy``) adapter: stream-json NDJSON -> canonical events."""
 
     provider = "antigravity"
-    credential_files: tuple[str, ...] = (OAUTH_TOKEN_REL,)
+    # Declared bundle files (SOR-258): token plus the onboarding marker the
+    # CLI insists on — the marker is optional in blobs since prepare_home
+    # reconstructs it.
+    credential_files: tuple[str, ...] = (OAUTH_TOKEN_REL, ONBOARDING_STATE_REL)
 
     def __init__(self) -> None:
         self._item_seq = 0
@@ -189,6 +205,10 @@ class AntigravityAdapter:
         runs; ``prepare_home`` never writes its contents. Approval bypass is
         argv-level (``--dangerously-skip-permissions``), so no CLI config
         file is needed; ``model`` travels on argv, not in a config file.
+
+        SOR-258: the onboarding marker is reconstructed with the
+        deterministic login-state document when the restored bundle lacks
+        it, so token-only blobs still satisfy the CLI's fresh-HOME check.
         """
         gemini = home / ".gemini"
         cli_dir = gemini / "antigravity-cli"
@@ -198,6 +218,12 @@ class AntigravityAdapter:
         token = cli_dir / "antigravity-oauth-token"
         if token.is_file():
             token.chmod(0o600)
+        onboarding = cli_dir / "cache" / "onboarding.json"
+        if not onboarding.is_file():
+            onboarding.parent.mkdir(parents=True, exist_ok=True)
+            onboarding.parent.chmod(0o700)
+            onboarding.write_text(ONBOARDING_STATE, encoding="utf-8")
+        onboarding.chmod(0o600)
 
     def first_turn_argv(self, prompt: str, model: str) -> list[str]:
         argv = [*agy_bin_tokens(), "-p", prompt, "--output-format", "stream-json"]

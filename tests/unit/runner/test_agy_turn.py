@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
+from runtime.runner.adapters.antigravity import ONBOARDING_STATE, ONBOARDING_STATE_REL
 from tests.unit.runner.conftest import load_json, parsed_events, run_runner
 
 MODEL = "gemini-3.8-flash-low"
@@ -93,8 +94,14 @@ def test_init_restores_token_blob(work: Path, agy_env: dict[str, str]) -> None:
     assert token.read_text(encoding="utf-8") == TOKEN_JSON
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
     assert stat.S_IMODE(token.parent.stat().st_mode) == 0o700
+    # SOR-258: the onboarding marker is reconstructed for the token-only
+    # blob and joins the recorded bundle so export writes it back.
+    marker = work / "home" / ONBOARDING_STATE_REL
+    assert marker.is_file()
+    assert marker.read_text(encoding="utf-8") == ONBOARDING_STATE
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
     session = load_json(work / "session.json")
-    assert session["credential_files"] == [TOKEN_REL]
+    assert session["credential_files"] == sorted([TOKEN_REL, ONBOARDING_STATE_REL])
     # The blob value must not leak into events or session files.
     assert TOKEN_JSON not in (work / "events.jsonl").read_text(encoding="utf-8")
     assert "SBX_ACCOUNT_CREDENTIAL" not in (work / "session.json").read_text(encoding="utf-8")
@@ -316,9 +323,16 @@ def test_export_credentials_roundtrip(work: Path, agy_env: dict[str, str]) -> No
         {"provider": "antigravity", "files": {TOKEN_REL: TOKEN_JSON}}
     )
     init_agy(agy_env)
-    same = run_runner(["export-credentials"], agy_env)
-    assert same.returncode == 0
-    assert same.stdout.strip() == ""
+    # SOR-258: a token-only blob differs from the completed bundle — export
+    # writes the full portable bundle back so stored records migrate.
+    first = run_runner(["export-credentials"], agy_env)
+    assert first.returncode == 0
+    exported = json.loads(first.stdout.strip())
+    assert exported["provider"] == "antigravity"
+    assert exported["files"] == {
+        TOKEN_REL: TOKEN_JSON,
+        ONBOARDING_STATE_REL: ONBOARDING_STATE,
+    }
     # CLI refresh rewrote the token file -> export prints the new blob.
     token = work / "home" / TOKEN_REL
     token.write_text('{"auth_method":"consumer","id_token":"REDACTED_NEW"}\n', encoding="utf-8")
@@ -327,3 +341,17 @@ def test_export_credentials_roundtrip(work: Path, agy_env: dict[str, str]) -> No
     exported = json.loads(out.stdout.strip())
     assert exported["provider"] == "antigravity"
     assert exported["files"][TOKEN_REL] == '{"auth_method":"consumer","id_token":"REDACTED_NEW"}\n'
+    assert exported["files"][ONBOARDING_STATE_REL] == ONBOARDING_STATE
+
+
+def test_export_unchanged_for_complete_bundle(work: Path, agy_env: dict[str, str]) -> None:
+    agy_env["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(
+        {
+            "provider": "antigravity",
+            "files": {TOKEN_REL: TOKEN_JSON, ONBOARDING_STATE_REL: ONBOARDING_STATE},
+        }
+    )
+    init_agy(agy_env)
+    same = run_runner(["export-credentials"], agy_env)
+    assert same.returncode == 0
+    assert same.stdout.strip() == ""

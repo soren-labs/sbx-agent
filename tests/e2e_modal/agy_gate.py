@@ -53,7 +53,10 @@ if str(REPO_ROOT) not in sys.path:
 
 import modal  # noqa: E402
 from runtime.image import sbx_runtime_image  # noqa: E402
-from runtime.runner.adapters.antigravity import OAUTH_TOKEN_REL  # noqa: E402
+from runtime.runner.adapters.antigravity import (  # noqa: E402
+    OAUTH_TOKEN_REL,
+    ONBOARDING_STATE_REL,
+)
 
 from tests.e2e_modal.helpers import artifacts_dir, leak_reason, write_json  # noqa: E402
 
@@ -254,18 +257,27 @@ def run_gate(sb: modal.Sandbox, args: argparse.Namespace, secrets: list[str]) ->
     rc, out, _err = sh(
         sb,
         f"stat -c '%a' '{HOME_DIR}/{OAUTH_TOKEN_REL}' "
-        f"'{HOME_DIR}/.gemini' '{HOME_DIR}/.gemini/antigravity-cli'",
+        f"'{HOME_DIR}/{ONBOARDING_STATE_REL}' "
+        f"'{HOME_DIR}/.gemini' '{HOME_DIR}/.gemini/antigravity-cli' "
+        f"'{HOME_DIR}/.gemini/antigravity-cli/cache'",
     )
     modes = out.strip().splitlines()
     check("init.token_mode_600", rc == 0 and modes[:1] == ["600"], f"modes={modes}")
-    check("init.dir_modes_700", rc == 0 and modes[1:] == ["700", "700"], f"modes={modes}")
+    # SOR-258: companion onboarding state is materialized next to the token
+    # (reconstructed when the injected blob is token-only).
+    check("init.onboarding_mode_600", rc == 0 and modes[1:2] == ["600"], f"modes={modes}")
+    check(
+        "init.dir_modes_700",
+        rc == 0 and modes[2:] == ["700", "700", "700"],
+        f"modes={modes}",
+    )
 
     session = json.loads(read_remote(sb, f"{WORK}/session.json") or "{}")
     check("init.session_provider", session.get("provider") == "antigravity")
     check("init.session_account", session.get("account_id") == account_id)
     check(
         "init.credential_files",
-        session.get("credential_files") == [OAUTH_TOKEN_REL],
+        session.get("credential_files") == sorted([OAUTH_TOKEN_REL, ONBOARDING_STATE_REL]),
         str(session.get("credential_files")),
     )
 

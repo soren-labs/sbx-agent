@@ -71,7 +71,10 @@ DOCKERFILE_OPENCODE_LOCAL = REPO_ROOT / "Dockerfile.opencode.local"
 # the manifest so doctor can verify the release credential-path contract.
 PROVIDER_CREDENTIAL_FILES: dict[str, tuple[str, ...]] = {
     "codex": (".codex/auth.json",),
-    "antigravity": (".gemini/antigravity-cli/antigravity-oauth-token",),
+    "antigravity": (  # SOR-258: token + non-secret onboarding marker
+        ".gemini/antigravity-cli/antigravity-oauth-token",
+        ".gemini/antigravity-cli/cache/onboarding.json",
+    ),
     "grok": (".grok/auth.json",),
     "opencode": (".local/share/opencode/auth.json",),
     "devin": (".local/share/devin/credentials.toml",),

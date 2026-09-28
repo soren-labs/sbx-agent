@@ -21,7 +21,7 @@ real-account gates were run for this tag.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | codex | **Stable** | `@openai/codex` **0.153.0** — pinned in `sbx-runtime` (`runtime/packages.txt`) | `.codex/auth.json` (ChatGPT `codex login`) | ✅ `codex exec resume` | ✅ | ✅ `SBX_CODEX_ACCOUNTS` | `tests/e2e_modal/` real-Modal suite (two-turn, concurrency, no-leak); committed `timings.json`; P0 spike; RC gate lane **CREDENTIAL_DEFERRED** at `v0.1.0-alpha` and still deferred — stale ChatGPT token, needs interactive `codex login` (external, not a product failure; `docs/reviews/release-0.1-gate-core.md`) |
 | devin | Experimental | Devin CLI **3000.10.21** — sha256-pinned bundle in `sbx-runtime-devin` | `.local/share/devin/credentials.toml` | ✅ ACP session | ✅ | ✅ `SBX_DEVIN_ACCOUNTS` / burst slots | SOR-73 spike: Modal clean-room credential injection + `auth status` + `-p` smoke, 2/4/8-way concurrency PASS — 2026-09-14 (`spike/p2/`); Release 0.1 `/v1` real-Modal gate **PASS** on the RC plane — two turns on one native thread, cancel, honest usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`); exact-head reviewer leg of the cross-provider workflow gate **PASS** (`docs/reviews/SOR-107-gate-workflow.md`) |
-| antigravity | Experimental | your own `agy` binary (`SBX_AGY_BIN` / `~/.local/bin/agy`, baked into `sbx-runtime-antigravity`; pin `agy_version` **1.2.3**, stream shape re-verified on real 1.2.3 — SOR-106) | `.gemini/antigravity-cli/antigravity-oauth-token` | ✅ `--conversation <id>` | ✅ | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/agy_gate.py` (init → 2 turns → stale-resume → export → leak scan); SOR-68 fleet gate **PASS** 50/50 on the RC plane — 4×1-slot fleet, `account_id=auto` distribution, cooldown + real `auth_invalid` failover, restart slot safety (`docs/reviews/release-0.1-gate-agy.md`) |
+| antigravity | Experimental | your own `agy` binary (`SBX_AGY_BIN` / `~/.local/bin/agy`, baked into `sbx-runtime-antigravity`; pin `agy_version` **1.2.3**, stream shape re-verified on real 1.2.3 — SOR-106) | `.gemini/antigravity-cli/antigravity-oauth-token` + `…/cache/onboarding.json` (optional companion — SOR-258) | ✅ `--conversation <id>` | ✅ | ✅ `SBX_ANTIGRAVITY_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/agy_gate.py` (init → 2 turns → stale-resume → export → leak scan); SOR-68 fleet gate **PASS** 50/50 on the RC plane — 4×1-slot fleet, `account_id=auto` distribution, cooldown + real `auth_invalid` failover, restart slot safety (`docs/reviews/release-0.1-gate-agy.md`) |
 | grok | Experimental | your own `grok` binary (`SBX_GROK_BIN` / `~/.local/bin/grok`, verified against real 1.0.24 stream shape) | `.grok/auth.json` | ✅ `--resume <id>` | ✅ | ✅ `SBX_GROK_ACCOUNTS` | Real-account gate harness merged: `tests/e2e_modal/grok_gate.py`; SOR-68 runner lanes (`grok-1`/`grok-2`) + fleet gate **PASS** on the RC plane — auto distribution, exhaustion, cooldown failover, stranded-`running` reaper (`docs/reviews/release-0.1-gate-grok.md`) |
 | opencode | Experimental | `opencode-ai` **1.18.29** — npm-pinned in `sbx-runtime-opencode` (`runtime/packages.txt` `opencode_*`) | `.local/share/opencode/auth.json` | ✅ `--session <id>` | ✅ | ✅ `SBX_OPENCODE_ACCOUNTS` | Real-account gate **PASS** on the RC plane — two turns on one native session, cancel, usage, zero leaks (`docs/reviews/release-0.1-gate-core.md`) |
 | claude | **Not supported** | — | — | — | — | — | Experimental adapter seam merged but **not registered** in the provider registry (SOR-97, replay-only); not schedulable |
@@ -171,9 +171,18 @@ directory imports take the containing dir):
 | --- | --- |
 | codex | `.codex/auth.json` |
 | devin | `.local/share/devin/credentials.toml` |
-| antigravity | `.gemini/antigravity-cli/antigravity-oauth-token` |
+| antigravity | `.gemini/antigravity-cli/antigravity-oauth-token` + `.gemini/antigravity-cli/cache/onboarding.json` (companion, optional) |
 | grok | `.grok/auth.json` |
 | opencode | `.local/share/opencode/auth.json` |
+
+Optional bundle members are imported when present but never required: the
+antigravity `cache/onboarding.json` marker is non-secret login state the
+1.2.x CLI demands before it accepts a restored token (a token alone fails
+`agy models` with "account not eligible"). When a blob omits it,
+materialization, Modal restore and every `runner init` reconstruct the
+deterministic login-state document — so pre-existing token-only account
+records keep working. Nothing else under `~/.gemini` (history,
+conversations, other cache) is declared or imported.
 
 ## Local discovery & verification
 
@@ -215,6 +224,27 @@ hints print):
 | antigravity | `agy` (OAuth login) |
 | grok | `grok` login |
 | opencode | `opencode auth login` |
+
+## Provider readiness (SOR-258)
+
+`/v1/providers` keeps three internal signals distinct — `runtime.enabled`
++ `runtime.status` (deploy evidence), `connection.status`
+(`connected`/`degraded`/`not_connected`) plus per-account scheduler
+statuses. Operator surfaces normalize them into one word:
+
+| Readiness | Meaning |
+| --- | --- |
+| `ready` | enabled, runtime sane, ≥1 scheduler-eligible account — a session can start now |
+| `needs_login` | no usable credential — accounts missing or all credential-broken (`invalid`/`unverified`/`disabled`); fix with `sbx auth login`/`relink`/`import` |
+| `busy` | verified credentials exist but all capacity is taken (accounts active-and-full or cooling) |
+| `disabled` | the deployment does not serve this provider |
+| `unhealthy` | deploy evidence is `degraded` (image/build/host CLI lane) — a deploy-side problem |
+
+`sbx status` prints a `readiness:` line per provider and
+`sbx doctor`'s `provider-connection` check reports the same word; the
+raw `connection`/`runtime` fields stay available alongside it. A
+`degraded` connection without account detail resolves to `busy` (accounts
+exist; capacity is the actionable read).
 
 ## Provider-specific notes
 

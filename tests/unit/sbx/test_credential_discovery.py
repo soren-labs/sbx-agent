@@ -24,6 +24,7 @@ SECRET = "sk-test-REDACTED"
 CODEX_REL = ".codex/auth.json"
 DEVIN_REL = ".local/share/devin/credentials.toml"
 AGY_REL = ".gemini/antigravity-cli/antigravity-oauth-token"
+AGY_ONBOARDING_REL = ".gemini/antigravity-cli/cache/onboarding.json"
 GROK_REL = ".grok/auth.json"
 OPENCODE_REL = ".local/share/opencode/auth.json"
 
@@ -92,6 +93,27 @@ class TestFindings:
         _write(tmp_path, DEVIN_REL, 'token = "REDACTED"\n')
         scan = scan_provider("devin", home=tmp_path)
         assert scan.status == "discovered"
+
+    def test_token_only_agy_is_discovered(self, tmp_path: Path) -> None:
+        """SOR-258: the onboarding marker is optional — its absence is not
+        a finding; a clean token alone discovers the account."""
+        _write(tmp_path, AGY_REL, '{"token": "x"}')
+        scan = scan_provider("antigravity", home=tmp_path)
+        assert scan.status == "discovered"
+
+    def test_full_agy_bundle_discovers(self, tmp_path: Path) -> None:
+        _write(tmp_path, AGY_REL, '{"token": "x"}')
+        _write(tmp_path, AGY_ONBOARDING_REL, '{"onboardingComplete": true}')
+        scan = scan_provider("antigravity", home=tmp_path)
+        assert scan.status == "discovered"
+
+    def test_broken_agy_marker_still_flags(self, tmp_path: Path) -> None:
+        """A present-but-malformed marker is schema_invalid — optional
+        only means reconstructible when absent, not ignorable."""
+        _write(tmp_path, AGY_REL, '{"token": "x"}')
+        _write(tmp_path, AGY_ONBOARDING_REL, "not json")
+        scan = scan_provider("antigravity", home=tmp_path)
+        assert scan.status == "schema_invalid"
 
     def test_open_permissions_are_explained(self, tmp_path: Path) -> None:
         path = _write(tmp_path, GROK_REL, '{"token": "x"}', mode=0o644)

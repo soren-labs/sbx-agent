@@ -117,7 +117,7 @@ from control.credsync import TAG_CRED_RUN_FP, CredentialSync
 from control.devin_pool import ScheduleRefused
 from control.github_app import GitHubAppError
 from control.latency import observe
-from control.onboarding import OnboardingError
+from control.onboarding import OnboardingError, complete_credential_blob
 from control.ports import Account, AccountRegistry, ApiKey, ApiKeyStore, Scheduler
 from control.provider_auth import AUTH_SESSION_STATES
 from control.resources import ResourceError, resolve_resources, resource_refs
@@ -2748,7 +2748,13 @@ def _materialize_account_secret(account: Account, blob: dict[str, Any]) -> None:
 
         ModalCredentialSecretWriter().refresh(
             account.secret_name,
-            {CREDENTIAL_ENV: json.dumps(blob, ensure_ascii=False, separators=(",", ":"))},
+            {
+                CREDENTIAL_ENV: json.dumps(
+                    complete_credential_blob(account.provider, blob),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            },
         )
     except Exception:
         pass
@@ -2790,7 +2796,9 @@ def create_account(
             raise V1ApiError(400, "invalid_request", "credential.files must be a string map")
     registry.put(account)
     if body.credential is not None:
-        blob = {"provider": body.provider, "files": dict(files or {})}
+        blob = complete_credential_blob(
+            body.provider, {"provider": body.provider, "files": dict(files or {})}
+        )
         registry.put_credential_blob(account.id, blob)
         try:
             CredentialLifecycleService(registry).note_credential(account.id, blob)

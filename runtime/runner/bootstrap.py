@@ -182,7 +182,17 @@ def cmd_init(
 
     if provider != "codex":
         adapter = get_adapter(provider)
-        adapter.prepare_home(sandbox_home(root), model)
+        home_dir = sandbox_home(root)
+        adapter.prepare_home(home_dir, model)
+        if credential_files:
+            # SOR-258: ``prepare_home`` may reconstruct declared companion
+            # files a token-only blob omitted (e.g. the antigravity
+            # onboarding marker). Record them so ``export-credentials``
+            # writes the full portable bundle back on rotation.
+            for relpath in getattr(adapter, "credential_files", ()):
+                if relpath not in credential_files and (home_dir / relpath).is_file():
+                    credential_files.append(relpath)
+            credential_files.sort()
 
     atomic_write(root / "AGENTS.md", SANDBOX_AGENTS_MD)
     events_path(root).write_text("", encoding="utf-8")

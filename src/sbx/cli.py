@@ -197,6 +197,8 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     come from ``/v1/providers``; a pre-catalog deployment leaves them
     ``None`` rather than failing.
     """
+    from control.provider_readiness import provider_readiness_map
+
     from sbx.deploy import read_deploy_state
     from sbx.doctor import live_agent_count, provider_summaries
     from sbx.httpapi import ApiError, V1Client
@@ -210,6 +212,7 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
     live_agents: int | None = None
     runtime: dict[str, Any] | None = None
     accounts: dict[str, Any] | None = None
+    readiness: dict[str, str] | None = None
     if not base_url:
         platform_status = "not_deployed"
     elif token is None:
@@ -249,6 +252,25 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
                             if isinstance(r, Mapping)
                         },
                     }
+                    # SOR-258: the user-facing readiness word — derived
+                    # from the same row plus per-account scheduler status
+                    # (admin scope; absent detail degrades to the busy
+                    # convention inside provider_readiness).
+                    account_statuses = None
+                    try:
+                        detail = client.list_accounts().get("accounts") or []
+                        account_statuses = {}
+                        for a in detail:
+                            if isinstance(a, Mapping):
+                                account_statuses.setdefault(str(a.get("provider")), []).append(
+                                    str(a.get("status") or "")
+                                )
+                    except ApiError:
+                        pass
+                    readiness = provider_readiness_map(
+                        [r for r in rows if isinstance(r, Mapping)],
+                        account_statuses=account_statuses,
+                    )
                 except ApiError:
                     pass  # pre-catalog deployment — runtime/accounts stay None
                 try:
@@ -279,6 +301,7 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
         },
         "runtime": runtime,
         "accounts": accounts,
+        "readiness": readiness,
         "providers": providers,
         "live_agents": live_agents,
         "concurrency_cap": cap,
@@ -317,6 +340,11 @@ def cmd_status(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             if isinstance(conn, Mapping)
         )
         print(f"accounts:  {acct_line or 'none connected'}")
+    if readiness is not None:
+        print(
+            "readiness: "
+            + ("; ".join(f"{name} {state}" for name, state in sorted(readiness.items())) or "-")
+        )
     rendered = ", ".join(providers) if isinstance(providers, list) else providers
     print(f"providers: {rendered or '-'}")
     if cfg.config.github_ephemeral:

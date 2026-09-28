@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pytest
 from runtime.runner.adapter import get_adapter
-from runtime.runner.adapters.antigravity import OAUTH_TOKEN_REL, AntigravityAdapter
+from runtime.runner.adapters.antigravity import (
+    OAUTH_TOKEN_REL,
+    ONBOARDING_STATE,
+    ONBOARDING_STATE_REL,
+    AntigravityAdapter,
+)
 from runtime.runner.constants import NOOP_EVENT_TYPE
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -47,9 +52,12 @@ def test_registered() -> None:
     assert adapter.provider == "antigravity"
 
 
-def test_credential_files_single_token() -> None:
+def test_credential_files_portable_bundle() -> None:
+    # SOR-258: token plus the non-secret onboarding marker the 1.2.x CLI
+    # requires next to it on a fresh HOME.
     assert AntigravityAdapter().credential_files == (
         ".gemini/antigravity-cli/antigravity-oauth-token",
+        ".gemini/antigravity-cli/cache/onboarding.json",
     )
 
 
@@ -125,6 +133,11 @@ def test_prepare_home_safe_permissions(tmp_path: Path) -> None:
     # Content is never rewritten; only the mode is tightened.
     assert "REDACTED" in token.read_text(encoding="utf-8")
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    # SOR-258: the missing onboarding marker is reconstructed (0600).
+    marker = tmp_path / ONBOARDING_STATE_REL
+    assert marker.read_text(encoding="utf-8") == ONBOARDING_STATE
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+    assert stat.S_IMODE(marker.parent.stat().st_mode) == 0o700
 
 
 def test_prepare_home_without_token(tmp_path: Path) -> None:
@@ -132,6 +145,17 @@ def test_prepare_home_without_token(tmp_path: Path) -> None:
     cli_dir = tmp_path / ".gemini" / "antigravity-cli"
     assert cli_dir.is_dir()
     assert not (cli_dir / "antigravity-oauth-token").exists()
+    assert (cli_dir / "cache" / "onboarding.json").is_file()
+
+
+def test_prepare_home_keeps_restored_marker(tmp_path: Path) -> None:
+    """A marker restored from the bundle is never overwritten (SOR-258)."""
+    marker = tmp_path / ONBOARDING_STATE_REL
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"onboardingComplete":true,"custom":1}\n', encoding="utf-8")
+    AntigravityAdapter().prepare_home(tmp_path, MODEL)
+    assert marker.read_text(encoding="utf-8") == '{"onboardingComplete":true,"custom":1}\n'
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
 
 
 def test_translate_real_success_fixture() -> None:

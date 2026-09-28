@@ -249,9 +249,11 @@ class CredentialSync:
         if blob_fingerprint(exported) == base_fp:
             return WritebackOutcome("unchanged")
         try:
-            from control.onboarding import validate_credential_blob
+            from control.onboarding import complete_credential_blob, validate_credential_blob
 
-            validate_credential_blob(account.provider, exported)
+            exported = complete_credential_blob(
+                account.provider, validate_credential_blob(account.provider, exported)
+            )
         except Exception:
             return WritebackOutcome("invalid")
 
@@ -392,9 +394,17 @@ class CredentialSync:
         if writer is None or getattr(account, "secret_name", None) != managed:
             return "skipped"
         try:
+            from control.onboarding import complete_credential_blob
+
             writer.refresh(
                 managed,
-                {CREDENTIAL_ENV: json.dumps(blob, ensure_ascii=False, separators=(",", ":"))},
+                {
+                    CREDENTIAL_ENV: json.dumps(
+                        complete_credential_blob(getattr(account, "provider", ""), blob),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                },
             )
         except Exception:
             return "failed"
