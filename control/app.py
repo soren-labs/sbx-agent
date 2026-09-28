@@ -23,6 +23,7 @@ from starlette._utils import create_collapsing_task_group
 from starlette.types import Receive, Scope, Send
 
 from control.api_v1 import router as api_v1_router
+from control.api_v2 import router as api_v2_router
 from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
     DEFAULT_MODEL,
@@ -378,6 +379,7 @@ def create_app(
 
     app = FastAPI(title="sbx-control", version="0.1.1")
     app.include_router(api_v1_router)  # empty shell until P2-D (SOR-64)
+    app.include_router(api_v2_router)  # Session-first facade (SOR-256)
     app.state.plane = plane
     app.state.run_store = run_store
     app.state.run_ledger = plane.run_ledger
