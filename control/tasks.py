@@ -1883,12 +1883,34 @@ class ModalDictTaskStore:
         return sorted(out, key=lambda r: r.created_at)
 
     def find_by_idempotency(self, owner: str, key: str) -> TaskRecord | None:
-        task_id = self._d().get(self._idem_key(owner, key))
+        d = self._d()
+        # The point index and the pre-index owner scan are both reads —
+        # issue them concurrently; the owner doc is then staged for the
+        # imminent ``put``, so the whole dedup + write-warm costs one wall
+        # round trip instead of three serial ones (SOR-268 round 3).
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            idem_fut = pool.submit(d.get, self._idem_key(owner, key))
+            owner_fut = pool.submit(d.get, self._owner_key(owner))
+            task_id = idem_fut.result()
+            owner_raw = owner_fut.result()
         if isinstance(task_id, str) and task_id:
             # Full row, not the summary: the replay response is pinned.
             return self.get_fresh(task_id)
-        # Pre-index records have no point row — scan the owner doc once.
-        for rec in self.list(owner):
+        with self._lock:
+            if len(self._owner_prefetch) > 64:
+                self._owner_prefetch.clear()
+            self._owner_prefetch[owner] = (time.monotonic(), owner_raw)
+        ids, summaries = self._owner_doc(owner_raw)
+        # The summary's ``idempotency`` metadata is durable — unlike the
+        # status fields ``list`` distrusts on agent-less rows — so the key
+        # match runs on summaries directly; only rows with no summary at
+        # all (pre-index data) are resolved individually.
+        for tid in ids:
+            meta = (summaries.get(tid) or {}).get("idempotency") or {}
+            if meta.get("key") == key:
+                return self.get_fresh(tid)
+        missing = [tid for tid in ids if tid not in summaries]
+        for rec in self._pooled_gets(missing):
             meta = rec.idempotency or {}
             if meta.get("key") == key:
                 return self.get_fresh(rec.id) or rec

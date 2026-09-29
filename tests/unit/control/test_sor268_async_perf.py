@@ -143,7 +143,11 @@ class TestTaskStoreIndexedWrites:
         fake.gets = 0
         got = store.find_by_idempotency("key_1", "idem-sess_a")
         assert got is not None and got.id == "sess_a"
-        assert fake.gets <= 2
+        # Round 3: the owner-doc read is issued concurrently with the
+        # point lookup — one overlapped get (staged for ``put``), still
+        # no owner scan: idem row + owner doc + record = 3.
+        assert fake.gets <= 3
+        assert fake.items_calls == 0
 
     def test_missing_index_rows_backfill(self) -> None:
         store, fake = _task_store()

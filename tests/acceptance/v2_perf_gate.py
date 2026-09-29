@@ -519,6 +519,18 @@ def run_probes(
                 budgets.get("ws_items"),
             )
         )
+        # SOR-268 round 3: the page cost must track live rows, not
+        # history. On v21 each stored ``finished`` row still paid a live
+        # settle (plane.get + ledger.list ≈ 2 ops × ~260 seeded rows ≈
+        # ~1500 ops over the 3 calls); now terminal rows project from the
+        # record + ws map and the whole probe is ~live_rows × 3 ops.
+        results.append(
+            ProbeResult(
+                "remote ops during list-history",
+                [float(op_counter.get("get", 0) + op_counter.get("list", 0))],
+                budgets.get("history_ops"),
+            )
+        )
     print(f"R2 list-history remote-ops{ops()}", file=sys.stderr)
 
     # ---- B4: bulk close must not wedge the plane ----------------------------
@@ -668,12 +680,16 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     # store (bypassing the latency shim — free) so the list probe reads
     # a ~300-row page like the production regression did. Absorbing-
     # terminal rows must cost zero remote ops on the request path.
+    # SOR-268 round 3: the production shape is mostly ``finished`` rows —
+    # the one terminal status that still paid a live settle per row on
+    # v21 (the residual ~linear @333 finding). A finished row with no
+    # delivery requirement projects from the record alone.
     for i in range(260):
         task_store_inner.put(
             TaskRecord(
                 id=f"sess_hist_{i:04d}",
                 owner=key.id,
-                status="cancelled",
+                status="finished" if i % 4 else "cancelled",
                 request={"prompt": {"text": f"history {i}"}},
                 resolved={"execution": {"provider": "codex"}},
                 agent_id=f"agent-h{i}",
@@ -751,6 +767,9 @@ def main() -> int:
         "list_history": 1.5 if live else 2.5,
         "cancel_p95": 1.0 if live else 1.5,
         "ws_items": 0.0,
+        # ~live_rows x ~3 ops per call x 3 calls, far below the ~1500 a
+        # per-row history settle costs (the v21 ~linear term).
+        "history_ops": 500.0,
         "bulk_wall": None,
         "bulk_read": 1.5 if live else 2.0,
         "account_items": 1.0,
