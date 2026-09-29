@@ -23,6 +23,7 @@ from control.config import (
     TURN_MAX_SECONDS,
     env_float,
     env_int,
+    lifecycle_config,
 )
 from control.credsync import TAG_CRED_BASE_FP
 from control.run_activity import RunActivityStore, compact_run_events
@@ -383,17 +384,43 @@ class ControlPlane:
         """
         with self._lock:
             live = self.backend.list(tags={"owner": owner})
-            # In-flight creates own no sandbox yet — count them against the cap
-            # so N parallel creates cannot overshoot it. A ``creating`` record
-            # whose sandbox already exists (bind pending) is counted via
-            # ``live`` only — never twice.
-            live_ids = {(h.tags or {}).get("session_id") for h in live}
+            records = [rec for rec in self.store.list_all() if rec.owner == owner]
+            by_id = {rec.id: rec for rec in records}
+            by_sandbox = {rec.sandbox_id: rec for rec in records if rec.sandbox_id}
+            # A live sandbox only consumes a slot when it backs a
+            # non-terminal session record — a genuinely live bound agent.
+            # Orphaned sandboxes (record lost/timed_out/deleted, or never
+            # recorded — the abandoned-bind leak) bill money but hold no
+            # agent: the reaper's orphan pass reclaims them, and counting
+            # them here wedged every new bind at ~2 live agents (SOR-271
+            # capacity finding). ``suspended`` records own no live sandbox —
+            # a surviving handle is an orphan, same as the reaper's rule.
+            live_bound_ids: set[str] = set()
+            for handle in live:
+                rec = by_id.get((handle.tags or {}).get("session_id")) or by_sandbox.get(handle.id)
+                if (
+                    rec is not None
+                    and rec.status not in TERMINAL_STATUSES
+                    and rec.status != "suspended"
+                ):
+                    live_bound_ids.add(rec.id)
+            # In-flight creates own no sandbox yet — count them against the
+            # cap so N parallel creates cannot overshoot it, but only while
+            # they are fresh: a ``creating`` record older than the create
+            # grace is dead weight (its provisioner died mid-bind; the
+            # reaper owns the ``lost`` transition) and must not hold a slot.
+            # Records already counted via ``live_bound_ids`` are excluded so
+            # a bound-but-still-creating record never counts twice.
+            now = self.clock()
+            create_grace_s = lifecycle_config().create_grace_s
             creating = sum(
                 1
-                for rec in self.store.list_all()
-                if rec.owner == owner and rec.status == "creating" and rec.id not in live_ids
+                for rec in records
+                if rec.status == "creating"
+                and rec.id not in live_bound_ids
+                and (now - rec.created_at).total_seconds() < create_grace_s
             )
-            if len(live) + creating >= self.max_concurrent:
+            if len(live_bound_ids) + creating >= self.max_concurrent:
                 raise ConcurrencyLimit()
             session_id = uuid.uuid4().hex
             tags = {"session_id": session_id, "owner": owner}
@@ -1610,11 +1637,24 @@ class ControlPlane:
         every ``running`` record is a candidate; only positive
         ``turns/<n>.json`` evidence finalizes. Run before the reaper so a
         provider success lands FINISHED + idle instead of ``lost`` when the
-        container died mid-watch.
+        container died mid-watch. Every stage is failure-isolated: a
+        throwing remote read yields what it could settle, never an
+        exception — the cron caller must reach the reaper every tick
+        (SOR-271 round-3 zombie finding).
         """
         settled: list[str] = []
-        for rec in self.store.list_all():
-            if rec.status == "running" and self.reconcile_turn(rec.id):
+        try:
+            records = self.store.list_all()
+        except Exception:
+            return settled
+        for rec in records:
+            try:
+                reconciled = rec.status == "running" and self.reconcile_turn(rec.id)
+            except Exception:
+                # One unreadable record must not starve the rest of the
+                # sweep (or the reaper downstream of this call).
+                continue
+            if reconciled:
                 settled.append(rec.id)
             elif rec.status == "idle":
                 # SOR-224: queued turns outlive a control-plane restart

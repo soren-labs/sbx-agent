@@ -500,7 +500,12 @@ def _first_run_worker(
         _drain_queued_best_effort(plane, session_id)
         return
     except SessionConflict as exc:
-        rec = plane.get(session_id)
+        try:
+            rec = plane.get(session_id)
+        except Exception:
+            # A store read must not kill this worker — an unhandled throw
+            # strands the session record ``creating`` with its lease held.
+            rec = None
         if rec is not None and rec.status == "closed":
             _persist_run1_terminal(run_states, session_id, "CANCELLED", _closed_error())
         else:
