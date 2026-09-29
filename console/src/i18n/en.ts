@@ -37,6 +37,7 @@ export const en = {
   "composer.recent": "Recent sessions",
   "composer.prompt_required": "Write a prompt first",
   "composer.view_all": "View all sessions",
+  "composer.send_hint": "Ctrl+Enter to send",
 
   "sessions.heading": "Sessions",
   "sessions.search_ph": "Search sessions…",
@@ -46,6 +47,8 @@ export const en = {
   "sessions.empty": "No sessions yet — start one above.",
   "sessions.empty_search": "No sessions match.",
   "sessions.load_more": "Load more",
+  "sessions.empty_cta": "Start a session",
+  "sessions.refreshing": "Refreshing…",
 
   "phase.queued": "Queued",
   "phase.starting": "Starting",
@@ -65,6 +68,10 @@ export const en = {
   "session.followup_ph": "Send a follow-up…",
   "session.send": "Send",
   "session.stop": "Stop",
+  "session.back": "All sessions",
+  "session.open_pr": "Open PR",
+  "session.working": "Working…",
+  "session.turn_queued": "Queued — will start shortly",
   "session.retry": "Retry",
   "session.retry_run": "Retry the failed turn",
   "session.deliver": "Create pull request",
@@ -108,6 +115,7 @@ export const en = {
   "act.info": "Info",
   "act.retryable": "retryable",
   "act.retry_after": "retry in {s}s",
+  "act.output": "output",
 
   "changes.summary": "{files} files changed",
   "changes.no_diff": "No file-level diff yet — the latest revision is still materializing.",
@@ -144,7 +152,7 @@ export const en = {
   "error.provider_busy.action": "Retry",
   "error.runtime_disabled.title": "Runtime disabled",
   "error.runtime_disabled.body": "The sandbox runtime is disabled for this deployment. An admin can re-enable it.",
-  "error.runtime_disabled.action": "Check Settings",
+  "error.runtime_disabled.action": "Open Integrations",
   "error.github_required.title": "GitHub required",
   "error.github_required.body": "Connect GitHub to run sessions against a repository.",
   "error.github_required.action": "Connect GitHub",
@@ -181,6 +189,7 @@ export const en = {
   "integrations.enabled": "Enabled",
   "integrations.disabled": "Disabled",
   "integrations.no_accounts": "No accounts — connect one to use this provider",
+  "integrations.needs_login_hint": "Reconnect this provider before new sessions can use it.",
   "integrations.runtime_ready": "Runtime ready",
   "integrations.runtime_degraded": "Runtime degraded",
   "integrations.connect_github": "Connect GitHub",
@@ -222,6 +231,7 @@ export const en = {
   "common.not_found": "Page not found",
   "common.optional": "optional",
   "common.off": "off",
+  "common.skip": "Skip to content",
 } as const;
 
 export type I18nKey = keyof typeof en;

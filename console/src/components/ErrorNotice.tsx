@@ -9,10 +9,13 @@ interface Props {
   provider?: string;
   onRetry?: () => void;
   onDismiss?: () => void;
+  /** Extra escape route beside the primary action — e.g. a provider-sourced
+   * failure also offers Integrations next to Retry. */
+  secondary?: { label: string; to: string };
 }
 
 /** Product-level, actionable error surface. */
-export function ErrorNotice({ error, provider, onRetry, onDismiss }: Props) {
+export function ErrorNotice({ error, provider, onRetry, onDismiss, secondary }: Props) {
   const { t } = useI18n();
   if (!error) return null;
 
@@ -41,7 +44,8 @@ export function ErrorNotice({ error, provider, onRetry, onDismiss }: Props) {
     case "runtime_disabled":
       title = t("error.runtime_disabled.title");
       body = t("error.runtime_disabled.body");
-      action = { label: t("error.runtime_disabled.action"), to: "/settings" };
+      // Runtime state lives on Integrations — never a bare 500.
+      action = { label: t("error.runtime_disabled.action"), to: "/integrations" };
       break;
     case "github_required":
       title = t("error.github_required.title");
@@ -86,12 +90,18 @@ export function ErrorNotice({ error, provider, onRetry, onDismiss }: Props) {
       <div className="grow">
         <div className="n-title">{title}</div>
         <div className="n-body">{body}</div>
-        {action && (
+        {(action || secondary) && (
           <div className="n-actions">
-            {action.to ? (
-              <Link className="btn btn-sm" to={action.to}>{action.label}</Link>
-            ) : (
-              <button className="btn btn-sm" onClick={action.onClick}>{action.label}</button>
+            {action &&
+              (action.to ? (
+                <Link className="btn btn-sm" to={action.to}>{action.label}</Link>
+              ) : (
+                <button className="btn btn-sm" onClick={action.onClick}>{action.label}</button>
+              ))}
+            {secondary && (
+              <Link className="btn btn-sm btn-ghost" to={secondary.to}>
+                {secondary.label}
+              </Link>
             )}
           </div>
         )}

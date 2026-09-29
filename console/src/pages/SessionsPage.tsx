@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { isApiError, type ApiError } from "../api";
 import type { Session } from "../api/types";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { Spinner } from "../components/icons";
 import { SessionCard } from "../components/SessionCard";
 import { useI18n } from "../i18n";
 import { useApi } from "../state/api";
+import { useDocumentTitle } from "../state/title";
 
 const LIVE: Session["phase"][] = ["queued", "starting", "running", "idle"];
 
 export function SessionsPage() {
   const { t } = useI18n();
+  useDocumentTitle(t("nav.sessions"));
   const api = useApi();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,11 +57,11 @@ export function SessionsPage() {
 
   return (
     <div>
-      <h1>{t("sessions.heading")}</h1>
-      <div className="row" style={{ marginBottom: 12 }}>
+      <div className="page-head">
+        <h1 className="grow" style={{ margin: 0 }}>{t("sessions.heading")}</h1>
         <input
-          className="grow"
           type="search"
+          className="search-box"
           placeholder={t("sessions.search_ph")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -81,17 +83,29 @@ export function SessionsPage() {
       </div>
       <ErrorNotice error={error} onRetry={load} onDismiss={() => setError(null)} />
       {loading && sessions.length === 0 ? (
-        <div className="empty"><Spinner /> {t("common.loading")}</div>
+        <div className="session-list" aria-busy="true">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="sk-row" />
+          ))}
+        </div>
       ) : visible.length === 0 ? (
         <div className="empty">
-          {query || filter !== "all"
-            ? t("sessions.empty_search")
-            : t("sessions.empty")}
+          {query || filter !== "all" ? (
+            t("sessions.empty_search")
+          ) : (
+            <>
+              <div className="e-icon" aria-hidden="true">◌</div>
+              <div>{t("sessions.empty")}</div>
+              <Link className="btn btn-sm" style={{ marginTop: 12 }} to="/">
+                {t("sessions.empty_cta")}
+              </Link>
+            </>
+          )}
         </div>
       ) : (
-        <div className="recent-strip" data-testid="session-list">
+        <div className="session-list" data-testid="session-list">
           {visible.map((s) => (
-            <SessionCard key={s.id} session={s} />
+            <SessionCard key={s.id} session={s} layout="row" />
           ))}
         </div>
       )}

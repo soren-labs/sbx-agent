@@ -163,7 +163,14 @@ export function Composer({
           placeholder={t("composer.prompt_ph")}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void submit(e);
+            }
+          }}
           disabled={submitting}
+          autoFocus
           data-testid="composer-prompt"
         />
       </div>
@@ -353,7 +360,7 @@ export function Composer({
       />
 
       <div className="send-row">
-        <span className="faint small">{providers.length} providers</span>
+        <span className="faint small kbd-hint">{t("composer.send_hint")}</span>
         <button
           type="submit"
           className="btn btn-primary"

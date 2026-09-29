@@ -12,7 +12,42 @@ function relTime(isoStr: string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-export function SessionCard({ session }: { session: Session }) {
+/**
+ * Session entry in two shapes: a card for the home recent strip, and a
+ * compact row for the Sessions index (one session per line — no
+ * control-panel-style stacking).
+ */
+export function SessionCard({
+  session,
+  layout = "card",
+}: {
+  session: Session;
+  layout?: "card" | "row";
+}) {
+  if (layout === "row") {
+    return (
+      <Link
+        to={`/sessions/${session.id}`}
+        className="session-row"
+        data-testid={`session-card-${session.id}`}
+      >
+        <span className="sr-pill">
+          <StatusPill phase={session.phase} endReason={session.endReason} />
+        </span>
+        <span className="sr-main">
+          <span className="sr-title">{session.title}</span>
+          {session.lastActivityPreview && (
+            <span className="sr-preview">{session.lastActivityPreview}</span>
+          )}
+        </span>
+        <span className="sr-side">
+          <ProviderBadge provider={session.provider} model={session.model} />
+          {session.repo && <span className="mono">{session.repo.name}</span>}
+          <span className="faint">{relTime(session.updatedAt)}</span>
+        </span>
+      </Link>
+    );
+  }
   return (
     <Link
       to={`/sessions/${session.id}`}

@@ -5,6 +5,7 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { Icon, Spinner } from "../components/icons";
 import { useI18n } from "../i18n";
 import { useApi } from "../state/api";
+import { useDocumentTitle } from "../state/title";
 import type { I18nKey } from "../i18n/en";
 
 function readinessPill(
@@ -27,6 +28,7 @@ function readinessPill(
 
 export function IntegrationsPage() {
   const { t } = useI18n();
+  useDocumentTitle(t("nav.integrations"));
   const api = useApi();
   const [data, setData] = useState<IntegrationStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,6 +88,16 @@ export function IntegrationsPage() {
                     total: p.accountsTotal,
                   })}
                 </div>
+                {p.connectionDetail && (
+                  <div className="faint small" style={{ marginTop: 4 }}>
+                    {p.connectionDetail}
+                  </div>
+                )}
+                {p.needsLogin && (
+                  <div className="small" style={{ marginTop: 6 }}>
+                    {t("integrations.needs_login_hint")}
+                  </div>
+                )}
                 {p.models.length > 0 && (
                   <div className="faint small" style={{ marginTop: 4 }}>
                     {p.models.join(" · ")}
