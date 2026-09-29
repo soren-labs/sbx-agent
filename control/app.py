@@ -706,7 +706,10 @@ def create_app(
         last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
         _: str = Depends(require_basic),
     ) -> DisconnectAwareStreamingResponse:
-        rec = plane.get(sid)
+        # SOR-271 round 2: Dict get + sandbox poll run off the event
+        # loop — a synchronous remote call inside ``async def`` stalls
+        # every other in-flight request while it blocks.
+        rec = await asyncio.to_thread(plane.get, sid)
         if rec is None:
             raise _http_error(404, "not_found")
         try:
@@ -716,7 +719,7 @@ def create_app(
         start_line = max(1, last_id + 1)
 
         handle = rec.handle()
-        poll = plane.backend.poll(handle) if handle is not None else None
+        poll = await asyncio.to_thread(plane.backend.poll, handle) if handle is not None else None
         keepalive_s: float = app.state.keepalive_s
 
         async def gen() -> AsyncIterator[str]:

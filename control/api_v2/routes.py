@@ -316,6 +316,8 @@ _DEFAULT_ACK_BUDGET_S = 0.35
 # SOR-268: concurrent settles on the list endpoint — one remote batch
 # per page row serialized into N × remote latency in the gate run.
 _SETTLE_FANOUT = env_int("SBX_V2_SETTLE_FANOUT", 8)
+# Frames per joined SSE yield — bounds event-loop send cycles per subscriber.
+_SSE_BATCH = env_int("SBX_V2_SSE_BATCH", 128)
 
 _PRE_BIND_CANCELLED: set[str] = set()
 """Session ids cancelled before the create worker bound an agent. The
@@ -336,13 +338,22 @@ def _ack_budget(request: Request) -> float:
         return _DEFAULT_ACK_BUDGET_S
 
 
+# SOR-271 round 2: the heavy request work (dispatch/cancel/retry chains of
+# sequential dict + sandbox ops) runs on ONE bounded pool, not an unbounded
+# thread per request. Under a 20× parallel burst the remote-op queue depth
+# stays bounded, so a fast-path read (``_require_session`` get, ACK) never
+# waits behind ~20 concurrent op chains on the shared store channel.
+_V2_OPS_WORKERS = env_int("SBX_V2_OPS_WORKERS", 6)
+_HEAVY_POOL = ThreadPoolExecutor(max_workers=_V2_OPS_WORKERS, thread_name_prefix="sbx-v2-ops")
+
+
 def _run_with_budget(fn: Any, budget_s: float) -> tuple[bool, dict[str, Any]]:
-    """Run ``fn`` on a daemon thread and wait up to ``budget_s``.
+    """Submit ``fn`` to the bounded ops pool and wait up to ``budget_s``.
 
     Returns ``(completed, box)`` — ``box['result']``/``box['error']`` hold
-    the outcome when ``completed``. The thread keeps running after a
-    timeout: the request path never serializes on resolve/provision/sandbox
-    work, only on this bounded wait.
+    the outcome when ``completed``. The submitted work keeps running after
+    a timeout (or waits out pool backpressure): the request path never
+    serializes on resolve/provision/sandbox work, only on this bounded wait.
     """
     box: dict[str, Any] = {}
     done = threading.Event()
@@ -355,7 +366,7 @@ def _run_with_budget(fn: Any, budget_s: float) -> tuple[bool, dict[str, Any]]:
         finally:
             done.set()
 
-    threading.Thread(target=_go, daemon=True, name="sbx-v2-ack").start()
+    _HEAVY_POOL.submit(_go)
     return done.wait(max(0.0, budget_s)), box
 
 
@@ -780,16 +791,38 @@ def list_sessions(
     # run_states, ws) — serialized, the page was N × remote latency (the
     # SOR-260 B2 finding). Bound the fanout so the pool can't itself
     # become a thundering herd on the remote store.
+    # SOR-271 round 2: workspace rows come from ONE index-doc read, and
+    # rows already at a durable terminal status skip the remote settle —
+    # the page cost tracks live rows, never the full history. ``finished``
+    # still settles live (a delivery can flip it to ``delivery_failed``).
+    ws_map: dict[str, Any] = {}
+    workspaces = getattr(plane, "workspaces", None)
+    # ``plane.workspaces`` is the service; the index-backed listing lives
+    # on the store it wraps (``list_records`` on either, duck-typed).
+    if not callable(getattr(workspaces, "list_records", None)):
+        workspaces = getattr(workspaces, "store", None)
+    list_records = getattr(workspaces, "list_records", None)
+    if callable(list_records):
+        try:
+            ws_map = {
+                str(agent_id): raw for agent_id, raw in list_records() if isinstance(raw, dict)
+            }
+        except Exception:
+            ws_map = {}
+
+    def _settle_row(record: TaskRecord) -> tuple[str, str, dict[str, Any] | None]:
+        ws = ws_map.get(record.agent_id) if record.agent_id else None
+        if record.status in _tasks._TASK_TERMINAL and record.status != "finished":
+            # Terminal is absorbing — the stored row is the final verdict.
+            return record.status, "stored", ws
+        prefetched = {"ws": ws, "rec": None, "rows": None}
+        return _settle_session(record, task_store, plane, run_states, prefetched=prefetched)
+
     if page:
         with ThreadPoolExecutor(
             max_workers=_SETTLE_FANOUT, thread_name_prefix="sbx-v2-settle"
         ) as pool:
-            settled = list(
-                pool.map(
-                    lambda r: _settle_session(r, task_store, plane, run_states),
-                    page,
-                )
-            )
+            settled = list(pool.map(_settle_row, page))
     else:
         settled = []
     sessions = [
@@ -1250,7 +1283,7 @@ def deliver_session(
 
 
 @router.get("/sessions/{session_id}/events")
-async def stream_session_events(
+def stream_session_events(
     request: Request,
     session_id: str,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
@@ -1267,6 +1300,15 @@ async def stream_session_events(
     payload — with ``Last-Event-ID`` resume and ``: keepalive``. A fresh
     ``session.status`` frame (no id) opens every connection so a reconnect
     immediately learns the current state.
+
+    SOR-271 round 2: this handler is SYNC — ``_require_session``,
+    ``acquire``, ``subscribe`` and ``opening_status`` all run remote Dict
+    reads; as an ``async def`` they executed on the ASGI event loop, so
+    every connect (and every EOF reconnect herd of 20 clients) stalled
+    the loop for hundreds of ms each and starved unrelated reads (the
+    >5s read spikes the gate saw under live-session SSE fanout). A ``def``
+    handler runs on the worker pool; only the queue-draining generator
+    below stays on the loop.
     """
     from control.app import DisconnectAwareStreamingResponse
 
@@ -1395,22 +1437,40 @@ async def stream_session_events(
             yield ": keepalive\n\n"
             if opening is not None:
                 yield opening
-            for frame in backlog:
-                yield frame
+            # Frames are independent SSE chunks — joining a backlog (or a
+            # drained queue burst) into one yield keeps the wire format
+            # identical while cutting event-loop send cycles from
+            # O(frames × subscribers) to O(batches × subscribers). A 20-
+            # client reconnect herd re-ingesting a long transcript no
+            # longer floods the loop with per-frame sends (SOR-271 r2).
+            for i in range(0, len(backlog), _SSE_BATCH):
+                yield "".join(backlog[i : i + _SSE_BATCH])
             next_ka = time.monotonic() + keepalive_s
             while True:
+                items: list[Any] = []
                 try:
-                    item = sub.q.get_nowait()
+                    while True:
+                        items.append(sub.q.get_nowait())
                 except queue.Empty:
+                    pass
+                if not items:
                     now = time.monotonic()
                     if now >= next_ka:
                         yield ": keepalive\n\n"
                         next_ka = now + keepalive_s
                     await asyncio.sleep(0.05)
                     continue
-                if item is _hub_mod._CLOSE:
+                closing = False
+                out: list[str] = []
+                for item in items:
+                    if item is _hub_mod._CLOSE:
+                        closing = True
+                        break
+                    out.append(item)
+                if out:
+                    yield "".join(out)
+                if closing:
                     return
-                yield item
         finally:
             hub.unsubscribe(sub)
 

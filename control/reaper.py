@@ -104,8 +104,35 @@ def reap(
         if on_action is not None:
             on_action(action)
 
+    def persist(rec: SessionRecord) -> bool:
+        """``store.put`` that cannot kill the sweep — the record stays
+        non-terminal and the next sweep retries it."""
+        try:
+            store.put(rec)
+            return True
+        except Exception:
+            emit("reap_error", rec.id, rec.sandbox_id)
+            return False
+
+    # Index-doc self-heal: manifest RMW writes can lose entries across
+    # containers, orphaning records from ``list_all`` — an agent invisible
+    # to the listing is invisible to this sweep and leaks its live-agent
+    # slot forever (the SOR-268 zombie finding). Rebuild once per sweep
+    # (a keys() enumeration on the cron, never on a request path).
+    rebuild_index = getattr(store, "rebuild_index", None)
+    if callable(rebuild_index):
+        try:
+            rebuild_index()
+        except Exception:
+            pass
+
     if account_registry is not None:
-        for acct in account_registry.list():
+        try:
+            accounts = list(account_registry.list())
+        except Exception:
+            accounts = []
+            emit("reap_error", None, None)
+        for acct in accounts:
             if not cooldown_expired(acct, now):
                 continue
             try:
@@ -116,7 +143,14 @@ def reap(
                 continue
             emit("account_recovered", None, None, account_id=acct.id)
 
-    for rec in store.list_all():
+    try:
+        records_all = store.list_all()
+    except Exception:
+        # No listing, no sweep — surface the failure and leave the rest
+        # (the orphan pass below) to run on what it can enumerate.
+        records_all = []
+        emit("reap_error", None, None)
+    for rec in records_all:
         if rec.status in TERMINAL_STATUSES:
             continue
         if rec.status == "suspended":
@@ -131,25 +165,40 @@ def reap(
             rec.status = "lost"
             rec.ended_at = now
             rec.updated_at = now
-            store.put(rec)
-            emit("lost", rec.id, None)
+            if persist(rec):
+                emit("lost", rec.id, None)
             continue
         handle = rec.handle()
-        poll = backend.poll(handle) if handle is not None else None
+        try:
+            poll = backend.poll(handle) if handle is not None else None
+        except Exception:
+            # A wedged poll means UNKNOWN, not dead — skip this record.
+            # Before this guard a single throwing poll aborted the whole
+            # sweep every cron tick, so records after it were never
+            # reaped (SOR-268 zombie idle agents).
+            emit("reap_error", rec.id, rec.sandbox_id)
+            continue
         alive = bool(poll and poll.alive)
         last = rec.last_activity_at or rec.updated_at
         idle_expired = (now - last).total_seconds() >= idle_timeout_s
 
         if not alive:
             if rec.status == "idle" and checkpoints is not None:
-                if checkpoints.has_checkpoint(rec.id):
+                try:
+                    has_checkpoint = bool(checkpoints.has_checkpoint(rec.id))
+                except Exception:
+                    # UNKNOWN checkpoint state — never misdiagnose as
+                    # platform loss; skip and retry next sweep.
+                    emit("reap_error", rec.id, rec.sandbox_id)
+                    continue
+                if has_checkpoint:
                     # A checkpoint landed but the suspend transition did
                     # not (half-finished sweep) — heal to the recoverable
                     # suspended state instead of losing the agent.
                     rec.status = "suspended"
                     rec.updated_at = now
-                    store.put(rec)
-                    emit("suspended", rec.id, rec.sandbox_id)
+                    if persist(rec):
+                        emit("suspended", rec.id, rec.sandbox_id)
                     continue
                 # SOR-180: explicit diagnosis — the platform reclaimed an
                 # idle agent before any checkpoint could be taken; the
@@ -159,7 +208,7 @@ def reap(
                 rec.updated_at = now
                 rec.current_turn_id = None
                 rec.current_turn_n = None
-                store.put(rec)
+                persisted = persist(rec)
                 try:
                     checkpoints.fail(
                         rec.id,
@@ -168,15 +217,16 @@ def reap(
                     )
                 except Exception:
                     pass
-                emit("platform_loss", rec.id, rec.sandbox_id)
+                if persisted:
+                    emit("platform_loss", rec.id, rec.sandbox_id)
                 continue
             rec.status = "timed_out" if rec.status == "idle" else "lost"
             rec.ended_at = now
             rec.updated_at = now
             rec.current_turn_id = None
             rec.current_turn_n = None
-            store.put(rec)
-            emit(rec.status, rec.id, rec.sandbox_id)
+            if persist(rec):
+                emit(rec.status, rec.id, rec.sandbox_id)
             continue
 
         if rec.status == "creating":
@@ -189,8 +239,8 @@ def reap(
                 rec.status = "lost"
                 rec.ended_at = now
                 rec.updated_at = now
-                store.put(rec)
-                emit("lost", rec.id, rec.sandbox_id)
+                if persist(rec):
+                    emit("lost", rec.id, rec.sandbox_id)
             continue
 
         if rec.status == "running":
@@ -203,8 +253,8 @@ def reap(
                 rec.updated_at = now
                 rec.current_turn_id = None
                 rec.current_turn_n = None
-                store.put(rec)
-                emit("lost", rec.id, rec.sandbox_id)
+                if persist(rec):
+                    emit("lost", rec.id, rec.sandbox_id)
                 if handle is not None:
                     try:
                         backend.terminate(handle)
@@ -230,19 +280,26 @@ def reap(
                     emit("cleanup_failed", rec.id, rec.sandbox_id)
                 rec.status = "suspended"
                 rec.updated_at = now
-                store.put(rec)
-                emit("suspended", rec.id, rec.sandbox_id)
+                if persist(rec):
+                    emit("suspended", rec.id, rec.sandbox_id)
                 continue
-            backend.terminate(handle)
+            try:
+                backend.terminate(handle)
+            except Exception:
+                emit("cleanup_failed", rec.id, rec.sandbox_id)
             rec.status = "timed_out"
             rec.ended_at = now
             rec.updated_at = now
             rec.current_turn_id = None
             rec.current_turn_n = None
-            store.put(rec)
-            emit("timed_out", rec.id, rec.sandbox_id)
+            if persist(rec):
+                emit("timed_out", rec.id, rec.sandbox_id)
 
-    records = {rec.id: rec for rec in store.list_all()}
+    try:
+        records = {rec.id: rec for rec in store.list_all()}
+    except Exception:
+        emit("reap_error", None, None)
+        return actions
     bound_live = {
         rec.sandbox_id
         for rec in records.values()
@@ -252,7 +309,12 @@ def reap(
         # it owns no live sandbox, so a surviving handle is an orphan.
         and rec.status != "suspended"
     }
-    for handle in backend.list():
+    try:
+        handles = backend.list()
+    except Exception:
+        emit("reap_error", None, None)
+        return actions
+    for handle in handles:
         if handle.id in bound_live:
             continue
         rec = _session_record(records, handle)
