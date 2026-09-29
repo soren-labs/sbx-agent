@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -222,6 +223,67 @@ class TestMaterialize:
         assert again is not None and again.revision_id == rev1.revision_id
         assert len(revision_store.list_revisions("a1")) == 1
 
+    def test_concurrent_materialize_same_run_lands_one_row(
+        self, tmp_path, backend, handle, workspaces, revisions, revision_store, monkeypatch
+    ) -> None:
+        """B7: settle + reconcile racing the same run's commit — the
+        identity lock serializes to exactly one durable row."""
+        import control.revisions as revisions_mod
+
+        origin, base = make_repo(tmp_path)
+        workspaces.prepare(handle, "a1", spec(origin, base))
+        write_in_workdir(handle, workspaces, "a1")
+
+        real_snapshot = revisions_mod.snapshot_workspace_artifact
+        gate = threading.Barrier(2)
+        git_lock = threading.Lock()
+
+        def slow_snapshot(**kw: Any) -> Any:
+            # Both callers must clear the unlocked fast-path check before
+            # either commits — the commit lock alone decides the winner.
+            gate.wait(timeout=15)
+            # The real snapshot is serialized: two concurrent `git add -N`
+            # in one workdir would fight over index.lock, which is a test
+            # artifact — not the settle/reconcile race being exercised.
+            with git_lock:
+                return real_snapshot(**kw)
+
+        real_run_git = revisions_mod.run_git
+        real_git_head = revisions_mod.git_head
+
+        def locked_run_git(*args: Any, **kw: Any) -> Any:
+            with git_lock:
+                return real_run_git(*args, **kw)
+
+        def locked_git_head(*args: Any, **kw: Any) -> Any:
+            with git_lock:
+                return real_git_head(*args, **kw)
+
+        monkeypatch.setattr(revisions_mod, "snapshot_workspace_artifact", slow_snapshot)
+        monkeypatch.setattr(revisions_mod, "run_git", locked_run_git)
+        monkeypatch.setattr(revisions_mod, "git_head", locked_git_head)
+
+        results: list[Any] = []
+        errors: list[BaseException] = []
+
+        def go() -> None:
+            try:
+                results.append(_materialize(revisions, backend, handle))
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=go) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        assert all(not t.is_alive() for t in threads)
+        assert not errors and len(results) == 2
+        rows = revision_store.list_revisions("a1")
+        assert len(rows) == 1
+        assert rows[0].status == "ready"
+        assert {r.revision_id for r in results} == {rows[0].revision_id}
+
     def test_new_revision_marks_prior_reviews_stale(
         self, tmp_path, backend, handle, workspaces, revisions
     ) -> None:
@@ -271,6 +333,129 @@ class TestMaterialize:
         rev = svc2.get("rev-deadbeef01")
         assert rev.head_sha == SHA_A
         assert svc2.latest("a1").revision_id == "rev-deadbeef01"
+
+
+def _stored_revision(revision_id: str, run_id: str | None, n: int, **kw: Any) -> Revision:
+    row = {
+        "agent_id": "a1",
+        "task_id": "t1",
+        "repo": "https://github.com/acme/widgets",
+        "base_sha": SHA_A,
+        "head_sha": SHA_B,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    row.update(kw)
+    return Revision(revision_id=revision_id, run_id=run_id, n=n, **row)
+
+
+class TestReadModelDedupe:
+    """B7: revision identity + ordering on the read side.
+
+    Rows already persisted for one logical revision — a settle/reconcile
+    race, or a failed materialization retried to ready — collapse to a
+    single representative; ``list``/``latest``/``resolve`` agree and
+    ordering stays deterministic even when duplicates share an ``n``.
+    """
+
+    def test_duplicate_run_rows_collapse(
+        self, revision_store: InMemoryRevisionStore, revisions: RevisionService
+    ) -> None:
+        for i in range(5):
+            revision_store.put_revision(
+                _stored_revision(
+                    f"rev-dup-{i}",
+                    "run-1",
+                    1,
+                    created_at=f"2026-01-01T00:00:0{i}+00:00",
+                    updated_at=f"2026-01-01T00:00:0{i}+00:00",
+                )
+            )
+        rows = revisions.list("a1")
+        assert len(rows) == 1
+        assert rows[0].run_id == "run-1"
+        assert revisions.resolve("a1", "1").revision_id == rows[0].revision_id
+        assert revisions.latest("a1").revision_id == rows[0].revision_id
+        # get() still fetches the hidden duplicates by id — history stays
+        # auditable, only the listing collapses.
+        assert revisions.get("rev-dup-4").revision_id == "rev-dup-4"
+
+    def test_failed_then_ready_collapses_to_ready(
+        self, revision_store: InMemoryRevisionStore, revisions: RevisionService
+    ) -> None:
+        revision_store.put_revision(
+            _stored_revision(
+                "rev-fail-1",
+                "run-1",
+                1,
+                status="materialization_failed",
+                error={"code": "artifact_invalid", "message": "boom"},
+            )
+        )
+        revision_store.put_revision(_stored_revision("rev-ready-1", "run-1", 2))
+        rows = revisions.list("a1")
+        assert [r.revision_id for r in rows] == ["rev-ready-1"]
+        assert rows[0].status == "ready"
+
+    def test_delivery_survives_collapse(
+        self, revision_store: InMemoryRevisionStore, revisions: RevisionService
+    ) -> None:
+        """Delivery state corresponds to its revision: the row carrying the
+        delivered record wins over a later duplicate without one."""
+        revision_store.put_revision(
+            _stored_revision(
+                "rev-deliv-1",
+                "run-1",
+                1,
+                delivery={
+                    "status": "delivered",
+                    "branch": "sbx/a1",
+                    "pushed_head_sha": SHA_B,
+                    "delivered_at": "2026-01-01T00:00:05+00:00",
+                },
+                updated_at="2026-01-01T00:00:05+00:00",
+            )
+        )
+        revision_store.put_revision(
+            _stored_revision("rev-dup-1", "run-1", 1, updated_at="2026-01-01T00:00:09+00:00")
+        )
+        rows = revisions.list("a1")
+        assert [r.revision_id for r in rows] == ["rev-deliv-1"]
+        assert rows[0].delivery["status"] == "delivered"
+        assert revisions.latest("a1").delivery["branch"] == "sbx/a1"
+
+    def test_multi_run_ordering_is_deterministic(
+        self, revision_store: InMemoryRevisionStore, revisions: RevisionService
+    ) -> None:
+        revision_store.put_revision(_stored_revision("rev-b", "run-2", 2))
+        revision_store.put_revision(_stored_revision("rev-a1", "run-1", 1))
+        revision_store.put_revision(_stored_revision("rev-a2", "run-1", 1))
+        revision_store.put_revision(_stored_revision("rev-manual", None, 3))
+        rows = revisions.list("a1")
+        assert [r.n for r in rows] == [1, 2, 3]
+        # Identical duplicates break deterministically on revision_id.
+        assert rows[0].revision_id == max("rev-a1", "rev-a2")
+        assert [r.revision_id for r in rows[1:]] == ["rev-b", "rev-manual"]
+
+    def test_repeat_failure_replays_recorded_row(
+        self, revision_store: InMemoryRevisionStore, revisions: RevisionService
+    ) -> None:
+        first = revisions._commit(
+            "a1",
+            run_id="run-1",
+            task_id="t1",
+            status="materialization_failed",
+            error={"code": "artifact_invalid", "message": "one"},
+        )
+        again = revisions._commit(
+            "a1",
+            run_id="run-1",
+            task_id="t1",
+            status="materialization_failed",
+            error={"code": "artifact_invalid", "message": "two"},
+        )
+        assert again.revision_id == first.revision_id
+        assert len(revision_store.list_revisions("a1")) == 1
 
 
 @needs_git

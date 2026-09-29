@@ -180,6 +180,12 @@ def changes_view(ws: dict[str, Any] | None) -> dict[str, Any] | None:
 def revision_view(public: dict[str, Any]) -> dict[str, Any]:
     """``Revision.public()`` minus the internal id namespaces/artifact ref."""
     delivery = public.get("delivery")
+    error = public.get("error")
+    if isinstance(error, dict):
+        # ``RevisionView.error`` is a display string — same ``code: message``
+        # shape the legacy workspace ``publish_error`` mirror uses.
+        code, message = error.get("code"), error.get("message")
+        error = f"{code}: {message}" if code and message else (message or code)
     return {
         "n": public.get("n"),
         "status": public.get("status"),
@@ -188,7 +194,7 @@ def revision_view(public: dict[str, Any]) -> dict[str, Any]:
         "head_sha": public.get("head_sha"),
         "created_at": public.get("created_at"),
         "updated_at": public.get("updated_at"),
-        "error": public.get("error"),
+        "error": error,
         "delivery": delivery_view_dict(delivery),
     }
 
@@ -327,11 +333,15 @@ def live_extras(record: TaskRecord, plane: Any) -> dict[str, Any]:
 
 
 def latest_run_error(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The most recent run's error, for the session-level ``error`` field."""
-    for run in reversed(runs):
-        if run.get("error"):
-            return run["error"]
-    return None
+    """The current attempt's error, for the session-level ``error`` field.
+
+    Only the newest run decides: a failed earlier attempt stays traceable
+    on its own run row and is never resurrected at session level once a
+    retry is queued, running, or finished.
+    """
+    if not runs:
+        return None
+    return runs[-1].get("error")
 
 
 def _session_status_for_sse(view: dict[str, Any]) -> dict[str, Any]:
