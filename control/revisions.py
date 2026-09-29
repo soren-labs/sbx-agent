@@ -529,8 +529,15 @@ class ModalDictRevisionStore:
 
     def list_revisions(self, agent_id: str) -> list[Revision]:
         out = []
+        seen: set[str] = set()
         for revision_id in list(self._d().get(f"revisions/{agent_id}") or []):
-            rec = self.get_revision(str(revision_id))
+            # The index is append-on-miss, not atomic — a raced double-put
+            # can record the same id twice; never return the row twice.
+            rid = str(revision_id)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            rec = self.get_revision(rid)
             if rec is not None:
                 out.append(rec)
         return sorted(out, key=lambda r: r.n)
@@ -605,6 +612,21 @@ def _clip(text: str, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def _revision_rank(revision: Revision) -> tuple[Any, ...]:
+    """Representative pick for stored rows sharing one ``run_id``: the
+    ``ready`` row, then the one carrying delivery state, then the most
+    recently updated — falling back to the lowest ``n`` so the winner is
+    deterministic."""
+    return (
+        revision.status == "ready",
+        bool(revision.delivery),
+        revision.updated_at or "",
+        revision.created_at or "",
+        -revision.n,
+        revision.revision_id,
+    )
+
+
 def _error_status(code: str) -> int:
     """HTTP-ish status for a canonical revision/delivery error code."""
     if code in (REVISION_NOT_FOUND, DELIVERY_NOT_FOUND, "artifact_not_found"):
@@ -670,7 +692,7 @@ class RevisionService:
         return remote
 
     def _next_n(self, agent_id: str) -> int:
-        existing = self._store.list_revisions(agent_id)
+        existing = self.list(agent_id)
         return (existing[-1].n if existing else 0) + 1
 
     # -- reads --------------------------------------------------------------
@@ -684,10 +706,34 @@ class RevisionService:
         return rec
 
     def list(self, agent_id: str) -> list[Revision]:
-        return self._store.list_revisions(agent_id)
+        """The agent's revisions — one row per logical revision.
+
+        Revision identity is its producing ``run_id``: a run materializes
+        at most one revision, so stored rows that share a non-empty
+        ``run_id`` are the same logical revision (a duplicate commit from
+        a settle/reconcile race, or a failed materialization later
+        re-run). Each run group collapses to one representative — ``ready``
+        beats ``materialization_failed``, then a recorded delivery, then
+        the most recent update — so delivery state always travels with the
+        surviving row. Ordering is ``(n, created_at, revision_id)``:
+        stable and deterministic even when legacy duplicates share an ``n``.
+        """
+        by_id: dict[str, Revision] = {}
+        for row in self._store.list_revisions(agent_id):
+            by_id.setdefault(row.revision_id, row)
+        by_run: dict[str, list[Revision]] = {}
+        out: list[Revision] = []
+        for row in by_id.values():
+            if row.run_id:
+                by_run.setdefault(row.run_id, []).append(row)
+            else:
+                out.append(row)
+        for rows in by_run.values():
+            out.append(max(rows, key=_revision_rank))
+        return sorted(out, key=lambda r: (r.n, r.created_at, r.revision_id))
 
     def latest(self, agent_id: str) -> Revision | None:
-        rows = self._store.list_revisions(agent_id)
+        rows = self.list(agent_id)
         return rows[-1] if rows else None
 
     def resolve(self, agent_id: str, ref: str | None) -> Revision:
@@ -711,7 +757,7 @@ class RevisionService:
             return rec
         if re.fullmatch(r"[0-9]+", ref):
             n = int(ref)
-            for rec in self._store.list_revisions(agent_id):
+            for rec in self.list(agent_id):
                 if rec.n == n:
                     return rec
         raise RevisionError(
@@ -780,6 +826,11 @@ class RevisionService:
         ``status="materialization_failed"`` and the clipped error, so a
         secret-scan refusal or collection error is visible after teardown
         instead of vanishing with the sandbox.
+
+        The git/snapshot work runs unlocked; ``_commit`` re-checks and
+        inserts under the identity lock, so a concurrent settle/reconcile
+        re-entry for the same run replays the committed row instead of
+        writing a duplicate.
         """
         if self._workspaces is None:
             return None
@@ -787,7 +838,7 @@ class RevisionService:
             # A run materializes at most one ready revision — a re-entrant
             # finish (control-plane reconcile settling the same turn from
             # evidence) replays the recorded one instead of duplicating.
-            for existing in self._store.list_revisions(agent_id):
+            for existing in self.list(agent_id):
                 if existing.run_id == run_id and existing.status == "ready":
                     return existing
         record = self._workspaces.get(agent_id)
@@ -817,21 +868,11 @@ class RevisionService:
                 task_id=task_id,
                 code=exc.code,
                 message=exc.message,
+                repo=record.repo,
+                base_sha=record.checkout_sha,
             )
         if not changed:
             return None
-        now = self._now()
-        revision = Revision(
-            revision_id=new_revision_id(),
-            agent_id=agent_id,
-            n=self._next_n(agent_id),
-            task_id=task_id,
-            run_id=run_id,
-            repo=record.repo,
-            base_sha=record.checkout_sha,
-            created_at=now,
-            updated_at=now,
-        )
         try:
             manifest = snapshot_workspace_artifact(
                 backend=backend,
@@ -845,15 +886,74 @@ class RevisionService:
                 run_n=run_n,
                 clock=self._clock,
             )
-            revision.artifact_id = manifest.artifact_id
-            revision.head_sha = manifest.head_sha
         except Exception as exc:
-            revision.status = "materialization_failed"
-            revision.error = {"code": "artifact_invalid", "message": _clip(str(exc))}
+            return self._record_failure(
+                agent_id,
+                run_id=run_id,
+                task_id=task_id,
+                code="artifact_invalid",
+                message=str(exc),
+                repo=record.repo,
+                base_sha=record.checkout_sha,
+            )
+        return self._commit(
+            agent_id,
+            run_id=run_id,
+            task_id=task_id,
+            status="ready",
+            error=None,
+            repo=record.repo,
+            base_sha=record.checkout_sha,
+            artifact_id=manifest.artifact_id,
+            head_sha=manifest.head_sha,
+        )
+
+    def _commit(
+        self,
+        agent_id: str,
+        *,
+        run_id: str | None,
+        task_id: str | None,
+        status: str,
+        error: dict[str, str] | None,
+        repo: str = "",
+        base_sha: str = "",
+        artifact_id: str | None = None,
+        head_sha: str = "",
+    ) -> Revision:
+        """Allocate ``n`` + insert the revision under the identity lock.
+
+        A ``ready`` row already committed for the same ``run_id`` is
+        replayed — success supersedes an earlier failure and a re-entrant
+        finish must never land a second row. A repeat failure verdict for
+        the same run replays the recorded failure too; only a recovery
+        (existing failed row + fresh ``ready`` outcome) appends, and the
+        read-side collapse prefers the ``ready`` representative.
+        """
+        with self._lock:
+            if run_id:
+                for existing in self.list(agent_id):
+                    if existing.run_id != run_id:
+                        continue
+                    if existing.status == "ready" or status == "materialization_failed":
+                        return existing
+            now = self._now()
+            revision = Revision(
+                revision_id=new_revision_id(),
+                agent_id=agent_id,
+                n=self._next_n(agent_id),
+                task_id=task_id,
+                run_id=run_id,
+                repo=repo,
+                base_sha=base_sha,
+                artifact_id=artifact_id,
+                head_sha=head_sha,
+                status=status,
+                error=error,
+                created_at=now,
+                updated_at=now,
+            )
             self._store.put_revision(revision)
-            self._mark_stale(agent_id)
-            return revision
-        self._store.put_revision(revision)
         # A newer revision exists — every earlier review no longer applies
         # to current state.
         self._mark_stale(agent_id)
@@ -867,22 +967,18 @@ class RevisionService:
         task_id: str | None,
         code: str,
         message: str,
+        repo: str = "",
+        base_sha: str = "",
     ) -> Revision:
-        now = self._now()
-        revision = Revision(
-            revision_id=new_revision_id(),
-            agent_id=agent_id,
-            n=self._next_n(agent_id),
-            task_id=task_id,
+        return self._commit(
+            agent_id,
             run_id=run_id,
+            task_id=task_id,
             status="materialization_failed",
             error={"code": code, "message": _clip(message)},
-            created_at=now,
-            updated_at=now,
+            repo=repo,
+            base_sha=base_sha,
         )
-        self._store.put_revision(revision)
-        self._mark_stale(agent_id)
-        return revision
 
     def _mark_stale(self, agent_id: str) -> None:
         for review in self._store.list_reviews(agent_id=agent_id):
@@ -899,15 +995,20 @@ class RevisionService:
         The row is demoted to ``materialization_failed`` rather than
         dropped, so the artifact stays auditable while ``deliver`` refuses
         it (non-ready revisions raise ``revision_not_ready``).
+
+        Runs under the identity lock over the raw store — every stored row
+        for the run is demoted, including duplicates the read-side
+        collapse keeps out of ``list``.
         """
         count = 0
-        for revision in self._store.list_revisions(agent_id):
-            if revision.run_id == run_id and revision.status == "ready":
-                revision.status = "materialization_failed"
-                revision.error = {"code": code, "message": _clip(message)}
-                revision.updated_at = self._now()
-                self._store.put_revision(revision)
-                count += 1
+        with self._lock:
+            for revision in self._store.list_revisions(agent_id):
+                if revision.run_id == run_id and revision.status == "ready":
+                    revision.status = "materialization_failed"
+                    revision.error = {"code": code, "message": _clip(message)}
+                    revision.updated_at = self._now()
+                    self._store.put_revision(revision)
+                    count += 1
         return count
 
     def _payload(self, revision: Revision) -> tuple[str, bytes]:
