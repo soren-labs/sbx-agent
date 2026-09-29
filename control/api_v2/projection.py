@@ -140,9 +140,45 @@ def _merge(merge: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _performed_delivery(ws: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Delivery state an ad-hoc ``deliver`` already performed on the agent.
+
+    ``_delivery_view`` only projects a *declared* git policy, so an ad-hoc
+    deliver — which lands its outcome (branch / pushed sha / PR / merge /
+    publish error) on the same durable workspace record — never reached
+    ``session.delivery`` (SOR-270). Surface that performed state as
+    not-owed (``required=False``) delivery so every read surface reports
+    the same reality; a publish failure reads ``failed`` even when an
+    earlier delivery had landed.
+    """
+    if not isinstance(ws, dict):
+        return None
+    # Only performed signals count: ``branch`` is also the declared policy's
+    # work-branch name (set by ``prepare``), never evidence of a push.
+    landed = any(ws.get(key) for key in ("pushed_head_sha", "pull_request", "merge"))
+    if not landed and ws.get("publish_error") is None:
+        return None
+    out: dict[str, Any] = {"required": False}
+    for key in ("branch", "pushed_head_sha", "pull_request", "merge"):
+        if ws.get(key) is not None:
+            out[key] = ws[key]
+    if ws.get("publish_error") is not None:
+        out["error"] = ws["publish_error"]
+        out["status"] = "failed"
+    else:
+        out["status"] = "delivered" if landed else "pending"
+    return out
+
+
 def delivery_view(record: TaskRecord, ws: dict[str, Any] | None) -> dict[str, Any] | None:
-    """``_delivery_view`` sanitized: required/status/branch/PR/merge/error."""
+    """``_delivery_view`` sanitized: required/status/branch/PR/merge/error.
+
+    Falls back to ``_performed_delivery`` when the session declares no git
+    policy but an ad-hoc deliver already landed on the workspace record.
+    """
     delivery = _tasks._delivery_view(record, ws)
+    if delivery is None:
+        delivery = _performed_delivery(ws)
     if delivery is None:
         return None
     return {

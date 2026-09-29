@@ -332,3 +332,201 @@ class TestChangesAndDeliver:
             0
         ]
         assert rev["delivery"]["status"] == "failed"
+
+
+@needs_git
+class TestSessionDeliveryProjection:
+    """SOR-270: an ad-hoc deliver — a session created without a git policy —
+    must land on ``session.delivery`` identically on every read surface
+    (deliver response, GET detail, list, changes facade)."""
+
+    def _ready_revision_session(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        credentialed: V1Env,
+        origin: tuple[Path, str],
+        name: str = "b.txt",
+    ) -> tuple[dict[str, Any], str, str]:
+        """A finished session with one materialized revision — returns
+        (session, agent_id, head_sha)."""
+        session = _make_session(client, auth, origin)
+        agent_id = _agent_id(credentialed, session["id"])
+        wait_idle(credentialed, agent_id)
+        head = commit_in_agent(credentialed, agent_id, name, f"{name}\n")
+        client.post(
+            f"/v2/sessions/{session['id']}/messages",
+            json={"prompt": "more work"},
+            headers=auth,
+        )
+        wait_session(client, auth, session["id"], "finished")
+        return session, agent_id, head
+
+    def _delivery_views(
+        self, client: TestClient, auth: dict[str, str], session_id: str
+    ) -> list[dict[str, Any] | None]:
+        """``session.delivery`` as projected on detail / list / changes."""
+        detail = client.get(f"/v2/sessions/{session_id}", headers=auth).json()["session"]
+        listed = next(
+            s
+            for s in client.get("/v2/sessions", headers=auth).json()["sessions"]
+            if s["id"] == session_id
+        )
+        changes = client.get(f"/v2/sessions/{session_id}/changes", headers=auth).json()["session"]
+        return [detail["delivery"], listed["delivery"], changes["delivery"]]
+
+    def test_adhoc_deliver_lands_on_session_delivery(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """Gate verbatim: ``session.delivery`` was null after an ad-hoc
+        deliver even though the workspace carried the outcome."""
+        session, _, head = self._ready_revision_session(client, auth, credentialed, origin)
+        resp = client.post(
+            f"/v2/sessions/{session['id']}/deliver",
+            json={"branch": "session/work"},
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        delivery = resp.json()["session"]["delivery"]
+        assert delivery is not None
+        assert delivery["required"] is False
+        assert delivery["status"] == "delivered"
+        assert delivery["branch"] == "session/work"
+        assert delivery["pushed_head_sha"] == head
+        # Refresh re-reads the durable workspace record — identical view.
+        for view in self._delivery_views(client, auth, session["id"]):
+            assert view == delivery
+
+    def test_adhoc_pr_delivery_projects_pull_request(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        credentialed: V1Env,
+        origin,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Gate verbatim: the console renders the Open-PR affordance from
+        ``session.delivery.pull_request`` — it must carry url/number."""
+        from tests.unit.control.test_revisions import FakeRemote
+
+        session, _, head = self._ready_revision_session(client, auth, credentialed, origin)
+        monkeypatch.setattr("control.revisions.github.repo_slug", lambda repo: "acme/widgets")
+        remote = FakeRemote(head_sha=head, head_ref="session/work")
+        credentialed.app.state.revisions._remote = remote
+        resp = client.post(
+            f"/v2/sessions/{session['id']}/deliver",
+            json={"branch": "session/work", "pull_request": {"title": "ship it"}},
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        delivery = resp.json()["session"]["delivery"]
+        assert delivery["status"] == "delivered"
+        assert delivery["required"] is False
+        pr = delivery["pull_request"]
+        assert pr["number"] == 7
+        assert pr["url"] == "https://github.com/acme/widgets/pull/7"
+        assert pr["state"] == "open"
+        assert pr["head_sha"] == head
+        for view in self._delivery_views(client, auth, session["id"]):
+            assert view == delivery
+
+    def test_followup_redeliver_updates_same_pr(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        credentialed: V1Env,
+        origin,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Follow-up + redeliver: the recorded open PR is updated in place
+        (same number, fresh head) — never re-created — and revisions stay
+        one-row-per-run (B7 must not regress)."""
+        from tests.unit.control.test_revisions import FakeRemote
+
+        session, agent_id, _ = self._ready_revision_session(client, auth, credentialed, origin)
+        monkeypatch.setattr("control.revisions.github.repo_slug", lambda repo: "acme/widgets")
+        remote = FakeRemote(head_sha="", head_ref="session/work")
+        credentialed.app.state.revisions._remote = remote
+        resp = client.post(
+            f"/v2/sessions/{session['id']}/deliver",
+            json={"branch": "session/work", "pull_request": {"title": "ship it"}},
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["session"]["delivery"]["pull_request"]["number"] == 7
+        assert len(remote.create_calls) == 1
+
+        # A follow-up materializes revision 2; redeliver must update the
+        # SAME recorded pull request rather than minting a new one.
+        wait_idle(credentialed, agent_id)
+        head2 = commit_in_agent(credentialed, agent_id, "c.txt", "three\n")
+        client.post(
+            f"/v2/sessions/{session['id']}/messages",
+            json={"prompt": "even more work"},
+            headers=auth,
+        )
+        wait_session(client, auth, session["id"], "finished")
+        remote.head_sha = head2
+        remote.create_calls.clear()
+        resp = client.post(
+            f"/v2/sessions/{session['id']}/deliver",
+            json={"pull_request": {"title": "ship it v2"}},
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        delivery = resp.json()["session"]["delivery"]
+        pr = delivery["pull_request"]
+        assert pr["number"] == 7
+        # The PR head moved to whatever sha this delivery pushed.
+        assert pr["head_sha"] == delivery["pushed_head_sha"]
+        assert remote.create_calls == []  # updated in place — no new PR
+
+        for view in self._delivery_views(client, auth, session["id"]):
+            assert view == delivery
+
+        revisions = client.get(f"/v2/sessions/{session['id']}/changes", headers=auth).json()[
+            "revisions"
+        ]
+        assert [r["n"] for r in revisions] == [1, 2]
+        assert revisions[1]["delivery"]["pull_request"]["number"] == 7
+
+    def test_declared_branch_only_projects_no_delivery(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """``delivery:{branch:"x"}`` alone names the work branch — publish
+        stays manual — so a declared-but-never-performed delivery must
+        still project ``session.delivery`` as null everywhere."""
+        repo, _ = origin
+        resp = client.post(
+            "/v2/sessions",
+            json={
+                "prompt": "Create hello.txt.",
+                "execution": {"provider": "codex"},
+                "repository": {"repo": f"file://{repo}"},
+                "delivery": {"branch": "session/work"},
+            },
+            headers=auth,
+        )
+        assert resp.status_code == 201, resp.text
+        session = resp.json()["session"]
+        wait_session(client, auth, session["id"], "finished")
+        wait_idle(credentialed, _agent_id(credentialed, session["id"]))
+        for view in self._delivery_views(client, auth, session["id"]):
+            assert view is None
+
+    def test_adhoc_deliver_failure_lands_on_session_delivery(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """A failed ad-hoc deliver surfaces ``status="failed"`` + the error
+        on session.delivery — the retry affordance's input."""
+        session, _, _ = self._ready_revision_session(client, auth, credentialed, origin)
+        resp = client.post(
+            f"/v2/sessions/{session['id']}/deliver",
+            json={"pull_request": {"title": "ship it"}},
+            headers=auth,
+        )
+        assert resp.status_code >= 400
+        for view in self._delivery_views(client, auth, session["id"]):
+            assert view is not None
+            assert view["status"] == "failed"
+            assert view["error"] is not None
