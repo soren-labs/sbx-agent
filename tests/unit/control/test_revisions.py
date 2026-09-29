@@ -236,14 +236,32 @@ class TestMaterialize:
 
         real_snapshot = revisions_mod.snapshot_workspace_artifact
         gate = threading.Barrier(2)
+        git_lock = threading.Lock()
 
         def slow_snapshot(**kw: Any) -> Any:
             # Both callers must clear the unlocked fast-path check before
             # either commits — the commit lock alone decides the winner.
             gate.wait(timeout=15)
-            return real_snapshot(**kw)
+            # The real snapshot is serialized: two concurrent `git add -N`
+            # in one workdir would fight over index.lock, which is a test
+            # artifact — not the settle/reconcile race being exercised.
+            with git_lock:
+                return real_snapshot(**kw)
+
+        real_run_git = revisions_mod.run_git
+        real_git_head = revisions_mod.git_head
+
+        def locked_run_git(*args: Any, **kw: Any) -> Any:
+            with git_lock:
+                return real_run_git(*args, **kw)
+
+        def locked_git_head(*args: Any, **kw: Any) -> Any:
+            with git_lock:
+                return real_git_head(*args, **kw)
 
         monkeypatch.setattr(revisions_mod, "snapshot_workspace_artifact", slow_snapshot)
+        monkeypatch.setattr(revisions_mod, "run_git", locked_run_git)
+        monkeypatch.setattr(revisions_mod, "git_head", locked_git_head)
 
         results: list[Any] = []
         errors: list[BaseException] = []
