@@ -55,7 +55,7 @@ FAKE_BINS = {
 _CLOUD_PREFIXES = ("MODAL_", "OPENAI_", "CODEX_API", "GH_", "GITHUB_", "SBX_GITHUB_")
 
 WRAPPER = """#!{python}
-import os, sys
+import os, re, sys
 argv = sys.argv[1:]
 text = " ".join(argv).lower()
 scenario = "success"
@@ -63,7 +63,8 @@ if {resume_check}:
     scenario = "resume"
 KEYWORDS = (("hang", "hang"), ("slow", "slow"), ("fail", "nonzero"), ("auth", "auth_invalid"))
 for keyword, name in KEYWORDS:
-    if keyword in text:
+    # whole-word match — "change" must not trigger "hang"
+    if re.search(r"\\b" + keyword + r"\\b", text):
         scenario = name
         break
 os.environ[{scenario_env!r}] = scenario
@@ -140,6 +141,12 @@ def prepare_env(state_dir: Path, api_key: str) -> dict[str, str]:
     os.environ["PYTHONPATH"] = str(REPO_ROOT)
     os.environ["CODEX_BIN"] = str(bin_dir / "codex")
     os.environ["OPENCODE_BIN"] = str(bin_dir / "opencode")
+    os.environ["DEVIN_BIN"] = str(bin_dir / "devin")
+    # fake devin only speaks ``devin -p`` NDJSON, not the ACP stdio bridge
+    os.environ.setdefault("SBX_DEVIN_TRANSPORT", "cli")
+    # codex seeds rely on an ambient host credential (secret_name=""), so the
+    # fixture provides a throwaway one — eligibility probes, nothing secrets
+    os.environ.setdefault("CODEX_AUTH_JSON", "{}")
     for _name, _script, scenario_env, _slow in FAKE_BINS.values():
         os.environ.pop(scenario_env, None)
     return _make_demo_repo(state_dir)

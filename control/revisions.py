@@ -807,6 +807,9 @@ class RevisionService:
                     CHECKOUT_FAILED, f"no HEAD in workdir {record.workdir} for agent {agent_id}"
                 )
             changed = dirty or head != record.checkout_sha
+            if record.dirty != dirty:
+                record.dirty = dirty
+                self._workspaces.save(record)
         except WorkspaceError as exc:
             return self._record_failure(
                 agent_id,

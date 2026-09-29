@@ -261,6 +261,10 @@ class WorkspaceRecord:
     workdir: str = DEFAULT_WORKDIR
     checkout_sha: str | None = None
     head_sha: str | None = None
+    # Last materialization's ``git status --porcelain`` verdict — untracked/
+    # modified content mints a patch revision without moving ``head_sha``,
+    # so sha comparison alone cannot see it.
+    dirty: bool = False
     reviewed_head_sha: str | None = None
     git: dict[str, Any] | None = None
     branch: str | None = None
@@ -305,6 +309,10 @@ def record_from_dict(data: Any) -> WorkspaceRecord:
         if value is not None and not is_commit_sha(value):
             raise ValueError(f"workspace record field {key} must be a commit sha")
         setattr(record, key, value)
+    dirty = data.get("dirty", False)
+    if not isinstance(dirty, bool):
+        raise ValueError("workspace record field dirty must be a bool")
+    record.dirty = dirty
     branch = data.get("branch")
     if branch is not None and not is_safe_ref(branch):
         raise ValueError("workspace record field branch must be a safe git ref")

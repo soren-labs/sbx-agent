@@ -71,10 +71,16 @@ export function normalizeTurnStatus(s: string | null | undefined): TurnStatus {
       return "running";
     case "finished":
     case "succeeded":
+    case "success":
       return "finished";
     case "failed":
     case "error":
     case "expired":
+    // sbx.turn_finished terminal statuses (runtime/runner/constants.py)
+    case "codex_error":
+    case "timeout":
+    case "bad_json":
+    case "auth_invalid":
       return "failed";
     case "cancelled":
       return "cancelled";
@@ -283,7 +289,9 @@ export function normalizeEvent(frame: any, sessionId: string): ActivityItem | nu
     };
   }
   if (type === "turn.finished") {
-    const ok = String(frame.status ?? "finished") === "finished";
+    // Wire status is the sbx.turn_finished vocabulary (success/codex_error/
+    // timeout/bad_json/auth_invalid) — reuse the canonical turn map.
+    const ok = normalizeTurnStatus(frame.status ?? "finished") === "finished";
     return {
       id: `evt-status-${sessionId}-turnfin-${n ?? nextSeq()}`,
       seq: nextSeq(), ts, turnId, n,

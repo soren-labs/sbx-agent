@@ -513,6 +513,7 @@ def snapshot_workspace_artifact(
     if head is None:
         raise WorkspaceError(CHECKOUT_FAILED, f"no HEAD in workdir {workdir} for agent {agent_id}")
     record.head_sha = head
+    record.dirty = dirty
     workspaces.save(record)
 
     forbidden = tuple(
