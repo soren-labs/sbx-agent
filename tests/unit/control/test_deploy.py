@@ -6,9 +6,8 @@ import importlib
 import sys
 from pathlib import Path
 
-import pytest
-
 import control.deploy as deploy_mod
+import pytest
 
 
 def _console_dist_fixture(tmp_path: Path) -> Path:
