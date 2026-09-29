@@ -58,12 +58,15 @@ import httpx  # noqa: E402
 
 class _SlowProxy:
     """Charges ``ms`` once per delegated call and counts calls by name —
-    stands in for one remote round-trip (Modal Dict op / sandbox RPC)."""
+    stands in for one remote round-trip (Modal Dict op / sandbox RPC).
+    ``ns`` namespaces the counter keys so different stores stay
+    distinguishable (``accounts.items`` vs ``get``)."""
 
-    def __init__(self, inner: Any, ms: float, counter: dict[str, int]) -> None:
+    def __init__(self, inner: Any, ms: float, counter: dict[str, int], ns: str = "") -> None:
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "_ms", ms)
         object.__setattr__(self, "_counter", counter)
+        object.__setattr__(self, "_ns", ns)
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(object.__getattribute__(self, "_inner"), name)
@@ -71,9 +74,11 @@ class _SlowProxy:
             return attr
         ms = object.__getattribute__(self, "_ms")
         counter = object.__getattribute__(self, "_counter")
+        ns = object.__getattribute__(self, "_ns")
 
         def _call(*args: Any, **kwargs: Any) -> Any:
-            counter[name] = counter.get(name, 0) + 1
+            key = f"{ns}{name}"
+            counter[key] = counter.get(key, 0) + 1
             out = attr(*args, **kwargs)
             if ms:
                 time.sleep(ms / 1000.0)
@@ -83,6 +88,36 @@ class _SlowProxy:
 
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(object.__getattribute__(self, "_inner"), name, value)
+
+
+class _HarnessDict:
+    """``modal.Dict``-shaped fake for the emulated plane: string keys,
+    arbitrary values — every method name is counted through the
+    ``_SlowProxy`` so ``items``/``keys`` full scans are visible."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, Any] = {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.data.get(key, default)
+
+    def put(self, key: str, value: Any) -> None:
+        self.data[key] = value
+
+    def pop(self, key: str) -> Any:
+        return self.data.pop(key)
+
+    def update(self, mapping: dict[str, Any]) -> None:
+        self.data.update(mapping)
+
+    def contains(self, key: str) -> bool:
+        return key in self.data
+
+    def items(self) -> Any:
+        return iter(list(self.data.items()))
+
+    def keys(self) -> Any:
+        return iter(list(self.data))
 
 
 # ---------------------------------------------------------------------------
@@ -195,14 +230,22 @@ def run_probes(
         probe_ops.append((results[-1].name if results else "", snap))
         return "  remote-ops: " + json.dumps(snap)
 
+    create_seq = 0
+
     def create_one(http: httpx.Client) -> httpx.Response:
+        nonlocal create_seq
+        create_seq += 1
+        # Unique Idempotency-Key: the replay-check path (idem get +
+        # owner prefetch + put) is the worst-case create — the path the
+        # SOR-271 gate timed.
+        h = {**headers, "Idempotency-Key": f"gate-{time.time_ns()}-{create_seq}"}
         return http.post(
             "/v2/sessions",
             json={
                 "prompt": "Create hello.txt in the workspace.",
                 "execution": {"provider": "codex"},
             },
-            headers=headers,
+            headers=h,
         )
 
     def detail_one(sid: str):
@@ -230,6 +273,17 @@ def run_probes(
         assert resp.status_code in (200, 201, 202), resp.text
         session_ids.append(resp.json()["session"]["id"])
     results.append(ProbeResult("POST /v2/sessions (create ACK)", samples, budgets.get("create")))
+    if op_counter is not None:
+        # SOR-271: the accounts full scan must be gone from the create
+        # path. One ``items`` is tolerated — the first-ever listing on a
+        # pre-index Dict pays one migration scan, then self-heals.
+        results.append(
+            ProbeResult(
+                "accounts full scans during creates",
+                [float(op_counter.get("accounts.items", 0))],
+                budgets.get("account_items"),
+            )
+        )
     print(f"B1 create remote-ops{ops()}", file=sys.stderr)
 
     # Wait for binds so detail/list exercise the full settle path.
@@ -292,12 +346,16 @@ def run_probes(
 
     # ---- B3: SSE fanout must not starve reads -------------------------------
     if bound_ids:
-        sid = bound_ids[-1]
+        # Spread clients across up to 4 sessions so the probe exercises
+        # several hubs (tail execs + status pollers), not only the
+        # one-hub/many-queues dedup case.
+        stream_targets = bound_ids[-4:]
         streams: list[Any] = []
         responses: list[Any] = []
         opened = 0
         try:
-            for _ in range(sse_clients):
+            for i in range(sse_clients):
+                sid = stream_targets[i % len(stream_targets)]
                 # Streams are long-lived: only the connect/first-byte wait is
                 # bounded. On the pre-fix plane this is where clients stall.
                 s = http.stream(
@@ -428,8 +486,11 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     # Platform-only default disables every provider; the gate needs codex.
     os.environ.setdefault("SBX_PROVIDERS", "codex")
 
+    from control.accounts import (
+        ModalDictAccountStore,
+        PersistentAccountRegistry,
+    )
     from control.api_v1.state import (
-        InMemoryAccountRegistry,
         InMemoryApiKeyStore,
         InMemoryScheduler,
     )
@@ -451,7 +512,14 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
         keepalive_s=0.5,
         max_concurrent=256,
     )
-    registry = InMemoryAccountRegistry()
+    # The accounts path goes through the real Dict-backed store — a
+    # ``modal_dict.items`` full scan inside ``resolve_execution`` (the
+    # SOR-271 create-ACK finding) shows up as ``accounts.items`` in the
+    # counter and as ~items latency on the dispatch path.
+    accounts_dict = _SlowProxy(_HarnessDict(), dict_ms, counter, ns="accounts.")
+    accounts_store = ModalDictAccountStore("sbx-accounts")
+    accounts_store._dict = accounts_dict
+    registry = PersistentAccountRegistry(accounts_store)
     scheduler = InMemoryScheduler(registry)
     keys = InMemoryApiKeyStore()
     app.state.account_registry = registry
@@ -509,9 +577,11 @@ def main() -> int:
     parser.add_argument("--api-key-file", default=None)
     parser.add_argument("--dict-ms", type=float, default=250.0)
     parser.add_argument("--sandbox-ms", type=float, default=500.0)
-    parser.add_argument("--sessions", type=int, default=6)
-    parser.add_argument("--sse-clients", type=int, default=8)
-    parser.add_argument("--bulk", type=int, default=8)
+    # SOR-271 gate shapes: >=20 warm create samples, 20 SSE clients
+    # spread across hubs, 16x bulk cancel.
+    parser.add_argument("--sessions", type=int, default=21)
+    parser.add_argument("--sse-clients", type=int, default=20)
+    parser.add_argument("--bulk", type=int, default=16)
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args()
 
@@ -530,6 +600,7 @@ def main() -> int:
         "sse_spike": 5.0,
         "bulk_wall": None,
         "bulk_read": 1.5 if live else 2.0,
+        "account_items": 1.0,
     }
 
     token: str | None = args.api_key
