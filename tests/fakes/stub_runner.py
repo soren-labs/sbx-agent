@@ -245,7 +245,12 @@ def _load_session(root: Path) -> dict:
 
 
 def _write_session(root: Path, session: dict) -> None:
-    (root / "session.json").write_text(json.dumps(session) + "\n", encoding="utf-8")
+    # Atomic replace: control-plane readers must never observe a torn file
+    # (``write_text`` truncates first, so a concurrent read can catch the
+    # empty window and fail its JSON parse).
+    tmp = root / "session.json.tmp"
+    tmp.write_text(json.dumps(session) + "\n", encoding="utf-8")
+    os.replace(tmp, root / "session.json")
 
 
 def cmd_turn(args: argparse.Namespace) -> int:
