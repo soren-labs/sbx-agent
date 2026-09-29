@@ -171,6 +171,97 @@ class TestChangesAndDeliver:
         diff = client.get(f"/v2/sessions/{session['id']}/changes/diff", headers=auth).json()
         assert [f["path"] for f in diff["files"]] == ["b.txt"]
 
+    def test_followups_yield_ordered_unique_revisions(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """B7: multi-follow-up materialization — one row per run, ordered
+        by ``n``, no duplicates."""
+        session = _make_session(client, auth, origin)
+        agent_id = _agent_id(credentialed, session["id"])
+        wait_idle(credentialed, agent_id)
+        for i, name in enumerate(("b.txt", "c.txt"), start=2):
+            commit_in_agent(credentialed, agent_id, name, f"{name}\n")
+            resp = client.post(
+                f"/v2/sessions/{session['id']}/messages",
+                json={"prompt": "more work"},
+                headers=auth,
+            )
+            assert resp.status_code == 202, resp.text
+            want = list(range(1, i))
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                rows = client.get(f"/v2/sessions/{session['id']}/changes", headers=auth).json()[
+                    "revisions"
+                ]
+                if [r["n"] for r in rows] == want:
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"revisions never settled to {want}: {rows}")
+
+    def test_changes_never_repeats_one_revision(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """B7: the same logical revision must never return multiple rows —
+        a duplicate stored row (the settle/reconcile race, or pre-fix
+        production data) collapses to its representative."""
+        from control.revisions import Revision, revision_to_dict
+
+        session = _make_session(client, auth, origin)
+        agent_id = _agent_id(credentialed, session["id"])
+        wait_idle(credentialed, agent_id)
+        head = commit_in_agent(credentialed, agent_id, "b.txt", "two\n")
+        client.post(
+            f"/v2/sessions/{session['id']}/messages",
+            json={"prompt": "more work"},
+            headers=auth,
+        )
+        wait_session(client, auth, session["id"], "finished")
+        data = client.get(f"/v2/sessions/{session['id']}/changes", headers=auth).json()
+        assert len(data["revisions"]) == 1
+        rev = data["revisions"][0]
+
+        # Simulate the pre-fix race: a second stored row for the same run.
+        store = credentialed.app.state.revision_store
+        src = store.list_revisions(agent_id)
+        assert len(src) == 1
+        store.put_revision(Revision(**{**revision_to_dict(src[0]), "revision_id": "rev-duprow01"}))
+        assert len(store.list_revisions(agent_id)) == 2
+
+        again = client.get(f"/v2/sessions/{session['id']}/changes", headers=auth).json()
+        assert [r["n"] for r in again["revisions"]] == [rev["n"]]
+        assert again["revisions"][0]["head_sha"] == head
+
+    def test_failed_revision_serializes_error_string(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """A ``materialization_failed`` revision's structured error reaches
+        the wire as the ``RevisionView`` display string — never a 500."""
+        from control.revisions import Revision
+
+        session = _make_session(client, auth, origin)
+        agent_id = _agent_id(credentialed, session["id"])
+        wait_idle(credentialed, agent_id)
+        credentialed.app.state.revision_store.put_revision(
+            Revision(
+                revision_id="rev-fail01",
+                agent_id=agent_id,
+                n=1,
+                run_id="run-1",
+                repo=f"file://{origin[0]}",
+                base_sha=origin[1],
+                status="materialization_failed",
+                error={"code": "artifact_invalid", "message": "boom"},
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        resp = client.get(f"/v2/sessions/{session['id']}/changes", headers=auth)
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()["revisions"]
+        assert rows[0]["status"] == "materialization_failed"
+        assert rows[0]["error"] == "artifact_invalid: boom"
+
     def test_deliver_pushes_to_remote(
         self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
     ) -> None:

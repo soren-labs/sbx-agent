@@ -4,9 +4,11 @@ import { getToken, setToken } from "../api/http";
 import { useI18n, type Locale } from "../i18n";
 import { useTheme, type Theme } from "../theme";
 import { loadDefaults, saveDefaults, type SessionDefaults } from "../state/prefs";
+import { useDocumentTitle } from "../state/title";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
+  useDocumentTitle(t("nav.settings"));
   const { theme, setTheme } = useTheme();
   const [defaults, setDefaultsState] = useState<SessionDefaults>(loadDefaults);
   const [token, setTokenState] = useState(getToken());

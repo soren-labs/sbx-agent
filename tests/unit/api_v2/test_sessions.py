@@ -296,6 +296,45 @@ class TestRetry:
         assert detail["run_count"] == 2
         assert detail["runs"][1]["status"] == "finished"
 
+    def test_retry_clears_stale_error(
+        self, client: TestClient, auth: dict[str, str], monkeypatch
+    ) -> None:
+        """B6: a failed attempt's error stays on its own run row — after a
+        successful retry the session-level error is empty on every read."""
+        monkeypatch.setenv("FAKE_CODEX_SCENARIO", "auth_invalid")
+        session = create_session(client, auth)["session"]
+        failed = wait_session(client, auth, session["id"], "failed")
+        assert failed["session"]["status"] == "failed"
+        assert failed["session"]["error"]["code"] == "auth_invalid"
+        assert failed["runs"][0]["error"]["code"] == "auth_invalid"
+
+        monkeypatch.setenv("FAKE_CODEX_SCENARIO", "success")
+        resp = client.post(f"/v2/sessions/{session['id']}/retry", json={}, headers=auth)
+        assert resp.status_code == 200, resp.text
+        _assert_no_leaks(resp.json())
+        # The retried attempt is the current one — the stale error is gone
+        # even before the new run finishes.
+        assert resp.json()["session"]["error"] is None
+
+        done = wait_session(client, auth, session["id"], "finished")
+        assert done["session"]["error"] is None
+
+        # Post-refresh detail read agrees, and the failed attempt stays
+        # traceable on its own run row.
+        detail = client.get(f"/v2/sessions/{session['id']}", headers=auth).json()
+        assert detail["session"]["status"] == "finished"
+        assert detail["session"]["error"] is None
+        assert detail["run_count"] == 2
+        assert detail["runs"][0]["status"] == "failed"
+        assert detail["runs"][0]["error"]["code"] == "auth_invalid"
+        assert detail["runs"][1]["error"] is None
+
+        # A list read cannot resurrect it either.
+        listed = client.get("/v2/sessions", headers=auth).json()
+        row = next(s for s in listed["sessions"] if s["id"] == session["id"])
+        assert row["status"] == "finished"
+        assert row["error"] is None
+
     def test_retry_active_session_conflicts(
         self, client: TestClient, auth: dict[str, str], monkeypatch
     ) -> None:

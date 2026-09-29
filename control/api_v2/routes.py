@@ -205,7 +205,7 @@ def _view(
         ws=ws,
         aggregate_status=status,
         aggregate_reason=reason,
-        error=latest_run_error(runs_v1) or _dispatch_error(record),
+        error=_session_error(record, status, runs_v1),
         usage=extras["usage"],
         cost_estimate_usd=extras["cost_estimate_usd"],
         turns=extras["turns"],
@@ -367,6 +367,27 @@ def _dispatch_error(record: TaskRecord) -> dict[str, Any] | None:
     return None
 
 
+def _session_error(
+    record: TaskRecord,
+    aggregate_status: str,
+    runs_v1: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """The session-level ``error`` — only while the session itself is failed.
+
+    The current attempt's run error, else the dispatch failure for a
+    session that never got an agent. A failed earlier attempt stays
+    traceable on its own run row: a queued/running/finished retry never
+    resurrects it at session level (B6).
+    """
+    if map_session_status(aggregate_status)[0] != "failed":
+        return None
+    if runs_v1:
+        error = latest_run_error(runs_v1)
+        if error is not None:
+            return error
+    return _dispatch_error(record)
+
+
 def _mark_dispatch_failed(task_store: TaskStore, session_id: str, exc: BaseException) -> None:
     """Persist a terminal dispatch failure on a not-yet-bound record.
 
@@ -417,7 +438,7 @@ def _optimistic_view(
         ws=None,
         aggregate_status=aggregate_status,
         aggregate_reason=aggregate_reason,
-        error=_dispatch_error(record),
+        error=_session_error(record, aggregate_status),
     )
 
 
@@ -658,6 +679,7 @@ def list_sessions(
             ws=ws,
             aggregate_status=status,
             aggregate_reason=reason,
+            error=_session_error(record, status),
         )
         for record, (status, reason, ws) in zip(page, settled)
     ]

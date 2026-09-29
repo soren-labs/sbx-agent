@@ -20,6 +20,7 @@ export function AppShell() {
   useTheme(); // applies data-theme on <html>
   return (
     <div className="shell">
+      <a className="skip-link" href="#main">{t("common.skip")}</a>
       <nav className="side-nav" aria-label="primary">
         <div className="brand">{t("app.name")}</div>
         {NAV.map((n) => (
@@ -38,7 +39,7 @@ export function AppShell() {
         <header className="top-bar">
           <span className="brand">{t("app.name")}</span>
         </header>
-        <main className="main">
+        <main className="main" id="main">
           <div className="main-inner">
             <Outlet />
           </div>

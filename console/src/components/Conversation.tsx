@@ -1,6 +1,9 @@
+import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
+import { toErrorKind } from "../api/normalize";
 import type { ActivityItem, Turn } from "../api/types";
 import { useI18n } from "../i18n";
-import { Icon } from "./icons";
+import { Icon, Spinner } from "./icons";
 
 const ACT_ICON: Record<string, string> = {
   status: "clock",
@@ -12,10 +15,16 @@ const ACT_ICON: Record<string, string> = {
   info: "plug",
 };
 
+function actTime(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
 /** One normalized activity row (Activity view + inline conversation markers). */
 export function ActivityRow({ item }: { item: ActivityItem }) {
   const { t } = useI18n();
-  let content: React.ReactNode = null;
+  let content: ReactNode = null;
   switch (item.kind) {
     case "status":
       content = t("act.status", { status: item.status ?? "" });
@@ -32,6 +41,12 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
               exit {item.exitCode}
             </span>
           )}
+          {item.output ? (
+            <details className="cmd-out">
+              <summary>{t("act.output")}</summary>
+              <pre>{item.output}</pre>
+            </details>
+          ) : null}
         </>
       );
       break;
@@ -54,14 +69,23 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
       );
       break;
     }
-    case "error":
+    case "error": {
+      const code = item.error?.code;
+      const kind = code ? toErrorKind(code) : "unknown";
       content = (
         <>
           {item.error?.message ?? item.text}
           {item.error?.retryable ? ` (${t("act.retryable")})` : ""}
+          {kind === "provider_login" && (
+            <>
+              {" — "}
+              <Link to="/integrations">{t("error.provider_login.action")}</Link>
+            </>
+          )}
         </>
       );
       break;
+    }
     default:
       content = item.text ?? item.kind;
   }
@@ -70,8 +94,9 @@ export function ActivityRow({ item }: { item: ActivityItem }) {
       <span className="a-icon">
         <Icon name={ACT_ICON[item.kind] ?? "plug"} size={12} />
       </span>
-      <span className="grow" style={{ minWidth: 0, overflowWrap: "break-word" }}>
-        {content}
+      <span className="a-body">{content}</span>
+      <span className="a-time" aria-hidden="true">
+        {actTime(item.ts)}
       </span>
     </div>
   );
@@ -123,9 +148,13 @@ export function Conversation({ turns }: { turns: Turn[] }) {
             .filter((a) => a.kind === "message" && a.role === "assistant")
             .sort((a, b) => b.seq - a.seq)[0]?.text ??
           null;
+        const pending =
+          turn.status === "queued" || turn.status === "running";
         return (
           <div key={turn.id}>
-            <div className="turn-sep">{t("session.turn", { n: turn.index })}</div>
+            {turn.index > 1 && (
+              <div className="turn-sep">{t("session.turn", { n: turn.index })}</div>
+            )}
             <div className="msg user">
               <div className="avatar" aria-hidden="true">Y</div>
               <div className="body">
@@ -140,7 +169,7 @@ export function Conversation({ turns }: { turns: Turn[] }) {
                 ))}
               </div>
             )}
-            {(finalMsg || turn.status === "running" || turn.status === "failed") && (
+            {(finalMsg || pending || turn.status === "failed") && (
               <div className="msg">
                 <div className="avatar" aria-hidden="true">A</div>
                 <div className="body">
@@ -148,12 +177,26 @@ export function Conversation({ turns }: { turns: Turn[] }) {
                   {finalMsg ? (
                     <div className="text">{finalMsg}</div>
                   ) : turn.status === "running" ? (
-                    <div className="text muted">…</div>
+                    <div className="text turn-pending">
+                      <Spinner size={13} /> {t("session.working")}
+                    </div>
+                  ) : turn.status === "queued" ? (
+                    <div className="text muted">{t("session.turn_queued")}</div>
                   ) : null}
                   {turn.error && (
                     <div className="act-row error" data-kind="error">
                       <span className="a-icon"><Icon name="warn" size={12} /></span>
-                      {turn.error.message}
+                      <span className="a-body">
+                        {turn.error.message}
+                        {turn.error.source === "provider" && (
+                          <>
+                            {" — "}
+                            <Link to="/integrations">
+                              {t("error.provider_login.action")}
+                            </Link>
+                          </>
+                        )}
+                      </span>
                     </div>
                   )}
                 </div>
