@@ -27,6 +27,7 @@ import json
 import re
 import shlex
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -35,7 +36,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from control import github
 from control.backend import Process, SandboxBackend, SandboxHandle
-from control.config import WORKSPACES_DICT_NAME
+from control.config import WORKSPACES_DICT_NAME, env_float
 from control.latency import observe
 from control.run_errors import clip_message
 from control.sandbox_io import drain, is_local_root, sandbox_env
@@ -521,12 +522,23 @@ class FileWorkspaceStore:
             self._path(agent_id).unlink(missing_ok=True)
 
 
+_WS_GET_CACHE_TTL_S = env_float("SBX_WS_GET_CACHE_TTL_S", 0.75)
+
+
 class ModalDictWorkspaceStore:
-    """Production store backed by ``modal.Dict``. Lazy-imports modal."""
+    """Production store backed by ``modal.Dict``. Lazy-imports modal.
+
+    SOR-268: ~0.75s per-record read-through cache on ``get`` — the V2
+    settle/view paths re-read the same workspace several times per
+    request and the SSE hub ticks it; mutations go through
+    ``get_fresh`` so a read-modify-write never runs on a cached row.
+    """
 
     def __init__(self, name: str = WORKSPACES_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
+        self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._lock = threading.Lock()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -535,9 +547,14 @@ class ModalDictWorkspaceStore:
             self._dict = modal.Dict.from_name(self._name, create_if_missing=True)
         return self._dict
 
-    def get(self, agent_id: str) -> WorkspaceRecord | None:
+    def _get_uncached(self, agent_id: str) -> dict[str, Any] | None:
         with observe("modal_dict.get", store=self._name, key=agent_id):
             raw = self._d().get(agent_id)
+        with self._lock:
+            self._get_cache[agent_id] = (time.monotonic(), raw if isinstance(raw, dict) else None)
+        return raw if isinstance(raw, dict) else None
+
+    def _decode(self, raw: dict[str, Any] | None, agent_id: str) -> WorkspaceRecord | None:
         if raw is None:
             return None
         try:
@@ -547,16 +564,34 @@ class ModalDictWorkspaceStore:
                 WORKSPACE_INVALID, f"stored workspace record for {agent_id} is corrupt: {exc}"
             ) from exc
 
+    def get(self, agent_id: str) -> WorkspaceRecord | None:
+        with self._lock:
+            cached = self._get_cache.get(agent_id)
+        if cached is not None and time.monotonic() - cached[0] < _WS_GET_CACHE_TTL_S:
+            raw = cached[1]
+        else:
+            raw = self._get_uncached(agent_id)
+        return self._decode(raw, agent_id)
+
+    def get_fresh(self, agent_id: str) -> WorkspaceRecord | None:
+        """Uncached read for mutation paths (read-modify-write)."""
+        return self._decode(self._get_uncached(agent_id), agent_id)
+
     def put(self, record: WorkspaceRecord) -> None:
+        raw = record_to_dict(record)
         with observe("modal_dict.put", store=self._name, key=record.agent_id):
-            self._d().put(record.agent_id, record_to_dict(record))
+            self._d().put(record.agent_id, raw)
+        with self._lock:
+            self._get_cache[record.agent_id] = (time.monotonic(), raw)
 
     def delete(self, agent_id: str) -> None:
         try:
             with observe("modal_dict.pop", store=self._name, key=agent_id):
                 self._d().pop(agent_id)
         except KeyError:
-            return
+            pass
+        with self._lock:
+            self._get_cache.pop(agent_id, None)
 
 
 @dataclass(frozen=True)
@@ -1028,7 +1063,7 @@ class WorkspaceService:
         """
         workdir = require_relpath(workdir, code=WORKSPACE_INVALID, what="workdir")
         policy = normalize_git_policy(git, agent_id=agent_id, base_ref=spec.base_ref)
-        if self._store.get(agent_id) is not None:
+        if self._get_fresh(agent_id) is not None:
             raise WorkspaceError(
                 WORKSPACE_INVALID, f"workspace already declared for agent {agent_id}"
             )
@@ -1085,7 +1120,7 @@ class WorkspaceService:
         """
         workdir = require_relpath(workdir, code=WORKSPACE_INVALID, what="workdir")
         policy = normalize_git_policy(git, agent_id=agent_id, base_ref=spec.base_ref)
-        if self._store.get(agent_id) is not None:
+        if self._get_fresh(agent_id) is not None:
             raise WorkspaceError(
                 WORKSPACE_INVALID, f"workspace already declared for agent {agent_id}"
             )
@@ -1370,8 +1405,17 @@ class WorkspaceService:
         record.pull_request = pr
         return self.save(record)
 
+    def _get_fresh(self, agent_id: str) -> WorkspaceRecord | None:
+        """Authoritative read for a mutation: a store that caches ``get``
+        (``ModalDictWorkspaceStore``) exposes ``get_fresh``; other stores
+        serve the live row anyway."""
+        fresh = getattr(self._store, "get_fresh", None)
+        if callable(fresh):
+            return fresh(agent_id)
+        return self._store.get(agent_id)
+
     def _require(self, agent_id: str) -> WorkspaceRecord:
-        record = self._store.get(agent_id)
+        record = self._get_fresh(agent_id)
         if record is None:
             raise WorkspaceError(WORKSPACE_NOT_FOUND, f"no workspace for agent {agent_id}")
         return record

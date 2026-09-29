@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -19,6 +21,8 @@ from control.config import (
     SANDBOX_USD_PER_S,
     TERMINAL_STATUSES,
     TURN_MAX_SECONDS,
+    env_float,
+    env_int,
 )
 from control.credsync import TAG_CRED_BASE_FP
 from control.run_activity import RunActivityStore, compact_run_events
@@ -33,6 +37,24 @@ from control.sandbox_io import drain, read_json, read_text, sandbox_env, write_f
 from control.store import SessionRecord, SessionStore, merge_usage
 
 Clock = Callable[[], datetime]
+
+# SOR-268: bound on concurrent remote teardown jobs (kill / stop-hook /
+# cancels / terminate) — a bulk cancel/close fans out to this many remote
+# calls at once and queues the rest, instead of serializing them under
+# the plane lock on the request path.
+_TEARDOWN_WORKERS = env_int("SBX_TEARDOWN_WORKERS", 4)
+
+# How long stop()/close() wait for the teardown worker before returning.
+# The durable state is already committed, so this only orders fast
+# teardowns (the observable contract: a close that completes teardown
+# inside the window returns with side-effects applied); slow provider
+# work converges on the pool after the ACK.
+_TEARDOWN_ACK_S = env_float("SBX_TEARDOWN_ACK_S", 0.5)
+
+# SOR-268: minimum seconds between remote turn-settle probes triggered by
+# the read path (``maybe_reconcile_turn``). Mutation paths always run the
+# full reconcile — this only caps settle-on-read frequency.
+_RECONCILE_COOLDOWN_S = env_float("SBX_RECONCILE_COOLDOWN_S", 2.0)
 
 
 def _utcnow() -> datetime:
@@ -185,9 +207,68 @@ class ControlPlane:
         # dispatched: post_message must not allocate that turn id to a
         # follow-up run in the gap between provision and dispatch (SOR-82 A2).
         self._first_turn_pending: set[str] = set()
+        # SOR-268: per-session timestamp of the last remote reconcile probe
+        # — ``maybe_reconcile_turn`` throttles the read-path settle so a
+        # busy/SSE-heavy plane doesn't pay poll+read_json on every read.
+        self._reconcile_at: dict[str, float] = {}
+        # SOR-268: bounded executor for the remote teardown tail of
+        # stop()/close() (proc kill, runner stop hook, open-run cancels,
+        # sandbox terminate). The durable intent lands synchronously under
+        # ``_lock``; provider calls converge on these workers so a bulk
+        # cancel/close cannot serialize the whole control plane through
+        # remote Modal calls held under one lock or exhaust the anyio
+        # request pool. Lazily created — threads spawn on first submit.
+        self._remote_ops: ThreadPoolExecutor | None = None
+        self._remote_ops_lock = threading.Lock()
 
     def runner(self, *args: str) -> list[str]:
         return [*self.runner_cmd, *args]
+
+    def _store_get(self, session_id: str) -> SessionRecord | None:
+        """Authoritative point read for the plane's mutation paths.
+
+        A store that caches ``get`` (``ModalDictStore``) exposes
+        ``get_fresh``; every other store serves the live row anyway.
+        Read-modify-write sequences under ``_lock`` must not run on a
+        cached row — a stale base would clobber a concurrent writer's
+        ``put`` on the way back out.
+        """
+        fresh = getattr(self.store, "get_fresh", None)
+        if callable(fresh):
+            return fresh(session_id)
+        return self.store.get(session_id)
+
+    def _submit_teardown(self, fn: Callable[[], None]) -> threading.Event:
+        """Run the remote teardown tail on the bounded worker pool.
+
+        Returns a ``done`` event so the caller may bound its wait
+        (``_TEARDOWN_ACK_S``): teardown that completes inside the window
+        keeps the legacy synchronous ordering; slower provider work
+        converges asynchronously. A pool failure degrades to inline
+        execution — teardown is never dropped.
+        """
+        done = threading.Event()
+
+        def _go() -> None:
+            try:
+                fn()
+            finally:
+                done.set()
+
+        try:
+            with self._remote_ops_lock:
+                if self._remote_ops is None:
+                    self._remote_ops = ThreadPoolExecutor(
+                        max_workers=_TEARDOWN_WORKERS,
+                        thread_name_prefix="sbx-teardown",
+                    )
+                self._remote_ops.submit(_go)
+        except Exception:
+            try:
+                _go()
+            except Exception:
+                pass
+        return done
 
     def public(self, rec: SessionRecord) -> dict[str, Any]:
         now = self.clock()
@@ -427,7 +508,7 @@ class ControlPlane:
         pass the workspace ``base_sha`` gate at prepare time.
         """
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None:
                 raise KeyError(session_id)
             if rec.status != "creating":
@@ -459,7 +540,7 @@ class ControlPlane:
             raise
 
         with self._lock:
-            stored = self.store.get(session_id)
+            stored = self._store_get(session_id)
             if stored is None or stored.status in TERMINAL_STATUSES:
                 # Closed while the sandbox was being created — do not bind it.
                 try:
@@ -545,7 +626,7 @@ class ControlPlane:
             raise
 
         with self._lock:
-            stored = self.store.get(session_id)
+            stored = self._store_get(session_id)
             if stored is None or stored.status in TERMINAL_STATUSES:
                 # Closed concurrently while init ran — do not resurrect it.
                 try:
@@ -568,7 +649,7 @@ class ControlPlane:
         """Terminal ``lost`` transition for a failed create; keeps sandbox_id."""
         with self._lock:
             self._first_turn_pending.discard(rec.id)
-            stored = self.store.get(rec.id) or rec
+            stored = self._store_get(rec.id) or rec
             if stored.status in TERMINAL_STATUSES:
                 return
             stored.status = "lost"
@@ -605,7 +686,7 @@ class ControlPlane:
         """
         checkpoints = self.checkpoints
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None or rec.status != "suspended":
                 return
         if checkpoints is None:
@@ -622,7 +703,7 @@ class ControlPlane:
             self._mark_unrecoverable(session_id)
             raise SessionConflict("session_not_runnable") from None
         with self._lock:
-            stored = self.store.get(session_id)
+            stored = self._store_get(session_id)
             if stored is None or stored.status != "suspended":
                 # Closed/terminated while the sandbox was being restored —
                 # do not bind it.
@@ -644,7 +725,7 @@ class ControlPlane:
     def _mark_unrecoverable(self, session_id: str) -> None:
         """Terminal ``lost`` for a suspended agent that cannot be restored."""
         with self._lock:
-            stored = self.store.get(session_id)
+            stored = self._store_get(session_id)
             if stored is None or stored.status != "suspended":
                 return
             stored.status = "lost"
@@ -701,7 +782,7 @@ class ControlPlane:
         self.recover_session(session_id)
         enqueued = False
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None:
                 raise KeyError(session_id)
             if rec.status in TERMINAL_STATUSES:
@@ -797,7 +878,7 @@ class ControlPlane:
             # session means the sandbox died between the liveness check and
             # dispatch, so the refusal is the canonical session_not_runnable
             # rather than an unhandled 500.
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is not None and rec.status in TERMINAL_STATUSES:
                 raise SessionConflict("session_not_runnable") from None
             raise
@@ -841,7 +922,7 @@ class ControlPlane:
             n = ns[0]
             turn_id = f"turn-{n}"
             with self._lock:
-                rec = self.store.get(session_id)
+                rec = self._store_get(session_id)
                 if (
                     rec is None
                     or rec.status != "idle"
@@ -925,7 +1006,7 @@ class ControlPlane:
         # checkpoint first so the queued turn lands on the same agent.
         self.recover_session(session_id)
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None:
                 self._first_turn_pending.discard(session_id)
                 raise KeyError(session_id)
@@ -1079,7 +1160,7 @@ class ControlPlane:
         (``drop_message=False``) whose turn id must stay allocated.
         """
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None or rec.current_turn_id != turn_id:
                 return
             try:
@@ -1138,7 +1219,7 @@ class ControlPlane:
         # unlocked, so untrusted work can strand this watcher thread but
         # never the whole control plane (SOR-130 review).
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             handle = rec.handle() if rec is not None else None
         payload = None
         if handle is not None:
@@ -1224,7 +1305,7 @@ class ControlPlane:
         # success — the verdict computed unlocked cannot resurrect a run.
         eager = False
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             active = rec is not None and rec.status not in TERMINAL_STATUSES
             now = self.clock()
             if active and payload is not None:
@@ -1354,7 +1435,7 @@ class ControlPlane:
                 except Exception:
                     pass
             with self._lock:
-                stored = self.store.get(session_id)
+                stored = self._store_get(session_id)
                 if stored is not None and stored.current_turn_id == turn_id:
                     stored.current_turn_id = None
                     stored.current_turn_n = None
@@ -1418,7 +1499,7 @@ class ControlPlane:
             return
         try:
             with self._lock:
-                rec = self.store.get(session_id)
+                rec = self._store_get(session_id)
             if rec is None:
                 return
             hook(rec, handle, n)
@@ -1448,7 +1529,7 @@ class ControlPlane:
         if outcome is None or outcome.code != "committed" or not outcome.fingerprint:
             return
         with self._lock:
-            stored = self.store.get(rec.id)
+            stored = self._store_get(rec.id)
             if stored is not None and stored.status not in TERMINAL_STATUSES:
                 stored.sandbox_tags[TAG_CRED_BASE_FP] = outcome.fingerprint
                 self.store.put(stored)
@@ -1473,7 +1554,7 @@ class ControlPlane:
         with self._lock:
             if session_id in self._live:
                 return False
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if (
                 rec is None
                 or rec.status != "running"
@@ -1486,6 +1567,13 @@ class ControlPlane:
             handle = rec.handle()
         if handle is None:
             return False
+        # Stamp before the remote probe — ``maybe_reconcile_turn`` reads
+        # this as "a probe ran recently"; a failed probe counts the same
+        # so a wedged sandbox can't turn the read path into a retry loop.
+        self._reconcile_at[session_id] = time.monotonic()
+        if len(self._reconcile_at) > 4096:
+            cutoff = time.monotonic() - max(_RECONCILE_COOLDOWN_S * 10, 60.0)
+            self._reconcile_at = {key: at for key, at in self._reconcile_at.items() if at > cutoff}
         try:
             if not self.backend.poll(handle).alive:
                 # Dead sandbox: the reaper's lost/timed_out transition owns it.
@@ -1497,6 +1585,23 @@ class ControlPlane:
             return False
         self._finish_turn(session_id, turn_id, n)
         return True
+
+    def maybe_reconcile_turn(self, session_id: str) -> bool:
+        """Read-path reconcile: at most one remote probe per cooldown.
+
+        ``reconcile_turn`` costs two sandbox round-trips (``poll`` +
+        ``turns/<n>.json`` read) when it fires — the V2 settle path calls
+        it on every read of a running session, so list size × SSE clients
+        multiplied remote calls into the SOR-260 starvation findings.
+        Read callers use this throttled form; mutation paths (post /
+        stop / close) still call ``reconcile_turn`` directly — a cancel
+        must see fresh turn evidence, never a cached skip.
+        """
+        if session_id in self._live:
+            return False
+        if time.monotonic() - self._reconcile_at.get(session_id, 0.0) < (_RECONCILE_COOLDOWN_S):
+            return False
+        return self.reconcile_turn(session_id)
 
     def reconcile_turns(self) -> list[str]:
         """Settle every watcher-less ``running`` session from turn evidence.
@@ -1553,12 +1658,12 @@ class ControlPlane:
         # be rewritten to CANCELLED by a stop landing after its watcher died.
         self.reconcile_turn(session_id)
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None:
                 raise KeyError(session_id)
             self._first_turn_pending.discard(session_id)
             handle = rec.handle()
-            live = self._live.get(session_id)
+            live = self._live.pop(session_id, None)
             if rec.status == "running":
                 if self.run_ledger is not None and rec.current_turn_n is not None:
                     # Persist CANCELLED before the session goes idle: a late
@@ -1570,54 +1675,72 @@ class ControlPlane:
                 rec.updated_at = self.clock()
                 rec.last_activity_at = rec.updated_at
                 self.store.put(rec)
-        if live is not None:
-            live.proc.kill()
-        if handle is not None:
-            try:
-                stop = self.backend.exec(handle, self.runner("stop"), env=sandbox_env(handle))
-                drain(stop)
-            except Exception:
-                # Best-effort hook only: the ledger cancel + proc kill above
-                # are the real stop; a dead sandbox has nothing left to run
-                # it on and must not mask an already-persisted cancel.
-                pass
-        with self._lock:
-            self._live.pop(session_id, None)
-            rec = self.store.get(session_id)
-            if rec is not None and rec.status == "suspended":
+            rec = self._store_get(session_id) or rec
+            if rec.status == "suspended":
                 # Already released for checkpoint recovery — the public
                 # equivalent of an idle, runnable agent.
-                return "idle"
-            final = rec.status if rec else "closed"
-        # SOR-224: a cancelled run frees the agent — the next queued turn
-        # (if any) dispatches now. Durable queue entries already cancelled
-        # are skipped by the drain.
-        if final == "idle":
-            try:
-                self.drain_queued(session_id)
-            except Exception:
-                pass
+                final = "idle"
+            else:
+                final = rec.status or "closed"
+        # SOR-268: the remote tail (turn proc kill + runner stop hook +
+        # queued drain) converges on the bounded teardown pool — the
+        # durable cancel is already persisted, so the caller ACKs without
+        # waiting on seconds of provider calls, and a bulk cancel cannot
+        # serialize the plane through remote work held under ``_lock``.
+        done = self._submit_teardown(
+            lambda: self._converge_stop(session_id, live=live, handle=handle, final=final)
+        )
+        done.wait(_TEARDOWN_ACK_S)
         return final
+
+    def _converge_stop(
+        self,
+        session_id: str,
+        *,
+        live: LiveTurn | None,
+        handle: SandboxHandle | None,
+        final: str,
+    ) -> None:
+        """Remote tail of ``stop`` on a teardown worker; all best-effort
+        because the ledger cancel + record update are already durable."""
+        try:
+            if live is not None:
+                try:
+                    live.proc.kill()
+                except Exception:
+                    pass
+            if handle is not None:
+                try:
+                    stop = self.backend.exec(handle, self.runner("stop"), env=sandbox_env(handle))
+                    drain(stop)
+                except Exception:
+                    # Best-effort hook only: the ledger cancel + proc kill
+                    # above are the real stop; a dead sandbox has nothing
+                    # left to run it on and must not mask the cancel.
+                    pass
+            # SOR-224: a cancelled run frees the agent — the next queued
+            # turn (if any) dispatches now. Durable queue entries already
+            # cancelled are skipped by the drain.
+            if final == "idle":
+                try:
+                    self.drain_queued(session_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def close(self, session_id: str) -> SessionRecord:
         # Reconcile before cancelling open runs: a provider success must land
         # FINISHED, not CANCELLED, when the watcher died ahead of the close.
         self.reconcile_turn(session_id)
         with self._lock:
-            rec = self.store.get(session_id)
+            rec = self._store_get(session_id)
             if rec is None:
                 raise KeyError(session_id)
             self._first_turn_pending.discard(session_id)
             live = self._live.pop(session_id, None)
             handle = rec.handle()
             self._run_meta.pop(session_id, None)
-            if self.run_ledger is not None:
-                # Runs still open can never complete once the sandbox is
-                # terminated; finalize them as CANCELLED so they stay
-                # truthful after teardown.
-                for record in self.run_ledger.list(session_id):
-                    if not record.terminal:
-                        self.run_ledger.cancel(session_id, record.n, message="agent closed")
             now = self.clock()
             rec.status = "closed"
             rec.ended_at = now
@@ -1625,35 +1748,76 @@ class ControlPlane:
             rec.current_turn_id = None
             rec.current_turn_n = None
             self.store.put(rec)
-        if live is not None:
-            live.proc.kill()
-        if handle is not None and self.snapshot_hook is not None:
-            try:
-                self.snapshot_hook(rec, handle)
-            except Exception:
-                pass
-        # SOR-180: the agent is gone for good — drop its checkpoint record
-        # so it can never be restored past close.
-        checkpoints = self.checkpoints
-        if checkpoints is not None:
-            try:
-                checkpoints.discard(session_id)
-            except Exception:
-                pass
-        # SOR-147: last write-back before teardown — a CLI-rotated credential
-        # must not die with the sandbox.
-        self._writeback_credentials(rec, handle)
-        if handle is not None:
-            try:
-                self.backend.terminate(handle)
-            except Exception:
-                # The record is already terminal and keeps sandbox_id/root/
-                # tags, so the reaper retries the terminate (SOR-80) while the
-                # caller can still release capacity (slots, leases).
-                pass
-        stored = self.store.get(session_id)
-        assert stored is not None
-        return stored
+        # SOR-268: the remote tail (open-run cancels, turn proc kill,
+        # workspace snapshot, checkpoint discard, credential write-back,
+        # sandbox terminate) converges on the bounded teardown pool. The
+        # run cancels re-list *after* the closed mark landed: a begin
+        # racing ``close`` either lost the lock (refused by the terminal
+        # check) or committed first and is seen by the re-list. This is
+        # what keeps a bulk close from wedging the control plane for
+        # minutes — the wedge was remote Modal calls held under ``_lock``.
+        done = self._submit_teardown(
+            lambda: self._converge_close(session_id, rec=rec, live=live, handle=handle)
+        )
+        done.wait(_TEARDOWN_ACK_S)
+        return rec
+
+    def _converge_close(
+        self,
+        session_id: str,
+        *,
+        rec: SessionRecord,
+        live: LiveTurn | None,
+        handle: SandboxHandle | None,
+    ) -> None:
+        """Remote tail of ``close`` on a teardown worker; all steps
+        best-effort — the record is already terminal and the reaper
+        retries a failed terminate (SOR-80)."""
+        try:
+            if self.run_ledger is not None:
+                try:
+                    # Runs still open can never complete once the sandbox
+                    # is terminated; finalize them as CANCELLED so they
+                    # stay truthful after teardown. Fresh list: an open
+                    # run that committed just before the close mark must
+                    # be seen here, never left open.
+                    for record in self.run_ledger.list_fresh(session_id):
+                        if not record.terminal:
+                            self.run_ledger.cancel(session_id, record.n, message="agent closed")
+                except Exception:
+                    pass
+            if live is not None:
+                try:
+                    live.proc.kill()
+                except Exception:
+                    pass
+            if handle is not None and self.snapshot_hook is not None:
+                try:
+                    self.snapshot_hook(rec, handle)
+                except Exception:
+                    pass
+            # SOR-180: the agent is gone for good — drop its checkpoint
+            # record so it can never be restored past close.
+            checkpoints = self.checkpoints
+            if checkpoints is not None:
+                try:
+                    checkpoints.discard(session_id)
+                except Exception:
+                    pass
+            # SOR-147: last write-back before teardown — a CLI-rotated
+            # credential must not die with the sandbox.
+            self._writeback_credentials(rec, handle)
+            if handle is not None:
+                try:
+                    self.backend.terminate(handle)
+                except Exception:
+                    # The record is already terminal and keeps
+                    # sandbox_id/root/tags, so the reaper retries the
+                    # terminate (SOR-80) while the caller can still
+                    # release capacity (slots, leases).
+                    pass
+        except Exception:
+            pass
 
 
 def format_sse(event_id: int, payload: dict[str, Any]) -> str:

@@ -27,19 +27,23 @@ advisory answer can never create on a dead account.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import subprocess
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from control.accounts import cooldown_expired
+from control.config import env_float, env_int
 from control.ports import Account, AccountRegistry
 
 # Canonical provider set — same tuple the scheduler/adapter registry use.
@@ -1612,17 +1616,62 @@ class FileTaskStore:
         return None
 
 
+# SOR-268: per-record read-through TTL for ``task/<id>`` point gets. The
+# detail/list/SSE paths re-read the same record several times inside one
+# request and the shared SSE hub polls it — the cache collapses those to
+# ~one remote get per record per TTL window. Writes go through ``put``
+# (write-through), so the only staleness window is a cross-container
+# writer's ``put`` — bounded by this TTL, same trade the session listing
+# cache already makes.
+_TASK_GET_CACHE_TTL_S = env_float("SBX_TASK_GET_CACHE_TTL_S", 0.5)
+
+# Owner-doc summary cap: ``owner/<owner>`` embeds recent record summaries
+# so ``list`` is a single remote read; ids are never dropped — ids whose
+# summary aged out are fetched point-wise through a bounded pool.
+_TASK_SUMMARY_MAX = env_int("SBX_TASK_SUMMARY_MAX", 500)
+
+# Fanout for backfilling ids whose summary is not in the owner doc (cap
+# exceeded or records written by a pre-index deploy).
+_TASK_DICT_FANOUT = 8
+
+
+def _task_summary(record: TaskRecord) -> dict[str, Any]:
+    """Owner-doc payload: the whole record minus ``response`` (the pinned
+    create reply — only idempotency replay needs it, and that path goes
+    through the ``idem/`` point index + full ``task/<id>`` read)."""
+    summary = record_to_dict(record)
+    summary["response"] = None
+    return summary
+
+
 class ModalDictTaskStore:
     """Production store backed by ``modal.Dict`` (``sbx-tasks``).
 
-    Records live under ``task/<id>``; a per-owner index ``owner/<owner>``
-    keeps list()/find_by_idempotency() cheap without a full-dict scan.
+    Key layout (SOR-268 indexed read model):
+
+    - ``task/<id>``             -> full record dict (authoritative)
+    - ``owner/<owner>``         -> ``{"ids": [...], "records": {id: summary}}``
+    - ``agent/<agent_id>``      -> task id (``find_by_agent`` point index)
+    - ``idem/<owner>/<hash>``   -> task id (``Idempotency-Key`` replay index)
+    - ``__owners__``            -> owner list (``list(None)`` index-of-indexes)
+
+    ``list(owner)`` reads the owner doc — one remote call — instead of
+    N+1 serial point gets. ``put`` batches the record + index rows into
+    one ``Dict.update`` (a single ``DictUpdateRequest`` RPC) after one
+    owner-doc read, so a write costs ~2 round trips instead of ~5. Ids in
+    the owner doc whose summary was trimmed (cap) or never embedded
+    (pre-index data) are backfilled through a bounded pool — a listing
+    can degrade in latency, never in completeness. Lost/corrupt index
+    rows self-heal: ``put`` rewrites them from the record, and
+    ``find_by_*`` falls back to an owner scan when the point row is
+    absent (pre-index records).
     """
 
     def __init__(self, name: str = TASKS_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
         self._lock = threading.Lock()
+        self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1631,31 +1680,146 @@ class ModalDictTaskStore:
             self._dict = modal.Dict.from_name(self._name, create_if_missing=True)
         return self._dict
 
+    @staticmethod
+    def _task_key(task_id: str) -> str:
+        return f"task/{task_id}"
+
+    @staticmethod
+    def _owner_key(owner: str) -> str:
+        return f"owner/{owner}"
+
+    @staticmethod
+    def _agent_key(agent_id: str) -> str:
+        digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
+        return f"agent/{digest}"
+
+    @staticmethod
+    def _idem_key(owner: str, key: str) -> str:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+        return f"idem/{owner_hash}/{digest}"
+
+    @staticmethod
+    def _batch(d: Any, writes: dict[str, Any]) -> None:
+        """One-RPC multi-key write via ``Dict.update`` (1.5.5+); older
+        clients degrade to per-key puts."""
+        update = getattr(d, "update", None)
+        if callable(update):
+            update(writes)
+            return
+        for key, value in writes.items():
+            d.put(key, value)
+
+    @staticmethod
+    def _owner_doc(raw: Any) -> tuple[list[str], dict[str, dict[str, Any]]]:
+        """Normalize the owner index row: ``(ids, summaries)`` for both the
+        current dict shape and the pre-index bare id list."""
+        if isinstance(raw, dict):
+            ids = [str(i) for i in raw.get("ids") or []]
+            records = {
+                str(k): v for k, v in (raw.get("records") or {}).items() if isinstance(v, dict)
+            }
+            return ids, records
+        if isinstance(raw, list):
+            return [str(i) for i in raw], {}
+        return [], {}
+
+    def _trim_summaries(self, records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        if len(records) <= _TASK_SUMMARY_MAX:
+            return records
+        newest = sorted(records.values(), key=lambda r: str(r.get("created_at") or ""))[
+            -_TASK_SUMMARY_MAX:
+        ]
+        keep = {str(r.get("id")) for r in newest}
+        return {k: v for k, v in records.items() if k in keep}
+
     def put(self, record: TaskRecord) -> None:
         d = self._d()
-        d.put(f"task/{record.id}", record_to_dict(record))
-        index_key = f"owner/{record.owner}"
+        task_key = self._task_key(record.id)
         with self._lock:
-            ids = list(d.get(index_key) or [])
-            if record.id not in ids:
-                ids.append(record.id)
-            d.put(index_key, ids)
-            self._index_owner(record.owner)
+            if getattr(record, "_response_unloaded", False):
+                # A record materialized from the owner-doc summary never
+                # loaded the pinned create ``response`` — a write-back
+                # (e.g. a status-transition settle) must merge the stored
+                # value instead of erasing it (SOR-268 review finding).
+                stored = d.get(task_key)
+                if isinstance(stored, dict) and stored.get("response") is not None:
+                    record.response = stored["response"]
+                record._response_unloaded = False
+            raw = record_to_dict(record)
+            writes: dict[str, Any] = {task_key: raw}
+            if record.owner:
+                owner_key = self._owner_key(record.owner)
+                ids, summaries = self._owner_doc(d.get(owner_key))
+                if record.id not in ids:
+                    ids.append(record.id)
+                summaries[record.id] = _task_summary(record)
+                writes[owner_key] = {"ids": ids, "records": self._trim_summaries(summaries)}
+                self._index_owner(record.owner, writes)
+            if record.agent_id:
+                writes[self._agent_key(record.agent_id)] = record.id
+            meta = record.idempotency or {}
+            if isinstance(meta.get("key"), str) and record.owner:
+                writes[self._idem_key(record.owner, meta["key"])] = record.id
+            self._batch(d, writes)
+        with self._lock:
+            self._get_cache[task_key] = (time.monotonic(), raw)
+
+    def _get_uncached(self, task_id: str) -> dict[str, Any] | None:
+        raw = self._d().get(self._task_key(task_id))
+        with self._lock:
+            self._get_cache[self._task_key(task_id)] = (time.monotonic(), raw)
+        return raw if isinstance(raw, dict) else None
 
     def get(self, task_id: str) -> TaskRecord | None:
-        raw = self._d().get(f"task/{task_id}")
+        task_key = self._task_key(task_id)
+        with self._lock:
+            cached = self._get_cache.get(task_key)
+        if cached is not None and time.monotonic() - cached[0] < _TASK_GET_CACHE_TTL_S:
+            raw = cached[1]
+        else:
+            raw = self._get_uncached(task_id)
+        return record_from_dict(raw) if raw is not None else None
+
+    def get_fresh(self, task_id: str) -> TaskRecord | None:
+        """Uncached point read for mutation paths (read-modify-write must
+        not run on a cached row)."""
+        raw = self._get_uncached(task_id)
         return record_from_dict(raw) if raw is not None else None
 
     def delete(self, task_id: str) -> None:
         rec = self.get(task_id)
-        try:
-            self._d().pop(f"task/{task_id}")
-        except KeyError:
-            pass
+        d = self._d()
+        task_key = self._task_key(task_id)
+        pops = [task_key]
         if rec is not None:
-            index_key = f"owner/{rec.owner}"
-            ids = [i for i in list(self._d().get(index_key) or []) if i != task_id]
-            self._d().put(index_key, ids)
+            if rec.agent_id:
+                pops.append(self._agent_key(rec.agent_id))
+            meta = rec.idempotency or {}
+            if rec.owner and isinstance(meta.get("key"), str):
+                pops.append(self._idem_key(rec.owner, meta["key"]))
+        for key in pops:
+            try:
+                d.pop(key)
+            except KeyError:
+                pass
+        if rec is not None and rec.owner:
+            owner_key = self._owner_key(rec.owner)
+            with self._lock:
+                ids, summaries = self._owner_doc(d.get(owner_key))
+                ids = [i for i in ids if i != task_id]
+                summaries.pop(task_id, None)
+                d.put(owner_key, {"ids": ids, "records": summaries})
+        with self._lock:
+            self._get_cache.pop(task_key, None)
+
+    def _pooled_gets(self, task_ids: list[str]) -> list[TaskRecord]:
+        """Bounded-parallel point reads for ids missing a doc summary."""
+        if not task_ids:
+            return []
+        with ThreadPoolExecutor(max_workers=_TASK_DICT_FANOUT) as pool:
+            raws = list(pool.map(self._get_uncached, task_ids))
+        return [record_from_dict(raw) for raw in raws if isinstance(raw, dict)]
 
     def list(self, owner: str | None = None) -> list[TaskRecord]:
         if owner is None:
@@ -1666,26 +1830,61 @@ class ModalDictTaskStore:
             for name in owners:
                 out.extend(self.list(str(name)))
             return out
-        out = []
-        for task_id in list(self._d().get(f"owner/{owner}") or []):
-            rec = self.get(str(task_id))
-            if rec is not None:
-                out.append(rec)
+        ids, summaries = self._owner_doc(self._d().get(self._owner_key(owner)))
+        out: list[TaskRecord] = []
+        missing: list[str] = []
+        for task_id in ids:
+            summary = summaries.get(task_id)
+            if summary is not None:
+                record = record_from_dict(summary)
+                # The summary omits ``response`` — flag it so ``put``
+                # merges the stored value instead of writing a None that
+                # erases the pinned create reply.
+                record._response_unloaded = True
+                out.append(record)
+            else:
+                missing.append(task_id)
+        out.extend(self._pooled_gets(missing))
         return sorted(out, key=lambda r: r.created_at)
 
     def find_by_idempotency(self, owner: str, key: str) -> TaskRecord | None:
+        task_id = self._d().get(self._idem_key(owner, key))
+        if isinstance(task_id, str) and task_id:
+            # Full row, not the summary: the replay response is pinned.
+            return self.get_fresh(task_id)
+        # Pre-index records have no point row — scan the owner doc once.
         for rec in self.list(owner):
             meta = rec.idempotency or {}
             if meta.get("key") == key:
-                return rec
+                return self.get_fresh(rec.id) or rec
         return None
 
-    def _index_owner(self, owner: str) -> None:
+    def find_by_agent(self, agent_id: str) -> TaskRecord | None:
+        task_id = self._d().get(self._agent_key(agent_id))
+        if isinstance(task_id, str) and task_id:
+            return self.get(task_id)
+        # Pre-index records: fall back to the owner scan (one read per
+        # owner, not one per task).
+        for rec in self.list():
+            if rec.agent_id == agent_id:
+                return self.get_fresh(rec.id) or rec
+        return None
+
+    def _index_owner(self, owner: str, writes: dict[str, Any]) -> None:
+        """Append ``owner`` to ``__owners__`` inside the same batch when
+        unseen; the in-memory ``self._owners`` set makes this a no-op for
+        steady-state writes."""
+        if owner in getattr(self, "_owners_seen", set()):
+            return
         d = self._d()
         owners = list(d.get("__owners__") or [])
         if owner not in owners:
             owners.append(owner)
-            d.put("__owners__", owners)
+            writes["__owners__"] = owners
+        seen = getattr(self, "_owners_seen", None)
+        if seen is None:
+            seen = self._owners_seen = set()
+        seen.add(owner)
 
 
 __all__ = [

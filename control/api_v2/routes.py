@@ -15,6 +15,7 @@ import queue
 import threading
 import time
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import Depends, Header, Query, Request
@@ -43,7 +44,7 @@ from control.api_v1.errors import V1ApiError, not_found
 from control.api_v1.lifecycle import RUN_TERMINAL, RunStateStore, request_fingerprint
 from control.api_v1.schemas import Prompt
 from control.api_v1.state import V1State
-from control.api_v2 import events as _events
+from control.api_v2 import events_hub as _hub_mod
 from control.api_v2 import router
 from control.api_v2.diff import parse_unified_diff
 from control.api_v2.projection import (
@@ -71,10 +72,9 @@ from control.api_v2.schemas import (
     SessionRetryResponse,
 )
 from control.artifacts import ArtifactError
-from control.config import TERMINAL_STATUSES
+from control.config import TERMINAL_STATUSES, env_int
 from control.ports import AccountRegistry, ApiKey, Scheduler
 from control.sandbox_io import read_text, sandbox_env
-from control.service import format_sse
 from control.tasks import TaskRecord, TaskStore, _iso_now
 
 RUNS_FIRST_VIEW_MAX = 25
@@ -100,16 +100,64 @@ def _require_session(task_store: TaskStore, key: ApiKey, session_id: str) -> Tas
     return record
 
 
+def _prefetch_reads(record: TaskRecord, plane: Any) -> dict[str, Any]:
+    """Concurrent remote reads the settle+view path needs: live session
+    record, workspace doc, run-ledger rows.
+
+    Serial these are three remote round-trips (Dict gets + list); fanned
+    out they cost one round-trip wall-clock, which is what keeps a cold
+    ``GET /v2/sessions/{id}`` inside its P95 budget at Modal latency.
+    """
+    agent_id = record.agent_id
+    out: dict[str, Any] = {"ws": None, "rec": None, "rows": None}
+    if agent_id is None:
+        return out
+    ledger = getattr(plane, "run_ledger", None)
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="sbx-read") as pool:
+        f_rec = pool.submit(plane.get, agent_id)
+        f_ws = pool.submit(_tasks._ws_record, plane, agent_id)
+        f_rows = pool.submit(lambda: list(ledger.list(agent_id))) if ledger is not None else None
+        try:
+            out["rec"] = f_rec.result()
+        except Exception:
+            out["rec"] = None
+        try:
+            out["ws"] = f_ws.result()
+        except Exception:
+            out["ws"] = None
+        if f_rows is not None:
+            try:
+                out["rows"] = f_rows.result()
+            except Exception:
+                out["rows"] = None
+        if out["rows"] is not None:
+            out["statuses"] = sorted((r.n, r.status) for r in out["rows"])
+    return out
+
+
 def _settle_session(
     record: TaskRecord,
     task_store: TaskStore,
     plane: Any,
     run_states: RunStateStore,
+    *,
+    prefetched: dict[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any] | None]:
     """``_settle_task`` that also returns the aggregate reason (needed for
     the ``provisioning`` phase). Same read-path convergence contract."""
-    ws = _tasks._ws_record(plane, record.agent_id)
-    status, reason = _tasks._aggregate_status(record, run_states, plane, ws)
+    ws = (
+        prefetched.get("ws")
+        if prefetched is not None
+        else _tasks._ws_record(plane, record.agent_id)
+    )
+    agg_pre = None
+    if prefetched is not None:
+        agg_pre = {}
+        if prefetched.get("rec") is not None:
+            agg_pre["rec"] = prefetched["rec"]
+        if "statuses" in prefetched:
+            agg_pre["statuses"] = prefetched["statuses"]
+    status, reason = _tasks._aggregate_status(record, run_states, plane, ws, prefetched=agg_pre)
     if status != record.status:
         record.transitions.append({"status": status, "reason": reason, "at": _iso_now()})
         record.status = status
@@ -131,20 +179,24 @@ def _view(
     reporter: Any,
     task_store: TaskStore,
     settled: tuple[str, str, dict[str, Any] | None] | None = None,
+    runs_v1: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Session projection with live extras (usage/cost/turns/error).
 
     ``settled`` is the caller's ``(status, reason, ws)`` triple when it
-    already paid ``_settle_session``; otherwise it is paid here.
+    already paid ``_settle_session``; otherwise it is paid here. ``runs_v1``
+    is the caller's already-rendered run list when the detail path paid
+    the ledger read once.
     """
     if settled is None:
         settled = _settle_session(record, task_store, plane, run_states)
     status, reason, ws = settled
     extras = live_extras(record, plane)
-    runs_v1: list[dict[str, Any]] = []
-    rec = plane.get(record.agent_id) if record.agent_id else None
-    if rec is not None:
-        runs_v1 = _tasks._task_runs(plane, rec, v1, run_states, scheduler, reporter)
+    if runs_v1 is None:
+        runs_v1 = []
+        rec = plane.get(record.agent_id) if record.agent_id else None
+        if rec is not None:
+            runs_v1 = _tasks._task_runs(plane, rec, v1, run_states, scheduler, reporter)
     return session_view(
         record,
         plane=plane,
@@ -170,8 +222,29 @@ def _detail(
     reporter: Any,
     task_store: TaskStore,
 ) -> dict[str, Any]:
-    """Bounded first view: session + its most recent runs, one round-trip."""
-    settled = _settle_session(record, task_store, plane, run_states)
+    """Bounded first view: session + its most recent runs.
+
+    SOR-268: the detail read fans its remote reads (live record, workspace
+    doc, ledger rows) out concurrently and renders every run off that one
+    ledger list — the serial walk is what made cold detail reads take
+    ~3.4-4.7s in the SOR-260 gate.
+    """
+    prefetched = _prefetch_reads(record, plane)
+    settled = _settle_session(record, task_store, plane, run_states, prefetched=prefetched)
+    rec = prefetched.get("rec")
+    if rec is None and record.agent_id is not None:
+        rec = plane.get(record.agent_id)
+    runs_v1: list[dict[str, Any]] = []
+    if rec is not None:
+        runs_v1 = _tasks._task_runs(
+            plane,
+            rec,
+            v1,
+            run_states,
+            scheduler,
+            reporter,
+            rows=prefetched.get("rows"),
+        )
     session = _view(
         record,
         plane=plane,
@@ -181,11 +254,8 @@ def _detail(
         reporter=reporter,
         task_store=task_store,
         settled=settled,
+        runs_v1=runs_v1,
     )
-    runs_v1: list[dict[str, Any]] = []
-    rec = plane.get(record.agent_id) if record.agent_id else None
-    if rec is not None:
-        runs_v1 = _tasks._task_runs(plane, rec, v1, run_states, scheduler, reporter)
     runs = [run_view(r) for r in runs_v1]
     return {
         "session": session,
@@ -238,6 +308,10 @@ def _to_task_request(body: CreateSessionRequest) -> _tasks.CreateTaskRequest:
 
 _ACK_BUDGET_ENV = "SBX_V2_ACK_BUDGET_S"
 _DEFAULT_ACK_BUDGET_S = 0.5
+
+# SOR-268: concurrent settles on the list endpoint — one remote batch
+# per page row serialized into N × remote latency in the gate run.
+_SETTLE_FANOUT = env_int("SBX_V2_SETTLE_FANOUT", 8)
 
 _PRE_BIND_CANCELLED: set[str] = set()
 """Session ids cancelled before the create worker bound an agent. The
@@ -580,21 +654,35 @@ def list_sessions(
     records.sort(key=lambda r: (r.created_at, r.id), reverse=True)
     total = len(records)
     page = records[offset : offset + limit]
-    sessions = []
-    for record in page:
-        status, reason, ws = _settle_session(record, task_store, plane, run_states)
-        sessions.append(
-            session_view(
-                record,
-                plane=plane,
-                task_store=task_store,
-                run_states=run_states,
-                ws=ws,
-                aggregate_status=status,
-                aggregate_reason=reason,
-                error=_session_error(record, status),
+    # SOR-268: a settle pays a few cached/pooled remote reads (plane.get,
+    # run_states, ws) — serialized, the page was N × remote latency (the
+    # SOR-260 B2 finding). Bound the fanout so the pool can't itself
+    # become a thundering herd on the remote store.
+    if page:
+        with ThreadPoolExecutor(
+            max_workers=_SETTLE_FANOUT, thread_name_prefix="sbx-v2-settle"
+        ) as pool:
+            settled = list(
+                pool.map(
+                    lambda r: _settle_session(r, task_store, plane, run_states),
+                    page,
+                )
             )
+    else:
+        settled = []
+    sessions = [
+        session_view(
+            record,
+            plane=plane,
+            task_store=task_store,
+            run_states=run_states,
+            ws=ws,
+            aggregate_status=status,
+            aggregate_reason=reason,
+            error=_session_error(record, status),
         )
+        for record, (status, reason, ws) in zip(page, settled)
+    ]
     return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
 
 
@@ -791,6 +879,7 @@ def cancel_session(
 @router.post("/sessions/{session_id}/retry", response_model=SessionRetryResponse)
 def retry_session(
     session_id: str,
+    request: Request,
     body: SessionRetryRequest | None = None,
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
@@ -802,37 +891,64 @@ def retry_session(
     task_store: TaskStore = Depends(get_task_store),
 ) -> dict[str, Any]:
     """Retry the failed step — a failed delivery re-publishes, a terminal
-    run verdict re-runs the original (or overridden) prompt."""
-    _require_session(task_store, key, session_id)
+    run verdict re-runs the original (or overridden) prompt.
+
+    SOR-268: ``retry_task`` serializes settle + cancel/dispatch work, so
+    it runs on a worker under ``_ack_budget``; a timeout answers
+    ``run: null`` — accepted, the retry still landing — which the schema
+    permits.
+    """
+    record = _require_session(task_store, key, session_id)
     v1_body = _tasks.RetryTaskRequest(
         mode=(body.mode if body else None),
         prompt=(Prompt(text=body.prompt) if body and body.prompt is not None else None),
         on_busy=(body.on_busy if body else "queue"),
     )
-    result = _tasks.retry_task(
-        session_id,
-        v1_body,
-        key=key,
-        plane=plane,
-        v1=v1,
-        run_states=run_states,
-        workflows=workflows,
-        scheduler=scheduler,
-        reporter=reporter,
-        task_store=task_store,
-    )
-    record = task_store.get(session_id)
-    return {
-        "session": _view(
-            record,
+
+    def _retry() -> dict[str, Any]:
+        return _tasks.retry_task(
+            session_id,
+            v1_body,
+            key=key,
             plane=plane,
             v1=v1,
             run_states=run_states,
+            workflows=workflows,
             scheduler=scheduler,
             reporter=reporter,
             task_store=task_store,
+        )
+
+    done, box = _run_with_budget(_retry, _ack_budget(request))
+    if done:
+        if "error" in box:
+            raise box["error"]
+        result = box["result"]
+        record_now = task_store.get(session_id) or record
+        return {
+            "session": _view(
+                record_now,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            ),
+            "run": (run_view(result["run"]) if result.get("run") else None),
+        }
+    return {
+        "session": _optimistic_view(
+            record,
+            aggregate_status=(
+                record.status if record.status in ("running", "delivering") else "queued"
+            ),
+            aggregate_reason="queued_work",
+            task_store=task_store,
+            run_states=run_states,
+            plane=plane,
         ),
-        "run": (run_view(result["run"]) if result.get("run") else None),
+        "run": None,
     }
 
 
@@ -1005,7 +1121,6 @@ async def stream_session_events(
     from control.app import DisconnectAwareStreamingResponse
 
     record = _require_session(task_store, key, session_id)
-    agent_id = record.agent_id
     try:
         last_id = int(last_event_id) if last_event_id else 0
     except ValueError:
@@ -1014,6 +1129,7 @@ async def stream_session_events(
 
     backend = getattr(plane, "backend", None)
     keepalive_s: float = getattr(request.app.state, "keepalive_s", 15.0)
+    app_state = request.app.state
 
     def _status_bits() -> tuple[str, str, str]:
         """Current (status, phase, frame) — polled so transitions stream live."""
@@ -1024,10 +1140,12 @@ async def stream_session_events(
         payload = {"type": "session.status", "status": st, "phase": ph}
         return st, ph, f"event: session.status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    def _status_frame() -> str:
-        return _status_bits()[2]
+    def _bound_agent_id() -> str | None:
+        fresh = task_store.get(session_id)
+        return (fresh.agent_id if fresh is not None else None) or record.agent_id
 
     def _live_handle() -> tuple[Any, Any]:
+        agent_id = _bound_agent_id()
         if backend is None or agent_id is None:
             return None, None
         rec_now = plane.get(agent_id)
@@ -1042,194 +1160,109 @@ async def stream_session_events(
             p = None
         return h, p
 
-    def _frame(raw: str, lineno: int, current_turn: int) -> tuple[str | None, int]:
-        """Normalize one events.jsonl line into an SSE frame (or None)."""
-        obj = _routes._parse_event_line(raw)
-        current_turn = _events.track_turn(obj, current_turn)
-        norm = _events.normalize(obj, current_turn)
-        if norm is not None and lineno >= start_line:
-            return format_sse(lineno, norm), current_turn
-        return None, current_turn
+    def _agent_terminal() -> bool:
+        agent_id = _bound_agent_id()
+        if agent_id is None:
+            return False
+        rec_now = plane.get(agent_id)
+        if rec_now is None or rec_now.status in ("closed", "timed_out", "lost"):
+            return True
+        statuses = _tasks._run_statuses_for(agent_id, run_states, plane)
+        return bool(statuses) and all(s in RUN_TERMINAL for _, s in statuses)
+
+    def _start_tail(handle: Any) -> Any:
+        return backend.exec(
+            handle,
+            ["tail", "-n", "+1", "-F", str(handle.root / "events.jsonl")],
+            sandbox_env(handle),
+        )
+
+    def _replay_lines() -> list[str]:
+        handle, _poll = _live_handle()
+        if backend is None or handle is None:
+            return []
+        try:
+            text = read_text(backend, handle, "events.jsonl")
+        except Exception:
+            return []
+        return text.splitlines() if text else []
+
+    def _replay_entries() -> list[dict[str, Any]]:
+        """Sandbox gone: stitch the durable per-run transcripts."""
+        activity = getattr(app_state, "run_activity", None)
+        if activity is None:
+            return []
+        agent_id = _bound_agent_id()
+        if agent_id is None:
+            return []
+        ns: set[int] = set()
+        rec_now = plane.get(agent_id)
+        if rec_now is not None:
+            ns = _routes._known_run_ns(rec_now, _routes._ledger(plane), run_states)
+        else:
+            ledger = _routes._ledger(plane)
+            if ledger is not None:
+                try:
+                    ns = {r.n for r in ledger.list(agent_id)}
+                except Exception:
+                    ns = set()
+        entries: list[dict[str, Any]] = []
+        for n in sorted(ns):
+            try:
+                entries.extend(activity.get(agent_id, n))
+            except Exception:
+                pass
+        return entries
+
+    # SOR-268: one hub per session owns the tail exec, the status settle,
+    # and the provisioning/replay states — N clients are N queues on the
+    # same poller, not N pollers (the SOR-260 B3 multiplier). The client
+    # generator only drains its queue; nothing remote runs on the loop.
+    registry = getattr(app_state, "v2_events_hubs", None)
+    if registry is None:
+        registry = _hub_mod.SessionEventsHubRegistry()
+        app_state.v2_events_hubs = registry
+    hub = registry.acquire(
+        session_id,
+        lambda: _hub_mod.SessionEventsHub(
+            session_id,
+            record_probe=lambda: task_store.get(session_id),
+            is_terminal_record=lambda r: r.status in _tasks._TASK_TERMINAL,
+            status_bits=_status_bits,
+            live_handle=_live_handle,
+            agent_terminal=_agent_terminal,
+            start_tail=_start_tail,
+            replay_lines=_replay_lines,
+            replay_entries=_replay_entries,
+        ),
+    )
+    sub, opening, backlog = hub.subscribe(start_line)
+    if opening is None:
+        opening = hub.opening_status()
 
     async def gen() -> AsyncIterator[str]:
-        nonlocal agent_id
-        proc: Any = None
-        current_turn = 0
-        last_status: tuple[str, str] | None = None
-        next_status = 0.0
-
-        def _status_tick() -> str | None:
-            """A session.status frame only when the wire state changed."""
-            nonlocal last_status
-            st, ph, frame = _status_bits()
-            if (st, ph) == last_status:
-                return None
-            last_status = (st, ph)
-            return frame
-
         try:
             yield ": keepalive\n\n"
-            st, ph, opening = _status_bits()
-            last_status = (st, ph)
-            yield opening
-            handle, poll = _live_handle()
+            if opening is not None:
+                yield opening
+            for frame in backlog:
+                yield frame
             next_ka = time.monotonic() + keepalive_s
-            # Wait out the provisioning window: the sandbox appears once the
-            # background worker binds it; a terminal/gone session exits to
-            # the replay path below. SOR-265: the record may still be unbound
-            # at connect time — re-read it until an agent lands.
-            while handle is None or poll is None or not poll.alive:
-                if agent_id is None:
-                    fresh = task_store.get(session_id) or record
-                    if fresh.status in _tasks._TASK_TERMINAL:
-                        break
-                    agent_id = fresh.agent_id
-                    if agent_id is None:
-                        now = time.monotonic()
-                        if now >= next_ka:
-                            yield ": keepalive\n\n"
-                            next_ka = now + keepalive_s
-                        await asyncio.sleep(0.05)
-                        handle, poll = _live_handle()
-                        continue
-                rec_now = plane.get(agent_id)
-                if rec_now is None or rec_now.status in ("closed", "timed_out", "lost"):
-                    break
-                statuses = _tasks._run_statuses_for(agent_id, run_states, plane)
-                if statuses and all(s in RUN_TERMINAL for _, s in statuses):
-                    break
-                now = time.monotonic()
-                if now >= next_status:
-                    next_status = now + _STATUS_POLL_S
-                    tick = _status_tick()
-                    if tick is not None:
-                        yield tick
-                if now >= next_ka:
-                    yield ": keepalive\n\n"
-                    next_ka = now + keepalive_s
-                await asyncio.sleep(0.05)
-                handle, poll = _live_handle()
-            if backend is not None and handle is not None and poll is not None and poll.alive:
-                proc = await asyncio.to_thread(
-                    backend.exec,
-                    handle,
-                    ["tail", "-n", "+1", "-F", str(handle.root / "events.jsonl")],
-                    sandbox_env(handle),
-                )
-                line_q: queue.Queue[tuple[str, str | None]] = queue.Queue()
-
-                def _reader() -> None:
-                    try:
-                        for line in proc.stdout:
-                            line_q.put(("line", line))
-                    except Exception:
-                        pass
-                    finally:
-                        line_q.put(("eof", None))
-
-                threading.Thread(target=_reader, daemon=True, name="sbx-v2-sse-tail").start()
-
-                lineno = 0
-                next_ka = time.monotonic() + keepalive_s
-                while True:
-                    try:
-                        kind, payload = line_q.get_nowait()
-                    except queue.Empty:
-                        now = time.monotonic()
-                        if now >= next_status:
-                            next_status = now + _STATUS_POLL_S
-                            tick = _status_tick()
-                            if tick is not None:
-                                yield tick
-                        if now >= next_ka:
-                            yield ": keepalive\n\n"
-                            next_ka = now + keepalive_s
-                        await asyncio.sleep(0.05)
-                        continue
-                    if kind == "eof":
-                        break
-                    raw = payload or ""
-                    # Contract: id is the events.jsonl 1-based line number —
-                    # a blank/torn line still consumes one.
-                    lineno += 1
-                    if not raw.strip():
-                        continue
-                    frame, current_turn = _frame(raw, lineno, current_turn)
-                    if frame is not None:
-                        yield frame
+            while True:
+                try:
+                    item = sub.q.get_nowait()
+                except queue.Empty:
                     now = time.monotonic()
                     if now >= next_ka:
                         yield ": keepalive\n\n"
                         next_ka = now + keepalive_s
-                yield _status_frame()
-                return
-
-            # Sandbox unreachable: replay the file if locally readable, then
-            # keep the stream open like /api/* and /v1 do.
-            lines: list[str] = []
-            if backend is not None and handle is not None:
-                try:
-                    text = read_text(backend, handle, "events.jsonl")
-                except Exception:
-                    text = None
-                if text:
-                    lines = text.splitlines()
-            lineno = 0
-            for raw in lines:
-                lineno += 1
-                if not raw.strip():
+                    await asyncio.sleep(0.05)
                     continue
-                frame, current_turn = _frame(raw, lineno, current_turn)
-                if frame is not None:
-                    yield frame
-            if not lines:
-                # Sandbox gone: stitch the durable per-run transcripts.
-                activity = getattr(request.app.state, "run_activity", None)
-                ns: set[int] = set()
-                rec_now = plane.get(agent_id) if agent_id else None
-                if rec_now is not None:
-                    ns = _routes._known_run_ns(rec_now, _routes._ledger(plane), run_states)
-                elif agent_id is not None:
-                    ledger = _routes._ledger(plane)
-                    if ledger is not None:
-                        try:
-                            ns = {r.n for r in ledger.list(agent_id)}
-                        except Exception:
-                            ns = set()
-                entries: list[dict[str, Any]] = []
-                for n in sorted(ns):
-                    try:
-                        entries.extend(activity.get(agent_id, n) if activity is not None else [])
-                    except Exception:
-                        pass
-                entries.sort(key=lambda e: e["id"])
-                for entry in entries:
-                    if entry["id"] < start_line:
-                        continue
-                    obj = entry["event"]
-                    current_turn = _events.track_turn(obj, current_turn)
-                    norm = _events.normalize(obj, current_turn)
-                    if norm is not None:
-                        yield format_sse(entry["id"], norm)
-            tick = _status_tick()
-            yield tick if tick is not None else _status_frame()
-            while True:
-                now = time.monotonic()
-                if now >= next_status:
-                    next_status = now + _STATUS_POLL_S
-                    tick = _status_tick()
-                    if tick is not None:
-                        yield tick
-                if now >= next_ka:
-                    yield ": keepalive\n\n"
-                    next_ka = now + keepalive_s
-                await asyncio.sleep(0.05)
+                if item is _hub_mod._CLOSE:
+                    return
+                yield item
         finally:
-            if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            hub.unsubscribe(sub)
 
     return DisconnectAwareStreamingResponse(
         gen(),
