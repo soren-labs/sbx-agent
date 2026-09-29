@@ -1735,10 +1735,19 @@ class ModalDictTaskStore:
 
     def put(self, record: TaskRecord) -> None:
         d = self._d()
-        raw = record_to_dict(record)
         task_key = self._task_key(record.id)
-        writes: dict[str, Any] = {task_key: raw}
         with self._lock:
+            if getattr(record, "_response_unloaded", False):
+                # A record materialized from the owner-doc summary never
+                # loaded the pinned create ``response`` — a write-back
+                # (e.g. a status-transition settle) must merge the stored
+                # value instead of erasing it (SOR-268 review finding).
+                stored = d.get(task_key)
+                if isinstance(stored, dict) and stored.get("response") is not None:
+                    record.response = stored["response"]
+                record._response_unloaded = False
+            raw = record_to_dict(record)
+            writes: dict[str, Any] = {task_key: raw}
             if record.owner:
                 owner_key = self._owner_key(record.owner)
                 ids, summaries = self._owner_doc(d.get(owner_key))
@@ -1827,7 +1836,12 @@ class ModalDictTaskStore:
         for task_id in ids:
             summary = summaries.get(task_id)
             if summary is not None:
-                out.append(record_from_dict(summary))
+                record = record_from_dict(summary)
+                # The summary omits ``response`` — flag it so ``put``
+                # merges the stored value instead of writing a None that
+                # erases the pinned create reply.
+                record._response_unloaded = True
+                out.append(record)
             else:
                 missing.append(task_id)
         out.extend(self._pooled_gets(missing))

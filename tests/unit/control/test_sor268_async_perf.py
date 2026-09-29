@@ -163,6 +163,49 @@ class TestTaskStoreIndexedWrites:
         store.get_fresh("sess_a")
         assert fake.gets == 1  # mutation-path reads never run on cache
 
+    def test_list_settle_writeback_preserves_pinned_response(self) -> None:
+        """SOR-268 review: a ``list`` record carries no ``response`` — a
+        settle write-back during a status transition must merge the
+        stored row's pinned create reply, not erase it."""
+        store, fake = _task_store()
+        store.put(_task("sess_a"))
+        listed = store.list("key_1")[0]
+        assert listed.response is None  # summary materialization
+        # The settle write-back: status transition + put of the listed row.
+        listed.status = "running"
+        listed.transitions.append({"status": "running", "reason": "run", "at": "t"})
+        store.put(listed)
+        fresh = store.get_fresh("sess_a")
+        assert fresh is not None
+        assert fresh.response == {"task": {"id": "sess_a"}}
+        assert fresh.status == "running"  # the transition itself landed
+
+    def test_response_merge_only_for_summary_records(self) -> None:
+        """A full-record put stays authoritative — merge never revives a
+        response the caller deliberately cleared, and an unflagged write
+        keeps the ~2-remote-op budget (no extra stored-row read)."""
+        store, fake = _task_store()
+        rec = _task("sess_a")
+        store.put(rec)
+        rec.response = None  # explicit clear through a full record
+        store.put(rec)
+        fake.gets = 0
+        rec.status = "running"
+        store.put(rec)  # unflagged path — no merge read
+        assert fake.gets == 1  # owner-doc read only
+        assert store.get_fresh("sess_a").response is None
+
+    def test_summary_flag_survives_only_until_first_put(self) -> None:
+        store, fake = _task_store()
+        store.put(_task("sess_a"))
+        listed = store.list("key_1")[0]
+        store.put(listed)  # merges + clears the flag
+        fake.gets = 0
+        listed.status = "closed"
+        store.put(listed)  # second put pays no merge read
+        assert fake.gets == 1
+        assert store.get_fresh("sess_a").response == {"task": {"id": "sess_a"}}
+
 
 class TestRunStoreReadCache:
     def _store(self) -> tuple[ModalDictRunStore, _BatchDict]:
@@ -495,6 +538,93 @@ class TestEventsHubFanout:
         hub.unsubscribe(sub)
         hub._dead.set()
         assert got_close  # tail EOF closed the stream for this client
+
+    @staticmethod
+    def _frame_ids(sub: Any, timeout: float = 5.0) -> list[int]:
+        """Drain a subscriber queue; return the ``id:`` numbers of event
+        frames received (status frames and the close sentinel skipped)."""
+        from control.api_v2 import events_hub as hub_mod
+
+        ids: list[int] = []
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                item = sub.q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if item is hub_mod._CLOSE:
+                break
+            if item.startswith("id:"):
+                ids.append(int(item.split("\n", 1)[0][3:].strip()))
+        return ids
+
+    def test_retailed_transcript_keeps_line_numbers(self) -> None:
+        """SOR-268 review: after a tail EOF the hub re-reads events.jsonl
+        from line 1 — ids must stay the file line number, so a
+        ``Last-Event-ID`` resume gets only genuinely new lines, never the
+        transcript a second time under shifted ids."""
+        procs: list = []
+        feeds: list[queue.Queue] = []
+        hub = self._hub(procs=procs, feeds=feeds)
+        deadline = time.monotonic() + 5
+        while not feeds and time.monotonic() < deadline:
+            time.sleep(0.01)
+        sub1, _o, _b = hub.subscribe(1)
+        for n in (1, 2, 3):
+            feeds[0].put(f'{{"type": "sbx.turn_started", "n": {n}}}\n')
+        assert self._frame_ids(sub1) == [1, 2, 3]
+        feeds[0].put(StopIteration)  # exec channel drop → EOF → close
+        assert self._frame_ids(sub1) == []
+
+        # Hub re-tails once the handle polls alive again.
+        deadline = time.monotonic() + 5
+        while len(feeds) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(feeds) == 2
+
+        resumed, _o2, _b2 = hub.subscribe(4)  # Last-Event-ID: 3
+        fresh, _o3, _b3 = hub.subscribe(1)
+        for n in (1, 2, 3):  # the tail re-reads the whole file
+            feeds[1].put(f'{{"type": "sbx.turn_started", "n": {n}}}\n')
+        feeds[1].put('{"type": "sbx.turn_started", "n": 4}\n')
+        deadline = time.monotonic() + 5
+        while len(hub._frames) < 4 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        with hub._lock:
+            assert [lineno for lineno, _f in hub._frames] == [1, 2, 3, 4]
+        assert self._frame_ids(resumed) == [4]  # dedup: no shifted re-replay
+        assert self._frame_ids(fresh) == [1, 2, 3, 4]
+        hub.unsubscribe(sub1)
+        hub.unsubscribe(resumed)
+        hub.unsubscribe(fresh)
+        hub._dead.set()
+
+    def test_replay_resolution_restarts_numbering(self) -> None:
+        """Live frames followed by replay (terminal/unreachable) must not
+        continue the live counter — replay ids are the transcript's own."""
+        from control.api_v2 import events_hub
+
+        hub = events_hub.SessionEventsHub(
+            "sess_y",
+            record_probe=lambda: None,
+            is_terminal_record=lambda r: False,
+            status_bits=lambda: ("closed", "done", "event: s\ndata: {}\n\n"),
+            live_handle=lambda: (None, None),
+            agent_terminal=lambda: False,  # hub stays waiting; resolve is manual
+            start_tail=lambda h: None,
+            replay_lines=lambda: [
+                '{"type": "sbx.turn_started", "n": 1}\n',
+                '{"type": "sbx.turn_started", "n": 2}\n',
+            ],
+            replay_entries=lambda: [],
+        )
+        # Ingest two live frames first (counter at 2), then resolve replay.
+        hub._ingest_raw('{"type": "sbx.turn_started", "n": 1}\n')
+        hub._ingest_raw('{"type": "sbx.turn_started", "n": 2}\n')
+        hub._resolve_replay()
+        with hub._lock:
+            assert [lineno for lineno, _f in hub._frames] == [1, 2]
+        hub._dead.set()
 
 
 class _PlaneStub:

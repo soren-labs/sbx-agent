@@ -170,6 +170,19 @@ class SessionEventsHub:
 
     # ------------------------------------------------------------ internals
 
+    def _reset_ingest(self) -> None:
+        """Start a fresh ingest pass over events.jsonl.
+
+        Every tail re-spawn or replay resolution re-reads the file from
+        line 1, so numbering restarts — ``id`` stays the events.jsonl
+        line number and a reconnecting ``Last-Event-ID`` resume dedups
+        correctly. A continuing counter re-emits the whole transcript
+        under shifted ids instead (SOR-268 review finding)."""
+        self._lineno = 0
+        self._current_turn = 0
+        with self._lock:
+            self._frames.clear()
+
     def _ingest_raw(self, raw: str) -> None:
         """Parse one raw events.jsonl line; fanout the normalized frame."""
         self._lineno += 1
@@ -184,6 +197,7 @@ class SessionEventsHub:
     def _resolve_replay(self) -> None:
         """Terminal / sandbox-unreachable replay: events.jsonl if readable,
         else the durable per-run transcripts — resolved ONCE per hub."""
+        self._reset_ingest()
         lines: list[str] = []
         try:
             lines = self._replay_lines()
@@ -248,6 +262,7 @@ class SessionEventsHub:
                         self._broadcast(_CLOSE)
                         self._proc = None
                         self._state = "waiting"
+                        self._reset_ingest()
                         continue
                     self._ingest_raw(payload or "")
                 except queue.Empty:
