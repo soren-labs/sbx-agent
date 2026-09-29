@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,32 @@ from control.backend import SandboxBackend, SandboxHandle
 from control.config import TERMINAL_STATUSES, lifecycle_config
 from control.ports import AccountRegistry
 from control.store import SessionRecord, SessionStore
+
+# Upper bound on one sandbox checkpoint per sweep record. A filesystem
+# suspend that never returns starves every record after it — and the
+# orphan pass — on every tick, which is a reaper that never reaps
+# (SOR-271 round-3). Past the bound the wedged agent takes the ordinary
+# terminate + ``timed_out`` path; a late-landing checkpoint is a wasted
+# op, not a stuck sweep.
+_SUSPEND_BOUND_S = 120
+
+
+def _bounded_call(fn: Callable[[], Any], timeout_s: float) -> Any:
+    """Run ``fn`` on a daemon thread; return its value or ``None`` on timeout."""
+    result: list[Any] = []
+
+    def _run() -> None:
+        try:
+            result.append(fn())
+        except Exception:
+            return
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive() or not result:
+        return None
+    return result[0]
 
 
 @dataclass(frozen=True)
@@ -78,7 +105,12 @@ def reap(
     ``on_action`` (optional) is invoked once per emitted action — the
     production cron wires it to ``/v1`` lease release (SOR-80). The
     ``suspended`` action is deliberately non-terminal: the caller must not
-    release the agent's account lease for it.
+    release the agent's account lease for it. A throwing callback is
+    isolated: it produces a ``reap_error`` action and the sweep
+    continues — one bad remote call (``settle_orphaned_runs`` hits the
+    run store) must never abort the records loop or skip the orphan
+    pass, which is the pass that reclaims zombie sandboxes (SOR-271
+    round-3: callbacks are part of the invocation path, not the rules).
 
     Unset bounds resolve from ``lifecycle_config`` (SOR-132/SOR-134), so
     every caller — cron, local sweep, gate — shares the deploy's resolved
@@ -102,7 +134,14 @@ def reap(
         action = ReapAction(kind, session_id, sandbox_id, account_id)
         actions.append(action)
         if on_action is not None:
-            on_action(action)
+            try:
+                on_action(action)
+            except Exception:
+                # Isolate the callback: a remote throw (lease release or
+                # run-ledger settle) records the failure and lets the
+                # sweep continue. Appended directly — never re-invoke
+                # on_action or it can fail the same way forever.
+                actions.append(ReapAction("reap_error", session_id, sandbox_id))
 
     def persist(rec: SessionRecord) -> bool:
         """``store.put`` that cannot kill the sweep — the record stays
@@ -184,11 +223,14 @@ def reap(
 
         if not alive:
             if rec.status == "idle" and checkpoints is not None:
-                try:
-                    has_checkpoint = bool(checkpoints.has_checkpoint(rec.id))
-                except Exception:
-                    # UNKNOWN checkpoint state — never misdiagnose as
-                    # platform loss; skip and retry next sweep.
+                # ``None`` (exception OR timeout) means UNKNOWN checkpoint
+                # state — never misdiagnose as platform loss; skip and
+                # retry next sweep.
+                has_checkpoint = _bounded_call(
+                    lambda: bool(checkpoints.has_checkpoint(rec.id)),
+                    _SUSPEND_BOUND_S,
+                )
+                if has_checkpoint is None:
                     emit("reap_error", rec.id, rec.sandbox_id)
                     continue
                 if has_checkpoint:
@@ -265,10 +307,11 @@ def reap(
         if rec.status == "idle" and idle_expired and handle is not None:
             suspended = False
             if checkpoints is not None:
-                try:
-                    suspended = bool(checkpoints.suspend(rec, handle))
-                except Exception:
-                    suspended = False
+                # Bounded: an exception OR a checkpoint that never returns
+                # both fall through to terminate + ``timed_out``.
+                suspended = bool(
+                    _bounded_call(lambda: checkpoints.suspend(rec, handle), _SUSPEND_BOUND_S)
+                )
             if suspended:
                 # SOR-180: filesystem checkpointed (credentials scrubbed
                 # first) → release the sandbox → recoverable ``suspended``

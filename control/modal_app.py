@@ -143,8 +143,14 @@ def reap_cron() -> None:
 
     # SOR-139: this plane owns no turn watchers, so every ``running`` record
     # is watcher-less — settle those with written turn evidence into
-    # FINISHED + idle before the reaper judges staleness.
-    plane.reconcile_turns()
+    # FINISHED + idle before the reaper judges staleness. The reconcile
+    # phase must never starve the reaper: a throwing tick here killed every
+    # sweep before it ran, which is how >10min zombies survived every cron
+    # tick (SOR-271 round-3 — fix the invocation path, not just resilience).
+    try:
+        plane.reconcile_turns()
+    except Exception:
+        pass
     # SOR-132/SOR-134: the reaper's bounds resolve from the same lifecycle
     # chain as the plane and ``Sandbox.create`` — including the graces,
     # which are env-tunable (``SBX_CREATE_GRACE_S`` / ``SBX_RUN_GRACE_S``).
