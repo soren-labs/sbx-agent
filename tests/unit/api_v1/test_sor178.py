@@ -80,12 +80,18 @@ def wait_idle(env: V1Env, agent_id: str, timeout: float = 15.0) -> None:
 
 
 def wait_workspace(
-    v1_env: V1Env, agent_id: str, *, expect_pr: bool = False, timeout: float = 15.0
+    v1_env: V1Env,
+    agent_id: str,
+    *,
+    expect_pr: bool = False,
+    expect_error: bool = False,
+    timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Poll the workspace record — the auto-publish hook runs on the
     watcher thread just after the run's terminal verdict persists. The
     hook persists ``pushed_head_sha`` before the PR step, so an
-    ``expect_pr`` wait must also hold for ``pull_request``."""
+    ``expect_pr`` wait must also hold for ``pull_request`` and an
+    ``expect_error`` wait for the failure record."""
     deadline = time.monotonic() + timeout
     ws = None
     while time.monotonic() < deadline:
@@ -94,7 +100,11 @@ def wait_workspace(
             ws = rec
             if ws.publish_error is not None:
                 break
-            if ws.pushed_head_sha is not None and (not expect_pr or ws.pull_request is not None):
+            if (
+                not expect_error
+                and ws.pushed_head_sha is not None
+                and (not expect_pr or ws.pull_request is not None)
+            ):
                 break
         time.sleep(0.05)
     assert ws is not None
@@ -251,7 +261,7 @@ class TestAutoPublish:
         )["agent"]
         run = wait_run(client, auth, agent["id"], "run-1")
         assert run["status"] == "FINISHED"
-        ws = wait_workspace(v1_env, agent["id"])
+        ws = wait_workspace(v1_env, agent["id"], expect_error=True)
         assert ws["pushed_head_sha"] == base  # push half still landed
         assert ws["publish_error"] is not None
         assert ws["publish_error"].startswith("repo_unavailable:")
