@@ -206,6 +206,40 @@ class TestTaskStoreIndexedWrites:
         assert fake.gets == 1
         assert store.get_fresh("sess_a").response == {"task": {"id": "sess_a"}}
 
+    def test_agent_less_summary_re_reads_authoritative_row(self) -> None:
+        """SOR-271: a pre-bind record has no agent to live-aggregate
+        against, so a stale index summary wedges the list at ``queued``
+        while ``task/<id>`` already went terminal. Agent-less summaries
+        are distrusted and point-read instead."""
+        store, fake = _task_store()
+        rec = _task("sess_a")
+        rec.agent_id = None
+        rec.status = "error"
+        rec.transitions.append(
+            {
+                "status": "error",
+                "reason": "dispatch_failed",
+                "at": "t",
+                "detail": {"code": "concurrency_limit", "message": "cap", "retryable": True},
+            }
+        )
+        store.put(rec)
+        # Simulate the lost index write: the owner-doc summary still says
+        # queued while the authoritative row is terminal.
+        fake.data["owner/key_1"]["records"]["sess_a"]["status"] = "queued"
+        fake.gets = 0
+        listed = store.list("key_1")
+        assert [r.status for r in listed] == ["error"]
+        assert fake.gets == 2  # owner doc + one authoritative point read
+
+        # A bound record's summary still materializes without a point read.
+        store.put(_task("sess_b"))
+        fake.data["owner/key_1"]["records"]["sess_b"]["status"] = "queued"
+        fake.gets = 0
+        listed = store.list("key_1")
+        assert {r.id: r.status for r in listed} == {"sess_a": "error", "sess_b": "queued"}
+        assert fake.gets == 2  # owner doc + sess_a point read only
+
 
 class TestRunStoreReadCache:
     def _store(self) -> tuple[ModalDictRunStore, _BatchDict]:

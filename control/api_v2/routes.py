@@ -419,6 +419,113 @@ def _mark_dispatch_failed(task_store: TaskStore, session_id: str, exc: BaseExcep
         pass
 
 
+def _redrive_dispatch(
+    record: TaskRecord,
+    *,
+    prompt: str | None,
+    delivery_mode: bool,
+    key: ApiKey,
+    plane: Any,
+    registry: Any,
+    scheduler: Scheduler,
+    v1: V1State,
+    run_states: RunStateStore,
+    workflows: Any,
+    reporter: Any,
+    resources_registry: Any,
+    capabilities: Any,
+    task_store: TaskStore,
+    resolver: Any,
+) -> dict[str, Any]:
+    """Re-drive the create dispatch for a session that failed before an
+    agent ever bound (SOR-271).
+
+    ``retry_task`` re-posts the prompt to a bound agent — a pre-bind
+    failure (concurrency_limit / account_unavailable / provider_exhausted)
+    has none, so the only honest retry is the original create path:
+    re-resolve, re-reserve, bind onto the same session id, start run-1.
+    The bind replaces the record wholesale, so the failed attempts are
+    folded into ``transitions`` first to keep the history traceable.
+    """
+    if record.status != "error":
+        if record.status in _tasks._TASK_TERMINAL:
+            raise V1ApiError(
+                409, "task_not_retryable", "session is terminal — there is nothing to retry"
+            )
+        raise V1ApiError(409, "session_not_runnable", "session is still provisioning")
+    if delivery_mode:
+        raise V1ApiError(
+            409, "task_not_retryable", "session never delivered — nothing to republish"
+        )
+    detail = _dispatch_error(record)
+    if detail is None or detail.get("retryable") is not True:
+        raise V1ApiError(
+            409, "task_not_retryable", "session's dispatch failure is not retryable"
+        )
+    spec = dict(record.request or {})
+    if prompt is not None:
+        spec["prompt"] = {"text": prompt}
+    v1_body = _tasks.CreateTaskRequest(**spec)
+    idem = record.idempotency or {}
+    # Consume any pre-redrive cancel handshake, then re-mark the record
+    # queued so the window between here and the bind reads honestly —
+    # a cancel that lands during the dispatch re-adds itself to
+    # ``_PRE_BIND_CANCELLED`` and is caught post-bind below.
+    _PRE_BIND_CANCELLED.discard(record.id)
+    record.transitions.append({"status": "queued", "reason": "retry_dispatch", "at": _iso_now()})
+    record.status = "queued"
+    record.updated_at = _iso_now()
+    task_store.put(record)
+    get_fresh = getattr(task_store, "get_fresh", None) or task_store.get
+    fresh = get_fresh(record.id)
+    if fresh is None or fresh.status == "cancelled":
+        raise V1ApiError(409, "task_not_retryable", "session was cancelled")
+    try:
+        created = _tasks._create_task_once(
+            v1_body,
+            key,
+            plane,
+            registry,
+            scheduler,
+            v1,
+            run_states,
+            workflows,
+            reporter=reporter,
+            resources_registry=resources_registry,
+            capabilities=capabilities,
+            task_store=task_store,
+            resolver=resolver,
+            idempotency_key=idem.get("key"),
+            idempotency_fingerprint=idem.get("fingerprint"),
+            new_id=lambda: record.id,
+        )
+    except Exception as exc:
+        _mark_dispatch_failed(task_store, record.id, exc)
+        raise
+    bound = task_store.get(record.id)
+    if bound is not None:
+        bound.transitions = [*record.transitions, *bound.transitions]
+        task_store.put(bound)
+    if record.id in _PRE_BIND_CANCELLED:
+        # A cancel landed while the agent was being bound — cancel the
+        # just-landed agent (same handshake as create_session).
+        try:
+            _tasks.cancel_task(
+                record.id,
+                key=key,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                workflows=workflows,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            )
+        finally:
+            _PRE_BIND_CANCELLED.discard(record.id)
+    return created
+
+
 def _optimistic_view(
     record: TaskRecord,
     *,
@@ -829,9 +936,10 @@ def cancel_session(
     worker still converges the record to ``cancelled``.
     """
     record = _require_session(task_store, key, session_id)
-    if record.agent_id is None and record.status not in _tasks._TASK_TERMINAL:
+    if record.agent_id is None and record.status != "cancelled":
         # Provisional bind may still land — make the dispatch worker's
-        # post-bind check cancel the agent it just created.
+        # post-bind check cancel the agent it just created. ``error`` is
+        # included: a retry re-dispatch may be in flight on this row.
         _PRE_BIND_CANCELLED.add(session_id)
 
     def _cancel() -> dict[str, Any]:
@@ -889,9 +997,17 @@ def retry_session(
     scheduler: Scheduler = Depends(get_scheduler),
     reporter: Any = Depends(get_run_reporter),
     task_store: TaskStore = Depends(get_task_store),
+    registry: AccountRegistry = Depends(get_registry),
+    resources_registry: Any = Depends(get_resources),
+    capabilities: Any = Depends(get_capabilities),
+    resolver: Any = Depends(get_repo_resolver),
 ) -> dict[str, Any]:
     """Retry the failed step — a failed delivery re-publishes, a terminal
     run verdict re-runs the original (or overridden) prompt.
+
+    A session that failed before its agent ever bound has nothing to
+    re-post to — its retryable dispatch failure is re-driven through the
+    original create path on the same session id (SOR-271).
 
     SOR-268: ``retry_task`` serializes settle + cancel/dispatch work, so
     it runs on a worker under ``_ack_budget``; a timeout answers
@@ -906,6 +1022,25 @@ def retry_session(
     )
 
     def _retry() -> dict[str, Any]:
+        fresh = task_store.get(session_id) or record
+        if fresh.agent_id is None:
+            return _redrive_dispatch(
+                fresh,
+                prompt=(body.prompt if body else None),
+                delivery_mode=(body.mode == "delivery" if body else False),
+                key=key,
+                plane=plane,
+                registry=registry,
+                scheduler=scheduler,
+                v1=v1,
+                run_states=run_states,
+                workflows=workflows,
+                reporter=reporter,
+                resources_registry=resources_registry,
+                capabilities=capabilities,
+                task_store=task_store,
+                resolver=resolver,
+            )
         return _tasks.retry_task(
             session_id,
             v1_body,
