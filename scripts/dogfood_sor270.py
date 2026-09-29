@@ -280,6 +280,7 @@ def main() -> int:
 
         # ---------- ad-hoc PR deliver (faked control-plane GitHub seam) ----------
         print("Ad-hoc deliver with pull_request: the PR must surface")
+        real_repo_slug = revisions_mod.github.repo_slug
         revisions_mod.github.repo_slug = lambda repo: "acme/widgets"  # noqa: E731
         remote = FakeRemote()
         app.state.revisions._remote = remote
@@ -352,6 +353,29 @@ def main() -> int:
             views["detail"] == delivery
             and views["list"] == delivery
             and views["changes"] == delivery,
+        )
+        revisions_mod.github.repo_slug = real_repo_slug
+
+        # ---------- declared branch alone must NOT read as delivered ----------
+        print("Regression: delivery:{branch} declared but never pushed -> null")
+        resp = http.post(
+            f"{base}/v2/sessions",
+            json={
+                "prompt": "Create hello.txt.",
+                "execution": {"provider": "codex"},
+                "repository": {"repo": f"file://{repo}"},
+                "delivery": {"branch": "session/work"},
+            },
+            headers=auth,
+        )
+        assert resp.status_code == 201, resp.text
+        sid2 = resp.json()["session"]["id"]
+        wait_status(http, base, auth, sid2, "finished")
+        views = delivery_views(http, base, auth, sid2)
+        check(
+            "declared work branch with no push stays delivery=null",
+            all(v is None for v in views.values()),
+            json.dumps(views),
         )
 
         ok = all(passed for _, passed, _ in CHECKS)

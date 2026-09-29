@@ -153,7 +153,9 @@ def _performed_delivery(ws: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     if not isinstance(ws, dict):
         return None
-    landed = any(ws.get(key) for key in ("branch", "pushed_head_sha", "pull_request", "merge"))
+    # Only performed signals count: ``branch`` is also the declared policy's
+    # work-branch name (set by ``prepare``), never evidence of a push.
+    landed = any(ws.get(key) for key in ("pushed_head_sha", "pull_request", "merge"))
     if not landed and ws.get("publish_error") is None:
         return None
     out: dict[str, Any] = {"required": False}

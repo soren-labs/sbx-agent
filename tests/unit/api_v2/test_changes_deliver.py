@@ -490,6 +490,30 @@ class TestSessionDeliveryProjection:
         assert [r["n"] for r in revisions] == [1, 2]
         assert revisions[1]["delivery"]["pull_request"]["number"] == 7
 
+    def test_declared_branch_only_projects_no_delivery(
+        self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
+    ) -> None:
+        """``delivery:{branch:"x"}`` alone names the work branch — publish
+        stays manual — so a declared-but-never-performed delivery must
+        still project ``session.delivery`` as null everywhere."""
+        repo, _ = origin
+        resp = client.post(
+            "/v2/sessions",
+            json={
+                "prompt": "Create hello.txt.",
+                "execution": {"provider": "codex"},
+                "repository": {"repo": f"file://{repo}"},
+                "delivery": {"branch": "session/work"},
+            },
+            headers=auth,
+        )
+        assert resp.status_code == 201, resp.text
+        session = resp.json()["session"]
+        wait_session(client, auth, session["id"], "finished")
+        wait_idle(credentialed, _agent_id(credentialed, session["id"]))
+        for view in self._delivery_views(client, auth, session["id"]):
+            assert view is None
+
     def test_adhoc_deliver_failure_lands_on_session_delivery(
         self, client: TestClient, auth: dict[str, str], credentialed: V1Env, origin
     ) -> None:
