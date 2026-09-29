@@ -158,15 +158,50 @@ def _settle_session(
         if "statuses" in prefetched:
             agg_pre["statuses"] = prefetched["statuses"]
     status, reason = _tasks._aggregate_status(record, run_states, plane, ws, prefetched=agg_pre)
-    if status != record.status:
-        record.transitions.append({"status": status, "reason": reason, "at": _iso_now()})
-        record.status = status
-        record.updated_at = _iso_now()
-        try:
-            task_store.put(record)
-        except Exception:
-            pass
+    _converge_writeback(record, status, reason, task_store)
     return status, reason, ws
+
+
+def _converge_writeback(
+    record: TaskRecord,
+    status: str,
+    reason: str,
+    task_store: TaskStore,
+) -> None:
+    """Persist a changed aggregate — the read-path convergence contract.
+
+    A failed convergence write must not 500 a status read: the live
+    aggregate is the answer either way."""
+    if status == record.status:
+        return
+    record.transitions.append({"status": status, "reason": reason, "at": _iso_now()})
+    record.status = status
+    record.updated_at = _iso_now()
+    try:
+        task_store.put(record)
+    except Exception:
+        pass
+
+
+def _terminal_projection(record: TaskRecord, ws: dict[str, Any] | None) -> tuple[str, str]:
+    """Aggregate for a stored-terminal row without any live reads.
+
+    ``error``/``cancelled``/``expired``/``delivery_failed`` are absorbing.
+    ``finished`` is terminal but flippable only by the delivery outcome —
+    which the workspace record already carries. A stored ``finished`` is
+    itself the settled verdict of a FINISHED latest run; a newer queued /
+    running run can only exist when a mutation path already rewrote the
+    stored status, so the ledger read adds nothing (SOR-268 round 3 — it
+    was the ~linear term on the list endpoint)."""
+    if record.status != "finished":
+        return record.status, "stored"
+    delivery = _tasks._delivery_view(record, ws)
+    if delivery is not None:
+        if delivery["status"] == "failed":
+            return "delivery_failed", "delivery_failed"
+        if delivery["status"] != "delivered":
+            return "delivering", "delivery_pending"
+    return "finished", "run_finished"
 
 
 def _view(
@@ -345,6 +380,11 @@ def _ack_budget(request: Request) -> float:
 # waits behind ~20 concurrent op chains on the shared store channel.
 _V2_OPS_WORKERS = env_int("SBX_V2_OPS_WORKERS", 6)
 _HEAVY_POOL = ThreadPoolExecutor(max_workers=_V2_OPS_WORKERS, thread_name_prefix="sbx-v2-ops")
+
+# Request-path prefetch staging (owner-doc reads the next store write
+# will consume). Fire-and-forget — stores treat a staged row as a
+# best-effort warm, never as required input.
+_PREFETCH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sbx-v2-prefetch")
 
 
 def _run_with_budget(fn: Any, budget_s: float) -> tuple[bool, dict[str, Any]]:
@@ -593,6 +633,14 @@ def create_session(
     v1_body = _to_task_request(body)
     fingerprint = request_fingerprint(v1_body)
     pin_key = f"v2:session:{idempotency_key}" if idempotency_key else None
+    # SOR-268 round 3: the owner-doc read ``put`` is about to need is issued
+    # up front on every create — not only the keyed path — so the
+    # read-modify-write only pays its ``Dict.update`` (SOR-271). On the
+    # keyed path ``find_by_idempotency`` stages the same row itself while
+    # resolving the dedup read.
+    prefetch = getattr(task_store, "prefetch_owner", None)
+    if callable(prefetch):
+        _PREFETCH_POOL.submit(prefetch, key.id)
     owned = None
     if pin_key is not None:
         outcome, entry = v1.idempotency.claim(key.id, pin_key, fingerprint)
@@ -610,20 +658,13 @@ def create_session(
                 "idempotency_in_progress",
                 "a create with this Idempotency-Key is still in progress",
             )
-        # The durable replay read (idem row -> task row, ~2 RTTs)
-        # overlaps the owner-doc read ``put`` is about to need — the
-        # staged row cuts one serial round trip off the create path
-        # (SOR-271). Order is preserved: ``put`` still runs only after
-        # the prior check passes, so an idempotent replay never writes
-        # an orphan session row.
-        prefetch = getattr(task_store, "prefetch_owner", None)
-        if callable(prefetch):
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                prior_fut = pool.submit(task_store.find_by_idempotency, key.id, pin_key)
-                pool.submit(prefetch, key.id)
-                prior = prior_fut.result()
-        else:
-            prior = task_store.find_by_idempotency(key.id, pin_key)
+        # ``find_by_idempotency`` issues the point index + pre-index owner
+        # reads concurrently and stages the owner doc for the imminent
+        # ``put`` — the whole dedup+stage is one wall round trip.
+        # Order is preserved: ``put`` still runs only after the prior
+        # check passes, so an idempotent replay never writes an orphan
+        # session row.
+        prior = task_store.find_by_idempotency(key.id, pin_key)
         if prior is not None:
             prior_fp = (prior.idempotency or {}).get("fingerprint")
             if prior_fp not in (None, fingerprint):
@@ -793,8 +834,11 @@ def list_sessions(
     # become a thundering herd on the remote store.
     # SOR-271 round 2: workspace rows come from ONE index-doc read, and
     # rows already at a durable terminal status skip the remote settle —
-    # the page cost tracks live rows, never the full history. ``finished``
-    # still settles live (a delivery can flip it to ``delivery_failed``).
+    # the page cost tracks live rows, never the full history.
+    # SOR-268 round 3: ``finished`` joins that skip — the only live input
+    # that can still change it is the delivery outcome, which ``ws_map``
+    # already carries; the per-row ``plane.get`` + ledger list was the
+    # residual ~linear term the re-gate still measured @333 rows.
     ws_map: dict[str, Any] = {}
     workspaces = getattr(plane, "workspaces", None)
     # ``plane.workspaces`` is the service; the index-backed listing lives
@@ -812,9 +856,13 @@ def list_sessions(
 
     def _settle_row(record: TaskRecord) -> tuple[str, str, dict[str, Any] | None]:
         ws = ws_map.get(record.agent_id) if record.agent_id else None
-        if record.status in _tasks._TASK_TERMINAL and record.status != "finished":
-            # Terminal is absorbing — the stored row is the final verdict.
-            return record.status, "stored", ws
+        if record.status in _tasks._TASK_TERMINAL:
+            # Terminal rows project from the stored row + ws map alone —
+            # converging write-back only when the delivery flip actually
+            # applies (a rare bounded write, not the per-row live reads).
+            status, reason = _terminal_projection(record, ws)
+            _converge_writeback(record, status, reason, task_store)
+            return status, reason, ws
         prefetched = {"ws": ws, "rec": None, "rows": None}
         return _settle_session(record, task_store, plane, run_states, prefetched=prefetched)
 
@@ -937,15 +985,16 @@ def post_message(
         result = box["result"]
         record_now = task_store.get(session_id) or record
         run = run_view(result["run"]) if result.get("run") else None
+        # Same bounded-ACK rule as cancel: the worker converged the record
+        # — one point read, no live view rebuild on the request path.
         return {
-            "session": _view(
+            "session": _optimistic_view(
                 record_now,
-                plane=plane,
-                v1=v1,
-                run_states=run_states,
-                scheduler=scheduler,
-                reporter=reporter,
+                aggregate_status=record_now.status,
+                aggregate_reason="stored",
                 task_store=task_store,
+                run_states=run_states,
+                plane=plane,
             ),
             "message": ({"n": run["n"], "status": run["status"]} if run else None),
         }
@@ -1004,25 +1053,18 @@ def cancel_session(
         )
 
     done, box = _run_with_budget(_cancel, _ack_budget(request))
-    if done:
-        if "error" in box:
-            raise box["error"]
-        record_now = task_store.get(session_id) or record
-        return {
-            "session": _view(
-                record_now,
-                plane=plane,
-                v1=v1,
-                run_states=run_states,
-                scheduler=scheduler,
-                reporter=reporter,
-                task_store=task_store,
-            )
-        }
-    agg = record.status if record.status in _tasks._TASK_TERMINAL else "cancelled"
+    if done and "error" in box:
+        raise box["error"]
+    # SOR-268 round 3: the ACK never pays a live ``_view`` rebuild — the
+    # worker already converged the record, so one point read answers with
+    # the post-cancel state. A full ``_view`` here re-ran settle + ledger +
+    # workspace reads on the request path and pushed bulk-cancel ACK p95
+    # over budget on the SOR-271 re-gate.
+    record_now = (task_store.get(session_id) or record) if done else record
+    agg = record_now.status if record_now.status in _tasks._TASK_TERMINAL else "cancelled"
     return {
         "session": _optimistic_view(
-            record,
+            record_now,
             aggregate_status=agg,
             aggregate_reason=("stored" if agg != "cancelled" else "task_cancelled"),
             task_store=task_store,
@@ -1109,14 +1151,13 @@ def retry_session(
         result = box["result"]
         record_now = task_store.get(session_id) or record
         return {
-            "session": _view(
+            "session": _optimistic_view(
                 record_now,
-                plane=plane,
-                v1=v1,
-                run_states=run_states,
-                scheduler=scheduler,
-                reporter=reporter,
+                aggregate_status=record_now.status,
+                aggregate_reason="stored",
                 task_store=task_store,
+                run_states=run_states,
+                plane=plane,
             ),
             "run": (run_view(result["run"]) if result.get("run") else None),
         }

@@ -11,8 +11,9 @@ routed zombie-agent finding:
    sends, one deduped cold compute.
 2. ``GET /v2/sessions`` scaled ~linearly with history (per-row settle +
    per-row workspace fetch). Now: terminal rows skip the remote settle
-   (``finished`` still settles — a delivery can flip it) and the
-   workspace map is ONE index-doc read on ``sbx-workspaces``.
+   and the workspace map is ONE index-doc read on ``sbx-workspaces``
+   (round 3 extends the skip to ``finished`` — the delivery outcome it
+   could still flip on lives in the ws map).
 3. Bulk cancel ACKs >1s p95: every request spawned an unbounded daemon
    thread, flooding the shared remote channel. Now: one bounded ops pool
    (``_HEAVY_POOL``) backs ``_run_with_budget``.
@@ -236,14 +237,16 @@ class TestListBoundedRead:
         row = next(s for s in out["sessions"] if s["id"] == "sess_0000")
         assert row["status"] == "cancelled"
 
-    def test_finished_rows_still_settle_for_delivery_flip(self) -> None:
-        """``finished`` is the one non-absorbing terminal status — a
-        pending ws delivery can flip it to ``delivery_failed``, so it
-        still pays the live settle."""
+    def test_finished_rows_project_without_live_settle(self) -> None:
+        """``finished`` is terminal-but-flippable only by the delivery
+        outcome — which the ws map already carries — so the list page
+        skips its live settle too (round 3: the residual ~linear term)."""
         task_store = _SpyTaskStore()
         task_store.put(_task("sess_f", status="finished", agent_id="agent-x"))
-        ws_store, _fake = _ws_store()
+        ws_store, fake = _ws_store()
         plane = _FakePlane(ws_store)
+        fake.gets = 0
+        task_store.puts.clear()
         out = v2_routes.list_sessions(
             key=self._key(),
             task_store=task_store,
@@ -252,7 +255,9 @@ class TestListBoundedRead:
             limit=100,
             offset=0,
         )
-        assert plane.get_calls == ["agent-x"]
+        assert plane.get_calls == []
+        assert fake.gets == 1  # the index get only
+        assert task_store.puts == []  # no flip → no write-back
         assert out["sessions"][0]["status"] == "finished"
 
     def test_error_rows_skip_the_settle(self) -> None:
