@@ -1672,6 +1672,7 @@ class ModalDictTaskStore:
         self._dict: Any = None
         self._lock = threading.Lock()
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._owner_prefetch: dict[str, tuple[float, Any]] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1733,6 +1734,35 @@ class ModalDictTaskStore:
         keep = {str(r.get("id")) for r in newest}
         return {k: v for k, v in records.items() if k in keep}
 
+    def prefetch_owner(self, owner: str) -> None:
+        """Warm the owner-doc read an imminent ``put`` will need.
+
+        The V2 create path runs this concurrently with
+        ``find_by_idempotency``: the two reads overlap, so the subsequent
+        ``put`` only pays its ``Dict.update`` round trip (SOR-271). The
+        staged row is consumed once and only while fresh — a stale
+        prefetch can never silently starve another writer's owner-doc
+        entries any longer than the usual read-modify-write window.
+        """
+        try:
+            raw = self._d().get(self._owner_key(owner))
+        except Exception:
+            return
+        with self._lock:
+            if len(self._owner_prefetch) > 64:
+                self._owner_prefetch.clear()
+            self._owner_prefetch[owner] = (time.monotonic(), raw)
+
+    def _owner_doc_for_write(
+        self, owner: str, d: Any
+    ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+        """Owner doc for ``put``'s read-modify-write: a just-prefetched
+        row if one was staged, else a fresh read."""
+        hit = self._owner_prefetch.pop(owner, None)
+        if hit is not None and time.monotonic() - hit[0] < 2.0:
+            return self._owner_doc(hit[1])
+        return self._owner_doc(d.get(self._owner_key(owner)))
+
     def put(self, record: TaskRecord) -> None:
         d = self._d()
         task_key = self._task_key(record.id)
@@ -1750,7 +1780,7 @@ class ModalDictTaskStore:
             writes: dict[str, Any] = {task_key: raw}
             if record.owner:
                 owner_key = self._owner_key(record.owner)
-                ids, summaries = self._owner_doc(d.get(owner_key))
+                ids, summaries = self._owner_doc_for_write(record.owner, d)
                 if record.id not in ids:
                     ids.append(record.id)
                 summaries[record.id] = _task_summary(record)

@@ -195,6 +195,13 @@ class AccountStore(Protocol):
     def iter_records(self) -> Iterable[tuple[str, Any]]:
         """All ``(account_id, payload)`` pairs, including undecodable ones."""
 
+    def list_records(self) -> Iterable[tuple[str, Any]]:
+        """All ``(account_id, payload)`` pairs for read-model listings.
+
+        Same contents as ``iter_records`` but optimized for the hot read
+        path: Dict-backed stores answer it with one index-doc read
+        instead of a full ``items()`` enumeration (SOR-271)."""
+
     def delete_record(self, account_id: str) -> None:
         """Remove the account payload (absent is a no-op)."""
 
@@ -231,6 +238,9 @@ class InMemoryAccountStore:
     def iter_records(self) -> Iterable[tuple[str, Any]]:
         with self._lock:
             return list(self._records.items())
+
+    def list_records(self) -> Iterable[tuple[str, Any]]:
+        return self.iter_records()
 
     def delete_record(self, account_id: str) -> None:
         validate_account_id(account_id)
@@ -345,6 +355,9 @@ class FileAccountStore:
             out.append((path.stem, raw if raw is not None else {"id": path.stem}))
         return out
 
+    def list_records(self) -> Iterable[tuple[str, Any]]:
+        return self.iter_records()
+
     def delete_record(self, account_id: str) -> None:
         with self._lock:
             self._record_path(account_id).unlink(missing_ok=True)
@@ -384,10 +397,12 @@ class ModalDictAccountStore:
     _ACCOUNT_PREFIX = "account/"
     _BLOB_PREFIX = "credential/"
     _LIFECYCLE_PREFIX = "credential_lifecycle/"
+    _INDEX_KEY = "__accounts__"
 
     def __init__(self, name: str = ACCOUNTS_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
+        self._ilock = threading.Lock()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -403,11 +418,31 @@ class ModalDictAccountStore:
             raw = self._d().get(key)
         return raw if isinstance(raw, dict) else None
 
+    @staticmethod
+    def _batch(d: Any, writes: dict[str, Any]) -> None:
+        """One-RPC multi-key write via ``Dict.update``; older clients
+        degrade to per-key puts."""
+        update = getattr(d, "update", None)
+        if callable(update):
+            update(writes)
+            return
+        for key, value in writes.items():
+            d.put(key, value)
+
+    def _read_index(self) -> dict[str, Any]:
+        raw = self._d().get(self._INDEX_KEY)
+        return dict(raw) if isinstance(raw, dict) else {}
+
     def put_record(self, account_id: str, record: dict[str, Any]) -> None:
         validate_account_id(account_id)
         key = self._ACCOUNT_PREFIX + account_id
-        with observe("modal_dict.put", store=self._name, key=key):
-            self._d().put(key, dict(record))
+        # ``Dict.update`` carries the row and its index entry in one
+        # atomic write — ``list_records`` never sees a torn pair.
+        with self._ilock:
+            index = self._read_index()
+            index[account_id] = dict(record)
+            with observe("modal_dict.put", store=self._name, key=key):
+                self._batch(self._d(), {key: dict(record), self._INDEX_KEY: index})
 
     def iter_records(self) -> Iterable[tuple[str, Any]]:
         out: list[tuple[str, Any]] = []
@@ -418,11 +453,50 @@ class ModalDictAccountStore:
                     out.append((key[len(self._ACCOUNT_PREFIX) :], raw))
         return out
 
+    def list_records(self) -> Iterable[tuple[str, Any]]:
+        """One index-doc read instead of an ``items()`` full scan.
+
+        Every ``put_record`` writes the account row and the ``__accounts__``
+        doc in one ``Dict.update``, so a warm listing is a single point
+        read (SOR-271: the full scan ran inside every session create's
+        ``resolve_execution``). A Dict predating the index falls back to
+        ``iter_records`` once and self-heals the index doc; a dropped or
+        corrupt index heals the same way on the next listing."""
+        try:
+            with observe("modal_dict.get", store=self._name, key=self._INDEX_KEY):
+                raw = self._d().get(self._INDEX_KEY)
+        except Exception:
+            raw = None
+        if isinstance(raw, dict):
+            return list(raw.items())
+        records = list(self.iter_records())
+        try:
+            with self._ilock:
+                self._batch(
+                    self._d(),
+                    {self._INDEX_KEY: {account_id: dict(rec) for account_id, rec in records}},
+                )
+        except Exception:
+            pass
+        return records
+
     def delete_record(self, account_id: str) -> None:
         validate_account_id(account_id)
+        key = self._ACCOUNT_PREFIX + account_id
+        # Index first: a crash between the two writes leaves an orphaned
+        # account row (invisible to listings, converged by the next
+        # self-heal) — never an index entry pointing at a missing row.
+        try:
+            with self._ilock:
+                index = self._read_index()
+                if account_id in index:
+                    del index[account_id]
+                    self._batch(self._d(), {self._INDEX_KEY: index})
+        except Exception:
+            pass
         try:
             with observe("modal_dict.pop", store=self._name, key=account_id):
-                self._d().pop(self._ACCOUNT_PREFIX + account_id)
+                self._d().pop(key)
         except KeyError:
             return
 
@@ -512,7 +586,7 @@ class PersistentAccountRegistry:
     def list(self, provider: str | None = None) -> list[Account]:
         out = [
             _decode(raw, account_id)
-            for account_id, raw in self._store.iter_records()
+            for account_id, raw in self._store.list_records()
             if isinstance(account_id, str)
         ]
         if provider is not None:

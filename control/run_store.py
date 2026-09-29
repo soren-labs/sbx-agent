@@ -546,6 +546,7 @@ _DICT_FANOUT = 8
 # ``get_fresh``/``list_fresh`` so a cancel can't overwrite a terminal
 # record it failed to see.
 _RUN_REC_CACHE_TTL_S = env_float("SBX_RUN_REC_CACHE_TTL_S", 1.0)
+_RUN_IDX_CACHE_TTL_S = env_float("SBX_RUN_IDX_CACHE_TTL_S", 1.0)
 
 
 class ModalDictRunStore:
@@ -582,6 +583,7 @@ class ModalDictRunStore:
         self._lock = threading.Lock()
         self._build_lock = threading.Lock()
         self._rec_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._idx_ns_cache: dict[str, tuple[float, list[int]]] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -644,13 +646,34 @@ class ModalDictRunStore:
         with self._lock:
             self._rec_cache[key] = (time.monotonic(), raw)
 
+    def _idx_ns(self, agent_id: str, *, cached: bool) -> list[int] | None:
+        """The agent's run numbers from the index doc.
+
+        ``cached=True`` rides a ~1s read-through cache so a warm
+        ``list`` is index-read-free — the SSE status pollers call this
+        every 0.5s per session (SOR-271). Index writes go through
+        ``_index_add``/``_index_remove``, which update the cache
+        write-through, so same-process mutations never read stale."""
+        if cached:
+            with self._lock:
+                hit = self._idx_ns_cache.get(agent_id)
+            if hit is not None and time.monotonic() - hit[0] < _RUN_IDX_CACHE_TTL_S:
+                return hit[1]
+        self._ensure_index()
+        raw_ns = self._idx().get(self._idx_key(agent_id))
+        ns = sorted({int(v) for v in raw_ns or [] if isinstance(v, int)})
+        if cached:
+            with self._lock:
+                self._idx_ns_cache[agent_id] = (time.monotonic(), ns)
+        return ns
+
     def _list(self, agent_id: str, *, cached: bool) -> list[RunRecord]:
         raws: dict[int, dict[str, Any] | None] | None = None
         ns: list[int] = []
         try:
-            self._ensure_index()
-            raw_ns = self._idx().get(self._idx_key(agent_id)) or []
+            raw_ns = self._idx_ns(agent_id, cached=cached)
             ns = sorted({int(v) for v in raw_ns if isinstance(v, int)})
+            ns = sorted({int(v) for v in (raw_ns or []) if isinstance(v, int)})
             raws = {}
             remote_ns: list[int] = []
             if cached:
@@ -730,8 +753,11 @@ class ModalDictRunStore:
                 key = self._idx_key(agent_id)
                 ns = self._idx().get(key) or []
                 if n in ns:
+                    self._idx_ns_cache[agent_id] = (time.monotonic(), sorted(ns))
                     return
-                self._idx().put(key, sorted([*ns, n]))
+                new_ns = sorted([*ns, n])
+                self._idx().put(key, new_ns)
+                self._idx_ns_cache[agent_id] = (time.monotonic(), new_ns)
         except Exception:
             self._index_broken()
 
@@ -741,12 +767,15 @@ class ModalDictRunStore:
                 key = self._idx_key(agent_id)
                 ns = self._idx().get(key) or []
                 if n not in ns:
+                    self._idx_ns_cache[agent_id] = (time.monotonic(), sorted(ns))
                     return
                 kept = [v for v in ns if v != n]
                 if kept:
                     self._idx().put(key, kept)
+                    self._idx_ns_cache[agent_id] = (time.monotonic(), kept)
                 else:
                     self._idx().pop(key)
+                    self._idx_ns_cache[agent_id] = (time.monotonic(), [])
         except Exception:
             self._index_broken()
 
@@ -754,6 +783,8 @@ class ModalDictRunStore:
         """Index maintenance failed: drop the marker so the next listing
         rebuilds and converges instead of serving a drifted index."""
         self._index_ready = False
+        with self._lock:
+            self._idx_ns_cache.clear()
         try:
             self._idx().pop(self._IDX_BUILT)
         except Exception:
@@ -800,6 +831,7 @@ class ModalDictRunStore:
             for agent, ns in groups.items():
                 self._idx().put(self._idx_key(agent), sorted(ns))
             self._idx().put(self._IDX_BUILT, b"1")
+            self._idx_ns_cache.clear()
         self._index_ready = True
         return sum(len(ns) for ns in groups.values())
 

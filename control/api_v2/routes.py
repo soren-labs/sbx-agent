@@ -307,7 +307,11 @@ def _to_task_request(body: CreateSessionRequest) -> _tasks.CreateTaskRequest:
 # ---------------------------------------------------------------------------
 
 _ACK_BUDGET_ENV = "SBX_V2_ACK_BUDGET_S"
-_DEFAULT_ACK_BUDGET_S = 0.5
+# On a warm production path the dispatch work (resolve/provision/bind)
+# never lands inside the wait window — the budget is then pure added
+# latency on the ACK. 0.35s still surfaces fast validation failures
+# (SOR-271: p95 ACK < 1s needs the window under ~400ms).
+_DEFAULT_ACK_BUDGET_S = 0.35
 
 # SOR-268: concurrent settles on the list endpoint — one remote batch
 # per page row serialized into N × remote latency in the gate run.
@@ -490,7 +494,20 @@ def create_session(
                 "idempotency_in_progress",
                 "a create with this Idempotency-Key is still in progress",
             )
-        prior = task_store.find_by_idempotency(key.id, pin_key)
+        # The durable replay read (idem row -> task row, ~2 RTTs)
+        # overlaps the owner-doc read ``put`` is about to need — the
+        # staged row cuts one serial round trip off the create path
+        # (SOR-271). Order is preserved: ``put`` still runs only after
+        # the prior check passes, so an idempotent replay never writes
+        # an orphan session row.
+        prefetch = getattr(task_store, "prefetch_owner", None)
+        if callable(prefetch):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                prior_fut = pool.submit(task_store.find_by_idempotency, key.id, pin_key)
+                pool.submit(prefetch, key.id)
+                prior = prior_fut.result()
+        else:
+            prior = task_store.find_by_idempotency(key.id, pin_key)
         if prior is not None:
             prior_fp = (prior.idempotency or {}).get("fingerprint")
             if prior_fp not in (None, fingerprint):
