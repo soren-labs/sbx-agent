@@ -459,9 +459,7 @@ def _redrive_dispatch(
         )
     detail = _dispatch_error(record)
     if detail is None or detail.get("retryable") is not True:
-        raise V1ApiError(
-            409, "task_not_retryable", "session's dispatch failure is not retryable"
-        )
+        raise V1ApiError(409, "task_not_retryable", "session's dispatch failure is not retryable")
     spec = dict(record.request or {})
     if prompt is not None:
         spec["prompt"] = {"text": prompt}
