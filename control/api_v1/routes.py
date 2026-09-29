@@ -2318,9 +2318,14 @@ async def stream_run(
 ) -> Any:
     from control.app import DisconnectAwareStreamingResponse
 
-    rec = _require_agent(plane, agent_id)
+    # SOR-271 round 2: every remote call in this handler and in the
+    # generator below runs via ``asyncio.to_thread`` — a synchronous Dict
+    # get/poll on the ASGI event loop stalls every other in-flight
+    # request while it blocks (read starvation under SSE fanout).
+    rec = await asyncio.to_thread(_require_agent, plane, agent_id)
     n = _run_n(run_id)
-    if n is None or n not in _known_run_ns(rec, _ledger(plane), run_states):
+    ledger = _ledger(plane)
+    if n is None or n not in await asyncio.to_thread(_known_run_ns, rec, ledger, run_states):
         raise not_found("run not found")
     try:
         last_id = int(last_event_id) if last_event_id else 0
@@ -2353,16 +2358,16 @@ async def stream_run(
         current_turn = 0
         try:
             yield ": keepalive\n\n"
-            handle, poll = _live_handle()
+            handle, poll = await asyncio.to_thread(_live_handle)
             next_ka = time.monotonic() + keepalive_s
             # Wait out the CREATING window: the sandbox appears once the
             # background worker binds it; a terminal run/session exits to the
             # replay path below.
             while handle is None or poll is None or not poll.alive:
-                state = run_states.get(agent_id, n)
+                state = await asyncio.to_thread(run_states.get, agent_id, n)
                 if state is not None and state.status in RUN_TERMINAL:
                     break
-                rec_now = plane.get(agent_id)
+                rec_now = await asyncio.to_thread(plane.get, agent_id)
                 if rec_now is None or rec_now.status in ("closed", "timed_out", "lost"):
                     break
                 now = time.monotonic()
@@ -2370,7 +2375,7 @@ async def stream_run(
                     yield ": keepalive\n\n"
                     next_ka = now + keepalive_s
                 await asyncio.sleep(0.05)
-                handle, poll = _live_handle()
+                handle, poll = await asyncio.to_thread(_live_handle)
             if backend is not None and handle is not None and poll is not None and poll.alive:
                 proc = await asyncio.to_thread(
                     backend.exec,
@@ -2426,7 +2431,7 @@ async def stream_run(
             lines: list[str] = []
             if backend is not None and handle is not None:
                 try:
-                    text = read_text(backend, handle, "events.jsonl")
+                    text = await asyncio.to_thread(read_text, backend, handle, "events.jsonl")
                 except Exception:
                     text = None
                 if text:
@@ -2444,7 +2449,11 @@ async def stream_run(
                 # Sandbox gone: fall back to the transcript captured at turn end.
                 activity = getattr(request.app.state, "run_activity", None)
                 try:
-                    entries = activity.get(agent_id, n) if activity is not None else None
+                    entries = (
+                        await asyncio.to_thread(activity.get, agent_id, n)
+                        if activity is not None
+                        else None
+                    )
                 except Exception:
                     entries = None
                 for entry in entries or ():
@@ -2456,7 +2465,7 @@ async def stream_run(
         finally:
             if proc is not None:
                 try:
-                    proc.kill()
+                    await asyncio.to_thread(proc.kill)
                 except Exception:
                     pass
 

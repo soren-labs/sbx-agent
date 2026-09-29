@@ -102,6 +102,10 @@ class SessionEventsHub:
         self._lineno = 0
         self._current_turn = 0
         self._status: tuple[str, str, str] | None = None  # last status tick
+        # Serializes cold ``opening_status`` computes: a reconnect herd
+        # (tail EOF → N clients attach at once) pays ONE ``status_bits``
+        # remote fan-in, not N — SOR-271 round 2.
+        self._status_compute_lock = threading.Lock()
         self._state = "waiting"  # waiting | live | replay
         self._inbox: queue.Queue[tuple[str, str | None]] = queue.Queue()
         self._proc: Any = None
@@ -159,14 +163,22 @@ class SessionEventsHub:
         self._broadcast(frame)
 
     def opening_status(self) -> str | None:
-        """Current status frame — computed synchronously if never polled."""
-        if self._status is None:
-            try:
-                st, ph, frame = self._status_bits()
-                self._status = (st, ph, frame)
-            except Exception:
-                return None
-        return self._status[2]
+        """Current status frame — computed synchronously if never polled.
+
+        The compute is deduped under ``_status_compute_lock``: concurrent
+        first-connect callers wait for the one in-flight ``status_bits``
+        and then read the populated ``_status`` instead of each paying
+        the remote fan-in."""
+        if self._status is not None:
+            return self._status[2]
+        with self._status_compute_lock:
+            if self._status is None:
+                try:
+                    st, ph, frame = self._status_bits()
+                    self._status = (st, ph, frame)
+                except Exception:
+                    return None
+            return self._status[2]
 
     # ------------------------------------------------------------ internals
 

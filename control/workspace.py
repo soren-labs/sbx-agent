@@ -28,7 +28,7 @@ import re
 import shlex
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -451,6 +451,13 @@ class WorkspaceStore(Protocol):
     def delete(self, agent_id: str) -> None:
         """Remove a record (retry of a failed prepare)."""
 
+    def list_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        """All ``(agent_id, raw record)`` pairs for read-model listings.
+
+        Dict-backed stores answer with one index-doc read instead of a
+        full ``items()`` enumeration (SOR-271 round 2: the /v2 session
+        list paid one workspace get per row, which scales with history)."""
+
 
 class InMemoryWorkspaceStore:
     """Thread-safe dict store for tests and ephemeral deployments."""
@@ -478,6 +485,10 @@ class InMemoryWorkspaceStore:
     def delete(self, agent_id: str) -> None:
         with self._lock:
             self._items.pop(agent_id, None)
+
+    def list_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        with self._lock:
+            return list(self._items.items())
 
 
 class FileWorkspaceStore:
@@ -521,6 +532,17 @@ class FileWorkspaceStore:
         with self._lock:
             self._path(agent_id).unlink(missing_ok=True)
 
+    def list_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        out: list[tuple[str, dict[str, Any]]] = []
+        for path in sorted(self._root.glob("*/workspace.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(raw, dict):
+                out.append((path.parent.name, raw))
+        return out
+
 
 _WS_GET_CACHE_TTL_S = env_float("SBX_WS_GET_CACHE_TTL_S", 0.75)
 
@@ -532,13 +554,20 @@ class ModalDictWorkspaceStore:
     settle/view paths re-read the same workspace several times per
     request and the SSE hub ticks it; mutations go through
     ``get_fresh`` so a read-modify-write never runs on a cached row.
+
+    SOR-271 round 2: workspace rows also ride a ``__workspaces__`` index
+    doc written atomically by ``put`` — ``list_records`` is one point
+    read, so the /v2 session list no longer pays a remote get per row.
     """
+
+    _INDEX_KEY = "__workspaces__"
 
     def __init__(self, name: str = WORKSPACES_DICT_NAME) -> None:
         self._name = name
         self._dict: Any = None
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._lock = threading.Lock()
+        self._ilock = threading.Lock()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -577,14 +606,79 @@ class ModalDictWorkspaceStore:
         """Uncached read for mutation paths (read-modify-write)."""
         return self._decode(self._get_uncached(agent_id), agent_id)
 
+    @staticmethod
+    def _batch(d: Any, writes: dict[str, Any]) -> None:
+        """One-RPC multi-key write via ``Dict.update``; older clients
+        degrade to per-key puts."""
+        update = getattr(d, "update", None)
+        if callable(update):
+            update(writes)
+            return
+        for key, value in writes.items():
+            d.put(key, value)
+
+    def _read_index(self) -> dict[str, Any]:
+        raw = self._d().get(self._INDEX_KEY)
+        return dict(raw) if isinstance(raw, dict) else {}
+
     def put(self, record: WorkspaceRecord) -> None:
         raw = record_to_dict(record)
-        with observe("modal_dict.put", store=self._name, key=record.agent_id):
-            self._d().put(record.agent_id, raw)
+        # ``Dict.update`` carries the row and its index entry in one
+        # atomic write — ``list_records`` never sees a torn pair.
+        with self._ilock:
+            index = self._read_index()
+            index[record.agent_id] = dict(raw)
+            with observe("modal_dict.put", store=self._name, key=record.agent_id):
+                self._batch(self._d(), {record.agent_id: raw, self._INDEX_KEY: index})
         with self._lock:
             self._get_cache[record.agent_id] = (time.monotonic(), raw)
 
+    def iter_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        """Full ``items()`` enumeration — migration/self-heal path only."""
+        out: list[tuple[str, dict[str, Any]]] = []
+        with observe("modal_dict.items", store=self._name):
+            items: Iterator[tuple[Any, Any]] = self._d().items()
+            for key, raw in items:
+                if isinstance(key, str) and not key.startswith("__") and isinstance(raw, dict):
+                    out.append((key, raw))
+        return out
+
+    def list_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        """One index-doc read instead of an ``items()`` full scan.
+
+        A Dict predating the index falls back to ``iter_records`` once
+        and self-heals the index doc; a dropped or corrupt index heals
+        the same way on the next listing."""
+        try:
+            with observe("modal_dict.get", store=self._name, key=self._INDEX_KEY):
+                raw = self._d().get(self._INDEX_KEY)
+        except Exception:
+            raw = None
+        if isinstance(raw, dict):
+            return list(raw.items())
+        records = list(self.iter_records())
+        try:
+            with self._ilock:
+                self._batch(
+                    self._d(),
+                    {self._INDEX_KEY: {agent_id: dict(rec) for agent_id, rec in records}},
+                )
+        except Exception:
+            pass
+        return records
+
     def delete(self, agent_id: str) -> None:
+        # Index first: a crash between the two writes leaves an orphaned
+        # workspace row (invisible to listings, converged by the next
+        # self-heal) — never an index entry pointing at a missing row.
+        try:
+            with self._ilock:
+                index = self._read_index()
+                if agent_id in index:
+                    del index[agent_id]
+                    self._batch(self._d(), {self._INDEX_KEY: index})
+        except Exception:
+            pass
         try:
             with observe("modal_dict.pop", store=self._name, key=agent_id):
                 self._d().pop(agent_id)
@@ -1031,6 +1125,11 @@ class WorkspaceService:
 
     def get(self, agent_id: str) -> WorkspaceRecord | None:
         return self._store.get(agent_id)
+
+    def list_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        """Index-backed raw-record listing — delegates to the store so a
+        caller holding only the service still gets the bounded read."""
+        return self._store.list_records()
 
     def save(self, record: WorkspaceRecord) -> WorkspaceRecord:
         record.updated_at = self._now()

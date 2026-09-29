@@ -191,6 +191,9 @@ _VER_UNREAD: Any = object()
 # ``put`` — bounded by this TTL, a strictly smaller staleness than the
 # listing cache above already accepts.
 _GET_CACHE_TTL_S = float(os.environ.get("SBX_SESSION_GET_CACHE_TTL_S", "0.75"))
+# SOR-271 round 2: background index rebuild cadence — heals manifest drift
+# (lost cross-container RMW writes) without request-path scans.
+_REBUILD_INTERVAL_S = float(os.environ.get("SBX_STORE_IDX_REBUILD_S", "120"))
 
 # ``_index_add`` result sentinel: the id was already indexed, so the index
 # write was skipped and the caller must bump ``ver`` itself.
@@ -246,6 +249,12 @@ class ModalDictStore:
         # Ids confirmed present in the manifest — a warm ``put`` skips
         # the index-doc read entirely (record put + ``ver`` bump only).
         self._indexed_ids: set[str] = set()
+        # SOR-271 round 2: manifest RMW writes can lose entries across
+        # containers, orphaning records from every ``list_all`` reader
+        # (the zombie-agent finding — the reaper never saw them). The
+        # background refresh thread re-enumerates ``keys()`` on this
+        # interval so drift self-heals instead of accumulating forever.
+        self._last_rebuild_at = 0.0
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -375,6 +384,18 @@ class ModalDictStore:
     def _refresh_listing(self) -> None:
         try:
             self._ensure_index()
+            if self._index_ready and (
+                time.monotonic() - self._last_rebuild_at > _REBUILD_INTERVAL_S
+            ):
+                # Off the request path: a full ``keys()`` enumeration
+                # rewrites the manifest, healing any index entries a
+                # cross-container RMW race lost.
+                try:
+                    self.rebuild_index()
+                except Exception:
+                    pass
+                else:
+                    self._last_rebuild_at = time.monotonic()
             ver = self._idx().get(self._IDX_VER)
             self._fetch_indexed(ver)
         except Exception:
@@ -531,4 +552,5 @@ class ModalDictStore:
             self._idx().put(self._IDX_VER, uuid.uuid4().hex)
             self._indexed_ids = set(keys)
         self._index_ready = True
+        self._last_rebuild_at = time.monotonic()
         return len(keys)

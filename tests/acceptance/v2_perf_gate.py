@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import threading
@@ -419,6 +420,107 @@ def run_probes(
                 except Exception:
                     pass
 
+    # ---- R2: the whole SSE herd on ONE live-running session -----------
+    # The v20 gate's failing shape: 20 clients on one live session must
+    # not starve unrelated reads (connect-path remote reads off the ASGI
+    # loop + one deduped cold opening_status + batched replay sends).
+    if bound_ids:
+        emulated = op_counter is not None
+        if emulated:
+            # Keep the dedicated session mid-turn for the whole probe —
+            # ``slow`` sleeps FAKE_CODEX_SLOW_SECONDS inside the run.
+            os.environ["FAKE_CODEX_SCENARIO"] = "slow"
+            os.environ["FAKE_CODEX_SLOW_SECONDS"] = "45"
+        try:
+            live_resp = create_one(http)
+            live_sid = (
+                live_resp.json()["session"]["id"]
+                if live_resp.status_code in (200, 201, 202)
+                else bound_ids[-1]
+            )
+            mark("live-sse")
+            live_streams: list[Any] = []
+            opened = 0
+            try:
+                for _ in range(sse_clients):
+                    s = http.stream(
+                        "GET",
+                        f"/v2/sessions/{live_sid}/events",
+                        headers=headers,
+                        timeout=httpx.Timeout(None, connect=30.0),
+                    )
+                    try:
+                        resp = s.__enter__()
+                    except httpx.HTTPError as exc:
+                        print(f"live SSE open failed: {exc!r}", file=sys.stderr)
+                        s.__exit__(None, None, None)
+                        break
+                    assert resp.status_code == 200
+                    live_streams.append(s)
+                    opened += 1
+                time.sleep(1.0)
+                samples = []
+                worst_spike = 0.0
+                for _ in range(10):
+                    dt = _timed_read(http, detail_one(bound_ids[0]))
+                    samples.append(dt)
+                    worst_spike = max(worst_spike, dt)
+                for _ in range(5):
+                    dt = _timed_read(http, list_one(25))
+                    samples.append(dt)
+                    worst_spike = max(worst_spike, dt)
+                results.append(
+                    ProbeResult(
+                        f"reads during {opened}xSSE on live session",
+                        samples,
+                        budgets.get("live_reads"),
+                    )
+                )
+                results.append(
+                    ProbeResult(
+                        "max single-read spike (live fanout)",
+                        [worst_spike],
+                        budgets.get("live_spike"),
+                    )
+                )
+                print(f"R2 live-fanout remote-ops{ops()}", file=sys.stderr)
+            finally:
+                for s in live_streams:
+                    try:
+                        s.__exit__(None, None, None)
+                    except Exception:
+                        pass
+        finally:
+            if emulated:
+                os.environ.pop("FAKE_CODEX_SCENARIO", None)
+                os.environ.pop("FAKE_CODEX_SLOW_SECONDS", None)
+
+    # ---- R2: deep-history list must stay bounded -----------------------
+    mark("list-history")
+    hist_samples: list[float] = []
+    total = 0
+    for _ in range(3):
+        dt, resp = _time(http, list_one(100))
+        assert resp.status_code == 200, resp.text
+        total = resp.json().get("total", 0)
+        hist_samples.append(dt)
+    results.append(
+        ProbeResult(
+            f"GET /v2/sessions list (total={total})",
+            hist_samples,
+            budgets.get("list_history"),
+        )
+    )
+    if op_counter is not None:
+        results.append(
+            ProbeResult(
+                "workspaces full scans during list",
+                [float(op_counter.get("workspaces.items", 0))],
+                budgets.get("ws_items"),
+            )
+        )
+    print(f"R2 list-history remote-ops{ops()}", file=sys.stderr)
+
     # ---- B4: bulk close must not wedge the plane ----------------------------
     if bulk_n:
         bulk_ids: list[str] = []
@@ -435,16 +537,22 @@ def run_probes(
                 bulk_ids.append(resp.json()["session"]["id"])
         t0 = time.perf_counter()
         threads = []
-        for sid in bulk_ids:
-            threads.append(
-                threading.Thread(
-                    target=lambda s=sid: http.post(
-                        f"/v2/sessions/{s}/cancel",
-                        headers=headers,
-                        timeout=120.0,
-                    )
+        cancel_lats: list[float] = []
+
+        def _do_cancel(s: str) -> None:
+            try:
+                start = time.perf_counter()
+                http.post(
+                    f"/v2/sessions/{s}/cancel",
+                    headers=headers,
+                    timeout=120.0,
                 )
-            )
+                cancel_lats.append(time.perf_counter() - start)
+            except httpx.HTTPError:
+                pass
+
+        for sid in bulk_ids:
+            threads.append(threading.Thread(target=_do_cancel, args=(sid,)))
         for t in threads:
             t.start()
         # unrelated reads while the bulk close is in flight
@@ -462,6 +570,16 @@ def run_probes(
                 budgets.get("bulk_wall"),
             )
         )
+        # R2: the v20 gate's third failure — parallel cancels must ACK
+        # inside the <1s budget even at 20x (bounded shared ops pool).
+        if cancel_lats:
+            results.append(
+                ProbeResult(
+                    f"bulk cancel x{len(bulk_ids)} ACK p95",
+                    cancel_lats,
+                    budgets.get("cancel_p95"),
+                )
+            )
         results.append(
             ProbeResult(
                 "detail during bulk cancel",
@@ -499,15 +617,24 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     from control.ports import Account
     from control.run_store import InMemoryRunStore
     from control.store import InMemoryStore
-    from control.tasks import InMemoryTaskStore
+    from control.tasks import InMemoryTaskStore, TaskRecord
+    from control.workspace import ModalDictWorkspaceStore
 
     stub_runner = (Path(__file__).resolve().parents[1] / "fakes" / "stub_runner.py").resolve()
     backend = _SlowProxy(LocalProcessBackend(), sandbox_ms, counter)
+    task_store_inner = InMemoryTaskStore()
+    # SOR-271 round 2: workspaces go through the real Dict-backed store —
+    # the v2 list page must read them via ONE index-doc get, not a
+    # per-row ``workspaces.get`` fanout (the ~linear list finding).
+    ws_dict = _SlowProxy(_HarnessDict(), dict_ms, counter, ns="workspaces.")
+    ws_store = ModalDictWorkspaceStore("sbx-workspaces")
+    ws_store._dict = ws_dict
     app = create_app(
         backend=backend,
         store=_SlowProxy(InMemoryStore(), dict_ms, counter),
         run_store=_SlowProxy(InMemoryRunStore(), dict_ms, counter),
-        task_store=_SlowProxy(InMemoryTaskStore(), dict_ms, counter),
+        task_store=_SlowProxy(task_store_inner, dict_ms, counter),
+        workspace_store=ws_store,
         runner_cmd=[sys.executable, str(stub_runner)],
         keepalive_s=0.5,
         max_concurrent=256,
@@ -536,7 +663,25 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
             created_at=datetime.now(UTC).isoformat(),
         )
     )
-    _key, token = keys.create(label="perf", scopes=("agents",))
+    key, token = keys.create(label="perf", scopes=("agents",))
+    # SOR-271 round 2: seed deep terminal history directly into the
+    # store (bypassing the latency shim — free) so the list probe reads
+    # a ~300-row page like the production regression did. Absorbing-
+    # terminal rows must cost zero remote ops on the request path.
+    for i in range(260):
+        task_store_inner.put(
+            TaskRecord(
+                id=f"sess_hist_{i:04d}",
+                owner=key.id,
+                status="cancelled",
+                request={"prompt": {"text": f"history {i}"}},
+                resolved={"execution": {"provider": "codex"}},
+                agent_id=f"agent-h{i}",
+                run_id=None,
+                created_at=f"2026-09-28T{i % 24:02d}:00:00+00:00",
+                updated_at=f"2026-09-28T{i % 24:02d}:00:00+00:00",
+            )
+        )
     return app, token
 
 
@@ -581,7 +726,8 @@ def main() -> int:
     # spread across hubs, 16x bulk cancel.
     parser.add_argument("--sessions", type=int, default=21)
     parser.add_argument("--sse-clients", type=int, default=20)
-    parser.add_argument("--bulk", type=int, default=16)
+    # SOR-271 round 2 gate shape: 20x parallel bulk cancel.
+    parser.add_argument("--bulk", type=int, default=20)
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args()
 
@@ -598,6 +744,13 @@ def main() -> int:
         "list": None,
         "sse_reads": 1.5 if live else 2.0,
         "sse_spike": 5.0,
+        # SOR-271 round 2: the v20 gate shapes — a 20x herd on ONE live
+        # session, a deep-history list, and 20x parallel cancel ACKs.
+        "live_reads": 1.5 if live else 2.0,
+        "live_spike": 5.0,
+        "list_history": 1.5 if live else 2.5,
+        "cancel_p95": 1.0 if live else 1.5,
+        "ws_items": 0.0,
         "bulk_wall": None,
         "bulk_read": 1.5 if live else 2.0,
         "account_items": 1.0,
