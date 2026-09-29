@@ -1865,7 +1865,7 @@ class ModalDictTaskStore:
         missing: list[str] = []
         for task_id in ids:
             summary = summaries.get(task_id)
-            if summary is not None:
+            if summary is not None and summary.get("agent_id") is not None:
                 record = record_from_dict(summary)
                 # The summary omits ``response`` — flag it so ``put``
                 # merges the stored value instead of writing a None that
@@ -1873,6 +1873,11 @@ class ModalDictTaskStore:
                 record._response_unloaded = True
                 out.append(record)
             else:
+                # Agent-less rows can never be trusted off the index: with
+                # no bound agent there is nothing to live-aggregate against,
+                # so a stale summary write (a lost owner-doc update) would
+                # wedge the row at ``queued`` while ``task/<id>`` already
+                # went terminal (SOR-271). Read the authoritative row.
                 missing.append(task_id)
         out.extend(self._pooled_gets(missing))
         return sorted(out, key=lambda r: r.created_at)
