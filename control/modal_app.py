@@ -54,16 +54,22 @@ CONTROL_IMAGE = (
         # extra for RS256 — same constraint as pyproject.toml.
         "pyjwt[crypto]>=2.10.0",
     )
-    # SOR-211: ship the Console with the control plane — the deployed app's
-    # URL serves it at "/" on the same origin as ``/v1``. Copied into the
-    # image (not mounted) so the deploy needs no runtime mount resolution.
+    # SOR-211 + SOR-266: ship the V2 Session Console build (``console/dist``)
+    # with the control plane — the deployed app's URL serves it at "/" on
+    # the same origin as ``/v1``. The legacy ``web/`` static UI no longer
+    # ships in the image at all. Copied into the image (not mounted) so the
+    # deploy needs no runtime mount resolution; a missing ``console/dist``
+    # fails the deploy loudly instead of falling back to the legacy UI.
     # Build steps must precede deferred ``add_local_*`` mounts — a
     # ``copy=True`` layer after ``add_local_python_source`` raises
     # InvalidError at deploy time (SOR-219 acceptance). Dev checkouts carry
-    # node_modules / playwright output under web/ — never bake them in.
+    # node_modules / playwright output under console/ — never bake them in.
     .add_local_dir(
-        Path(__file__).resolve().parents[1] / "web",
-        remote_path="/root/web",
+        Path(
+            os.environ.get("SBX_CONSOLE_DIST")
+            or Path(__file__).resolve().parents[1] / "console" / "dist"
+        ).resolve(),
+        remote_path="/root/console",
         copy=True,
         ignore=lambda p: (
             "node_modules" in p.parts or "test-results" in p.parts or "playwright-report" in p.parts
@@ -77,7 +83,10 @@ CONTROL_IMAGE = (
 # material only ever arrives through the Secret mounts above.
 _REMOTE_ENV = {
     **remote_env_overlay(app_name=_APP_NAME),
-    "SBX_WEB_DIR": "/root/web",
+    # SOR-266: the React console build is the only product UI at "/"; the
+    # env is explicit so a missing /root/console fails startup loudly
+    # rather than silently falling back to the legacy web/ directory.
+    "SBX_CONSOLE_DIR": "/root/console",
 }
 
 # SOR-203: web-function autoscaler warmth, resolved at deploy time from

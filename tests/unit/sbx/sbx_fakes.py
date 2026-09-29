@@ -9,6 +9,7 @@ No Modal credentials, no network.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -158,6 +159,52 @@ def provider_row(
     }
 
 
+FAKE_GIT_SHA = "deadbeef1234deadbeef1234deadbeef1234dead"
+FAKE_CONSOLE_INDEX = (
+    "<html><head><title>Session Console</title>"
+    f'<meta name="sbx-build-sha" content="{FAKE_GIT_SHA}"></head>'
+    '<body><div id="root"></div></body></html>'
+)
+FAKE_CONSOLE_PRIMARY = b"/* fake console bundle */\n"
+FAKE_CONSOLE_MANIFEST: dict[str, Any] = {
+    "schema": "sbx-console-build/1",
+    "frontend_source": "console/",
+    "git_sha": FAKE_GIT_SHA,
+    "api_mode": "http",
+    "built_at": "2026-09-29T00:00:00Z",
+    "primary_asset": {
+        "path": "assets/index-deadbeef.js",
+        "sha256": hashlib.sha256(FAKE_CONSOLE_PRIMARY).hexdigest(),
+        "bytes": len(FAKE_CONSOLE_PRIMARY),
+    },
+    "files": [
+        {
+            "path": "index.html",
+            "sha256": hashlib.sha256(FAKE_CONSOLE_INDEX.encode()).hexdigest(),
+            "bytes": len(FAKE_CONSOLE_INDEX),
+        },
+        {
+            "path": "assets/index-deadbeef.js",
+            "sha256": hashlib.sha256(FAKE_CONSOLE_PRIMARY).hexdigest(),
+            "bytes": len(FAKE_CONSOLE_PRIMARY),
+        },
+    ],
+}
+
+
+def make_console_dist(root: Path, *, git_sha: str | None = None) -> Path:
+    """Write a minimal console/dist fixture (index + hashed asset + manifest)."""
+    manifest = dict(FAKE_CONSOLE_MANIFEST)
+    if git_sha:
+        manifest["git_sha"] = git_sha
+    dist = root / "console-dist"
+    (dist / "assets").mkdir(parents=True, exist_ok=True)
+    (dist / "index.html").write_text(FAKE_CONSOLE_INDEX, encoding="utf-8")
+    (dist / "assets" / "index-deadbeef.js").write_bytes(FAKE_CONSOLE_PRIMARY)
+    (dist / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return dist
+
+
 def make_v1(
     *,
     token: str | None = None,
@@ -170,6 +217,7 @@ def make_v1(
     agents_page_size: int = 100,
     providers: list[dict[str, Any]] | None = None,
     console: bool = True,
+    console_manifest: dict[str, Any] | None = None,
     accounts: list[dict[str, Any]] | None = None,
     verify_status: str = "active",
 ) -> tuple[httpx.MockTransport, dict[str, Any]]:
@@ -200,13 +248,27 @@ def make_v1(
             raise httpx.ConnectError("no route to host", request=request)
         path = request.url.path
         if path == "/":
-            # The same-origin Console shell (SOR-211) — unauthenticated.
+            # The same-origin Console shell (SOR-211/SOR-266) —
+            # unauthenticated. Serves the React app's ``id="root"`` shell.
             if not console:
                 return err(404, "not_found", "no console")
             return httpx.Response(
                 200,
-                text="<html><head><title>sbx-browser</title></head><body></body></html>",
+                text=FAKE_CONSOLE_INDEX,
                 headers={"content-type": "text/html; charset=utf-8"},
+            )
+        if path == "/build-manifest.json":
+            if not console:
+                return err(404, "not_found", "no console")
+            return httpx.Response(
+                200,
+                json=console_manifest if console_manifest is not None else FAKE_CONSOLE_MANIFEST,
+            )
+        if path == "/assets/index-deadbeef.js":
+            if not console:
+                return err(404, "not_found", "no console")
+            return httpx.Response(
+                200, content=FAKE_CONSOLE_PRIMARY, headers={"content-type": "text/javascript"}
             )
         if path == "/v1/me":
             if not authed(request):
@@ -328,6 +390,11 @@ def make_env(tmp_path: Path, extra: Mapping[str, str] | None = None) -> dict[str
         "HOME": str(home),
         "SBX_CONFIG": str(tmp_path / "config.toml"),
         "SBX_STATE_DIR": str(tmp_path / "state"),
+        # SOR-266: deploy builds the console via npm by default; tests pin
+        # the prebuilt-dist lane so no test shell-outs to node.
+        "SBX_CONSOLE_DIST": str(make_console_dist(tmp_path)),
+        # Deterministic deploy SHA matching the fixture manifest/index meta.
+        "SBX_GIT_SHA": FAKE_GIT_SHA,
     }
     env.update(extra or {})
     return env

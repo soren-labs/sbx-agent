@@ -6,7 +6,7 @@
   "description": "SOR-257: V2 Session Console — React + TypeScript + Vite first pass",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/build-manifest.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

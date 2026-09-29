@@ -9,10 +9,13 @@ never leaves half-initialized resources behind.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -521,6 +524,247 @@ def _materialize_account_secrets(cfg: BootstrapConfig, plane: Plane) -> StepResu
     return StepResult("credentials:accounts", bool(materialized), detail)
 
 
+def _repo_root() -> Path:
+    """Repo checkout root — ``src/sbx/deploy.py`` → repo root."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _git_sha(repo_root: Path, env: Mapping[str, str]) -> str | None:
+    """The checkout's HEAD SHA — ``SBX_GIT_SHA`` wins when set explicitly."""
+    override = env.get("SBX_GIT_SHA")
+    if override:
+        return override
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and sha else None
+
+
+def _console_manifest(dist: Path, *, git_sha: str | None) -> dict[str, Any]:
+    """Load (or synthesize) the console build manifest under ``dist``.
+
+    ``npm run build`` writes ``build-manifest.json`` itself; a prebuilt
+    ``SBX_CONSOLE_DIST`` without one is hashed here so release evidence
+    stays complete either way.
+    """
+    manifest_path = dist / "build-manifest.json"
+    manifest: dict[str, Any] = {}
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            manifest = data
+    except (OSError, json.JSONDecodeError):
+        pass
+    if not isinstance(manifest.get("files"), list) or not manifest["files"]:
+        files = []
+        for path in sorted(dist.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(dist).as_posix()
+            if rel == "build-manifest.json":
+                continue
+            files.append(
+                {
+                    "path": rel,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "bytes": path.stat().st_size,
+                }
+            )
+        manifest["files"] = files
+    if not manifest.get("primary_asset"):
+        manifest["primary_asset"] = next(
+            (
+                f
+                for f in manifest["files"]
+                if f.get("path", "").startswith("assets/") and str(f.get("path")).endswith(".js")
+            ),
+            None,
+        )
+    manifest.setdefault("git_sha", git_sha)
+    manifest.setdefault("frontend_source", "console/")
+    return manifest
+
+
+def _prepare_console(env: Mapping[str, str]) -> tuple[StepResult, dict[str, Any]]:
+    """Produce the SHA-bound ``console/dist`` the control image ships (SOR-266).
+
+    Default lane: ``npm ci`` + ``npm run build`` in ``console/`` with
+    ``VITE_API_MODE=http`` (live API, same-origin base) and
+    ``VITE_BUILD_SHA=<git HEAD>`` — the build stamps index.html's
+    ``sbx-build-sha`` meta and writes ``dist/build-manifest.json``.
+    ``SBX_CONSOLE_DIST`` points at a prebuilt artifact instead (the
+    operator asserts it matches the deployed source); its manifest is
+    still read/recorded.
+    """
+    repo_root = _repo_root()
+    git_sha = _git_sha(repo_root, env)
+    override = env.get("SBX_CONSOLE_DIST")
+    dist = Path(override).expanduser().resolve() if override else repo_root / "console" / "dist"
+    if override:
+        if not dist.is_dir() or not (dist / "index.html").is_file():
+            raise BootstrapError(
+                f"SBX_CONSOLE_DIST={override} does not contain a built console",
+                hint="point it at a console/dist build output (with index.html)",
+                code="console_dist_missing",
+            )
+        manifest = _console_manifest(dist, git_sha=git_sha)
+        return (
+            StepResult("console", False, f"prebuilt {dist} @ {git_sha or 'unknown-sha'}"),
+            _frontend_record(dist, manifest, git_sha),
+        )
+
+    console_src = repo_root / "console"
+    if not (console_src / "package.json").is_file():
+        raise BootstrapError(
+            "console/ source is missing from this checkout",
+            hint="deploy from a full sbx-browser checkout, or set SBX_CONSOLE_DIST "
+            "to a prebuilt console/dist",
+            code="console_source_missing",
+        )
+    npm = shutil.which("npm")
+    if npm is None:
+        raise BootstrapError(
+            "npm not found — cannot build the Session Console",
+            hint="install Node.js 20+ (npm) on the deploy host, or build "
+            "`npm --prefix console ci && npm run build` elsewhere and set "
+            "SBX_CONSOLE_DIST to that output",
+            code="console_build_unavailable",
+        )
+    build_env = dict(os.environ)
+    build_env["VITE_API_MODE"] = env.get("VITE_API_MODE") or "http"
+    build_env["VITE_API_BASE"] = env.get("VITE_API_BASE", "")
+    if git_sha:
+        build_env["VITE_BUILD_SHA"] = git_sha
+    for argv in ([npm, "ci"], [npm, "run", "build"]):
+        proc = subprocess.run(
+            argv,
+            cwd=console_src,
+            env=build_env,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stdout + proc.stderr).strip()[-800:]
+            raise BootstrapError(
+                f"console build failed at `{' '.join(argv[1:])}`: {tail}",
+                hint="fix the console build locally (`npm --prefix console ci && "
+                "npm --prefix console run build`), then rerun `sbx deploy`",
+                code="console_build_failed",
+            )
+    if not dist.is_dir() or not (dist / "index.html").is_file():
+        raise BootstrapError(
+            "console build produced no dist/index.html",
+            hint="inspect `npm --prefix console run build` output",
+            code="console_build_failed",
+        )
+    manifest = _console_manifest(dist, git_sha=git_sha)
+    primary = manifest.get("primary_asset") or {}
+    return (
+        StepResult(
+            "console",
+            True,
+            f"console/dist @ {git_sha or 'unknown-sha'} "
+            f"({len(manifest['files'])} assets, primary {primary.get('path', 'none')})",
+        ),
+        _frontend_record(dist, manifest, git_sha),
+    )
+
+
+def _frontend_record(dist: Path, manifest: dict[str, Any], git_sha: str | None) -> dict[str, Any]:
+    primary = manifest.get("primary_asset") or {}
+    return {
+        "source": "console/dist",
+        "dir": str(dist),
+        "git_sha": manifest.get("git_sha") or git_sha,
+        "primary_asset": {
+            "path": primary.get("path"),
+            "sha256": primary.get("sha256"),
+        }
+        if primary
+        else None,
+        "asset_count": len(manifest.get("files") or []),
+        "manifest": "build-manifest.json",
+    }
+
+
+def _console_probe_detail(frontend: dict[str, Any]) -> str:
+    primary = frontend.get("primary_asset") or {}
+    sha = (frontend.get("git_sha") or "unknown-sha")[:12]
+    return f"/ serves console @ {sha} (primary {primary.get('path', 'none')} hash-verified)"
+
+
+def _probe_console(
+    base_url: str,
+    frontend: dict[str, Any],
+    *,
+    transport: httpx.BaseTransport | None,
+) -> None:
+    """Fetch the deployed root + build manifest; fail loudly on the legacy UI."""
+    url = base_url.rstrip("/")
+    try:
+        with httpx.Client(transport=transport, timeout=10.0) as client:
+            root = client.get(url + "/")
+            manifest_resp = client.get(url + "/build-manifest.json")
+            primary = frontend.get("primary_asset") or {}
+            asset_resp = (
+                client.get(url + "/" + str(primary["path"])) if primary.get("path") else None
+            )
+    except httpx.HTTPError as exc:
+        raise BootstrapError(
+            f"deployed app did not serve the console at {url}: {exc}",
+            hint="cold start can take a minute — rerun `sbx deploy` or check `sbx doctor`",
+            code="deploy_verify_failed",
+        ) from exc
+    html = root.text if root.status_code == 200 else ""
+    if (
+        root.status_code != 200
+        or 'id="root"' not in html
+        or "text/html" not in (root.headers.get("content-type") or "")
+    ):
+        raise BootstrapError(
+            f"deployed root at {url} is not the V2 Session Console (status {root.status_code})",
+            hint="the deployment is serving the legacy web/ UI — verify the image "
+            "ships console/dist and SBX_CONSOLE_DIR is set (SOR-266)",
+            code="deploy_verify_failed",
+        )
+    if manifest_resp.status_code == 200:
+        served = manifest_resp.json()
+        expected_sha = frontend.get("git_sha")
+        served_sha = served.get("git_sha") if isinstance(served, dict) else None
+        if expected_sha and served_sha and expected_sha != served_sha:
+            raise BootstrapError(
+                f"deployed console manifest git_sha {served_sha[:12]} != "
+                f"deployed source {str(expected_sha)[:12]}",
+                hint="the image baked a stale console/dist — rebuild and rerun `sbx deploy`",
+                code="deploy_verify_failed",
+            )
+    if asset_resp is not None:
+        if asset_resp.status_code != 200:
+            raise BootstrapError(
+                f"deployed console primary asset {primary['path']} answered "
+                f"{asset_resp.status_code}",
+                hint="the image shipped an incomplete console/dist — rerun `sbx deploy`",
+                code="deploy_verify_failed",
+            )
+        digest = hashlib.sha256(asset_resp.content).hexdigest()
+        if primary.get("sha256") and digest != primary["sha256"]:
+            raise BootstrapError(
+                f"deployed console primary asset hash mismatch for {primary['path']}",
+                hint="the served bundle does not match the recorded build — "
+                "rebuild and rerun `sbx deploy`",
+                code="deploy_verify_failed",
+            )
+
+
 def _probe_v1(
     base_url: str,
     token: str,
@@ -704,6 +948,13 @@ def deploy(
             except BootstrapError:
                 pass  # evidence writes never block the deploy
 
+    # SOR-266: build the React Console (``console/dist``, live HTTP API
+    # mode, bound to the checkout's git SHA) before ``modal deploy`` copies
+    # it into the control image. A build failure aborts the deploy — a
+    # fresh deployment must never silently fall back to the legacy web/ UI.
+    console_step, frontend = _prepare_console(env)
+    steps.append(console_step)
+
     # SOR-217: degraded providers skip their app-level credential Secret
     # mount (``control.config.app_secret_names``) — ``modal deploy`` must
     # not fail on a Secret the deploy already knows is absent.
@@ -723,6 +974,11 @@ def deploy(
     token, _ = load_or_create_key(key_path(env))
     _probe_v1(base_url, token, transport=transport, attempts=probe_attempts, sleep=sleep)
     steps.append(StepResult("verify", False, "/v1/me answered 200"))
+    # SOR-266: prove the deployment actually serves the same-SHA console
+    # build at "/" — the primary asset's sha256 must match the local
+    # build manifest recorded in the deploy state below.
+    _probe_console(base_url, frontend, transport=transport)
+    steps.append(StepResult("verify:console", False, _console_probe_detail(frontend)))
 
     if cfg.sources.get("api_base_url") != "env" and config.api_base_url != base_url:
         save(_replace_base_url(config, base_url), cfg.path, env=env)
@@ -733,6 +989,9 @@ def deploy(
         "app": config.modal_app_name,
         "app_url": base_url,
         "key_fingerprint": fingerprint(token),
+        # SOR-266 release evidence: which frontend the deployment serves,
+        # bound to the checkout SHA and the primary asset's content hash.
+        "frontend": {**frontend, "served_url": base_url, "deployed_at": _iso_now()},
         # SOR-212/SOR-215: per-provider runtime evidence written to the
         # ``sbx-runtime`` Dict and consumed by ``/v1/providers``.
         "runtime": runtime_records,
