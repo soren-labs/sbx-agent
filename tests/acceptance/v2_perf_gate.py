@@ -138,6 +138,17 @@ def _time(http: httpx.Client, fn) -> tuple[float, Any]:
     return time.perf_counter() - t0, out
 
 
+def _timed_read(http: httpx.Client, fn) -> float:
+    """A read probe where starvation (client timeout) is itself the
+    measurement — a wedged pre-fix plane must not crash the gate."""
+    t0 = time.perf_counter()
+    try:
+        fn(http)
+    except httpx.HTTPError:
+        pass
+    return time.perf_counter() - t0
+
+
 def _wait_bound(
     http: httpx.Client, headers: dict[str, str], session_id: str, timeout: float = 120.0
 ) -> dict[str, Any]:
@@ -284,22 +295,38 @@ def run_probes(
         sid = bound_ids[-1]
         streams: list[Any] = []
         responses: list[Any] = []
+        opened = 0
         try:
             for _ in range(sse_clients):
-                s = http.stream("GET", f"/v2/sessions/{sid}/events", headers=headers)
-                resp = s.__enter__()
+                # Streams are long-lived: only the connect/first-byte wait is
+                # bounded. On the pre-fix plane this is where clients stall.
+                s = http.stream(
+                    "GET",
+                    f"/v2/sessions/{sid}/events",
+                    headers=headers,
+                    timeout=httpx.Timeout(None, connect=30.0),
+                )
+                try:
+                    resp = s.__enter__()
+                except httpx.HTTPError as exc:
+                    print(f"SSE open failed: {exc!r}", file=sys.stderr)
+                    s.__exit__(None, None, None)
+                    break
                 assert resp.status_code == 200
                 streams.append(s)
                 responses.append(resp)
+                opened += 1
             time.sleep(1.0)  # let every client attach to the hub
             samples = []
             worst_spike = 0.0
+            # A starved read on the pre-fix plane times out at the client
+            # ceiling — that IS the B3 symptom, so record it as a sample.
             for _ in range(10):
-                dt, _ = _time(http, detail_one(sid))
+                dt = _timed_read(http, detail_one(sid))
                 samples.append(dt)
                 worst_spike = max(worst_spike, dt)
             for _ in range(5):
-                dt, _ = _time(http, list_one(25))
+                dt = _timed_read(http, list_one(25))
                 samples.append(dt)
                 worst_spike = max(worst_spike, dt)
             results.append(
@@ -323,7 +350,10 @@ def run_probes(
                     if line.startswith("event:"):
                         seen_frames += 1
                         break
-            print(f"SSE: {seen_frames}/{sse_clients} clients framed", file=sys.stderr)
+            print(
+                f"SSE: {seen_frames}/{opened} of {sse_clients} clients framed",
+                file=sys.stderr,
+            )
         finally:
             for s in streams:
                 try:
@@ -362,7 +392,7 @@ def run_probes(
         # unrelated reads while the bulk close is in flight
         wedge_samples: list[float] = []
         for _ in range(6):
-            dt, resp = _time(http, detail_one(bound_ids[-1] if bound_ids else bulk_ids[0]))
+            dt = _timed_read(http, detail_one(bound_ids[-1] if bound_ids else bulk_ids[0]))
             wedge_samples.append(dt)
         for t in threads:
             t.join(timeout=120)
