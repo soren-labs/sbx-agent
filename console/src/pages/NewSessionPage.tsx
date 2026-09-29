@@ -4,14 +4,15 @@ import { isApiError, type ApiError } from "../api";
 import type { ModelInfo, NewSessionInput, ProviderInfo, Session } from "../api/types";
 import { Composer } from "../components/Composer";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { Spinner } from "../components/icons";
 import { SessionCard } from "../components/SessionCard";
 import { useI18n } from "../i18n";
 import { useApi } from "../state/api";
+import { useDocumentTitle } from "../state/title";
 
 /** `/` — composer + recent sessions. Not a dashboard. */
 export function NewSessionPage() {
   const { t } = useI18n();
+  useDocumentTitle(t("nav.new"));
   const api = useApi();
   const navigate = useNavigate();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -57,7 +58,7 @@ export function NewSessionPage() {
   };
 
   return (
-    <div>
+    <div className="narrow">
       <Composer
         providers={providers}
         models={models}
@@ -65,12 +66,16 @@ export function NewSessionPage() {
         onSubmit={submit}
       />
       <ErrorNotice error={error} onRetry={load} onDismiss={() => setError(null)} />
-      <div className="row" style={{ marginTop: 26 }}>
+      <div className="row section-head">
         <h2 className="grow" style={{ margin: 0 }}>{t("composer.recent")}</h2>
         <Link to="/sessions" className="small">{t("composer.view_all")}</Link>
       </div>
       {loading ? (
-        <div className="empty"><Spinner /> {t("common.loading")}</div>
+        <div className="recent-strip" aria-busy="true">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="card sk-card" />
+          ))}
+        </div>
       ) : recent.length === 0 ? (
         <div className="empty">{t("sessions.empty")}</div>
       ) : (

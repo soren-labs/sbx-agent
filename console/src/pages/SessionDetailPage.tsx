@@ -13,11 +13,12 @@ import { ChangesPanel } from "../components/ChangesPanel";
 import { Conversation, ActivityTimeline } from "../components/Conversation";
 import { ErrorNotice, ReconnectBanner } from "../components/ErrorNotice";
 import { FollowUp } from "../components/FollowUp";
-import { Spinner } from "../components/icons";
+import { Icon, Spinner } from "../components/icons";
 import { SessionMeta } from "../components/SessionMeta";
 import { ProviderBadge, StatusPill } from "../components/StatusPill";
 import { useI18n } from "../i18n";
 import { useApi } from "../state/api";
+import { useDocumentTitle } from "../state/title";
 
 type Tab = "conversation" | "activity" | "changes";
 
@@ -64,6 +65,7 @@ export function SessionDetailPage() {
   const { t } = useI18n();
   const api = useApi();
   const { id = "" } = useParams();
+  useDocumentTitle(t("nav.sessions"));
   const location = useLocation();
   const optimistic = (location.state as { session?: Session } | null)?.session;
 
@@ -288,6 +290,9 @@ export function SessionDetailPage() {
 
   return (
     <div>
+      <Link to="/sessions" className="back-link">
+        <Icon name="back" size={13} /> {t("session.back")}
+      </Link>
       <div className="session-head">
         <h1>{session.title}</h1>
         <StatusPill phase={session.phase} endReason={session.endReason} />
@@ -298,30 +303,44 @@ export function SessionDetailPage() {
         {session.effort && session.effort !== "auto" && (
           <span>{t("detail.effort")}: {session.effort}</span>
         )}
-        {session.phase === "failed" && (
-          <button
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={() => void act(() => api.retrySession(id))}
-            data-testid="retry-btn"
-          >
-            {t("session.retry")}
-          </button>
-        )}
-        {session.repo && session.hasChanges && !delivered && (
-          <button
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={() =>
-              void deliver({ title: session.title, target: session.repo?.ref }).catch((e) =>
-                setError(isApiError(e) ? e : null),
-              )
-            }
-            data-testid="deliver-btn"
-          >
-            {busy ? t("session.delivering") : t("session.deliver")}
-          </button>
-        )}
+        <span className="session-actions">
+          {session.phase === "failed" && (
+            <button
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() => void act(() => api.retrySession(id))}
+              data-testid="retry-btn"
+            >
+              {t("session.retry")}
+            </button>
+          )}
+          {session.repo && session.hasChanges && !delivered && (
+            <button
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() =>
+                void deliver({ title: session.title, target: session.repo?.ref }).catch((e) =>
+                  setError(isApiError(e) ? e : null),
+                )
+              }
+              data-testid="deliver-btn"
+            >
+              {busy ? t("session.delivering") : t("session.deliver")}
+            </button>
+          )}
+          {session.delivery?.prUrl && (
+            <a
+              className="btn btn-sm"
+              href={session.delivery.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="open-pr"
+            >
+              <Icon name="github" size={13} />
+              {t("session.open_pr")}
+            </a>
+          )}
+        </span>
       </div>
 
       {live && (
@@ -340,6 +359,11 @@ export function SessionDetailPage() {
           }
           provider={session.provider ?? undefined}
           onRetry={() => void act(() => api.retrySession(id))}
+          secondary={
+            session.error.source === "provider"
+              ? { label: t("error.provider_login.action"), to: "/integrations" }
+              : undefined
+          }
         />
       )}
       <ReconnectBanner retryInMs={retryInMs} reconnected={reconnected} />

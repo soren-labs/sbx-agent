@@ -80,6 +80,7 @@ export function FollowUp({ phase, onSend, onStop }: Props) {
             <span className="sr-only">{t("session.stop")}</span>
           </button>
         )}
+        <span className="faint small kbd-hint">{t("composer.send_hint")}</span>
         <button
           type="submit"
           className="btn btn-primary"

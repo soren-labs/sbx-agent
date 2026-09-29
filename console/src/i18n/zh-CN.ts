@@ -39,6 +39,7 @@ export const zhCN: Record<I18nKey, string> = {
   "composer.recent": "最近会话",
   "composer.prompt_required": "请先填写提示词",
   "composer.view_all": "查看全部会话",
+  "composer.send_hint": "Ctrl+Enter 发送",
 
   "sessions.heading": "会话",
   "sessions.search_ph": "搜索会话…",
@@ -48,6 +49,8 @@ export const zhCN: Record<I18nKey, string> = {
   "sessions.empty": "还没有会话——在上方创建一个。",
   "sessions.empty_search": "没有匹配的会话。",
   "sessions.load_more": "加载更多",
+  "sessions.empty_cta": "创建会话",
+  "sessions.refreshing": "刷新中…",
 
   "phase.queued": "排队中",
   "phase.starting": "启动中",
@@ -67,6 +70,10 @@ export const zhCN: Record<I18nKey, string> = {
   "session.followup_ph": "发送追问…",
   "session.send": "发送",
   "session.stop": "停止",
+  "session.back": "全部会话",
+  "session.open_pr": "打开 PR",
+  "session.working": "处理中…",
+  "session.turn_queued": "排队中——即将开始",
   "session.retry": "重试",
   "session.retry_run": "重试失败的轮次",
   "session.deliver": "创建拉取请求",
@@ -110,6 +117,7 @@ export const zhCN: Record<I18nKey, string> = {
   "act.info": "信息",
   "act.retryable": "可重试",
   "act.retry_after": "{s} 秒后重试",
+  "act.output": "输出",
 
   "changes.summary": "{files} 个文件变更",
   "changes.no_diff": "暂无文件级 diff——最新修订仍在生成中。",
@@ -146,7 +154,7 @@ export const zhCN: Record<I18nKey, string> = {
   "error.provider_busy.action": "重试",
   "error.runtime_disabled.title": "运行时已禁用",
   "error.runtime_disabled.body": "此部署的沙箱运行时已禁用，请联系管理员重新启用。",
-  "error.runtime_disabled.action": "查看设置",
+  "error.runtime_disabled.action": "打开集成页",
   "error.github_required.title": "需要连接 GitHub",
   "error.github_required.body": "连接 GitHub 后才能针对仓库运行会话。",
   "error.github_required.action": "连接 GitHub",
@@ -183,6 +191,7 @@ export const zhCN: Record<I18nKey, string> = {
   "integrations.enabled": "已启用",
   "integrations.disabled": "已禁用",
   "integrations.no_accounts": "暂无账号——连接一个以使用该提供商",
+  "integrations.needs_login_hint": "重新连接该提供商后，新会话才能使用它。",
   "integrations.runtime_ready": "运行时就绪",
   "integrations.runtime_degraded": "运行时降级",
   "integrations.connect_github": "连接 GitHub",
@@ -224,4 +233,5 @@ export const zhCN: Record<I18nKey, string> = {
   "common.not_found": "页面不存在",
   "common.optional": "可选",
   "common.off": "关闭",
+  "common.skip": "跳到内容",
 };
