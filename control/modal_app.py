@@ -17,11 +17,9 @@ from control.config import (
     MODAL_APP_NAME,
     app_secret_names,
     control_warmth_config,
-    lifecycle_config,
     remote_env_overlay,
 )
-from control.reaper import ReapAction, reap
-from control.service import release_lease_for_action
+from control.reaper import _bounded_call, sweep_plane
 
 _APP_NAME = os.environ.get("SBX_MODAL_APP_NAME", MODAL_APP_NAME)
 app = modal.App(_APP_NAME)
@@ -114,6 +112,26 @@ def fastapi_app():
     return create_app()
 
 
+# Whole-cron wall for ``create_app`` — the app build does a dozen lazy
+# Dict/client resolutions; one stalled RPC must not eat the tick.
+_BUILD_BOUND_S = 90
+# Ops heartbeat Dict: the durable proof that the cron actually ran —
+# ``sbx-control-ops["reap:last"]`` carries the tick's start/finish and
+# action counts so invocation is verifiable from outside Modal's logs
+# (SOR-271 round-4: "verify the reaper is actually invoked").
+_OPS_DICT_NAME = "sbx-control-ops"
+
+
+def _ops_heartbeat(key: str, payload: dict) -> None:
+    """Best-effort durable marker; a failed write never kills the tick."""
+
+    def _put() -> None:
+        ops = modal.Dict.from_name(_OPS_DICT_NAME, create_if_missing=True)
+        ops[key] = payload
+
+    _bounded_call(lambda: _put() or True, 15)
+
+
 @app.function(
     image=CONTROL_IMAGE,
     schedule=modal.Cron("*/5 * * * *"),
@@ -122,53 +140,49 @@ def fastapi_app():
 )
 def reap_cron() -> None:
     os.environ.setdefault("SBX_BACKEND", "modal")
-    web = create_app()
+    started_at = datetime.now(UTC)
+    _ops_heartbeat(
+        "reap:last",
+        {"started_at": started_at.isoformat(), "finished_at": None},
+    )
+    web = _bounded_call(create_app, _BUILD_BOUND_S)
+    if web is None:
+        # App build threw or never returned — log + mark, never wedge.
+        print(f"[reap] create_app exceeded {_BUILD_BOUND_S}s — tick skipped")
+        _ops_heartbeat(
+            "reap:last",
+            {
+                "started_at": started_at.isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "error": "create_app_bounded",
+            },
+        )
+        return
     plane = web.state.plane
-    v1_state = getattr(web.state, "v1_state", None)
-
-    def _on_action(action: ReapAction) -> None:
-        # SOR-180: a suspended agent keeps its account lease — it is
-        # recoverable and returns under the same Agent/account on the
-        # next follow-up. ``platform_loss`` IS terminal (uncheckpointed
-        # loss) — release + settle like ``lost``.
-        if action.kind != "suspended":
-            release_lease_for_action(v1_state, action)
-        if action.kind in ("lost", "timed_out", "platform_loss") and action.session_id:
-            # SOR-139: the session just went terminal — persist a terminal
-            # verdict for any still-open run so no record dangles RUNNING.
-            plane.settle_orphaned_runs(
-                action.session_id,
-                session_status="lost" if action.kind == "platform_loss" else action.kind,
-            )
-
     # SOR-139: this plane owns no turn watchers, so every ``running`` record
     # is watcher-less — settle those with written turn evidence into
     # FINISHED + idle before the reaper judges staleness. The reconcile
     # phase must never starve the reaper: a throwing tick here killed every
     # sweep before it ran, which is how >10min zombies survived every cron
     # tick (SOR-271 round-3 — fix the invocation path, not just resilience).
-    try:
-        plane.reconcile_turns()
-    except Exception:
-        pass
-    # SOR-132/SOR-134: the reaper's bounds resolve from the same lifecycle
-    # chain as the plane and ``Sandbox.create`` — including the graces,
-    # which are env-tunable (``SBX_CREATE_GRACE_S`` / ``SBX_RUN_GRACE_S``).
-    lifecycle = lifecycle_config()
-    reap(
-        plane.store,
-        plane.backend,
-        datetime.now(UTC),
-        idle_timeout_s=lifecycle.idle_timeout_s,
-        create_grace_s=lifecycle.create_grace_s,
-        run_grace_s=lifecycle.run_stale_s,
+    # SOR-271 round-4: ``sweep_plane`` time-bounds BOTH phases — a remote
+    # call that never returns (wedged sandbox read, stalled Dict RPC)
+    # degraded every prior tick identically and silently.
+    summary = sweep_plane(
+        plane,
+        v1_state=getattr(web.state, "v1_state", None),
         # SOR-63: expired cooldowns return accounts to rotation; absent on
         # app.state until the registry is wired (P2-D bootstrap).
         account_registry=getattr(web.state, "account_registry", None),
-        # SOR-180: idle-expired agents checkpoint + release to suspended
-        # (recoverable); idle agents lost before checkpointing surface as
-        # explicit platform_loss.
-        checkpoints=getattr(plane, "checkpoints", None),
-        # SOR-80: timed_out / lost sessions must drop any held /v1 lease.
-        on_action=_on_action,
+        log=print,
+    )
+    _ops_heartbeat(
+        "reap:last",
+        {
+            "started_at": summary["now"].isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
+            "settled_turns": len(summary["settled_turns"]),
+            "action_kinds": summary["action_kinds"],
+            "elapsed_s": summary["elapsed_s"],
+        },
     )

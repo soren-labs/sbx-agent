@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
 
 from control.accounts import cooldown_expired, is_valid_account_id, iso_utc, parse_iso
-from control.config import TERMINAL_STATUSES, env_float, env_int
+from control.config import TERMINAL_STATUSES, env_float, env_int, lifecycle_config
 from control.ports import Account, AccountRegistry, ProviderId, ScheduleDecision
 from control.run_errors import RunError
 
@@ -96,12 +96,35 @@ def session_running_source(store: Any) -> Callable[[str], int]:
     """
 
     def count(account_id: str) -> int:
-        return sum(
-            1
-            for rec in store.list_all()
-            if rec.status not in TERMINAL_STATUSES
-            and (rec.sandbox_tags or {}).get("account_id") == account_id
-        )
+        now = datetime.now(UTC)
+        lifecycle = lifecycle_config()
+        counted = 0
+        for rec in store.list_all():
+            if rec.status in TERMINAL_STATUSES:
+                continue
+            if (rec.sandbox_tags or {}).get("account_id") != account_id:
+                continue
+            # Dead-weight records (SOR-271 round-4): a ``creating`` record
+            # past ``create_grace_s`` or a ``running`` record stale beyond
+            # ``run_grace_s`` holds no genuinely-live work — the reaper's
+            # ``lost`` transition owns both, and counting them saturated
+            # the global cap with zombies between sweeps.
+            if rec.status == "creating":
+                # Mirror the reaper's staleness basis: an unbound create is
+                # judged from created_at, a bound one from updated_at.
+                basis = rec.updated_at if rec.sandbox_id else rec.created_at
+                if basis is not None and (
+                    (now - basis).total_seconds() >= lifecycle.create_grace_s
+                ):
+                    continue
+            if (
+                rec.status == "running"
+                and rec.updated_at is not None
+                and ((now - rec.updated_at).total_seconds() >= lifecycle.run_stale_s)
+            ):
+                continue
+            counted += 1
+        return counted
 
     return count
 

@@ -299,6 +299,9 @@ def test_item7_two_sessions_isolated_third_is_429(
 ) -> None:
     monkeypatch.setenv("FAKE_CODEX_SCENARIO", "success")
     _app, _backend, store = live_env
+    # Pin the plane cap — the default now resolves SBX_MAX_CONCURRENT → 8
+    # (SOR-271 round-4); this spec exercises cap enforcement itself.
+    _app.state.plane.max_concurrent = 2
     a = client.post("/api/sessions", json={"title": "a"}, auth=AUTH)
     b = client.post("/api/sessions", json={"title": "b"}, auth=AUTH)
     assert a.status_code == 201
