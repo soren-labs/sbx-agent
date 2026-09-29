@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
@@ -38,7 +39,7 @@ from runtime.runner.contract import (
     violation_summary,
 )
 
-from control.config import RUNS_DICT_NAME
+from control.config import RUNS_DICT_NAME, env_float
 from control.latency import observe
 from control.run_errors import (
     CODE_CONTRACT_VIOLATION,
@@ -535,6 +536,17 @@ class FileRunStore:
 
 _DICT_FANOUT = 8
 
+# SOR-268: per-record read-through TTL for ``<agent>/<n>`` point gets.
+# The run-read paths (``ledger.list`` → per-run ``get``, ``_run_public``,
+# ``_statuses``) re-read the same records several times per request —
+# the cache collapses a warm ``list`` to the single index-doc read.
+# Writes go through ``put`` (write-through), so the only staleness
+# window is a cross-container writer's ``put`` — bounded by this TTL.
+# Mutation paths never use this cache: ``RunLedger`` reads through
+# ``get_fresh``/``list_fresh`` so a cancel can't overwrite a terminal
+# record it failed to see.
+_RUN_REC_CACHE_TTL_S = env_float("SBX_RUN_REC_CACHE_TTL_S", 1.0)
+
 
 class ModalDictRunStore:
     """Production store backed by ``modal.Dict``. Lazy-imports modal.
@@ -552,6 +564,11 @@ class ModalDictRunStore:
     number — skipped on read — never an invisible live run. A lost index
     update is repaired by ``rebuild_index`` (also the lazy migration for
     pre-index Dicts).
+
+    SOR-268: record payloads ride a ~1s read-through cache — a warm
+    ``list(agent_id)`` costs only the index-doc read. ``get_fresh`` /
+    ``list_fresh`` bypass it for ledger mutations, which need the
+    authoritative row before a terminal transition.
     """
 
     _IDX_PREFIX = "agent/"
@@ -564,6 +581,7 @@ class ModalDictRunStore:
         self._index_ready = False
         self._lock = threading.Lock()
         self._build_lock = threading.Lock()
+        self._rec_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -588,10 +606,31 @@ class ModalDictRunStore:
         digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
         return f"{ModalDictRunStore._IDX_PREFIX}{digest}"
 
-    def get(self, agent_id: str, n: int) -> RunRecord | None:
+    def _rec_get_uncached(self, agent_id: str, n: int) -> dict[str, Any] | None:
         key = self._key(agent_id, n)
         with observe("modal_dict.get", store=self._name, key=key):
             raw = self._d().get(key)
+        with self._lock:
+            self._rec_cache[key] = (time.monotonic(), raw if isinstance(raw, dict) else None)
+        return raw if isinstance(raw, dict) else None
+
+    def _rec_get(self, agent_id: str, n: int) -> dict[str, Any] | None:
+        key = self._key(agent_id, n)
+        with self._lock:
+            cached = self._rec_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < _RUN_REC_CACHE_TTL_S:
+            return cached[1]
+        return self._rec_get_uncached(agent_id, n)
+
+    def get(self, agent_id: str, n: int) -> RunRecord | None:
+        raw = self._rec_get(agent_id, n)
+        if raw is None:
+            return None
+        return _decode(raw, agent_id, n)
+
+    def get_fresh(self, agent_id: str, n: int) -> RunRecord | None:
+        """Uncached point read for ledger mutations."""
+        raw = self._rec_get_uncached(agent_id, n)
         if raw is None:
             return None
         return _decode(raw, agent_id, n)
@@ -599,25 +638,55 @@ class ModalDictRunStore:
     def put(self, record: RunRecord) -> None:
         self._index_add(record.agent_id, record.n)
         key = self._key(record.agent_id, record.n)
+        raw = record_to_dict(record)
         with observe("modal_dict.put", store=self._name, key=key):
-            self._d().put(key, record_to_dict(record))
+            self._d().put(key, raw)
+        with self._lock:
+            self._rec_cache[key] = (time.monotonic(), raw)
 
-    def list(self, agent_id: str) -> list[RunRecord]:
-        raws: list[Any] | None = None
+    def _list(self, agent_id: str, *, cached: bool) -> list[RunRecord]:
+        raws: dict[int, dict[str, Any] | None] | None = None
         ns: list[int] = []
         try:
             self._ensure_index()
             raw_ns = self._idx().get(self._idx_key(agent_id)) or []
             ns = sorted({int(v) for v in raw_ns if isinstance(v, int)})
-            with observe("modal_dict.get_runs", store=self._name, agent_id=agent_id, runs=len(ns)):
-                with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
-                    raws = list(pool.map(lambda n: self._d().get(self._key(agent_id, n)), ns))
+            raws = {}
+            remote_ns: list[int] = []
+            if cached:
+                now = time.monotonic()
+                for n in ns:
+                    key = self._key(agent_id, n)
+                    with self._lock:
+                        hit = self._rec_cache.get(key)
+                    if hit is not None and now - hit[0] < _RUN_REC_CACHE_TTL_S:
+                        raws[n] = hit[1]
+                    else:
+                        remote_ns.append(n)
+            else:
+                remote_ns = list(ns)
+            if remote_ns:
+                with observe(
+                    "modal_dict.get_runs",
+                    store=self._name,
+                    agent_id=agent_id,
+                    runs=len(remote_ns),
+                ):
+                    with ThreadPoolExecutor(max_workers=_DICT_FANOUT) as pool:
+                        fetched = list(
+                            pool.map(lambda n: self._rec_get_uncached(agent_id, n), remote_ns)
+                        )
+                raws.update(zip(remote_ns, fetched))
         except Exception:
             raws = None
         if raws is not None:
             # Stale run numbers (record deleted between index write and
             # read) fetch None and are skipped.
-            out = [_decode(raw, agent_id, n) for n, raw in zip(ns, raws) if isinstance(raw, dict)]
+            out = [
+                _decode(raw, agent_id, n)
+                for n, raw in sorted(raws.items())
+                if isinstance(raw, dict)
+            ]
             return sorted(out, key=lambda r: r.n)
         # Index unavailable: fall back to the honest full enumeration
         # rather than fail the listing.
@@ -635,12 +704,22 @@ class ModalDictRunStore:
                 out.append(_decode(raw, agent_id, n))
         return sorted(out, key=lambda r: r.n)
 
+    def list(self, agent_id: str) -> list[RunRecord]:
+        """Warm listing: index-doc read + cached records (stale ≤TTL)."""
+        return self._list(agent_id, cached=True)
+
+    def list_fresh(self, agent_id: str) -> list[RunRecord]:
+        """Uncached listing for ledger mutations (cancel/drain/dedupe)."""
+        return self._list(agent_id, cached=False)
+
     def delete(self, agent_id: str, n: int) -> None:
         try:
             with observe("modal_dict.pop", store=self._name, key=self._key(agent_id, n)):
                 self._d().pop(self._key(agent_id, n))
         except KeyError:
             pass
+        with self._lock:
+            self._rec_cache.pop(self._key(agent_id, n), None)
         self._index_remove(agent_id, n)
 
     # --------------------------------------------------------- run index
@@ -755,11 +834,34 @@ class RunLedger:
     def _now(self) -> str:
         return self._clock().isoformat()
 
+    def _get_fresh(self, agent_id: str, n: int) -> RunRecord | None:
+        """Authoritative read for a mutation: a store that keeps a
+        read-through cache (``ModalDictRunStore``) exposes ``get_fresh``;
+        every other store serves the live row anyway."""
+        fresh = getattr(self._store, "get_fresh", None)
+        if callable(fresh):
+            return fresh(agent_id, n)
+        return self._store.get(agent_id, n)
+
+    def _list_fresh(self, agent_id: str) -> list[RunRecord]:
+        fresh = getattr(self._store, "list_fresh", None)
+        if callable(fresh):
+            return fresh(agent_id)
+        return self._store.list(agent_id)
+
     def get(self, agent_id: str, n: int) -> RunRecord | None:
         return self._store.get(agent_id, n)
 
+    def get_fresh(self, agent_id: str, n: int) -> RunRecord | None:
+        return self._get_fresh(agent_id, n)
+
     def list(self, agent_id: str) -> list[RunRecord]:
         return self._store.list(agent_id)
+
+    def list_fresh(self, agent_id: str) -> list[RunRecord]:
+        """Uncached listing for mutation-adjacent reads (cancel/close must
+        see every open run, not a ≤TTL-stale cached page)."""
+        return self._list_fresh(agent_id)
 
     def begin(
         self,
@@ -778,7 +880,7 @@ class RunLedger:
         if status not in OPEN_RUN_STATUSES:
             raise ValueError(f"begin status must be open, got {status!r}")
         with self._lock:
-            existing = self._store.get(agent_id, n)
+            existing = self._get_fresh(agent_id, n)
             if existing is not None:
                 return existing
             now = self._now()
@@ -809,7 +911,7 @@ class RunLedger:
         pins do: a replay resolves to the original run rather than
         allocating a second turn (SOR-224).
         """
-        for record in self.list(agent_id):
+        for record in self._list_fresh(agent_id):
             pin = record.idempotency or {}
             if pin.get("key_id") == key_id and pin.get("key") == key:
                 return record
@@ -817,12 +919,12 @@ class RunLedger:
 
     def queued_ns(self, agent_id: str) -> list[int]:
         """Run numbers still waiting in the durable ``QUEUED`` state, FIFO."""
-        return [record.n for record in self.list(agent_id) if record.status == "QUEUED"]
+        return [record.n for record in self._list_fresh(agent_id) if record.status == "QUEUED"]
 
     def mark_running(self, agent_id: str, n: int) -> RunRecord | None:
         """``CREATING → RUNNING`` (async create lands with A2); terminal safe."""
         with self._lock:
-            existing = self._store.get(agent_id, n)
+            existing = self._get_fresh(agent_id, n)
             if existing is None or existing.terminal or existing.status == "RUNNING":
                 return existing
             now = self._now()
@@ -855,7 +957,7 @@ class RunLedger:
         if status not in TERMINAL_RUN_STATUSES:
             raise ValueError(f"finish status must be terminal, got {status!r}")
         with self._lock:
-            existing = self._store.get(agent_id, n)
+            existing = self._get_fresh(agent_id, n)
             if existing is not None and existing.terminal:
                 return existing
             now = self._now()
@@ -914,7 +1016,7 @@ class RunLedger:
         monotonic status history. Returns the record, or None when absent.
         """
         with self._lock:
-            existing = self._store.get(agent_id, n)
+            existing = self._get_fresh(agent_id, n)
             if existing is None:
                 return None
             merged = list(existing.artifact_refs)
@@ -931,7 +1033,7 @@ class RunLedger:
         """Drop an open record (turn rolled back before exec). Never removes
         a terminal record."""
         with self._lock:
-            existing = self._store.get(agent_id, n)
+            existing = self._get_fresh(agent_id, n)
             if existing is not None and existing.terminal:
                 return
             self._store.delete(agent_id, n)

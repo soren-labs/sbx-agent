@@ -183,6 +183,19 @@ _LIST_CACHE_STALE_S = max(10 * _LIST_CACHE_TTL_S, 120.0)
 # stored ``None`` so a failed token read never looks like a write.
 _VER_UNREAD: Any = object()
 
+# SOR-268: per-record read-through TTL for ``get``. The V2 read paths
+# (settle → ``plane.get`` → ``live_extras``) re-read the same session
+# record several times per request and the SSE hub polls it — the cache
+# collapses those to ~one remote get per record per window. ``put`` is
+# write-through, so the only staleness is a cross-container writer's
+# ``put`` — bounded by this TTL, a strictly smaller staleness than the
+# listing cache above already accepts.
+_GET_CACHE_TTL_S = float(os.environ.get("SBX_SESSION_GET_CACHE_TTL_S", "0.75"))
+
+# ``_index_add`` result sentinel: the id was already indexed, so the index
+# write was skipped and the caller must bump ``ver`` itself.
+_IDX_WRITE_SKIPPED: Any = object()
+
 
 class ModalDictStore:
     """Production store backed by ``modal.Dict``. Lazy-imports modal.
@@ -228,6 +241,11 @@ class ModalDictStore:
         # the full fanout for a cache that merely aged out.
         self._refresh_lock = threading.Lock()
         self._refresh_thread: threading.Thread | None = None
+        # SOR-268 per-record read-through cache for ``get``.
+        self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        # Ids confirmed present in the manifest — a warm ``put`` skips
+        # the index-doc read entirely (record put + ``ver`` bump only).
+        self._indexed_ids: set[str] = set()
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -244,18 +262,38 @@ class ModalDictStore:
         return self._index
 
     def get(self, session_id: str) -> SessionRecord | None:
-        with observe("modal_dict.get", store=self._name, key=session_id):
-            raw = self._d().get(session_id)
+        with self._lock:
+            cached = self._get_cache.get(session_id)
+        if cached is not None and time.monotonic() - cached[0] < _GET_CACHE_TTL_S:
+            raw = cached[1]
+        else:
+            raw = self._get_uncached(session_id)
         if raw is None:
             return None
         return record_from_dict(raw)
 
+    def _get_uncached(self, session_id: str) -> dict[str, Any] | None:
+        with observe("modal_dict.get", store=self._name, key=session_id):
+            raw = self._d().get(session_id)
+        with self._lock:
+            self._get_cache[session_id] = (time.monotonic(), raw if isinstance(raw, dict) else None)
+        return raw if isinstance(raw, dict) else None
+
+    def get_fresh(self, session_id: str) -> SessionRecord | None:
+        """Uncached point read for mutation paths (the plane's
+        read-modify-write under ``_lock`` must not run on a cached row)."""
+        raw = self._get_uncached(session_id)
+        return record_from_dict(raw) if raw is not None else None
+
     def put(self, record: SessionRecord) -> None:
         raw = record_to_dict(record)
-        self._index_add(record.id)
+        ver = self._index_add(record.id)
         with observe("modal_dict.put", store=self._name, key=record.id):
             self._d().put(record.id, raw)
-        ver = self._index_bump_ver()
+        if ver is _IDX_WRITE_SKIPPED:
+            ver = self._index_bump_ver()
+        with self._lock:
+            self._get_cache[record.id] = (time.monotonic(), raw)
         self._cache_merge(raw, ver)
 
     def list_all(self) -> list[SessionRecord]:
@@ -309,6 +347,8 @@ class ModalDictStore:
         # Stale ids (record deleted between index write and read) fetch
         # None and are skipped.
         self._list_cache = (ver, time.monotonic(), raws)
+        with self._lock:
+            self._indexed_ids = {str(r.get("id")) for r in raws}
         return [record_from_dict(copy.deepcopy(raw)) for raw in raws]
 
     def _list_scan_fallback(self) -> list[SessionRecord]:
@@ -380,19 +420,45 @@ class ModalDictStore:
             pass
         self._index_remove(session_id)
         ver = self._index_bump_ver()
+        with self._lock:
+            self._get_cache.pop(session_id, None)
         self._cache_merge_delete(session_id, ver)
 
     # ------------------------------------------------------- listing index
 
-    def _index_add(self, session_id: str) -> None:
+    def _index_add(self, session_id: str) -> Any:
+        """Ensure ``session_id`` is in the id manifest. Returns the minted
+        ``ver`` token when the index update batched it (the caller then
+        skips the separate bump), ``_IDX_WRITE_SKIPPED`` when the id was
+        already indexed (caller bumps ``ver`` itself)."""
+        with self._lock:
+            if session_id in self._indexed_ids:
+                return _IDX_WRITE_SKIPPED
         try:
             with self._lock:
+                if session_id in self._indexed_ids:
+                    return _IDX_WRITE_SKIPPED
                 ids = self._idx().get(self._IDX_IDS) or []
                 if session_id in ids:
-                    return
-                self._idx().put(self._IDX_IDS, sorted([*ids, session_id]))
+                    self._indexed_ids.add(session_id)
+                    return _IDX_WRITE_SKIPPED
+                token = uuid.uuid4().hex
+                self._idx_update({self._IDX_IDS: sorted([*ids, session_id]), self._IDX_VER: token})
+                self._indexed_ids.add(session_id)
+                return token
         except Exception:
             self._index_broken()
+            return _IDX_WRITE_SKIPPED
+
+    def _idx_update(self, writes: dict[str, Any]) -> None:
+        """One-RPC multi-key index write via ``Dict.update``; older
+        clients degrade to per-key puts."""
+        update = getattr(self._idx(), "update", None)
+        if callable(update):
+            update(writes)
+            return
+        for key, value in writes.items():
+            self._idx().put(key, value)
 
     def _index_remove(self, session_id: str) -> None:
         try:
@@ -401,6 +467,7 @@ class ModalDictStore:
                 if session_id not in ids:
                     return
                 self._idx().put(self._IDX_IDS, [i for i in ids if i != session_id])
+                self._indexed_ids.discard(session_id)
         except Exception:
             self._index_broken()
 
@@ -408,6 +475,8 @@ class ModalDictStore:
         """Index maintenance failed: drop the marker so the next listing
         rebuilds and converges instead of serving a drifted manifest."""
         self._index_ready = False
+        with self._lock:
+            self._indexed_ids.clear()
         try:
             self._idx().pop(self._IDX_BUILT)
         except Exception:
@@ -460,5 +529,6 @@ class ModalDictStore:
             self._idx().put(self._IDX_IDS, keys)
             self._idx().put(self._IDX_BUILT, b"1")
             self._idx().put(self._IDX_VER, uuid.uuid4().hex)
+            self._indexed_ids = set(keys)
         self._index_ready = True
         return len(keys)

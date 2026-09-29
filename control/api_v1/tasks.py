@@ -334,7 +334,12 @@ def _run_statuses(
 
 
 def _aggregate_status(
-    record: TaskRecord, run_states: RunStateStore, plane: Any, ws: dict[str, Any] | None
+    record: TaskRecord,
+    run_states: RunStateStore,
+    plane: Any,
+    ws: dict[str, Any] | None,
+    *,
+    prefetched: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Live ``(task status, machine-readable reason)``.
 
@@ -346,13 +351,24 @@ def _aggregate_status(
     """
     if record.agent_id is None:
         return record.status, "awaiting_dispatch"
-    rec = plane.get(record.agent_id)
+    prefetched = prefetched or {}
+    rec = prefetched["rec"] if "rec" in prefetched else plane.get(record.agent_id)
     if rec is not None and rec.status == "running":
-        reconcile = getattr(plane, "reconcile_turn", None)
+        # SOR-268: settle-on-read is throttled per session — the full
+        # reconcile costs poll + turns/<n>.json per call, which under
+        # fanout/SSE load is the starvation vector; mutation paths still
+        # run the unthrottled ``reconcile_turn``.
+        reconcile = getattr(plane, "maybe_reconcile_turn", None) or getattr(
+            plane, "reconcile_turn", None
+        )
         if callable(reconcile):
             reconcile(record.agent_id)
             rec = plane.get(record.agent_id) or rec
-    statuses = _run_statuses(record, run_states, plane)
+    statuses = (
+        prefetched["statuses"]
+        if "statuses" in prefetched
+        else _run_statuses(record, run_states, plane)
+    )
     if any(s == "RUNNING" for _, s in statuses):
         return "running", "run_active"
     if any(s in ("QUEUED", "CREATING") for _, s in statuses):
@@ -493,15 +509,35 @@ def _task_runs(
     run_states: RunStateStore,
     scheduler: Any,
     reporter: Any,
+    *,
+    rows: Any = None,
 ) -> list[dict[str, Any]]:
-    """Every run of the task's agent; queued runs carry ``queue_position``."""
-    statuses = dict(_run_statuses_for(rec.id, run_states, plane))
+    """Every run of the task's agent; queued runs carry ``queue_position``.
+
+    ``rows`` may carry the caller's prefetched ``ledger.list`` result: the
+    statuses and the per-run ``record`` prefetch then ride the same single
+    list call, so a detail render costs O(1) remote reads instead of one
+    serial ``ledger.get`` per run.
+    """
+    ledger = getattr(plane, "run_ledger", None)
+    if rows is None and ledger is not None:
+        try:
+            rows = ledger.list(rec.id)
+        except Exception:
+            rows = None
+    by_n: dict[int, Any] = {}
+    if rows is not None:
+        statuses = dict(sorted((r.n, r.status) for r in rows))
+        by_n = {r.n: r for r in rows}
+    else:
+        statuses = dict(_run_statuses_for(rec.id, run_states, plane))
     queue = [n for n, s in sorted(statuses.items()) if s == "QUEUED"]
     pub = plane.public(rec)
     meta = _routes._meta_for(v1, rec)
     cancelled = v1.cancelled(rec.id)
     runs: list[dict[str, Any]] = []
     for n in sorted(statuses):
+        prefetch = {"record": by_n.get(n)} if rows is not None else {}
         view = _routes._run_public(
             plane,
             pub,
@@ -512,6 +548,7 @@ def _task_runs(
             run_states,
             scheduler=scheduler,
             reporter=reporter,
+            **prefetch,
         )
         if statuses[n] == "QUEUED":
             view["queue_position"] = queue.index(n) + 1
