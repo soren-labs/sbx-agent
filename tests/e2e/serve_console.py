@@ -232,7 +232,9 @@ def build_app(demo: dict[str, str], base: str):
     )
     os.environ["SBX_GITHUB_BROKER_URL"] = f"{base}/__broker"
 
-    # ``create_app`` already mounts ``web/`` at "/" (SOR-211 same-origin).
+    # SOR-266: this harness exercises the legacy ``web/`` UI — opt into the
+    # explicit legacy lane (root + /legacy) instead of the V2 console dist.
+    os.environ.setdefault("SBX_WEB_DIR", str(WEB_DIR))
     app = create_app()
     app.mount("/__broker", create_broker_app(service=broker_service))
     _verify_seeded_accounts(app)

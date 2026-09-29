@@ -20,6 +20,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette._utils import create_collapsing_task_group
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Receive, Scope, Send
 
 from control.api_v1 import router as api_v1_router
@@ -109,6 +110,49 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
                     await aclose()
             if self.background is not None:
                 await self.background()
+
+
+class SPAStaticFiles(StaticFiles):
+    """Vite/React Router build: real files plus ``index.html`` history fallback.
+
+    Fallback rules: a missed request serves ``index.html`` only for GET/HEAD
+    paths with no file extension — so ``/sessions`` or ``/settings`` deep
+    links land in the React app, a missing ``/assets/*.js`` stays a real 404
+    (a page must never be served in place of a script), and API prefixes
+    (``/v1``/``/v2``/``/api``/``/.well-known``) never fall back to HTML.
+    Content-hashed ``assets/*`` cache immutably; everything else revalidates.
+    """
+
+    _API_PREFIXES = ("v1", "v2", "api", ".well-known")
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or not self._spa_fallback(path, scope):
+                raise
+            return await self._index(scope)
+        if response.status_code == 404 and self._spa_fallback(path, scope):
+            return await self._index(scope)
+        name = Path(path).name
+        if name != "index.html" and path.startswith("assets/") and Path(path).suffix:
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    async def _index(self, scope: Scope) -> Response:
+        response = await super().get_response("index.html", scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    def _spa_fallback(self, path: str, scope: Scope) -> bool:
+        if scope["method"] not in ("GET", "HEAD"):
+            return False
+        first = path.split("/", 1)[0]
+        if first in self._API_PREFIXES:
+            return False
+        return not Path(path).suffix
 
 
 def _select_backend() -> SandboxBackend:
@@ -815,20 +859,61 @@ def create_app(
             return PlainTextResponse("no pending challenge", status_code=404)
         return PlainTextResponse(str(challenge))
 
-    # SOR-211: the control plane serves the Console at "/" on the same
-    # origin as ``/v1`` — the deployed Modal URL opens the UI directly,
-    # and ``sbx open`` hands the browser a one-time grant into it.
-    # Skipped when the web assets are absent (a library-only install).
-    web_dir = Path(os.environ.get("SBX_WEB_DIR") or _default_web_dir())
-    if web_dir.is_dir():
-        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="console")
+    # SOR-211 + SOR-266: the control plane serves the V2 Session Console
+    # (the ``console/dist`` React build) at "/" on the same origin as
+    # ``/v1`` — the deployed Modal URL opens the UI directly, and
+    # ``sbx open`` hands the browser a one-time grant into it. The legacy
+    # ``web/`` static UI is no longer the default product UI: it is only
+    # reachable at ``/legacy`` (or at "/" when ``SBX_WEB_DIR`` is set
+    # explicitly, the legacy-test lane) and never ships in production.
+    _mount_frontends(app)
 
     return app
+
+
+def _default_console_dir() -> Path:
+    """The repo's ``console/dist`` build output — ``control/app.py`` → repo root."""
+    return Path(__file__).resolve().parents[1] / "console" / "dist"
 
 
 def _default_web_dir() -> Path:
     """The repo's ``web/`` directory — ``control/app.py`` → repo root."""
     return Path(__file__).resolve().parents[1] / "web"
+
+
+def _mount_frontends(app: FastAPI) -> None:
+    """Mount the console/legacy frontends (SOR-266 cutover).
+
+    - ``SBX_CONSOLE_DIR`` (or the default ``console/dist``) serves the V2
+      React Console at "/" with SPA history fallback. An explicitly set
+      ``SBX_CONSOLE_DIR`` that does not exist fails loudly — a production
+      deploy must never silently fall back to ``web/`` at root.
+    - When no console build exists, ``web/`` stays reachable only as an
+      explicitly-marked legacy surface: ``/legacy``, plus "/" when
+      ``SBX_WEB_DIR`` is set explicitly (the e2e/dev legacy-test lane;
+      production never sets it).
+    """
+    console_env = os.environ.get("SBX_CONSOLE_DIR")
+    console_dir = Path(console_env) if console_env else _default_console_dir()
+    if console_dir.is_dir():
+        app.mount("/", SPAStaticFiles(directory=str(console_dir), html=True), name="console")
+        return
+    if console_env:
+        raise RuntimeError(
+            f"SBX_CONSOLE_DIR={console_env} does not contain the console build — "
+            "run `npm --prefix console ci && npm run build` (or set SBX_CONSOLE_DIST "
+            "at deploy time) so the production image ships console/dist"
+        )
+    web_env = os.environ.get("SBX_WEB_DIR")
+    web_dir = Path(web_env) if web_env else _default_web_dir()
+    if not web_dir.is_dir():
+        return
+    legacy = StaticFiles(directory=str(web_dir), html=True)
+    app.mount("/legacy", legacy, name="legacy-console")
+    if web_env:
+        # Explicit legacy opt-in: dev/e2e harnesses only. The URL is the
+        # marking — /legacy mirrors the same files.
+        app.mount("/", legacy, name="console")
 
 
 # Local ``uvicorn control.app:app``. Tests should call ``create_app(...)``.

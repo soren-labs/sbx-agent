@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from sbx_fakes import FakePlane, make_cfg, make_env, make_v1
+from sbx_fakes import FAKE_CONSOLE_MANIFEST, FAKE_GIT_SHA, FakePlane, make_cfg, make_env, make_v1
 
 from sbx.config import BootstrapConfig, key_path, load
 from sbx.deploy import deploy, read_deploy_state
@@ -517,3 +517,63 @@ def test_deploy_versions_lock_replays_frozen_set(tmp_path) -> None:
     state = read_deploy_state(env)
     assert state["cli_versions"]["providers"]["codex"]["source"] == "lock"
     assert state["cli_versions"]["providers"]["codex"]["version"] == "0.0.1-old"
+
+
+def test_deploy_console_step_records_release_evidence(tmp_path) -> None:
+    """SOR-266: deploy reports a console build step and persists the
+    SHA-bound frontend manifest the SOR-260 gate can audit."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    report, env, _ = _deploy(tmp_path, plane, config=BootstrapConfig(providers=("codex",)))
+
+    names = [s.name for s in report.steps]
+    assert "console" in names
+    assert "verify:console" in names
+    frontend = read_deploy_state(env)["frontend"]
+    assert frontend["source"] == "console/dist"
+    assert frontend["git_sha"] == FAKE_GIT_SHA
+    assert frontend["primary_asset"]["path"] == "assets/index-deadbeef.js"
+    assert frontend["primary_asset"]["sha256"]
+    assert frontend["manifest"] == "build-manifest.json"
+    assert frontend["served_url"] == report.base_url
+    assert frontend["deployed_at"]
+
+
+def test_deploy_fails_loudly_when_root_is_not_console(tmp_path) -> None:
+    """A deployment still serving the legacy UI (or 404) must fail verify —
+    the SOR-260 regression cannot pass silently."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path)
+    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig(providers=("codex",)))
+    transport, _ = make_v1(console=False)
+    with pytest.raises(BootstrapError, match="not the V2 Session Console") as exc:
+        deploy(cfg, plane, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "deploy_verify_failed"
+
+
+def test_deploy_fails_on_stale_console_manifest(tmp_path) -> None:
+    """The served manifest's git_sha must equal the deployed source SHA —
+    a stale baked console/dist is a hard failure."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path)
+    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig(providers=("codex",)))
+    stale = {**FAKE_CONSOLE_MANIFEST, "git_sha": "0" * 40}
+    transport, _ = make_v1(console_manifest=stale)
+    with pytest.raises(BootstrapError, match="manifest git_sha") as exc:
+        deploy(cfg, plane, env=env, transport=transport, sleep=lambda s: None)
+    assert exc.value.code == "deploy_verify_failed"
+
+
+def test_deploy_fails_fast_when_console_dist_missing(tmp_path) -> None:
+    """An explicit SBX_CONSOLE_DIST pointing at nothing aborts before any
+    remote write — never a silent web/ fallback."""
+    plane = FakePlane()
+    plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}
+    env = make_env(tmp_path, extra={"SBX_CONSOLE_DIST": str(tmp_path / "nope")})
+    cfg = make_cfg(tmp_path, env=env, config=BootstrapConfig(providers=("codex",)))
+    with pytest.raises(BootstrapError) as exc:
+        deploy(cfg, plane, env=env, transport=make_v1()[0], sleep=lambda s: None)
+    assert exc.value.code == "console_dist_missing"
+    assert not plane.apps
