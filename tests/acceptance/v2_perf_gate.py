@@ -61,13 +61,28 @@ class _SlowProxy:
     """Charges ``ms`` once per delegated call and counts calls by name —
     stands in for one remote round-trip (Modal Dict op / sandbox RPC).
     ``ns`` namespaces the counter keys so different stores stay
-    distinguishable (``accounts.items`` vs ``get``)."""
+    distinguishable (``accounts.items`` vs ``get``).
 
-    def __init__(self, inner: Any, ms: float, counter: dict[str, int], ns: str = "") -> None:
+    ``chan`` is an optional shared semaphore every call must acquire —
+    SOR-268 round 4: in production every store/sandbox RPC multiplexes
+    onto ONE Modal client channel with ~4-way effective parallelism, so
+    the ambient op rate (SSE hub ticks, worker chains) directly queues
+    request-path ops. Without it the emulator can't reproduce the
+    under-fanout starvation the gate keeps measuring."""
+
+    def __init__(
+        self,
+        inner: Any,
+        ms: float,
+        counter: dict[str, int],
+        ns: str = "",
+        chan: Any = None,
+    ) -> None:
         object.__setattr__(self, "_inner", inner)
         object.__setattr__(self, "_ms", ms)
         object.__setattr__(self, "_counter", counter)
         object.__setattr__(self, "_ns", ns)
+        object.__setattr__(self, "_chan", chan)
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(object.__getattribute__(self, "_inner"), name)
@@ -76,14 +91,21 @@ class _SlowProxy:
         ms = object.__getattribute__(self, "_ms")
         counter = object.__getattribute__(self, "_counter")
         ns = object.__getattribute__(self, "_ns")
+        chan = object.__getattribute__(self, "_chan")
 
         def _call(*args: Any, **kwargs: Any) -> Any:
             key = f"{ns}{name}"
             counter[key] = counter.get(key, 0) + 1
-            out = attr(*args, **kwargs)
-            if ms:
-                time.sleep(ms / 1000.0)
-            return out
+            if chan is None:
+                out = attr(*args, **kwargs)
+                if ms:
+                    time.sleep(ms / 1000.0)
+                return out
+            with chan:
+                out = attr(*args, **kwargs)
+                if ms:
+                    time.sleep(ms / 1000.0)
+                return out
 
         return _call
 
@@ -608,8 +630,17 @@ def run_probes(
 # ---------------------------------------------------------------------------
 
 
-def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
-    """The real control plane on loopback with latency-shimmed remote ops."""
+def _emulated_app(
+    dict_ms: float,
+    sandbox_ms: float,
+    counter: dict[str, int],
+    channel_par: int = 4,
+):
+    """The real control plane on loopback with latency-shimmed remote ops.
+
+    ``channel_par`` bounds the parallelism of every remote op through one
+    shared semaphore — the serialized client channel the production
+    contention lives on."""
     import os
     from datetime import UTC, datetime
 
@@ -633,19 +664,20 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     from control.workspace import ModalDictWorkspaceStore
 
     stub_runner = (Path(__file__).resolve().parents[1] / "fakes" / "stub_runner.py").resolve()
-    backend = _SlowProxy(LocalProcessBackend(), sandbox_ms, counter)
+    chan = threading.Semaphore(channel_par) if channel_par and channel_par > 0 else None
+    backend = _SlowProxy(LocalProcessBackend(), sandbox_ms, counter, chan=chan)
     task_store_inner = InMemoryTaskStore()
     # SOR-271 round 2: workspaces go through the real Dict-backed store —
     # the v2 list page must read them via ONE index-doc get, not a
     # per-row ``workspaces.get`` fanout (the ~linear list finding).
-    ws_dict = _SlowProxy(_HarnessDict(), dict_ms, counter, ns="workspaces.")
+    ws_dict = _SlowProxy(_HarnessDict(), dict_ms, counter, ns="workspaces.", chan=chan)
     ws_store = ModalDictWorkspaceStore("sbx-workspaces")
     ws_store._dict = ws_dict
     app = create_app(
         backend=backend,
-        store=_SlowProxy(InMemoryStore(), dict_ms, counter),
-        run_store=_SlowProxy(InMemoryRunStore(), dict_ms, counter),
-        task_store=_SlowProxy(task_store_inner, dict_ms, counter),
+        store=_SlowProxy(InMemoryStore(), dict_ms, counter, chan=chan),
+        run_store=_SlowProxy(InMemoryRunStore(), dict_ms, counter, chan=chan),
+        task_store=_SlowProxy(task_store_inner, dict_ms, counter, chan=chan),
         workspace_store=ws_store,
         runner_cmd=[sys.executable, str(stub_runner)],
         keepalive_s=0.5,
@@ -655,7 +687,7 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     # ``modal_dict.items`` full scan inside ``resolve_execution`` (the
     # SOR-271 create-ACK finding) shows up as ``accounts.items`` in the
     # counter and as ~items latency on the dispatch path.
-    accounts_dict = _SlowProxy(_HarnessDict(), dict_ms, counter, ns="accounts.")
+    accounts_dict = _SlowProxy(_HarnessDict(), dict_ms, counter, ns="accounts.", chan=chan)
     accounts_store = ModalDictAccountStore("sbx-accounts")
     accounts_store._dict = accounts_dict
     registry = PersistentAccountRegistry(accounts_store)
@@ -738,6 +770,12 @@ def main() -> int:
     parser.add_argument("--api-key-file", default=None)
     parser.add_argument("--dict-ms", type=float, default=250.0)
     parser.add_argument("--sandbox-ms", type=float, default=500.0)
+    parser.add_argument(
+        "--channel-par",
+        type=int,
+        default=4,
+        help="effective parallelism of the shared remote-op channel (0 = unbounded)",
+    )
     # SOR-271 gate shapes: >=20 warm create samples, 20 SSE clients
     # spread across hubs, 16x bulk cancel.
     parser.add_argument("--sessions", type=int, default=21)
@@ -787,7 +825,7 @@ def main() -> int:
             return 2
         base = args.base_url
     else:
-        app, token = _emulated_app(args.dict_ms, args.sandbox_ms, counter)
+        app, token = _emulated_app(args.dict_ms, args.sandbox_ms, counter, args.channel_par)
         base, server_ctx = _serve(app)
 
     headers = {"Authorization": f"Bearer {token}"}

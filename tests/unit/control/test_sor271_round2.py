@@ -30,6 +30,7 @@ import asyncio
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from control import store as store_mod
@@ -88,6 +89,7 @@ class TestWorkspaceIndex:
         store, fake = _ws_store()
         for i in range(5):
             store.put(_ws_record(f"a{i}"))
+        store._list_cache = None  # cold reader — no put write-through
         fake.gets = 0
         records = dict(store.list_records())
         assert sorted(records) == [f"a{i}" for i in range(5)]
@@ -108,6 +110,7 @@ class TestWorkspaceIndex:
         assert sorted(records) == [f"old{i}" for i in range(3)]
         assert fake.items_calls == 1  # one migration scan…
         assert isinstance(fake.data.get("__workspaces__"), dict)  # …then healed
+        store._list_cache = None  # cold reader — prove the healed index serves
         fake.gets = 0
         dict(store.list_records())
         assert fake.gets == 1 and fake.items_calls == 1
@@ -190,6 +193,11 @@ class _FakePlane:
         return rec.public() if hasattr(rec, "public") else {}
 
 
+def _req() -> Any:
+    """A ``Request`` stand-in — ``.app.state`` carries the list memo."""
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+
+
 class TestListBoundedRead:
     """GET /v2/sessions: page cost tracks live rows, never history."""
 
@@ -218,7 +226,9 @@ class TestListBoundedRead:
         fake.items_calls = 0
         task_store.puts.clear()
 
+        ws_store._list_cache = None  # cold reader — the index get counts
         out = v2_routes.list_sessions(
+            _req(),
             key=self._key(),
             task_store=task_store,
             run_states=run_states,
@@ -248,6 +258,7 @@ class TestListBoundedRead:
         fake.gets = 0
         task_store.puts.clear()
         out = v2_routes.list_sessions(
+            _req(),
             key=self._key(),
             task_store=task_store,
             run_states=InMemoryRunStore(),
@@ -268,6 +279,7 @@ class TestListBoundedRead:
         fake.gets = 0
         task_store.puts.clear()
         out = v2_routes.list_sessions(
+            _req(),
             key=self._key(),
             task_store=task_store,
             run_states=InMemoryRunStore(),

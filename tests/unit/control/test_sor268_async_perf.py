@@ -115,6 +115,7 @@ class TestTaskStoreIndexedWrites:
         store, fake = _task_store()
         for i in range(8):
             store.put(_task(f"sess_{i}"))
+        store._owner_list_cache.clear()  # cold reader — no put write-through
         fake.gets = 0
         records = store.list("key_1")
         assert sorted(r.id for r in records) == [f"sess_{i}" for i in range(8)]
@@ -231,6 +232,7 @@ class TestTaskStoreIndexedWrites:
         # Simulate the lost index write: the owner-doc summary still says
         # queued while the authoritative row is terminal.
         fake.data["owner/key_1"]["records"]["sess_a"]["status"] = "queued"
+        store._owner_list_cache.clear()  # cold reader — no put write-through
         fake.gets = 0
         listed = store.list("key_1")
         assert [r.status for r in listed] == ["error"]
@@ -239,6 +241,7 @@ class TestTaskStoreIndexedWrites:
         # A bound record's summary still materializes without a point read.
         store.put(_task("sess_b"))
         fake.data["owner/key_1"]["records"]["sess_b"]["status"] = "queued"
+        store._owner_list_cache.clear()
         fake.gets = 0
         listed = store.list("key_1")
         assert {r.id: r.status for r in listed} == {"sess_a": "error", "sess_b": "queued"}

@@ -546,6 +546,14 @@ class FileWorkspaceStore:
 
 _WS_GET_CACHE_TTL_S = env_float("SBX_WS_GET_CACHE_TTL_S", 0.75)
 
+# SOR-268 round 4: read-through TTL on the ``__workspaces__`` index doc.
+# ``list_records`` feeds the /v2 list page's ws map and the SSE status
+# path; repeat calls inside ~1s then cost zero remote ops. ``put`` /
+# ``delete`` write-through the index they just composed — this process's
+# own mutations never go stale; a cross-container write settles within
+# the TTL.
+_WS_LIST_CACHE_TTL_S = env_float("SBX_WS_LIST_CACHE_TTL_S", 1.0)
+
 
 class ModalDictWorkspaceStore:
     """Production store backed by ``modal.Dict``. Lazy-imports modal.
@@ -566,6 +574,7 @@ class ModalDictWorkspaceStore:
         self._name = name
         self._dict: Any = None
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._list_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
         self._lock = threading.Lock()
         self._ilock = threading.Lock()
 
@@ -632,6 +641,7 @@ class ModalDictWorkspaceStore:
                 self._batch(self._d(), {record.agent_id: raw, self._INDEX_KEY: index})
         with self._lock:
             self._get_cache[record.agent_id] = (time.monotonic(), raw)
+            self._list_cache = (time.monotonic(), index)
 
     def iter_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
         """Full ``items()`` enumeration — migration/self-heal path only."""
@@ -648,20 +658,39 @@ class ModalDictWorkspaceStore:
 
         A Dict predating the index falls back to ``iter_records`` once
         and self-heals the index doc; a dropped or corrupt index heals
-        the same way on the next listing."""
+        the same way on the next listing. Results memoize for
+        ``_WS_LIST_CACHE_TTL_S`` (writes merge in) — mutation paths use
+        ``list_records_fresh`` when they must see every entry."""
+        with self._lock:
+            hit = self._list_cache
+        if hit is not None and time.monotonic() - hit[0] < _WS_LIST_CACHE_TTL_S:
+            return list(hit[1].items())
+        index = self._read_index_or_migrate()
+        with self._lock:
+            self._list_cache = (time.monotonic(), index)
+        return list(index.items())
+
+    def list_records_fresh(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        """Uncached index read for paths that must see every entry."""
+        index = self._read_index_or_migrate()
+        with self._lock:
+            self._list_cache = (time.monotonic(), index)
+        return list(index.items())
+
+    def _read_index_or_migrate(self) -> dict[str, dict[str, Any]]:
         try:
             with observe("modal_dict.get", store=self._name, key=self._INDEX_KEY):
                 raw = self._d().get(self._INDEX_KEY)
         except Exception:
             raw = None
         if isinstance(raw, dict):
-            return list(raw.items())
-        records = list(self.iter_records())
+            return raw
+        records = dict(self.iter_records())
         try:
             with self._ilock:
                 self._batch(
                     self._d(),
-                    {self._INDEX_KEY: {agent_id: dict(rec) for agent_id, rec in records}},
+                    {self._INDEX_KEY: {agent_id: dict(rec) for agent_id, rec in records.items()}},
                 )
         except Exception:
             pass
@@ -671,6 +700,7 @@ class ModalDictWorkspaceStore:
         # Index first: a crash between the two writes leaves an orphaned
         # workspace row (invisible to listings, converged by the next
         # self-heal) — never an index entry pointing at a missing row.
+        index: dict[str, dict[str, Any]] | None = None
         try:
             with self._ilock:
                 index = self._read_index()
@@ -678,7 +708,10 @@ class ModalDictWorkspaceStore:
                     del index[agent_id]
                     self._batch(self._d(), {self._INDEX_KEY: index})
         except Exception:
-            pass
+            index = None
+        if index is not None:
+            with self._lock:
+                self._list_cache = (time.monotonic(), index)
         try:
             with observe("modal_dict.pop", store=self._name, key=agent_id):
                 self._d().pop(agent_id)

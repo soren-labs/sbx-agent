@@ -72,7 +72,7 @@ from control.api_v2.schemas import (
     SessionRetryResponse,
 )
 from control.artifacts import ArtifactError
-from control.config import TERMINAL_STATUSES, env_int
+from control.config import TERMINAL_STATUSES, env_float, env_int
 from control.ports import AccountRegistry, ApiKey, Scheduler
 from control.sandbox_io import read_text, sandbox_env
 from control.tasks import TaskRecord, TaskStore, _iso_now
@@ -202,6 +202,22 @@ def _terminal_projection(record: TaskRecord, ws: dict[str, Any] | None) -> tuple
         if delivery["status"] != "delivered":
             return "delivering", "delivery_pending"
     return "finished", "run_finished"
+
+
+def _status_aggregate(
+    record: TaskRecord,
+    ws: dict[str, Any] | None,
+    run_states: RunStateStore,
+    plane: Any,
+) -> tuple[str, str]:
+    """Aggregate for the hub's status tick — stored-terminal rows project
+    from the record + ws alone (SOR-268 round 4). A live aggregate still
+    pays ``plane.get`` + the ledger list on every call, which at ~2 ticks
+    per second per hub is the ambient remote-op rate that starved
+    unrelated reads under 20x live fanout on the SOR-271 re-gate."""
+    if record.status in _tasks._TASK_TERMINAL:
+        return _terminal_projection(record, ws)
+    return _tasks._aggregate_status(record, run_states, plane, ws)
 
 
 def _view(
@@ -380,6 +396,40 @@ def _ack_budget(request: Request) -> float:
 # waits behind ~20 concurrent op chains on the shared store channel.
 _V2_OPS_WORKERS = env_int("SBX_V2_OPS_WORKERS", 6)
 _HEAVY_POOL = ThreadPoolExecutor(max_workers=_V2_OPS_WORKERS, thread_name_prefix="sbx-v2-ops")
+
+# SOR-268 round 4: beat delay before a cancel-converge worker starts its
+# ~12-op chain on the shared remote-op channel — the burst's ACK-path
+# reads (one point get each, ~0.6s of channel time for 20) drain first
+# instead of queueing behind the chains they spawned. Convergence is
+# async — the delay only shifts when the kill starts, not whether it lands.
+_CONVERGE_DELAY_S = env_float("SBX_V2_CONVERGE_DELAY_S", 0.6)
+
+# SOR-268 round 4: rendered-page memo for ``GET /v2/sessions``. The list
+# endpoint is polled (gate probes, console refresh) — repeat calls inside
+# ~1s must not re-pay the page's remote ops against a store channel that
+# SSE fanout already keeps busy. Any v2 mutation path drops the caller's
+# entries, so own writes are never hidden; a cross-container write
+# settles within the TTL (same trade as the underlying store caches).
+_LIST_MEMO_TTL_S = env_float("SBX_V2_LIST_MEMO_S", 1.0)
+_LIST_MEMO_MAX = 64
+
+
+def _list_memo(app_state: Any) -> dict[tuple[str, int, int], tuple[float, dict[str, Any]]]:
+    memo = getattr(app_state, "_v2_list_memo", None)
+    if memo is None:
+        memo = {}
+        app_state._v2_list_memo = memo
+    return memo
+
+
+def _list_memo_drop(app_state: Any, owner: str) -> None:
+    """Own writes invalidate the rendered page immediately."""
+    memo = getattr(app_state, "_v2_list_memo", None)
+    if not memo:
+        return
+    for mkey in [mkey for mkey in memo if mkey[0] == owner]:
+        memo.pop(mkey, None)
+
 
 # Request-path prefetch staging (owner-doc reads the next store write
 # will consume). Fire-and-forget — stores treat a staged row as a
@@ -811,11 +861,13 @@ def create_session(
             agent_id=fresh.agent_id or record.id,
             body=result,
         )
+    _list_memo_drop(request.app.state, key.id)
     return result
 
 
 @router.get("/sessions", response_model=SessionListResponse)
 def list_sessions(
+    request: Request,
     key: ApiKey = Depends(agents_key),
     task_store: TaskStore = Depends(get_task_store),
     run_states: RunStateStore = Depends(get_run_states),
@@ -824,6 +876,11 @@ def list_sessions(
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     """The caller's sessions, newest first."""
+    memo = _list_memo(request.app.state)
+    mkey = (key.id, int(limit), int(offset))
+    hit = memo.get(mkey)
+    if hit is not None and time.monotonic() - hit[0] < _LIST_MEMO_TTL_S:
+        return hit[1]
     records = [r for r in task_store.list(key.id) if is_session_id(r.id)]
     records.sort(key=lambda r: (r.created_at, r.id), reverse=True)
     total = len(records)
@@ -886,7 +943,11 @@ def list_sessions(
         )
         for record, (status, reason, ws) in zip(page, settled)
     ]
-    return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+    result = {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+    if len(memo) > _LIST_MEMO_MAX:
+        memo.clear()
+    memo[mkey] = (time.monotonic(), result)
+    return result
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
@@ -943,6 +1004,7 @@ def post_message(
     landing — which the schema already permits.
     """
     record = _require_session(task_store, key, session_id)
+    _list_memo_drop(request.app.state, key.id)
     agent_id = record.agent_id
     if agent_id is None:
         raise V1ApiError(409, "session_not_runnable", "session is still provisioning")
@@ -1031,6 +1093,17 @@ def cancel_session(
     proc kill + stop-hook exec), so it runs on a worker under
     ``_ack_budget``; a timeout answers cancelled-optimistically since the
     worker still converges the record to ``cancelled``.
+
+    SOR-268 round 4: the ACK now follows the durable INTENT, not the
+    convergence chain. With the marker lane available the request path
+    pays only the ``_require_session`` point read — the worker then
+    persists the ``cancel/<id>`` marker, runs the full ``cancel_task``
+    chain, and flips the marker applied, off the ACK's clock. Under a
+    20× parallel burst nothing on the request path queues behind the
+    ~12-op chains on the bounded ops pool. The marker deliberately does
+    NOT flip ``record.status``: the worker's ``_settle_task`` must still
+    see the row as live, or its already-cancelled short-circuit would
+    skip the real kill/drain.
     """
     record = _require_session(task_store, key, session_id)
     if record.agent_id is None and record.status != "cancelled":
@@ -1038,6 +1111,20 @@ def cancel_session(
         # post-bind check cancel the agent it just created. ``error`` is
         # included: a retry re-dispatch may be in flight on this row.
         _PRE_BIND_CANCELLED.add(session_id)
+    _list_memo_drop(request.app.state, key.id)
+
+    if record.status in _tasks._TASK_TERMINAL:
+        # Idempotent replay — nothing left to converge, no worker needed.
+        return {
+            "session": _optimistic_view(
+                record,
+                aggregate_status=record.status,
+                aggregate_reason="stored",
+                task_store=task_store,
+                run_states=run_states,
+                plane=plane,
+            )
+        }
 
     def _cancel() -> dict[str, Any]:
         return _tasks.cancel_task(
@@ -1052,6 +1139,45 @@ def cancel_session(
             task_store=task_store,
         )
 
+    mark = getattr(task_store, "mark_cancel_pending", None)
+    if callable(mark):
+        _list_memo_drop(request.app.state, key.id)
+        mark_applied = getattr(task_store, "mark_cancel_applied", None)
+
+        def _converge() -> None:
+            # Yield the channel for a beat: a 20x bulk burst's ACK-path
+            # reads clear before ~12-op cancel chains start queueing on
+            # the shared remote-op channel — the ACK must reflect the
+            # durable intent only, never wait on the chain.
+            time.sleep(_CONVERGE_DELAY_S)
+            try:
+                mark(session_id)
+            except Exception:
+                pass
+            try:
+                _cancel()
+            except Exception:
+                pass
+            if callable(mark_applied):
+                try:
+                    mark_applied(session_id)
+                except Exception:
+                    pass
+
+        _HEAVY_POOL.submit(_converge)
+        return {
+            "session": _optimistic_view(
+                record,
+                aggregate_status="cancelled",
+                aggregate_reason="task_cancelled",
+                task_store=task_store,
+                run_states=run_states,
+                plane=plane,
+            )
+        }
+
+    # No intent-marker lane (test stub stores): the budgeted path still
+    # bounds the wait, and a timeout answers cancelled-optimistically.
     done, box = _run_with_budget(_cancel, _ack_budget(request))
     if done and "error" in box:
         raise box["error"]
@@ -1105,6 +1231,7 @@ def retry_session(
     permits.
     """
     record = _require_session(task_store, key, session_id)
+    _list_memo_drop(request.app.state, key.id)
     v1_body = _tasks.RetryTaskRequest(
         mode=(body.mode if body else None),
         prompt=(Prompt(text=body.prompt) if body and body.prompt is not None else None),
@@ -1279,6 +1406,7 @@ def session_changes_diff(
 @router.post("/sessions/{session_id}/deliver", response_model=SessionDeliverResponse)
 def deliver_session(
     session_id: str,
+    request: Request,
     body: SessionDeliverRequest | None = None,
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
@@ -1306,6 +1434,7 @@ def deliver_session(
         session_id, v1_body, key=key, task_store=task_store, revisions=revisions
     )
     record = task_store.get(session_id)
+    _list_memo_drop(request.app.state, key.id)
     return {
         "session": _view(
             record,
@@ -1368,7 +1497,11 @@ def stream_session_events(
         """Current (status, phase, frame) — polled so transitions stream live."""
         fresh = task_store.get(session_id) or record
         ws = _tasks._ws_record(plane, fresh.agent_id)
-        status, reason = _tasks._aggregate_status(fresh, run_states, plane, ws)
+        # SOR-268 round 4: the hub ticks ~2×/s for the LIFE of each live
+        # client; a stored-terminal record projects without the live
+        # reads whose per-tick remote ops — on the shared store channel —
+        # starved unrelated reads under 20× live fanout on the re-gate.
+        status, reason = _status_aggregate(fresh, ws, run_states, plane)
         st, ph = map_session_status(status, reason)
         payload = {"type": "session.status", "status": st, "phase": ph}
         return st, ph, f"event: session.status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

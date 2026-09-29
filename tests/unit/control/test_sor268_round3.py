@@ -121,6 +121,7 @@ class TestListTerminalRowsCostZeroOps:
         task_store.puts.clear()
 
         out = v2_routes.list_sessions(
+            _req(),
             key=_key(),
             task_store=task_store,
             run_states=InMemoryRunStore(),
@@ -152,6 +153,7 @@ class TestListTerminalRowsCostZeroOps:
         plane = _FakePlane(ws_store)
         task_store.puts.clear()
         out = v2_routes.list_sessions(
+            _req(),
             key=_key(),
             task_store=task_store,
             run_states=InMemoryRunStore(),
@@ -233,6 +235,9 @@ class TestMutationAckSkipsLiveView:
 
     def test_timeout_path_still_optimistic(self, monkeypatch: Any) -> None:
         task_store = _GetCountingTaskStore()
+        # Exercise the budget fallback: round-4 stores with the marker
+        # lane take the intent path instead (covered in test_sor268_round4).
+        task_store.mark_cancel_pending = None
         task_store.put(_task("sess_t", status="running", agent_id="agent-t"))
         plane = _FakePlane()
 

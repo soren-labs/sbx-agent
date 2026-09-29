@@ -1512,6 +1512,7 @@ class InMemoryTaskStore:
 
     def __init__(self) -> None:
         self._items: dict[str, dict[str, Any]] = {}
+        self._cancel_marks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def put(self, record: TaskRecord) -> None:
@@ -1549,6 +1550,28 @@ class InMemoryTaskStore:
             if rec.agent_id == agent_id:
                 return rec
         return None
+
+    def mark_cancel_pending(self, task_id: str) -> bool:
+        with self._lock:
+            self._cancel_marks[task_id] = {
+                "task_id": task_id,
+                "at": _iso_now(),
+                "applied": False,
+            }
+        return True
+
+    def mark_cancel_applied(self, task_id: str) -> None:
+        with self._lock:
+            self._cancel_marks[task_id] = {
+                "task_id": task_id,
+                "at": _iso_now(),
+                "applied": True,
+            }
+
+    def cancel_mark(self, task_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            mark = self._cancel_marks.get(task_id)
+        return dict(mark) if mark is not None else None
 
 
 class FileTaskStore:
@@ -1615,6 +1638,41 @@ class FileTaskStore:
                 return rec
         return None
 
+    def mark_cancel_pending(self, task_id: str) -> bool:
+        """Process-local intent marker (the Modal store's is the durable
+        one this exists to mirror — a file deployment's intent survives
+        as the marker file itself)."""
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+            self._cancel_path(task_id).write_text(
+                json.dumps({"task_id": task_id, "at": _iso_now(), "applied": False}) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return False
+        return True
+
+    def mark_cancel_applied(self, task_id: str) -> None:
+        try:
+            self._cancel_path(task_id).write_text(
+                json.dumps({"task_id": task_id, "at": _iso_now(), "applied": True}) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def cancel_mark(self, task_id: str) -> dict[str, Any] | None:
+        try:
+            raw = json.loads(self._cancel_path(task_id).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    def _cancel_path(self, task_id: str) -> Path:
+        # ``cancel-`` prefix: ``list``'s ``*.json`` glob decodes it as a
+        # task record, fails, and skips — it can never masquerade as one.
+        return self._root / f"cancel-{task_id}.json"
+
 
 # SOR-268: per-record read-through TTL for ``task/<id>`` point gets. The
 # detail/list/SSE paths re-read the same record several times inside one
@@ -1624,6 +1682,15 @@ class FileTaskStore:
 # writer's ``put`` — bounded by this TTL, same trade the session listing
 # cache already makes.
 _TASK_GET_CACHE_TTL_S = env_float("SBX_TASK_GET_CACHE_TTL_S", 0.5)
+
+# SOR-268 round 4: read-through TTL on the ``owner/<owner>`` index doc
+# itself. ``list(owner)`` is the /v2 list endpoint's only per-call remote
+# read; memoizing the fetched doc for ~1s collapses repeated listings
+# (poll loops, SSE-fanout probes) to zero remote ops while ``put`` /
+# ``delete`` write-through the doc they just composed, so this process's
+# own writes are never stale. A cross-container write settles within the
+# TTL — the same trade every other listing cache in this codebase makes.
+_TASK_LIST_TTL_S = env_float("SBX_TASK_LIST_CACHE_TTL_S", 1.0)
 
 # Owner-doc summary cap: ``owner/<owner>`` embeds recent record summaries
 # so ``list`` is a single remote read; ids are never dropped — ids whose
@@ -1653,6 +1720,8 @@ class ModalDictTaskStore:
     - ``owner/<owner>``         -> ``{"ids": [...], "records": {id: summary}}``
     - ``agent/<agent_id>``      -> task id (``find_by_agent`` point index)
     - ``idem/<owner>/<hash>``   -> task id (``Idempotency-Key`` replay index)
+    - ``cancel/<id>``           -> durable cancel-intent marker (``applied``
+                                 flips when the worker's convergence lands)
     - ``__owners__``            -> owner list (``list(None)`` index-of-indexes)
 
     ``list(owner)`` reads the owner doc — one remote call — instead of
@@ -1673,6 +1742,7 @@ class ModalDictTaskStore:
         self._lock = threading.Lock()
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._owner_prefetch: dict[str, tuple[float, Any]] = {}
+        self._owner_list_cache: dict[str, tuple[float, list[str], dict[str, dict[str, Any]]]] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1684,6 +1754,10 @@ class ModalDictTaskStore:
     @staticmethod
     def _task_key(task_id: str) -> str:
         return f"task/{task_id}"
+
+    @staticmethod
+    def _cancel_key(task_id: str) -> str:
+        return f"cancel/{task_id}"
 
     @staticmethod
     def _owner_key(owner: str) -> str:
@@ -1792,8 +1866,65 @@ class ModalDictTaskStore:
             if isinstance(meta.get("key"), str) and record.owner:
                 writes[self._idem_key(record.owner, meta["key"])] = record.id
             self._batch(d, writes)
+            owner_doc = writes.get(self._owner_key(record.owner)) if record.owner else None
         with self._lock:
             self._get_cache[task_key] = (time.monotonic(), raw)
+            if isinstance(owner_doc, dict):
+                self._owner_list_cache[record.owner] = (
+                    time.monotonic(),
+                    [str(i) for i in owner_doc.get("ids") or []],
+                    dict(owner_doc.get("records") or {}),
+                )
+
+    def mark_cancel_pending(self, task_id: str) -> bool:
+        """Durable cancel intent — one ``Dict.update``, no read-modify-write.
+
+        The /v2 cancel route writes this marker BEFORE answering: the ACK
+        then carries a persisted intent even if the process dies before the
+        convergence worker's own ``put`` lands (the same exposure the
+        budget-timeout path already accepted). It never touches
+        ``task/<id>`` — the worker's ``cancel_task`` must still see the
+        record as live, or its already-cancelled short-circuit would skip
+        the real kill/drain.
+        """
+        try:
+            self._batch(
+                self._d(),
+                {
+                    self._cancel_key(task_id): {
+                        "task_id": task_id,
+                        "at": _iso_now(),
+                        "applied": False,
+                    }
+                },
+            )
+        except Exception:
+            return False
+        return True
+
+    def mark_cancel_applied(self, task_id: str) -> None:
+        """Worker-side: the convergence chain ran — annotate the marker."""
+        try:
+            self._batch(
+                self._d(),
+                {
+                    self._cancel_key(task_id): {
+                        "task_id": task_id,
+                        "at": _iso_now(),
+                        "applied": True,
+                    }
+                },
+            )
+        except Exception:
+            pass
+
+    def cancel_mark(self, task_id: str) -> dict[str, Any] | None:
+        """The intent marker's durable state, or None when absent."""
+        try:
+            raw = self._d().get(self._cancel_key(task_id))
+        except Exception:
+            return None
+        return dict(raw) if isinstance(raw, dict) else None
 
     def _get_uncached(self, task_id: str) -> dict[str, Any] | None:
         raw = self._d().get(self._task_key(task_id))
@@ -1840,6 +1971,7 @@ class ModalDictTaskStore:
                 ids = [i for i in ids if i != task_id]
                 summaries.pop(task_id, None)
                 d.put(owner_key, {"ids": ids, "records": summaries})
+                self._owner_list_cache[rec.owner] = (time.monotonic(), ids, summaries)
         with self._lock:
             self._get_cache.pop(task_key, None)
 
@@ -1851,6 +1983,33 @@ class ModalDictTaskStore:
             raws = list(pool.map(self._get_uncached, task_ids))
         return [record_from_dict(raw) for raw in raws if isinstance(raw, dict)]
 
+    def _owner_doc_for_read(self, owner: str) -> tuple[list[str], dict[str, dict[str, Any]]]:
+        """Owner doc for ``list``: the ~1s memo when fresh, else a point
+        get. ``put``/``delete`` write-through, so this process's own
+        mutations are reflected immediately; a cross-container write
+        settles within ``_TASK_LIST_TTL_S`` (SOR-268 round 4 — repeat
+        listings under SSE fanout stopped paying the per-call get)."""
+        with self._lock:
+            hit = self._owner_list_cache.get(owner)
+        if hit is not None and time.monotonic() - hit[0] < _TASK_LIST_TTL_S:
+            return list(hit[1]), dict(hit[2])
+        raw = self._d().get(self._owner_key(owner))
+        ids, summaries = self._owner_doc(raw)
+        with self._lock:
+            self._owner_list_cache[owner] = (time.monotonic(), ids, summaries)
+        return list(ids), dict(summaries)
+
+    def list_fresh(self, owner: str | None = None) -> list[TaskRecord]:
+        """Uncached listing for mutation paths (read-modify-write callers
+        must never act on the ≤TTL-stale memo)."""
+        if owner is None:
+            owners = list(self._d().get("__owners__") or [])
+            out: list[TaskRecord] = []
+            for name in owners:
+                out.extend(self.list_fresh(str(name)))
+            return out
+        return self._list_from_doc(*self._owner_doc(self._d().get(self._owner_key(owner))))
+
     def list(self, owner: str | None = None) -> list[TaskRecord]:
         if owner is None:
             # Dict has no key scan — every record goes through an owner
@@ -1860,7 +2019,12 @@ class ModalDictTaskStore:
             for name in owners:
                 out.extend(self.list(str(name)))
             return out
-        ids, summaries = self._owner_doc(self._d().get(self._owner_key(owner)))
+        ids, summaries = self._owner_doc_for_read(owner)
+        return self._list_from_doc(ids, summaries)
+
+    def _list_from_doc(
+        self, ids: list[str], summaries: dict[str, dict[str, Any]]
+    ) -> list[TaskRecord]:
         out: list[TaskRecord] = []
         missing: list[str] = []
         for task_id in ids:

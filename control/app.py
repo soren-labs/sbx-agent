@@ -842,6 +842,42 @@ def create_app(
                     list_page(limit=100)
                 except Exception:
                     pass
+            # SOR-268 round 4: warm the /v2 read model too — the cold-gate
+            # 13.9s first list paid every lazy ``Dict.from_name`` connect
+            # and first index read serially on the request path.
+            ws_list = getattr(workspace_store, "list_records", None)
+            if callable(ws_list):
+                try:
+                    ws_list()
+                except Exception:
+                    pass
+            task_d = getattr(task_store, "_d", None)
+            if callable(task_d):
+                try:
+                    owners = list(task_d().get("__owners__") or [])
+                except Exception:
+                    owners = []
+                # Bound the fan-out: each owner-doc read populates the
+                # round-4 list memo for that owner's first request.
+                for owner_id in owners[:16]:
+                    try:
+                        task_store.list(owner_id)
+                    except Exception:
+                        pass
+            for target in (run_activity_store, revision_store):
+                connect = getattr(target, "_d", None)
+                if callable(connect):
+                    try:
+                        connect()
+                    except Exception:
+                        pass
+            registry = getattr(app.state, "account_registry", None)
+            registry_list = getattr(registry, "list", None)
+            if callable(registry_list):
+                try:
+                    registry_list()
+                except Exception:
+                    pass
 
         threading.Thread(target=_warm_listing_indexes, daemon=True).start()
 
