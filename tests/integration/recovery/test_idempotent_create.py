@@ -118,7 +118,15 @@ def test_different_keys_create_different_agents(recovery_env) -> None:
     two = env.post_agent(idempotency_key="idem-b")
     assert one.status_code == 201 and two.status_code == 201
     assert one.json()["agent"]["id"] != two.json()["agent"]["id"]
+    # Create may ACK the durable creating record before allocation ends.
+    until = time.monotonic() + 5
+    while len(env.backend.handles) < 2 and time.monotonic() < until:
+        time.sleep(0.01)
     assert len(env.backend.handles) == 2
+    assert {h.tags["session_id"] for h in env.backend.handles} == {
+        one.json()["agent"]["id"],
+        two.json()["agent"]["id"],
+    }
 
 
 def test_retry_reuses_key_across_restart(recovery_env) -> None:

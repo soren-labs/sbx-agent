@@ -132,6 +132,58 @@ def test_create_dispatch_failure_keeps_error_contract(
     assert resp.json()["error"]["code"] == "provider_exhausted"
 
 
+def test_create_does_not_read_again_after_ack_deadline(
+    client: TestClient,
+    v1_env: V1Env,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bound row can land before the create worker finishes its reply."""
+    from control.api_v2 import routes
+
+    store = v1_env.app.state.task_store
+    published, finish = threading.Event(), threading.Event()
+    original_put, original_get = store.put, store.get
+    original_budget = routes._run_with_budget
+    ack_thread = None
+
+    def put(record):
+        original_put(record)
+        if record.agent_id is not None:
+            published.set()
+            assert finish.wait(5)
+
+    def budget(fn, seconds):
+        nonlocal ack_thread
+        done, box = original_budget(fn, seconds)
+        assert published.wait(5)
+        assert not done
+        ack_thread = threading.get_ident()
+        return done, box
+
+    def get(task_id):
+        assert threading.get_ident() != ack_thread, "post-deadline store read can block ACK"
+        return original_get(task_id)
+
+    monkeypatch.setattr(store, "put", put)
+    monkeypatch.setattr(store, "get", get)
+    monkeypatch.setattr(routes, "_run_with_budget", budget)
+    v1_env.app.state.v2_ack_budget_s = 0.1
+    try:
+        response = client.post(
+            "/v2/sessions",
+            headers=auth,
+            json={"prompt": "hello", "execution": {"provider": "codex"}},
+        )
+        assert response.status_code == 201, response.text
+        sid = response.json()["session"]["id"]
+        assert response.json()["session"]["status"] == "queued"
+    finally:
+        finish.set()
+    ack_thread = None
+    wait_session(client, auth, sid, "finished")
+
+
 def test_message_acks_without_sandbox_exec(
     client: TestClient,
     v1_env: V1Env,

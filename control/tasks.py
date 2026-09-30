@@ -1703,6 +1703,7 @@ class ModalDictTaskStore:
         self._lock = threading.Lock()
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._owner_prefetch: dict[str, tuple[float, Any]] = {}
+        self._owner_versions: dict[str, int] = {}
         self._owner_list_cache: dict[str, tuple[float, list[str], dict[str, dict[str, Any]]]] = {}
         self._terminal_validation_cursor: dict[str, int] = {}
 
@@ -1776,18 +1777,31 @@ class ModalDictTaskStore:
         The V2 create path runs this concurrently with
         ``find_by_idempotency``: the two reads overlap, so the subsequent
         ``put`` only pays its ``Dict.update`` round trip (SOR-271). The
-        staged row is consumed once and only while fresh — a stale
-        prefetch can never silently starve another writer's owner-doc
-        entries any longer than the usual read-modify-write window.
+        staged row is consumed once and only while fresh. Local owner-doc
+        writes invalidate staged rows and in-flight observations, so a
+        prefetch cannot overwrite a newer local write.
         """
+        with self._lock:
+            version = self._owner_versions.get(owner, 0)
         try:
             raw = self._d().get(self._owner_key(owner))
         except Exception:
             return
         with self._lock:
+            if self._owner_versions.get(owner, 0) != version:
+                return
             if len(self._owner_prefetch) > 64:
                 self._owner_prefetch.clear()
             self._owner_prefetch[owner] = (time.monotonic(), raw)
+
+    def _owner_written(self, owner: str) -> None:
+        """Invalidate snapshots observed before a local owner-doc write.
+
+        Caller holds the write lock; an in-flight prefetch checks this
+        generation after its RPC before staging the observed snapshot.
+        """
+        self._owner_versions[owner] = self._owner_versions.get(owner, 0) + 1
+        self._owner_prefetch.pop(owner, None)
 
     def _owner_doc_for_write(
         self, owner: str, d: Any
@@ -1827,6 +1841,8 @@ class ModalDictTaskStore:
             meta = record.idempotency or {}
             if isinstance(meta.get("key"), str) and record.owner:
                 writes[self._idem_key(record.owner, meta["key"])] = record.id
+            if record.owner:
+                self._owner_written(record.owner)
             self._batch(d, writes)
         with self._lock:
             self._get_cache[task_key] = (time.monotonic(), raw)
@@ -1931,6 +1947,7 @@ class ModalDictTaskStore:
                 ids, summaries = self._owner_doc(d.get(owner_key))
                 ids = [i for i in ids if i != task_id]
                 summaries.pop(task_id, None)
+                self._owner_written(rec.owner)
                 d.put(owner_key, {"ids": ids, "records": summaries})
                 self._owner_list_cache.pop(rec.owner, None)
         with self._lock:
@@ -1978,6 +1995,7 @@ class ModalDictTaskStore:
                     if summaries.get(rec.id) != observed.get(rec.id):
                         continue
                     summaries[rec.id] = _task_summary(rec)
+                self._owner_written(owner)
                 self._batch(d, {owner_key: {"ids": ids, "records": summaries}})
                 self._owner_list_cache[owner] = (
                     time.monotonic(),
@@ -2071,6 +2089,8 @@ class ModalDictTaskStore:
 
     def find_by_idempotency(self, owner: str, key: str) -> TaskRecord | None:
         d = self._d()
+        with self._lock:
+            version = self._owner_versions.get(owner, 0)
         # The point index and the pre-index owner scan are both reads —
         # issue them concurrently; the owner doc is then staged for the
         # imminent ``put``, so the whole dedup + write-warm costs one wall
@@ -2086,7 +2106,8 @@ class ModalDictTaskStore:
         with self._lock:
             if len(self._owner_prefetch) > 64:
                 self._owner_prefetch.clear()
-            self._owner_prefetch[owner] = (time.monotonic(), owner_raw)
+            if self._owner_versions.get(owner, 0) == version:
+                self._owner_prefetch[owner] = (time.monotonic(), owner_raw)
         ids, summaries = self._owner_doc(owner_raw)
         # The summary's ``idempotency`` metadata is durable — unlike the
         # status fields ``list`` distrusts on agent-less rows — so the key

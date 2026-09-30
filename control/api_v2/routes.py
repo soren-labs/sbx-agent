@@ -896,7 +896,10 @@ def create_session(
         if owned is not None:
             v1.idempotency.abandon(key.id, pin_key, owned)
         raise box["error"]
-    fresh = task_store.get(record.id) or record
+    # Once the wait expires, even a fresh task read (or a bound-session
+    # render) can add unbounded remote work to the ACK. The queued row was
+    # persisted before dispatch; reads will expose the worker's result.
+    fresh = (task_store.get(record.id) or record) if done else record
     if fresh.agent_id is not None:
         result = {
             "session": _view(

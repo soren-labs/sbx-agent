@@ -2,10 +2,44 @@
 
 import copy
 
+import pytest
 from control.tasks import ModalDictTaskStore
 from tests.acceptance.v2_perf_gate import ProbeResult, _percentile
 from tests.unit.control.test_sor268_async_perf import _BatchDict
 from tests.unit.control.test_sor271_round2 import _task
+
+
+@pytest.mark.parametrize("lookup", ["prefetch", "idempotency"])
+@pytest.mark.parametrize("change", ["put", "delete"])
+def test_owner_prefetch_cannot_overwrite_intervening_local_write(lookup, change) -> None:
+    store = ModalDictTaskStore("test-tasks")
+    fake = _BatchDict()
+    store._dict = fake
+    store.put(_task("sess_seed", status="error", agent_id=None))
+    original = fake.get
+    pending = True
+
+    def read_then_write(key, default=None):
+        nonlocal pending
+        observed = copy.deepcopy(original(key, default))
+        if key == "owner/key_1" and pending:
+            pending = False
+            if change == "put":
+                store.put(_task("sess_between", status="error", agent_id=None))
+            else:
+                store.delete("sess_seed")
+        return observed
+
+    fake.get = read_then_write
+    if lookup == "prefetch":
+        store.prefetch_owner("key_1")
+    else:
+        store.find_by_idempotency("key_1", "v2:session:next")
+    store.put(_task("sess_next", status="error", agent_id=None))
+
+    expected = {"sess_seed", "sess_between", "sess_next"} if change == "put" else {"sess_next"}
+    assert set(fake.data["owner/key_1"]["ids"]) == expected
+    assert {row.id for row in store.list("key_1")} == expected
 
 
 def test_small_sample_p95_does_not_hide_slow_request() -> None:
