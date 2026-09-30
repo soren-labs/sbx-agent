@@ -79,6 +79,7 @@ def reap(
     account_registry: AccountRegistry | None = None,
     checkpoints: Any = None,
     on_action: Callable[[ReapAction], None] | None = None,
+    on_scan: Callable[[list[SessionRecord]], None] | None = None,
     deadline_s: float | None = None,
 ) -> list[ReapAction]:
     """Reconcile Dict records with live sandboxes.
@@ -228,6 +229,8 @@ def reap(
         # (the orphan pass below) to run on what it can enumerate.
         records_all = []
         emit("reap_error", None, None)
+    if on_scan is not None:
+        on_scan(records_all)
     for rec in records_all:
         if deadline_hit():
             emit("sweep_deadline", None, None)
@@ -524,6 +527,25 @@ def sweep_plane(
             )
 
     remaining = sweep_bound_s - (time.monotonic() - started)
+    scan: dict[str, Any] = {
+        "store": getattr(plane.store, "_name", type(plane.store).__name__),
+        "backend": type(plane.backend).__name__,
+        "idle_timeout_s": lifecycle.idle_timeout_s,
+        "records": 0,
+        "by_status": {},
+        "expired_idle": 0,
+    }
+
+    def _on_scan(records: list[SessionRecord]) -> None:
+        scan["records"] = len(records)
+        for record in records:
+            counts = scan["by_status"]
+            counts[record.status] = counts.get(record.status, 0) + 1
+            last = record.last_activity_at or record.updated_at
+            if record.status == "idle" and (now - last).total_seconds() >= lifecycle.idle_timeout_s:
+                scan["expired_idle"] += 1
+        emit_log(f"[reap] scan {scan}")
+
     actions = reap(
         plane.store,
         plane.backend,
@@ -534,6 +556,7 @@ def sweep_plane(
         account_registry=account_registry,
         checkpoints=getattr(plane, "checkpoints", None),
         on_action=_on_action,
+        on_scan=_on_scan,
         deadline_s=max(1.0, remaining),
     )
     kinds: dict[str, int] = {}
@@ -547,4 +570,5 @@ def sweep_plane(
         "settled_turns": settled,
         "elapsed_s": elapsed,
         "now": now,
+        "scan": scan,
     }

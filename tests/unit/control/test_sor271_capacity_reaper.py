@@ -430,5 +430,9 @@ def test_sweep_plane_happy_path_reaps_and_logs() -> None:
     assert store.get("idle1").status == "timed_out"
     assert backend.poll(h).alive is False
     assert summary["action_kinds"] == {"timed_out": 1}
+    assert summary["scan"]["records"] == 1
+    assert summary["scan"]["by_status"] == {"idle": 1}
+    assert summary["scan"]["expired_idle"] == 1
+    assert summary["scan"]["idle_timeout_s"] == 300
     assert logs[0].startswith("[reap] tick start")
     assert logs[-1].startswith("[reap] tick done")

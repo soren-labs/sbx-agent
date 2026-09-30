@@ -105,7 +105,10 @@ _WARMTH = control_warmth_config()
     min_containers=_WARMTH.min_containers or None,
     buffer_containers=_WARMTH.buffer_containers or None,
 )
-@modal.concurrent(max_inputs=20)
+# Long-lived SSE connections are inputs too. Leave burst headroom for short
+# API requests while the autoscaler brings up another container; twenty
+# streams must not occupy every input and force unrelated reads to cold-start.
+@modal.concurrent(max_inputs=64, target_inputs=32)
 @modal.asgi_app()
 def fastapi_app():
     os.environ.setdefault("SBX_BACKEND", "modal")
@@ -119,7 +122,7 @@ _BUILD_BOUND_S = 90
 # ``sbx-control-ops["reap:last"]`` carries the tick's start/finish and
 # action counts so invocation is verifiable from outside Modal's logs
 # (SOR-271 round-4: "verify the reaper is actually invoked").
-_OPS_DICT_NAME = "sbx-control-ops"
+_OPS_DICT_NAME = f"{_APP_NAME}-ops"
 
 
 def _ops_heartbeat(key: str, payload: dict) -> None:
@@ -184,5 +187,7 @@ def reap_cron() -> None:
             "settled_turns": len(summary["settled_turns"]),
             "action_kinds": summary["action_kinds"],
             "elapsed_s": summary["elapsed_s"],
+            "app": _APP_NAME,
+            "scan": summary["scan"],
         },
     )

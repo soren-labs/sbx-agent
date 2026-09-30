@@ -61,7 +61,7 @@ def test_modal_backend_source_matches_p0() -> None:
 def test_modal_app_source_has_decorators() -> None:
     src = MODAL_APP.read_text(encoding="utf-8")
     assert "@modal.asgi_app()" in src
-    assert "@modal.concurrent(max_inputs=20)" in src
+    assert "@modal.concurrent(max_inputs=64, target_inputs=32)" in src
     assert 'modal.Cron("*/5 * * * *")' in src
     # Secrets resolve via the provider-gated name list (SOR-115).
     assert "app_secret_names" in src
