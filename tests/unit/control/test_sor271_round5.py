@@ -1,8 +1,17 @@
 """Production-shaped regressions for the round-5 performance gate."""
 
 from control.tasks import ModalDictTaskStore
+from tests.acceptance.v2_perf_gate import ProbeResult, _percentile
 from tests.unit.control.test_sor268_async_perf import _BatchDict
 from tests.unit.control.test_sor271_round2 import _task
+
+
+def test_small_sample_p95_does_not_hide_slow_request() -> None:
+    for samples in ([0.2, 1.6], [0.2, 0.3, 1.6]):
+        result = ProbeResult("ACK", list(samples), 1.0)
+        assert result.p95 == 1.6
+        assert not result.ok()
+        assert _percentile(list(samples), 0.95) == 1.6
 
 
 def test_unbound_terminal_history_uses_one_owner_read() -> None:

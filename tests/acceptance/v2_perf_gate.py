@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -141,7 +142,7 @@ class ProbeResult:
         if not self.samples:
             return float("nan")
         xs = sorted(self.samples)
-        idx = max(0, int(len(xs) * 0.95) - 1)
+        idx = max(0, math.ceil(len(xs) * 0.95) - 1)
         return xs[idx]
 
     @property
@@ -165,7 +166,7 @@ def _percentile(xs: list[float], q: float) -> float:
     if not xs:
         return float("nan")
     s = sorted(xs)
-    return s[max(0, int(len(s) * q) - 1)]
+    return s[max(0, math.ceil(len(s) * q) - 1)]
 
 
 def _time(http: httpx.Client, fn) -> tuple[float, Any]:
