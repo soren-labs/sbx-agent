@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from control.api_v1.lifecycle import IdempotencyStore, InMemoryRunStates, RunStateStore
+from control.config import TERMINAL_STATUSES
 from control.ports import Account, ApiKey, ScheduleDecision
 from control.workflow_store import InMemoryWorkflowStore, WorkflowStore
 
@@ -322,6 +323,9 @@ class V1State:
     # they live on V1State even when durable stores replace the rest.
     console_grants: ConsoleGrantStore = field(default_factory=ConsoleGrantStore)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Monotonic timestamp of the last ``reconcile_leases`` pass — throttle
+    # state, not durable data (V1State is process-local by design).
+    leases_reconciled_at: float = 0.0
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:
         with self.lock:
@@ -338,6 +342,51 @@ class V1State:
     def pop_lease(self, session_id: str) -> Any | None:
         with self.lock:
             return self.leases.pop(session_id, None)
+
+    def reconcile_leases(self, store: Any, *, interval_s: float = 10.0) -> int:
+        """Decay leases whose session no longer owns live work.
+
+        ``AccountLease`` objects are in-process — the reaper cron runs in
+        a different container and can only *ask* for a release it cannot
+        execute here, so dead leases are also decayed lazily on the
+        request path: a session that went terminal, ``lost``/
+        ``timed_out``, or ``suspended`` (no live sandbox — recovery uses
+        the durable checkpoint, not a held slot) must not pin a
+        scheduler slot forever (SOR-271 round-5: every finished/cancelled
+        session wedged capacity at the global cap). Rate-limited by
+        ``interval_s`` so the bind path does not pay a store read per
+        lease on every acquire.
+        """
+        if store is None:
+            return 0
+        now = time.monotonic()
+        if now - self.leases_reconciled_at < interval_s:
+            return 0
+        self.leases_reconciled_at = now
+        with self.lock:
+            pending = list(self.leases.items())
+        released = 0
+        for session_id, _lease in pending:
+            try:
+                rec = store.get(session_id)
+            except Exception:
+                # Unreadable durable state — keep the lease this pass and
+                # retry rather than free slots on a store blip.
+                continue
+            if (
+                rec is not None
+                and rec.status not in TERMINAL_STATUSES
+                and (rec.status != "suspended")
+            ):
+                continue
+            popped = self.pop_lease(session_id)
+            if popped is None:
+                continue
+            release = getattr(popped, "release", None)
+            if callable(release):
+                release()
+                released += 1
+        return released
 
     def mark_cancelled(self, session_id: str, turn_n: int) -> None:
         with self.lock:

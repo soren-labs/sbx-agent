@@ -189,5 +189,12 @@ def reap_cron() -> None:
             "elapsed_s": summary["elapsed_s"],
             "app": _APP_NAME,
             "scan": summary["scan"],
+            # SOR-271 round-5 observability: how much of the plane the
+            # sweep actually enumerated + what it skipped, so "reaper ran
+            # but saw nothing" is visible instead of silently identical
+            # to "reaper never ran".
+            "records_seen": summary["records_seen"],
+            "handles_seen": summary["handles_seen"],
+            "skipped": summary["skipped"],
         },
     )

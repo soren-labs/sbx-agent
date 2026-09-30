@@ -1321,6 +1321,14 @@ def _create_agent_once(
     provider = body.agent.provider
     requested = body.agent.account_id or "auto"
 
+    # In-process leases can only decay here — the reaper cron runs in a
+    # separate container and its lease release is a no-op on this process.
+    # Sessions that went terminal/lost/timed_out/suspended between binds
+    # would otherwise pin scheduler slots until manual close (SOR-271 r5).
+    reconcile_leases = getattr(v1, "reconcile_leases", None)
+    if callable(reconcile_leases):
+        reconcile_leases(getattr(plane, "store", None))
+
     # P2.1's Devin pool exposes an atomic acquire() in addition to the frozen
     # consultative Scheduler.decide() port.  Use it when available so two
     # concurrent POSTs cannot both observe the same free slot.

@@ -286,7 +286,9 @@ def test_close_releases_the_capacity_slot() -> None:
 def test_running_source_skips_dead_weight_records() -> None:
     """The scheduler's store-derived count must exclude the records the
     reaper owns as ``lost`` — stale ``creating``/``running`` zombies —
-    while still counting fresh creates, live runs, idle and suspended."""
+    plus ``suspended`` records, which own no live sandbox (recovery uses
+    the durable checkpoint, not a held capacity slot), while still
+    counting fresh creates, live runs, and idle agents."""
     store = InMemoryStore()
     now = datetime.now(UTC)
     stale = now - timedelta(seconds=3600)
@@ -307,7 +309,7 @@ def test_running_source_skips_dead_weight_records() -> None:
     store.put(_record(session_id="term", status="closed", last=now, account_id="a"))
     store.put(_record(session_id="other", status="idle", last=now, account_id="b"))
     count = session_running_source(store)
-    assert count("a") == 4  # fresh creating + live running + idle + suspended
+    assert count("a") == 3  # fresh creating + live running + idle (not suspended)
     assert count("b") == 1
     assert count("nobody") == 0
 

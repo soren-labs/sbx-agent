@@ -68,6 +68,24 @@ class ReapAction:
     account_id: str | None = None
 
 
+def _list_all(store: SessionStore) -> list[SessionRecord]:
+    """Authoritative session enumeration for life-safety decisions.
+
+    ``SessionStore.list_all`` may be served by the ModalDictStore's
+    indexed manifest, which can silently drop records — a cross-container
+    RMW race the periodic rebuild only heals opportunistically. A record
+    missing from the listing is invisible to this sweep forever: it stays
+    ``idle``, keeps its live sandbox, and holds a capacity slot while the
+    API keeps reporting it (SOR-271 round-5 zombie agents). When the
+    store offers an unindexed ``list_all_scan`` (a full ``items()``
+    enumeration), prefer it; in-memory stores fall back to ``list_all``.
+    """
+    scan = getattr(store, "list_all_scan", None)
+    if callable(scan):
+        return list(scan())
+    return list(store.list_all())
+
+
 def reap(
     store: SessionStore,
     backend: SandboxBackend,
@@ -81,6 +99,7 @@ def reap(
     on_action: Callable[[ReapAction], None] | None = None,
     on_scan: Callable[[list[SessionRecord]], None] | None = None,
     deadline_s: float | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[ReapAction]:
     """Reconcile Dict records with live sandboxes.
 
@@ -124,14 +143,16 @@ def reap(
     ``fail(id, error)`` on it, duck-typed.
 
     ``on_action`` (optional) is invoked once per emitted action — the
-    production cron wires it to ``/v1`` lease release (SOR-80). The
-    ``suspended`` action is deliberately non-terminal: the caller must not
-    release the agent's account lease for it. A throwing callback is
-    isolated: it produces a ``reap_error`` action and the sweep
-    continues — one bad remote call (``settle_orphaned_runs`` hits the
-    run store) must never abort the records loop or skip the orphan
-    pass, which is the pass that reclaims zombie sandboxes (SOR-271
-    round-3: callbacks are part of the invocation path, not the rules).
+    production cron wires it to ``/v1`` lease release (SOR-80). A
+    ``suspended`` agent owns no live sandbox: its lease is released like
+    every other reaped state — recoverability lives in the durable
+    checkpoint, while an unreleased slot wedges new binds at the global
+    cap (SOR-271 round-5). A throwing callback is isolated: it produces a
+    ``reap_error`` action and the sweep continues — one bad remote call
+    (``settle_orphaned_runs`` hits the run store) must never abort the
+    records loop or skip the orphan pass, which is the pass that reclaims
+    zombie sandboxes (SOR-271 round-3: callbacks are part of the
+    invocation path, not the rules).
 
     SOR-271 round-4: every remote call on this path — store list/put,
     backend poll/list/terminate, registry ops, ``rebuild_index``, and
@@ -145,6 +166,14 @@ def reap(
     Unset bounds resolve from ``lifecycle_config`` (SOR-132/SOR-134), so
     every caller — cron, local sweep, gate — shares the deploy's resolved
     values instead of the contract defaults.
+
+    ``stats`` (optional) is a dict the sweep fills in place:
+    ``records_seen``/``handles_seen`` record how much of the plane the
+    sweep actually enumerated, and ``skipped`` counts records left
+    untouched by reason (``suspended``, ``idle_fresh``, ``creating``,
+    ``running``, ``terminal``, ``bound_live``, ``creating_inflight``) —
+    the counters that make "the reaper ran but saw nothing" observable
+    instead of silently identical to "the reaper never ran".
     """
     lifecycle = lifecycle_config()
     if idle_timeout_s is None:
@@ -154,6 +183,15 @@ def reap(
     if run_grace_s is None:
         run_grace_s = lifecycle.run_stale_s
     actions: list[ReapAction] = []
+    skipped: dict[str, int] | None = None
+    if stats is not None:
+        stats["records_seen"] = 0
+        stats["handles_seen"] = 0
+        skipped = stats.setdefault("skipped", {})
+
+    def skip(reason: str) -> None:
+        if skipped is not None:
+            skipped[reason] = skipped.get(reason, 0) + 1
 
     def emit(
         kind: str,
@@ -223,7 +261,7 @@ def reap(
                 continue
             emit("account_recovered", None, None, account_id=acct.id)
 
-    records_all = _bounded_call(store.list_all, _LIST_BOUND_S)
+    records_all = _bounded_call(lambda: _list_all(store), _LIST_BOUND_S)
     if records_all is None:
         # No listing, no sweep — surface the failure and leave the rest
         # (the orphan pass below) to run on what it can enumerate.
@@ -231,15 +269,19 @@ def reap(
         emit("reap_error", None, None)
     if on_scan is not None:
         on_scan(records_all)
+    if stats is not None:
+        stats["records_seen"] = len(records_all)
     for rec in records_all:
         if deadline_hit():
             emit("sweep_deadline", None, None)
             return actions
         if rec.status in TERMINAL_STATUSES:
+            skip("terminal")
             continue
         if rec.status == "suspended":
             # SOR-180: checkpointed and released — owns no live sandbox;
             # a follow-up message restores it via the checkpoint service.
+            skip("suspended")
             continue
         if rec.status == "creating" and not rec.sandbox_id:
             # Record published before the sandbox bound (SOR-80 create order).
@@ -248,6 +290,7 @@ def reap(
             )
             age_s = (now - basis).total_seconds()
             if age_s < create_grace_s:
+                skip("creating")
                 continue
             rec.status = "lost"
             rec.ended_at = now
@@ -338,6 +381,8 @@ def reap(
                 rec.updated_at = now
                 if persist(rec):
                     emit("lost", rec.id, rec.sandbox_id)
+            else:
+                skip("creating")
             continue
 
         if rec.status == "running":
@@ -358,6 +403,8 @@ def reap(
                     )
                     if terminated is None:
                         emit("cleanup_failed", rec.id, rec.sandbox_id)
+            else:
+                skip("running")
             continue
 
         if rec.status == "idle" and idle_expired and handle is not None:
@@ -395,8 +442,16 @@ def reap(
             rec.current_turn_n = None
             if persist(rec):
                 emit("timed_out", rec.id, rec.sandbox_id)
+            continue
 
-    listed = _bounded_call(store.list_all, _LIST_BOUND_S)
+        # Everything that fell through keeps no action this tick: ``idle``
+        # inside its retention window, or a status this sweep does not own.
+        if rec.status == "idle" and not idle_expired:
+            skip("idle_fresh")
+        else:
+            skip("unhandled")
+
+    listed = _bounded_call(lambda: _list_all(store), _LIST_BOUND_S)
     if listed is None:
         emit("reap_error", None, None)
         return actions
@@ -414,17 +469,21 @@ def reap(
     if handles is None:
         emit("reap_error", None, None)
         return actions
+    if stats is not None:
+        stats["handles_seen"] = len(handles)
     for handle in handles:
         if deadline_hit():
             emit("sweep_deadline", None, None)
             return actions
         if handle.id in bound_live:
+            skip("bound_live")
             continue
         rec = _session_record(records, handle)
         if rec is not None and rec.status not in TERMINAL_STATUSES:
             # Same-session record without a bound sandbox id → in-flight
             # create in the record-publication window; never orphan-kill it.
             if rec.sandbox_id is None:
+                skip("creating_inflight")
                 continue
             kind = "orphan_terminate"
             session_id = None
@@ -511,12 +570,14 @@ def sweep_plane(
     settle = getattr(plane, "settle_orphaned_runs", None)
 
     def _on_action(action: ReapAction) -> None:
-        # A ``suspended`` agent keeps its account lease (recoverable);
-        # everything else releases like a terminal transition. Kinds that
-        # carry no session (``reap_error``, ``sweep_deadline``,
+        # A ``suspended`` agent owns no live sandbox — its lease must free
+        # like every other reaped state: an unreleased slot wedges new
+        # binds at the global cap even though the agent holds nothing
+        # (SOR-271 round-5). Recoverability lives in the durable
+        # checkpoint, not in the capacity slot. Kinds that carry no
+        # session (``reap_error``, ``sweep_deadline``,
         # ``account_recovered``) no-op through ``release_lease``.
-        if action.kind != "suspended":
-            release_lease_for_action(v1_state, action)
+        release_lease_for_action(v1_state, action)
         if (
             action.kind in ("lost", "timed_out", "platform_loss")
             and action.session_id
@@ -549,6 +610,7 @@ def sweep_plane(
                 scan["expired_idle"] += 1
         emit_log(f"[reap] scan {scan}")
 
+    stats: dict[str, Any] = {"records_seen": 0, "handles_seen": 0, "skipped": {}}
     actions = reap(
         plane.store,
         plane.backend,
@@ -561,12 +623,17 @@ def sweep_plane(
         on_action=_on_action,
         on_scan=_on_scan,
         deadline_s=max(1.0, remaining),
+        stats=stats,
     )
     kinds: dict[str, int] = {}
     for action in actions:
         kinds[action.kind] = kinds.get(action.kind, 0) + 1
     elapsed = time.monotonic() - started
-    emit_log(f"[reap] tick done elapsed_s={elapsed:.1f} actions={len(actions)} kinds={kinds}")
+    emit_log(
+        f"[reap] tick done elapsed_s={elapsed:.1f} actions={len(actions)} kinds={kinds} "
+        f"records_seen={stats['records_seen']} handles_seen={stats['handles_seen']} "
+        f"skipped={stats['skipped']}"
+    )
     return {
         "actions": actions,
         "action_kinds": kinds,
@@ -574,4 +641,7 @@ def sweep_plane(
         "elapsed_s": elapsed,
         "now": now,
         "scan": scan,
+        "records_seen": stats["records_seen"],
+        "handles_seen": stats["handles_seen"],
+        "skipped": stats["skipped"],
     }

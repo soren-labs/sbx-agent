@@ -109,6 +109,12 @@ def session_running_source(store: Any) -> Callable[[str], int]:
             # ``run_grace_s`` holds no genuinely-live work — the reaper's
             # ``lost`` transition owns both, and counting them saturated
             # the global cap with zombies between sweeps.
+            # A ``suspended`` record owns no live sandbox either — its
+            # sandbox was terminated at suspend time and recovery restores
+            # from the durable checkpoint — so it must not hold a slot
+            # (SOR-271 round-5: suspended zombies pinned the global cap).
+            if rec.status == "suspended":
+                continue
             if rec.status == "creating":
                 # Mirror the reaper's staleness basis: an unbound create is
                 # judged from created_at, a bound one from updated_at.
