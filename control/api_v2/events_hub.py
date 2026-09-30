@@ -28,9 +28,10 @@ from typing import Any
 
 from control.api_v1.routes import _parse_event_line
 from control.api_v2 import events as _events
+from control.config import env_float
 from control.service import format_sse
 
-_STATUS_POLL_S = 0.5
+_STATUS_POLL_S = env_float("SBX_V2_SSE_STATUS_POLL_S", 1.0)
 _HANDLE_POLL_S = 1.0
 _LOOP_IDLE_S = 0.25
 # Bound on retained parsed frames per session; a resume older than the

@@ -1625,6 +1625,11 @@ class FileTaskStore:
 # cache already makes.
 _TASK_GET_CACHE_TTL_S = env_float("SBX_TASK_GET_CACHE_TTL_S", 0.5)
 
+# ``GET /v2/sessions`` repeatedly reads the same owner index. The index is
+# invalidated on every local write, so a short read-through memo removes the
+# final owner-doc RPC from polling without hiding this process's mutations.
+_TASK_LIST_CACHE_TTL_S = env_float("SBX_TASK_LIST_CACHE_TTL_S", 1.0)
+
 # Owner-doc summary cap: ``owner/<owner>`` embeds recent record summaries
 # so ``list`` is a single remote read; ids are never dropped — ids whose
 # summary aged out are fetched point-wise through a bounded pool.
@@ -1673,6 +1678,7 @@ class ModalDictTaskStore:
         self._lock = threading.Lock()
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._owner_prefetch: dict[str, tuple[float, Any]] = {}
+        self._owner_list_cache: dict[str, tuple[float, list[str], dict[str, dict[str, Any]]]] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1684,6 +1690,10 @@ class ModalDictTaskStore:
     @staticmethod
     def _task_key(task_id: str) -> str:
         return f"task/{task_id}"
+
+    @staticmethod
+    def _cancel_key(task_id: str) -> str:
+        return f"cancel/{task_id}"
 
     @staticmethod
     def _owner_key(owner: str) -> str:
@@ -1794,6 +1804,47 @@ class ModalDictTaskStore:
             self._batch(d, writes)
         with self._lock:
             self._get_cache[task_key] = (time.monotonic(), raw)
+            if record.owner:
+                self._owner_list_cache.pop(record.owner, None)
+
+    def mark_cancel_pending(self, task_id: str) -> bool:
+        """Persist cancel intent in one Dict.update and perform no reads."""
+        try:
+            self._batch(
+                self._d(),
+                {
+                    self._cancel_key(task_id): {
+                        "task_id": task_id,
+                        "at": _iso_now(),
+                        "applied": False,
+                    }
+                },
+            )
+        except Exception:
+            return False
+        return True
+
+    def mark_cancel_applied(self, task_id: str) -> None:
+        try:
+            self._batch(
+                self._d(),
+                {
+                    self._cancel_key(task_id): {
+                        "task_id": task_id,
+                        "at": _iso_now(),
+                        "applied": True,
+                    }
+                },
+            )
+        except Exception:
+            pass
+
+    def cancel_mark(self, task_id: str) -> dict[str, Any] | None:
+        try:
+            raw = self._d().get(self._cancel_key(task_id))
+        except Exception:
+            return None
+        return dict(raw) if isinstance(raw, dict) else None
 
     def _get_uncached(self, task_id: str) -> dict[str, Any] | None:
         raw = self._d().get(self._task_key(task_id))
@@ -1811,6 +1862,21 @@ class ModalDictTaskStore:
             raw = self._get_uncached(task_id)
         return record_from_dict(raw) if raw is not None else None
 
+    def peek_cached(self, task_id: str) -> TaskRecord | None:
+        """Return the last local row without remote I/O, regardless of TTL.
+
+        This is intentionally an ACK-path primitive, not a mutation read.
+        Callers may rely only on immutable identity fields unless they have
+        an explicit race-safe rule for stale status (the V2 cancel route only
+        fast-paths cached non-terminal rows). Mutations keep using
+        ``get``/``get_fresh``.
+        """
+        with self._lock:
+            cached = self._get_cache.get(self._task_key(task_id))
+        if cached is None or cached[1] is None:
+            return None
+        return record_from_dict(cached[1])
+
     def get_fresh(self, task_id: str) -> TaskRecord | None:
         """Uncached point read for mutation paths (read-modify-write must
         not run on a cached row)."""
@@ -1821,7 +1887,7 @@ class ModalDictTaskStore:
         rec = self.get(task_id)
         d = self._d()
         task_key = self._task_key(task_id)
-        pops = [task_key]
+        pops = [task_key, self._cancel_key(task_id)]
         if rec is not None:
             if rec.agent_id:
                 pops.append(self._agent_key(rec.agent_id))
@@ -1840,6 +1906,7 @@ class ModalDictTaskStore:
                 ids = [i for i in ids if i != task_id]
                 summaries.pop(task_id, None)
                 d.put(owner_key, {"ids": ids, "records": summaries})
+                self._owner_list_cache.pop(rec.owner, None)
         with self._lock:
             self._get_cache.pop(task_key, None)
 
@@ -1860,7 +1927,14 @@ class ModalDictTaskStore:
             for name in owners:
                 out.extend(self.list(str(name)))
             return out
-        ids, summaries = self._owner_doc(self._d().get(self._owner_key(owner)))
+        with self._lock:
+            cached = self._owner_list_cache.get(owner)
+        if cached is not None and time.monotonic() - cached[0] < _TASK_LIST_CACHE_TTL_S:
+            ids, summaries = list(cached[1]), dict(cached[2])
+        else:
+            ids, summaries = self._owner_doc(self._d().get(self._owner_key(owner)))
+            with self._lock:
+                self._owner_list_cache[owner] = (time.monotonic(), ids, summaries)
         out: list[TaskRecord] = []
         missing: list[str] = []
         for task_id in ids:

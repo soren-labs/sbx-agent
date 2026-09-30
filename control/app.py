@@ -836,6 +836,7 @@ def create_app(
             for fn in (
                 getattr(store, "list_all", None),
                 getattr(workflow_store, "all_bindings", None),
+                getattr(workspace_store, "list_records", None),
             ):
                 if callable(fn):
                     try:
