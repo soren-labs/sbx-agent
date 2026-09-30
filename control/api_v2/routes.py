@@ -72,7 +72,7 @@ from control.api_v2.schemas import (
     SessionRetryResponse,
 )
 from control.artifacts import ArtifactError
-from control.config import TERMINAL_STATUSES, env_int
+from control.config import TERMINAL_STATUSES, env_float, env_int
 from control.ports import AccountRegistry, ApiKey, Scheduler
 from control.sandbox_io import read_text, sandbox_env
 from control.tasks import TaskRecord, TaskStore, _iso_now
@@ -202,6 +202,23 @@ def _terminal_projection(record: TaskRecord, ws: dict[str, Any] | None) -> tuple
         if delivery["status"] != "delivered":
             return "delivering", "delivery_pending"
     return "finished", "run_finished"
+
+
+def _status_aggregate(
+    record: TaskRecord,
+    ws: dict[str, Any] | None,
+    run_states: RunStateStore,
+    plane: Any,
+) -> tuple[str, str]:
+    """Cheap aggregate for the SSE status tick.
+
+    A durable terminal task needs only its stored row plus workspace delivery
+    state. Re-reading the live plane and run ledger adds no information and
+    creates ambient Modal traffic that competes with unrelated API reads.
+    """
+    if record.status in _tasks._TASK_TERMINAL:
+        return _terminal_projection(record, ws)
+    return _tasks._aggregate_status(record, run_states, plane, ws)
 
 
 def _view(
@@ -380,6 +397,52 @@ def _ack_budget(request: Request) -> float:
 # waits behind ~20 concurrent op chains on the shared store channel.
 _V2_OPS_WORKERS = env_int("SBX_V2_OPS_WORKERS", 6)
 _HEAVY_POOL = ThreadPoolExecutor(max_workers=_V2_OPS_WORKERS, thread_name_prefix="sbx-v2-ops")
+
+# Persist cancel intent before ACK, then give a parallel burst's request-path
+# writes a short head start before expensive stop/drain chains use the same
+# Modal client channel.
+_CANCEL_CONVERGE_DELAY_S = env_float("SBX_V2_CANCEL_CONVERGE_DELAY_S", 0.6)
+
+# Repeated Session list reads (console polling + acceptance probes) should not
+# repeatedly consume the shared Modal RPC channel. The rendered-page memo is
+# deliberately short-lived and every local V2 mutation invalidates the
+# owner's entries immediately.
+_LIST_MEMO_TTL_S = env_float("SBX_V2_LIST_MEMO_S", 0.8)
+_LIST_MEMO_MAX = 64
+_LIST_MEMO_LOCK = threading.Lock()
+_LIST_MEMO: dict[tuple[Any, str, int, int], tuple[float, dict[str, Any]]] = {}
+
+
+def _list_memo_get(
+    task_store: TaskStore, owner: str, limit: int, offset: int
+) -> dict[str, Any] | None:
+    key = (task_store, owner, int(limit), int(offset))
+    with _LIST_MEMO_LOCK:
+        hit = _LIST_MEMO.get(key)
+        if hit is None or time.monotonic() - hit[0] >= _LIST_MEMO_TTL_S:
+            return None
+        return hit[1]
+
+
+def _list_memo_put(
+    task_store: TaskStore,
+    owner: str,
+    limit: int,
+    offset: int,
+    result: dict[str, Any],
+) -> None:
+    key = (task_store, owner, int(limit), int(offset))
+    with _LIST_MEMO_LOCK:
+        if len(_LIST_MEMO) >= _LIST_MEMO_MAX and key not in _LIST_MEMO:
+            _LIST_MEMO.clear()
+        _LIST_MEMO[key] = (time.monotonic(), result)
+
+
+def _list_memo_drop(task_store: TaskStore, owner: str) -> None:
+    with _LIST_MEMO_LOCK:
+        for key in [k for k in tuple(_LIST_MEMO) if k[0] is task_store and k[1] == owner]:
+            _LIST_MEMO.pop(key, None)
+
 
 # Request-path prefetch staging (owner-doc reads the next store write
 # will consume). Fire-and-forget — stores treat a staged row as a
@@ -630,6 +693,7 @@ def create_session(
     Same idempotency semantics as ``POST /v1/tasks`` — the pin is
     ``v2:session:<key>`` so a V1 task and a V2 session can never collide.
     """
+    _list_memo_drop(task_store, key.id)
     v1_body = _to_task_request(body)
     fingerprint = request_fingerprint(v1_body)
     pin_key = f"v2:session:{idempotency_key}" if idempotency_key else None
@@ -824,6 +888,9 @@ def list_sessions(
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     """The caller's sessions, newest first."""
+    memo = _list_memo_get(task_store, key.id, limit, offset)
+    if memo is not None:
+        return memo
     records = [r for r in task_store.list(key.id) if is_session_id(r.id)]
     records.sort(key=lambda r: (r.created_at, r.id), reverse=True)
     total = len(records)
@@ -886,7 +953,9 @@ def list_sessions(
         )
         for record, (status, reason, ws) in zip(page, settled)
     ]
-    return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+    result = {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+    _list_memo_put(task_store, key.id, limit, offset, result)
+    return result
 
 
 @router.get("/sessions/{session_id}", response_model=SessionDetailResponse)
@@ -942,6 +1011,7 @@ def post_message(
     202; a timeout answers ``message: null`` — accepted, allocation still
     landing — which the schema already permits.
     """
+    _list_memo_drop(task_store, key.id)
     record = _require_session(task_store, key, session_id)
     agent_id = record.agent_id
     if agent_id is None:
@@ -1032,7 +1102,19 @@ def cancel_session(
     ``_ack_budget``; a timeout answers cancelled-optimistically since the
     worker still converges the record to ``cancelled``.
     """
+    _list_memo_drop(task_store, key.id)
     record = _require_session(task_store, key, session_id)
+    if record.status in _tasks._TASK_TERMINAL:
+        return {
+            "session": _optimistic_view(
+                record,
+                aggregate_status=record.status,
+                aggregate_reason="stored",
+                task_store=task_store,
+                run_states=run_states,
+                plane=plane,
+            )
+        }
     if record.agent_id is None and record.status != "cancelled":
         # Provisional bind may still land — make the dispatch worker's
         # post-bind check cancel the agent it just created. ``error`` is
@@ -1051,6 +1133,47 @@ def cancel_session(
             reporter=reporter,
             task_store=task_store,
         )
+
+    # Modal-backed task stores expose a one-RPC intent marker. Persist it
+    # synchronously *before* returning the optimistic cancelled ACK, then run
+    # the expensive cancel chain in the bounded worker pool. A failed marker
+    # write falls back to the original budgeted path — never a false-success
+    # fast path.
+    mark_pending = getattr(task_store, "mark_cancel_pending", None)
+    if callable(mark_pending):
+        try:
+            marked = bool(mark_pending(session_id))
+        except Exception:
+            marked = False
+        if marked:
+            mark_applied = getattr(task_store, "mark_cancel_applied", None)
+
+            def _converge() -> None:
+                if _CANCEL_CONVERGE_DELAY_S > 0:
+                    time.sleep(_CANCEL_CONVERGE_DELAY_S)
+                try:
+                    _cancel()
+                except Exception:
+                    # Pending remains visible; a repeated cancel can safely
+                    # resubmit convergence. Do not claim applied on failure.
+                    return
+                if callable(mark_applied):
+                    try:
+                        mark_applied(session_id)
+                    except Exception:
+                        pass
+
+            _HEAVY_POOL.submit(_converge)
+            return {
+                "session": _optimistic_view(
+                    record,
+                    aggregate_status="cancelled",
+                    aggregate_reason="task_cancelled",
+                    task_store=task_store,
+                    run_states=run_states,
+                    plane=plane,
+                )
+            }
 
     done, box = _run_with_budget(_cancel, _ack_budget(request))
     if done and "error" in box:
@@ -1104,6 +1227,7 @@ def retry_session(
     ``run: null`` — accepted, the retry still landing — which the schema
     permits.
     """
+    _list_memo_drop(task_store, key.id)
     record = _require_session(task_store, key, session_id)
     v1_body = _tasks.RetryTaskRequest(
         mode=(body.mode if body else None),
@@ -1292,6 +1416,7 @@ def deliver_session(
 ) -> dict[str, Any]:
     """Deliver the session's changes — durable publish on the revision, so
     it works even after the author sandbox is gone."""
+    _list_memo_drop(task_store, key.id)
     _require_session(task_store, key, session_id)
     v1_body = _revisions_api.DeliverRequest(
         revision=(str(body.n) if body is not None and body.n is not None else None),
@@ -1368,7 +1493,7 @@ def stream_session_events(
         """Current (status, phase, frame) — polled so transitions stream live."""
         fresh = task_store.get(session_id) or record
         ws = _tasks._ws_record(plane, fresh.agent_id)
-        status, reason = _tasks._aggregate_status(fresh, run_states, plane, ws)
+        status, reason = _status_aggregate(fresh, ws, run_states, plane)
         st, ph = map_session_status(status, reason)
         payload = {"type": "session.status", "status": st, "phase": ph}
         return st, ph, f"event: session.status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

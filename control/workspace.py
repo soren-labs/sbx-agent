@@ -545,6 +545,7 @@ class FileWorkspaceStore:
 
 
 _WS_GET_CACHE_TTL_S = env_float("SBX_WS_GET_CACHE_TTL_S", 0.75)
+_WS_LIST_CACHE_TTL_S = env_float("SBX_WS_LIST_CACHE_TTL_S", 1.0)
 
 
 class ModalDictWorkspaceStore:
@@ -566,6 +567,7 @@ class ModalDictWorkspaceStore:
         self._name = name
         self._dict: Any = None
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._list_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
         self._lock = threading.Lock()
         self._ilock = threading.Lock()
 
@@ -632,6 +634,7 @@ class ModalDictWorkspaceStore:
                 self._batch(self._d(), {record.agent_id: raw, self._INDEX_KEY: index})
         with self._lock:
             self._get_cache[record.agent_id] = (time.monotonic(), raw)
+            self._list_cache = None
 
     def iter_records(self) -> Iterable[tuple[str, dict[str, Any]]]:
         """Full ``items()`` enumeration — migration/self-heal path only."""
@@ -649,12 +652,18 @@ class ModalDictWorkspaceStore:
         A Dict predating the index falls back to ``iter_records`` once
         and self-heals the index doc; a dropped or corrupt index heals
         the same way on the next listing."""
+        with self._lock:
+            cached = self._list_cache
+        if cached is not None and time.monotonic() - cached[0] < _WS_LIST_CACHE_TTL_S:
+            return list(cached[1].items())
         try:
             with observe("modal_dict.get", store=self._name, key=self._INDEX_KEY):
                 raw = self._d().get(self._INDEX_KEY)
         except Exception:
             raw = None
         if isinstance(raw, dict):
+            with self._lock:
+                self._list_cache = (time.monotonic(), dict(raw))
             return list(raw.items())
         records = list(self.iter_records())
         try:
@@ -677,6 +686,8 @@ class ModalDictWorkspaceStore:
                 if agent_id in index:
                     del index[agent_id]
                     self._batch(self._d(), {self._INDEX_KEY: index})
+                    with self._lock:
+                        self._list_cache = None
         except Exception:
             pass
         try:
