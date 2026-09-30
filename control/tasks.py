@@ -1762,6 +1762,32 @@ class ModalDictTaskStore:
             return [str(i) for i in raw], {}
         return [], {}
 
+    @staticmethod
+    def _idempotency_digest(record: TaskRecord) -> str | None:
+        key = (record.idempotency or {}).get("key")
+        return hashlib.sha256(key.encode("utf-8")).hexdigest() if isinstance(key, str) else None
+
+    @classmethod
+    def _owner_idempotency(cls, raw: Any) -> dict[str, str | None]:
+        """Compact immutable key metadata survives full-summary eviction.
+
+        Presence with None means a row is known to have no key. Legacy rows
+        without metadata are read once; status freshness is irrelevant here.
+        """
+        ids, summaries = cls._owner_doc(raw)
+        known = raw.get("idempotency_keys", {}) if isinstance(raw, dict) else {}
+        id_set = set(ids)
+        out = {tid: known[tid] for tid in ids if tid in known}
+        for tid, summary in summaries.items():
+            if tid in id_set and tid not in out and "idempotency" in summary:
+                key = (summary.get("idempotency") or {}).get("key")
+                out[tid] = (
+                    hashlib.sha256(key.encode("utf-8")).hexdigest()
+                    if isinstance(key, str)
+                    else None
+                )
+        return out
+
     def _trim_summaries(self, records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if len(records) <= _TASK_SUMMARY_MAX:
             return records
@@ -1805,13 +1831,17 @@ class ModalDictTaskStore:
 
     def _owner_doc_for_write(
         self, owner: str, d: Any
-    ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    ) -> tuple[list[str], dict[str, dict[str, Any]], dict[str, str | None]]:
         """Owner doc for ``put``'s read-modify-write: a just-prefetched
         row if one was staged, else a fresh read."""
         hit = self._owner_prefetch.pop(owner, None)
-        if hit is not None and time.monotonic() - hit[0] < 2.0:
-            return self._owner_doc(hit[1])
-        return self._owner_doc(d.get(self._owner_key(owner)))
+        raw = (
+            hit[1]
+            if hit is not None and time.monotonic() - hit[0] < 2.0
+            else d.get(self._owner_key(owner))
+        )
+        ids, summaries = self._owner_doc(raw)
+        return ids, summaries, self._owner_idempotency(raw)
 
     def put(self, record: TaskRecord) -> None:
         d = self._d()
@@ -1830,11 +1860,16 @@ class ModalDictTaskStore:
             writes: dict[str, Any] = {task_key: raw}
             if record.owner:
                 owner_key = self._owner_key(record.owner)
-                ids, summaries = self._owner_doc_for_write(record.owner, d)
+                ids, summaries, key_meta = self._owner_doc_for_write(record.owner, d)
                 if record.id not in ids:
                     ids.append(record.id)
                 summaries[record.id] = _task_summary(record)
-                writes[owner_key] = {"ids": ids, "records": self._trim_summaries(summaries)}
+                key_meta[record.id] = self._idempotency_digest(record)
+                writes[owner_key] = {
+                    "ids": ids,
+                    "records": self._trim_summaries(summaries),
+                    "idempotency_keys": key_meta,
+                }
                 self._index_owner(record.owner, writes)
             if record.agent_id:
                 writes[self._agent_key(record.agent_id)] = record.id
@@ -1944,11 +1979,14 @@ class ModalDictTaskStore:
         if rec is not None and rec.owner:
             owner_key = self._owner_key(rec.owner)
             with self._lock:
-                ids, summaries = self._owner_doc(d.get(owner_key))
+                owner_raw = d.get(owner_key)
+                ids, summaries = self._owner_doc(owner_raw)
+                key_meta = self._owner_idempotency(owner_raw)
+                key_meta.pop(task_id, None)
                 ids = [i for i in ids if i != task_id]
                 summaries.pop(task_id, None)
                 self._owner_written(rec.owner)
-                d.put(owner_key, {"ids": ids, "records": summaries})
+                d.put(owner_key, {"ids": ids, "records": summaries, "idempotency_keys": key_meta})
                 self._owner_list_cache.pop(rec.owner, None)
         with self._lock:
             self._get_cache.pop(task_key, None)
@@ -1962,7 +2000,12 @@ class ModalDictTaskStore:
         return [record_from_dict(raw) for raw in raws if isinstance(raw, dict)]
 
     def _backfill_summaries(
-        self, owner: str, records: list[TaskRecord], observed: dict[str, dict[str, Any]]
+        self,
+        owner: str,
+        records: list[TaskRecord],
+        observed: dict[str, dict[str, Any]],
+        *,
+        key_records: list[TaskRecord] | None = None,
     ) -> None:
         """Merge fetched rows' summaries into the owner doc.
 
@@ -1978,8 +2021,13 @@ class ModalDictTaskStore:
             d = self._d()
             owner_key = self._owner_key(owner)
             with self._lock:
-                ids, summaries = self._owner_doc(d.get(owner_key))
+                owner_raw = d.get(owner_key)
+                ids, summaries = self._owner_doc(owner_raw)
+                key_meta = self._owner_idempotency(owner_raw)
                 id_set = set(ids)
+                for rec in key_records if key_records is not None else records:
+                    if rec.id in id_set:
+                        key_meta[rec.id] = self._idempotency_digest(rec)
                 for rec in records:
                     if rec.id not in id_set:
                         # A concurrent ``delete`` dropped the index entry
@@ -1996,7 +2044,9 @@ class ModalDictTaskStore:
                         continue
                     summaries[rec.id] = _task_summary(rec)
                 self._owner_written(owner)
-                self._batch(d, {owner_key: {"ids": ids, "records": summaries}})
+                self._batch(
+                    d, {owner_key: {"ids": ids, "records": summaries, "idempotency_keys": key_meta}}
+                )
                 self._owner_list_cache[owner] = (
                     time.monotonic(),
                     list(ids),
@@ -2010,7 +2060,11 @@ class ModalDictTaskStore:
                 # the imminent ``put`` merges onto the healed view.
                 self._owner_prefetch[owner] = (
                     time.monotonic(),
-                    {"ids": list(ids), "records": dict(summaries)},
+                    {
+                        "ids": list(ids),
+                        "records": dict(summaries),
+                        "idempotency_keys": dict(key_meta),
+                    },
                 )
         except Exception:
             return
@@ -2109,22 +2163,18 @@ class ModalDictTaskStore:
             if self._owner_versions.get(owner, 0) == version:
                 self._owner_prefetch[owner] = (time.monotonic(), owner_raw)
         ids, summaries = self._owner_doc(owner_raw)
-        # The summary's ``idempotency`` metadata is durable — unlike the
-        # status fields ``list`` distrusts on agent-less rows — so the key
-        # match runs on summaries directly; only rows with no summary at
-        # all (pre-index data) are resolved individually.
+        known = self._owner_idempotency(owner_raw)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         for tid in ids:
-            meta = (summaries.get(tid) or {}).get("idempotency") or {}
-            if meta.get("key") == key:
+            if known.get(tid) == digest:
                 return self.get_fresh(tid)
-        missing = [tid for tid in ids if tid not in summaries]
+        # Only pre-migration rows lack immutable key metadata. Full summaries
+        # are bounded, but evicting one must not reintroduce a history scan.
+        missing = [tid for tid in ids if tid not in known]
         fetched = self._pooled_gets(missing)
         heal = [r for r in fetched if _record_heals(r)]
-        if heal:
-            # Same self-heal as ``list``: the pre-index rows walked here
-            # are the v23 create-ACK regression — every keyed create
-            # re-read them all point-wise until they were backfilled.
-            self._backfill_summaries(owner, heal, summaries)
+        if fetched:
+            self._backfill_summaries(owner, heal, summaries, key_records=fetched)
         for rec in fetched:
             meta = rec.idempotency or {}
             if meta.get("key") == key:

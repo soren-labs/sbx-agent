@@ -21,11 +21,12 @@ def _seed_missing(store: ModalDictTaskStore, fake: _BatchDict, task_id: str, sta
     """Insert ``task/<id>`` keyed in ``ids`` but absent from the owner
     doc's ``records`` map — the shape ``missing`` catches: pre-index rows
     accumulated by older deploys, entries dropped by a lost owner-doc
-    update, or rows aged out of the summary cap."""
+    update. Immutable key metadata is absent too, as in a legacy deploy."""
     rec = _task(task_id, status=status, agent_id="agent-x")
     store.put(rec)
     doc = fake.data[f"owner/{rec.owner}"]
     doc["records"].pop(task_id, None)
+    doc.get("idempotency_keys", {}).pop(task_id, None)
     store._owner_list_cache.clear()
 
 
@@ -138,6 +139,7 @@ class TestFindByIdempotencyBackfill:
         idem_key = next(k for k in fake.data if k.startswith("idem/"))
         fake.data.pop(idem_key)
         fake.data["owner/key_1"]["records"].pop("sess_pin", None)
+        fake.data["owner/key_1"].get("idempotency_keys", {}).pop("sess_pin", None)
         _seed_missing(store, fake, "sess_0", "finished")
         store._owner_list_cache.clear()
 

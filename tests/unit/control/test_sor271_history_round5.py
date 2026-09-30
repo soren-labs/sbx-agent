@@ -2,6 +2,7 @@
 
 import copy
 
+import control.tasks as taskmod
 import pytest
 from control.tasks import ModalDictTaskStore
 from tests.acceptance.v2_perf_gate import ProbeResult, _percentile
@@ -40,6 +41,48 @@ def test_owner_prefetch_cannot_overwrite_intervening_local_write(lookup, change)
     expected = {"sess_seed", "sess_between", "sess_next"} if change == "put" else {"sess_next"}
     assert set(fake.data["owner/key_1"]["ids"]) == expected
     assert {row.id for row in store.list("key_1")} == expected
+
+
+def test_keyed_create_does_not_reread_history_evicted_from_summary_cache(monkeypatch):
+    monkeypatch.setattr(taskmod, "_TASK_SUMMARY_MAX", 4)
+    store = ModalDictTaskStore("test-tasks")
+    fake = _BatchDict()
+    store._dict = fake
+    for i in range(40):
+        record = _task(f"sess_{i}", status="error", agent_id=None)
+        record.idempotency = {"key": f"key-{i}"}
+        store.put(record)
+    for i in range(3):
+        fake.gets = 0
+        assert store.find_by_idempotency("key_1", f"new-key-{i}") is None
+        assert fake.gets == 2  # point alias + owner doc, independent of history size
+        store.put(_task(f"sess_new_{i}", status="error", agent_id=None))
+    # Older aliases remain replayable even when their full summaries age out.
+    fake.data.pop(store._idem_key("key_1", "key-0"))
+    assert store.find_by_idempotency("key_1", "key-0").id == "sess_0"
+
+
+def test_legacy_unbound_key_metadata_is_migrated_once(monkeypatch):
+    monkeypatch.setattr(taskmod, "_TASK_SUMMARY_MAX", 1)
+    store = ModalDictTaskStore("test-tasks")
+    fake = _BatchDict()
+    store._dict = fake
+    rows = [
+        _task("sess_legacy", status="queued", agent_id=None),
+        _task("sess_old", status="error", agent_id=None),
+    ]
+    rows[1].idempotency = {"key": "legacy-key"}
+    for record in rows:
+        fake.data[store._task_key(record.id)] = taskmod.record_to_dict(record)
+    fake.data["owner/key_1"] = [record.id for record in rows]
+    assert store.find_by_idempotency("key_1", "unused") is None
+    store.put(_task("sess_new", status="error", agent_id=None))
+    fake.gets = 0
+    assert store.find_by_idempotency("key_1", "another-unused") is None
+    assert fake.gets == 2
+    assert store.find_by_idempotency("key_1", "legacy-key").id == "sess_old"
+    store.delete("sess_old")
+    assert store.find_by_idempotency("key_1", "legacy-key") is None
 
 
 def test_small_sample_p95_does_not_hide_slow_request() -> None:
