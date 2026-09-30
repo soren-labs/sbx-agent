@@ -243,7 +243,10 @@ def reap(
             continue
         if rec.status == "creating" and not rec.sandbox_id:
             # Record published before the sandbox bound (SOR-80 create order).
-            age_s = (now - rec.created_at).total_seconds()
+            basis = (
+                rec.updated_at if rec.sandbox_tags.get("recovering") == "true" else rec.created_at
+            )
+            age_s = (now - basis).total_seconds()
             if age_s < create_grace_s:
                 continue
             rec.status = "lost"

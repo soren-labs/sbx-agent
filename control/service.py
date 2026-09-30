@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -195,6 +195,9 @@ class ControlPlane:
         # means suspend/recovery is unavailable — suspended agents cannot
         # recover and an idle expiry falls back to ``timed_out``.
         self.checkpoints: Any = None
+        # App-layer account reservation shared by every recovery entrypoint.
+        # The returned callback commits on success or releases on failure.
+        self.recovery_reserve: Callable[[SessionRecord], Callable[[bool], None]] | None = None
         # Durable per-run activity transcripts, captured at turn end so the
         # run stream stays replayable after sandbox teardown. None disables.
         self.run_activity: RunActivityStore | None = None
@@ -348,6 +351,40 @@ class ControlPlane:
         )
         return session_id
 
+    def _ensure_capacity(self, owner: str) -> None:
+        """Check creates and checkpoint restores under the same plane lock."""
+        live = self.backend.list(tags={"owner": owner})
+        records = [rec for rec in self.store.list_all() if rec.owner == owner]
+        by_id = {rec.id: rec for rec in records}
+        by_sandbox = {rec.sandbox_id: rec for rec in records if rec.sandbox_id}
+        live_bound_ids: set[str] = set()
+        for handle in live:
+            rec = by_id.get((handle.tags or {}).get("session_id")) or by_sandbox.get(handle.id)
+            if (
+                rec is not None
+                and rec.status not in TERMINAL_STATUSES
+                and rec.status != "suspended"
+            ):
+                live_bound_ids.add(rec.id)
+        now = self.clock()
+        creating = sum(
+            1
+            for rec in records
+            if rec.status == "creating"
+            and rec.id not in live_bound_ids
+            and (
+                now
+                - (
+                    rec.updated_at
+                    if rec.sandbox_tags.get("recovering") == "true"
+                    else rec.created_at
+                )
+            ).total_seconds()
+            < lifecycle_config().create_grace_s
+        )
+        if len(live_bound_ids) + creating >= self.max_concurrent:
+            raise ConcurrencyLimit()
+
     def open_session(
         self,
         *,
@@ -383,45 +420,8 @@ class ControlPlane:
         a control-plane restart still dedups (``find_by_idempotency``).
         """
         with self._lock:
-            live = self.backend.list(tags={"owner": owner})
-            records = [rec for rec in self.store.list_all() if rec.owner == owner]
-            by_id = {rec.id: rec for rec in records}
-            by_sandbox = {rec.sandbox_id: rec for rec in records if rec.sandbox_id}
-            # A live sandbox only consumes a slot when it backs a
-            # non-terminal session record — a genuinely live bound agent.
-            # Orphaned sandboxes (record lost/timed_out/deleted, or never
-            # recorded — the abandoned-bind leak) bill money but hold no
-            # agent: the reaper's orphan pass reclaims them, and counting
-            # them here wedged every new bind at ~2 live agents (SOR-271
-            # capacity finding). ``suspended`` records own no live sandbox —
-            # a surviving handle is an orphan, same as the reaper's rule.
-            live_bound_ids: set[str] = set()
-            for handle in live:
-                rec = by_id.get((handle.tags or {}).get("session_id")) or by_sandbox.get(handle.id)
-                if (
-                    rec is not None
-                    and rec.status not in TERMINAL_STATUSES
-                    and rec.status != "suspended"
-                ):
-                    live_bound_ids.add(rec.id)
-            # In-flight creates own no sandbox yet — count them against the
-            # cap so N parallel creates cannot overshoot it, but only while
-            # they are fresh: a ``creating`` record older than the create
-            # grace is dead weight (its provisioner died mid-bind; the
-            # reaper owns the ``lost`` transition) and must not hold a slot.
-            # Records already counted via ``live_bound_ids`` are excluded so
-            # a bound-but-still-creating record never counts twice.
+            self._ensure_capacity(owner)
             now = self.clock()
-            create_grace_s = lifecycle_config().create_grace_s
-            creating = sum(
-                1
-                for rec in records
-                if rec.status == "creating"
-                and rec.id not in live_bound_ids
-                and (now - rec.created_at).total_seconds() < create_grace_s
-            )
-            if len(live_bound_ids) + creating >= self.max_concurrent:
-                raise ConcurrencyLimit()
             session_id = uuid.uuid4().hex
             tags = {"session_id": session_id, "owner": owner}
             # Preserve the exact P1 sandbox shape for legacy /api callers.
@@ -712,16 +712,57 @@ class ControlPlane:
         not-runnable refusal either way.
         """
         checkpoints = self.checkpoints
+
+        def finish_reservation(_success: bool) -> None:
+            pass
+
         with self._lock:
             rec = self._store_get(session_id)
             if rec is None or rec.status != "suspended":
                 return
+            try:
+                self._ensure_capacity(rec.owner)
+            except ConcurrencyLimit as exc:
+                raise SessionConflict(exc.error, exc.code) from None
+            if self.recovery_reserve is not None:
+                finish_reservation = self.recovery_reserve(rec)
+            # Publish the reservation before the slow restore. New creates
+            # count it, and concurrent follow-ups cannot restore twice.
+            reserved = replace(
+                rec,
+                status="creating",
+                sandbox_id=None,
+                sandbox_root=None,
+                updated_at=self.clock(),
+                sandbox_tags={**rec.sandbox_tags, "recovering": "true"},
+            )
+            try:
+                self.store.put(reserved)
+            except Exception:
+                finish_reservation(False)
+                raise
+
+        def rollback() -> None:
+            try:
+                with self._lock:
+                    stored = self._store_get(session_id)
+                    if (
+                        stored is not None
+                        and stored.status == "creating"
+                        and stored.sandbox_tags.get("recovering") == "true"
+                    ):
+                        self.store.put(rec)
+            finally:
+                finish_reservation(False)
+
         if checkpoints is None:
+            rollback()
             self._mark_unrecoverable(session_id)
             raise SessionConflict("session_not_runnable")
         try:
             handle = checkpoints.restore(rec)
         except Exception as exc:
+            rollback()
             if getattr(exc, "retryable", False):
                 # Transient restore failure: the checkpoint stays usable
                 # and the record ``suspended`` — the next follow-up
@@ -730,24 +771,45 @@ class ControlPlane:
             self._mark_unrecoverable(session_id)
             raise SessionConflict("session_not_runnable") from None
         with self._lock:
-            stored = self._store_get(session_id)
-            if stored is None or stored.status != "suspended":
+            try:
+                stored = self._store_get(session_id)
+            except Exception:
+                try:
+                    self.backend.terminate(handle)
+                finally:
+                    finish_reservation(False)
+                raise
+            if (
+                stored is None
+                or stored.status != "creating"
+                or stored.sandbox_tags.get("recovering") != "true"
+            ):
                 # Closed/terminated while the sandbox was being restored —
                 # do not bind it.
                 try:
                     self.backend.terminate(handle)
                 except Exception:
                     pass
+                finish_reservation(False)
                 raise SessionConflict("session_not_runnable")
             stored.sandbox_id = handle.id
             stored.sandbox_root = str(handle.root)
             if handle.tags:
                 stored.sandbox_tags = dict(handle.tags)
+            stored.sandbox_tags.pop("recovering", None)
             stored.status = "idle"
             now = self.clock()
             stored.updated_at = now
             stored.last_activity_at = now
-            self.store.put(stored)
+            try:
+                self.store.put(stored)
+            except Exception:
+                try:
+                    self.backend.terminate(handle)
+                finally:
+                    rollback()
+                raise
+            finish_reservation(True)
 
     def _mark_unrecoverable(self, session_id: str) -> None:
         """Terminal ``lost`` for a suspended agent that cannot be restored."""
