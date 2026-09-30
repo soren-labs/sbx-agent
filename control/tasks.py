@@ -1630,6 +1630,31 @@ _TASK_GET_CACHE_TTL_S = env_float("SBX_TASK_GET_CACHE_TTL_S", 0.5)
 # final owner-doc RPC from polling without hiding this process's mutations.
 _TASK_LIST_CACHE_TTL_S = env_float("SBX_TASK_LIST_CACHE_TTL_S", 1.0)
 
+# Agent-less summaries are distrusted for live rows: a stale summary could
+# wedge a row at ``queued`` while ``task/<id>`` already went terminal
+# (SOR-271). A summary that already reports a *terminal* status cannot
+# wedge forward — reaching terminal required a ``put``, which rewrites the
+# summary atomically with the row — so unbound terminal rows stay off the
+# point-read path. Mirrors ``_tasks._TASK_TERMINAL`` (kept local: the v1
+# module imports this one).
+_SUMMARY_TERMINAL = frozenset({"finished", "error", "cancelled", "expired", "delivery_failed"})
+
+
+def _summary_trusted(summary: dict[str, Any]) -> bool:
+    """Owner-doc summary safe to serve as the listing row.
+
+    Bound rows are always trustworthy (the summary rides every ``put``).
+    Agent-less rows are trusted only at a terminal status — a live
+    agent-less summary could wedge a row at ``queued`` while ``task/<id>``
+    went terminal on a write that skipped the doc (SOR-271)."""
+    return summary.get("agent_id") is not None or summary.get("status") in _SUMMARY_TERMINAL
+
+
+def _record_heals(record: TaskRecord) -> bool:
+    """A freshly fetched row whose summary the doc would trust next read."""
+    return record.agent_id is not None or record.status in _SUMMARY_TERMINAL
+
+
 # Owner-doc summary cap: ``owner/<owner>`` embeds recent record summaries
 # so ``list`` is a single remote read; ids are never dropped — ids whose
 # summary aged out are fetched point-wise through a bounded pool.
@@ -1918,6 +1943,47 @@ class ModalDictTaskStore:
             raws = list(pool.map(self._get_uncached, task_ids))
         return [record_from_dict(raw) for raw in raws if isinstance(raw, dict)]
 
+    def _backfill_summaries(self, owner: str, records: list[TaskRecord]) -> None:
+        """Merge fetched rows' summaries into the owner doc.
+
+        Best-effort self-heal: additive-only (entries are added or
+        refreshed, never removed) and serialized with ``put``'s owner-doc
+        read-modify-write through ``self._lock``, so it cannot drop a
+        concurrent writer's entries. No ``_trim_summaries`` here — a
+        transient over-cap doc is harmless and the next ``put`` re-trims;
+        trimming on this path would re-orphan the very rows the backfill
+        just healed.
+        """
+        try:
+            d = self._d()
+            owner_key = self._owner_key(owner)
+            with self._lock:
+                ids, summaries = self._owner_doc(d.get(owner_key))
+                id_set = set(ids)
+                for rec in records:
+                    summaries[rec.id] = _task_summary(rec)
+                    if rec.id not in id_set:
+                        ids.append(rec.id)
+                        id_set.add(rec.id)
+                self._batch(d, {owner_key: {"ids": ids, "records": summaries}})
+                self._owner_list_cache[owner] = (
+                    time.monotonic(),
+                    list(ids),
+                    dict(summaries),
+                )
+                # A create's ``put`` pops ``_owner_prefetch`` and rewrites
+                # the doc from it — a pre-heal staged read would clobber
+                # this backfill on every keyed create (the v23 create-ACK
+                # regression: ``find_by_idempotency`` re-walked the whole
+                # missing set per call). Re-stage the doc just written so
+                # the imminent ``put`` merges onto the healed view.
+                self._owner_prefetch[owner] = (
+                    time.monotonic(),
+                    {"ids": list(ids), "records": dict(summaries)},
+                )
+        except Exception:
+            return
+
     def list(self, owner: str | None = None) -> list[TaskRecord]:
         if owner is None:
             # Dict has no key scan — every record goes through an owner
@@ -1939,11 +2005,7 @@ class ModalDictTaskStore:
         missing: list[str] = []
         for task_id in ids:
             summary = summaries.get(task_id)
-            if summary is not None and (
-                summary.get("agent_id") is not None
-                or summary.get("status")
-                in {"finished", "error", "expired", "delivery_failed", "cancelled"}
-            ):
+            if summary is not None and _summary_trusted(summary):
                 record = record_from_dict(summary)
                 # The summary omits ``response`` — flag it so ``put``
                 # merges the stored value instead of writing a None that
@@ -1951,14 +2013,25 @@ class ModalDictTaskStore:
                 record._response_unloaded = True
                 out.append(record)
             else:
-                # An unbound non-terminal summary can be stuck at queued
-                # after a lost owner-doc update. Refresh those rows, but
-                # project settled unbound history like bound history: retry
-                # writes publish a new summary through the same put path.
-                # Re-reading every failed dispatch made the list cost scale
-                # with hundreds of old cap failures (SOR-271 round 5).
+                # Agent-less *live* rows can never be trusted off the
+                # index: with no bound agent there is nothing to
+                # live-aggregate against, so a stale summary write (a
+                # lost owner-doc update) would wedge the row at
+                # ``queued`` while ``task/<id>`` already went terminal
+                # (SOR-271). Read the authoritative row.
                 missing.append(task_id)
-        out.extend(self._pooled_gets(missing))
+        fetched = self._pooled_gets(missing)
+        out.extend(fetched)
+        heal = [r for r in fetched if _record_heals(r)]
+        if heal:
+            # Backfill the fetched rows' summaries so the next listing
+            # does not re-pay the point reads — otherwise every pre-index
+            # or agent-less row costs one serialized remote get on every
+            # list call forever (the production Dict accumulates such
+            # rows across deploys; that re-read is the ~8x v23 list
+            # regression). Agent-less live rows are skipped: their fresh
+            # summary stays untrusted, so the write buys nothing.
+            self._backfill_summaries(owner, heal)
         return sorted(out, key=lambda r: r.created_at)
 
     def find_by_idempotency(self, owner: str, key: str) -> TaskRecord | None:
@@ -1989,7 +2062,14 @@ class ModalDictTaskStore:
             if meta.get("key") == key:
                 return self.get_fresh(tid)
         missing = [tid for tid in ids if tid not in summaries]
-        for rec in self._pooled_gets(missing):
+        fetched = self._pooled_gets(missing)
+        heal = [r for r in fetched if _record_heals(r)]
+        if heal:
+            # Same self-heal as ``list``: the pre-index rows walked here
+            # are the v23 create-ACK regression — every keyed create
+            # re-read them all point-wise until they were backfilled.
+            self._backfill_summaries(owner, heal)
+        for rec in fetched:
             meta = rec.idempotency or {}
             if meta.get("key") == key:
                 return self.get_fresh(rec.id) or rec

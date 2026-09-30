@@ -266,6 +266,16 @@ def run_probes(
     http = httpx.Client(base_url=base_url, timeout=60.0)
 
     # ---- B1: create ACK ----------------------------------------------------
+    if op_counter is not None:
+        # Warm the dedup read model: on a Dict with pre-index rows, the
+        # first keyed create walks the missing-summary set point-wise and
+        # self-heals it (SOR-268 round-5 backfill). One throwaway create
+        # pays that one-time cost so the timed samples measure the warm
+        # steady state the production budgets are written against —
+        # production sees the same single spike once per Dict, not per
+        # create.
+        dt, resp = _time(http, create_one)
+        assert resp.status_code in (200, 201, 202), resp.text
     mark("create")
     samples: list[float] = []
     session_ids: list[str] = []
@@ -497,6 +507,12 @@ def run_probes(
                 os.environ.pop("FAKE_CODEX_SLOW_SECONDS", None)
 
     # ---- R2: deep-history list must stay bounded -----------------------
+    # Warm-up: the first list on a dict carrying missing-summary rows
+    # pays their one-time point reads + backfill (the cold-list budget);
+    # the timed samples measure the *warm* steady state the gate gates on.
+    if emulated:
+        warm = http.get("/v2/sessions", params={"limit": 100}, headers=headers)
+        assert warm.status_code == 200, warm.text
     mark("list-history")
     hist_samples: list[float] = []
     total = 0
@@ -525,11 +541,21 @@ def run_probes(
         # settle (plane.get + ledger.list ≈ 2 ops × ~260 seeded rows ≈
         # ~1500 ops over the 3 calls); now terminal rows project from the
         # record + ws map and the whole probe is ~live_rows × 3 ops.
+        # SOR-268 round 5: ``tasks.*`` dict ops are the production
+        # regression's exact signal — 3 warm lists must cost a handful of
+        # owner-doc reads, never ~N point gets on accumulated history.
         results.append(
             ProbeResult(
-                "remote ops during list-history",
-                [float(op_counter.get("get", 0) + op_counter.get("list", 0))],
+                "task-dict remote ops during list-history",
+                [float(op_counter.get("tasks.get", 0) + op_counter.get("tasks.update", 0))],
                 budgets.get("history_ops"),
+            )
+        )
+        results.append(
+            ProbeResult(
+                "task-dict full scans during list",
+                [float(op_counter.get("tasks.items", 0))],
+                budgets.get("tasks_items"),
             )
         )
     print(f"R2 list-history remote-ops{ops()}", file=sys.stderr)
@@ -630,12 +656,19 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     from control.ports import Account
     from control.run_store import InMemoryRunStore
     from control.store import InMemoryStore
-    from control.tasks import InMemoryTaskStore, TaskRecord
+    from control.tasks import ModalDictTaskStore, TaskRecord
     from control.workspace import ModalDictWorkspaceStore
 
     stub_runner = (Path(__file__).resolve().parents[1] / "fakes" / "stub_runner.py").resolve()
     backend = _SlowProxy(LocalProcessBackend(), sandbox_ms, counter)
-    task_store_inner = InMemoryTaskStore()
+    # SOR-268 round 5: tasks go through the REAL Dict-backed store — the
+    # production regression (``hundreds of sequential modal_dict calls
+    # per list``) lives in its owner-doc/missing-summary path, invisible
+    # to the in-memory stand-in. Dict ops count under ``tasks.*``.
+    task_inner = _HarnessDict()
+    task_dict = _SlowProxy(task_inner, dict_ms, counter, ns="tasks.")
+    task_store_inner = ModalDictTaskStore("sbx-tasks")
+    task_store_inner._dict = task_dict
     # SOR-271 round 2: workspaces go through the real Dict-backed store —
     # the v2 list page must read them via ONE index-doc get, not a
     # per-row ``workspaces.get`` fanout (the ~linear list finding).
@@ -646,7 +679,7 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
         backend=backend,
         store=_SlowProxy(InMemoryStore(), dict_ms, counter),
         run_store=_SlowProxy(InMemoryRunStore(), dict_ms, counter),
-        task_store=_SlowProxy(task_store_inner, dict_ms, counter),
+        task_store=task_store_inner,
         workspace_store=ws_store,
         runner_cmd=[sys.executable, str(stub_runner)],
         keepalive_s=0.5,
@@ -678,15 +711,26 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
     )
     key, token = keys.create(label="perf", scopes=("agents",))
     # SOR-271 round 2: seed deep terminal history directly into the
-    # store (bypassing the latency shim — free) so the list probe reads
-    # a ~300-row page like the production regression did. Absorbing-
-    # terminal rows must cost zero remote ops on the request path.
+    # store (bypassing the latency shim — a free seed-store writes the
+    # real owner-doc shape, then its data is grafted in) so the list
+    # probe reads a ~300-row page like the production regression did.
+    # Absorbing-terminal rows must cost zero remote ops on the request
+    # path.
     # SOR-268 round 3: the production shape is mostly ``finished`` rows —
     # the one terminal status that still paid a live settle per row on
     # v21 (the residual ~linear @333 finding). A finished row with no
     # delivery requirement projects from the record alone.
-    for i in range(260):
-        task_store_inner.put(
+    # SOR-268 round 5: the production ``sbx-tasks`` Dict accumulates rows
+    # across deploys — most lack an owner-doc summary (pre-index writes,
+    # aged-out or lost entries) and v23 point-read every one on EVERY
+    # list (the ~8x regression). Seed that shape too: the first list
+    # heals them and the timed lists must stay O(page + live).
+    seed_dict = _HarnessDict()
+    seed_store = ModalDictTaskStore("sbx-tasks")
+    seed_store._dict = seed_dict
+    legacy: list[str] = []
+    for i in range(200):
+        seed_store.put(
             TaskRecord(
                 id=f"sess_hist_{i:04d}",
                 owner=key.id,
@@ -699,6 +743,58 @@ def _emulated_app(dict_ms: float, sandbox_ms: float, counter: dict[str, int]):
                 updated_at=f"2026-09-28T{i % 24:02d}:00:00+00:00",
             )
         )
+    for i in range(60):
+        tid = f"sess_legacy_{i:04d}"
+        seed_store.put(
+            TaskRecord(
+                id=tid,
+                owner=key.id,
+                status="finished" if i % 3 else "cancelled",
+                request={"prompt": {"text": f"legacy {i}"}},
+                resolved={"execution": {"provider": "codex"}},
+                agent_id=f"agent-legacy{i}",
+                run_id=None,
+                created_at=f"2026-09-27T{i % 24:02d}:00:00+00:00",
+                updated_at=f"2026-09-27T{i % 24:02d}:00:00+00:00",
+            )
+        )
+        legacy.append(tid)
+    for i in range(8):
+        # Unbound terminal rows — agent-less summaries that must be
+        # trusted (they cannot wedge forward).
+        seed_store.put(
+            TaskRecord(
+                id=f"sess_unbound_{i}",
+                owner=key.id,
+                status="finished",
+                request={"prompt": {"text": f"unbound {i}"}},
+                resolved=None,
+                agent_id=None,
+                run_id=None,
+                created_at="2026-09-26T00:00:00+00:00",
+                updated_at="2026-09-26T00:00:00+00:00",
+            )
+        )
+    for i in range(2):
+        # Unbound *live* rows — summaries stay distrusted; each pays a
+        # bounded point read per list (the SOR-271 wedge safety net).
+        seed_store.put(
+            TaskRecord(
+                id=f"sess_unqueued_{i}",
+                owner=key.id,
+                status="queued",
+                request={"prompt": {"text": f"unqueued {i}"}},
+                resolved=None,
+                agent_id=None,
+                run_id=None,
+                created_at="2026-09-29T00:00:00+00:00",
+                updated_at="2026-09-29T00:00:00+00:00",
+            )
+        )
+    owner_doc = seed_dict.data[f"owner/{key.id}"]
+    for tid in legacy:
+        owner_doc["records"].pop(tid, None)
+    task_inner.data.update(seed_dict.data)
     return app, token
 
 
@@ -769,8 +865,12 @@ def main() -> int:
         "cancel_p95": 1.0 if live else 1.5,
         "ws_items": 0.0,
         # ~live_rows x ~3 ops per call x 3 calls, far below the ~1500 a
-        # per-row history settle costs (the v21 ~linear term).
-        "history_ops": 500.0,
+        # per-row history settle costs (the v21 ~linear term). Round 5:
+        # task-dict ops only — 3 warm lists ≈ 3 owner-doc gets + a few
+        # live-agentless point reads; the v23 regression was ~N history
+        # gets per call.
+        "history_ops": 60.0,
+        "tasks_items": 0.0,
         "bulk_wall": None,
         "bulk_read": 1.5 if live else 2.0,
         "account_items": 1.0,
