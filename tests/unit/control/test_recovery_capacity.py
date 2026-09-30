@@ -10,7 +10,7 @@ from control.ports import Account
 from control.reaper import reap
 from control.scheduler import AccountScheduler, ScheduleRefused
 from control.service import ConcurrencyLimit, SessionConflict
-from control.store import InMemoryStore, SessionRecord
+from control.store import InMemoryStore, SessionRecord, record_from_dict, record_to_dict
 from tests.fakes.fake_ports import InMemoryAccountRegistry
 
 
@@ -198,3 +198,45 @@ def test_stale_lease_scan_cannot_release_completed_recovery(env):
     assert original_get("suspended").status == "idle"
     assert "suspended" in state.leases
     assert scheduler.active_count == 1
+
+
+class _DetachedStore(InMemoryStore):
+    """Reads return a fully detached record — the isolation a remote Dict
+    gives. ``InMemoryStore.get`` shares nested ``messages``/``sandbox_tags``
+    with the stored row, which would mask a lost-update rollback."""
+
+    def get(self, session_id):
+        rec = super().get(session_id)
+        return record_from_dict(record_to_dict(rec)) if rec is not None else None
+
+
+def test_failed_recovery_preserves_writes_landed_during_restore(env):
+    app, _backend, store, scheduler, checkpoints = env
+    plane = app.state.plane
+    detached = _DetachedStore()
+    detached.put(store.get("suspended"))
+    plane.store = detached
+
+    class Retryable(Exception):
+        retryable = True
+
+    def fail_after_concurrent_write(_rec):
+        # A queued follow-up lands on the published creating/recovering
+        # record while the slow restore is still in flight.
+        stored = detached.get("suspended")
+        assert stored.status == "creating"
+        stored.messages.append(
+            {"role": "user", "text": "follow-up", "turn_id": "turn-2", "ts": "t0"}
+        )
+        detached.put(stored)
+        raise Retryable()
+
+    checkpoints.restore = fail_after_concurrent_write
+    with pytest.raises(SessionConflict):
+        plane.recover_session("suspended")
+    stored = detached.get("suspended")
+    assert stored.status == "suspended"
+    assert "recovering" not in stored.sandbox_tags
+    assert any(m.get("text") == "follow-up" for m in stored.messages)
+    assert scheduler.active_count == 0
+    assert "suspended" not in app.state.v1_state.leases

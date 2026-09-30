@@ -12,6 +12,7 @@ Absent or unreadable evidence leaves the record untouched — the reaper's
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 
 from control.backend import SandboxSpec
@@ -114,7 +115,14 @@ def test_reconciled_agent_accepts_follow_up_run(recovery_env: RecoveryEnv) -> No
 
     finished = env2.wait_run("agt-stranded", "run-2")
     assert finished["status"] == "FINISHED"
-    agent = env2.get_agent("agt-stranded").json()
+    # The durable verdict precedes eager checkpoint settlement. The live
+    # watcher correctly keeps the agent busy until that work completes.
+    until = time.monotonic() + 5
+    while time.monotonic() < until:
+        agent = env2.get_agent("agt-stranded").json()
+        if agent["status"] == "idle":
+            break
+        time.sleep(0.01)
     assert agent["status"] == "idle"
 
 

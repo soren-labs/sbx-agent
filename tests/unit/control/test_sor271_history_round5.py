@@ -110,3 +110,38 @@ def test_lost_cross_instance_retry_summary_eventually_converges() -> None:
         rows = first.list("key_1")
     assert next(r for r in rows if r.id == "sess_16").status == "queued"
     assert fake.data["owner/key_1"]["records"]["sess_16"]["status"] == "queued"
+
+
+def test_backfill_does_not_resurrect_deleted_index_entry() -> None:
+    """A row deleted between the owner-doc read and the summary backfill
+    must not be re-indexed — the healed summary would serve the gone
+    record as a phantom row on every later list."""
+    for lookup in ("list", "idempotency"):
+        store = ModalDictTaskStore("test-tasks")
+        fake = _BatchDict()
+        store._dict = fake
+        record = _task("sess_gone", status="error", agent_id=None)
+        store.put(record)
+        # Pre-index shape: the id is in the manifest without a summary, so
+        # the row is point-read and offered to the backfill.
+        fake.data["owner/key_1"]["records"].pop(record.id)
+        original = store._pooled_gets
+
+        def fetched_then_deleted(ids):
+            fetched = original(ids)
+            store.delete(record.id)
+            return fetched
+
+        store._pooled_gets = fetched_then_deleted
+        try:
+            if lookup == "list":
+                store.list("key_1")
+            else:
+                store.find_by_idempotency("key_1", "v2:session:new")
+        finally:
+            store._pooled_gets = original
+        store._owner_list_cache.clear()
+        doc = fake.data["owner/key_1"]
+        assert record.id not in doc["ids"]
+        assert record.id not in doc["records"]
+        assert store.list("key_1") == []

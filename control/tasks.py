@@ -1964,15 +1964,20 @@ class ModalDictTaskStore:
                 ids, summaries = self._owner_doc(d.get(owner_key))
                 id_set = set(ids)
                 for rec in records:
+                    if rec.id not in id_set:
+                        # A concurrent ``delete`` dropped the index entry
+                        # between the listing read and this write —
+                        # re-adding it would resurrect a gone record as a
+                        # phantom row on every future list (its trusted
+                        # terminal summary would serve without a point
+                        # read against the deleted ``task/<id>``).
+                        continue
                     # Point reads happen before this lock. A concurrent retry
                     # may have published a newer summary in the meantime;
                     # never overwrite it with the fetched terminal snapshot.
                     if summaries.get(rec.id) != observed.get(rec.id):
                         continue
                     summaries[rec.id] = _task_summary(rec)
-                    if rec.id not in id_set:
-                        ids.append(rec.id)
-                        id_set.add(rec.id)
                 self._batch(d, {owner_key: {"ids": ids, "records": summaries}})
                 self._owner_list_cache[owner] = (
                     time.monotonic(),

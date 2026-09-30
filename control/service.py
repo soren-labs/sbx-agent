@@ -56,6 +56,8 @@ _TEARDOWN_ACK_S = env_float("SBX_TEARDOWN_ACK_S", 0.5)
 # the read path (``maybe_reconcile_turn``). Mutation paths always run the
 # full reconcile — this only caps settle-on-read frequency.
 _RECONCILE_COOLDOWN_S = env_float("SBX_RECONCILE_COOLDOWN_S", 2.0)
+_READ_RECONCILE_WAIT_S = 0.05
+_READ_RECONCILE_WORKERS = 4
 
 
 def _utcnow() -> datetime:
@@ -215,6 +217,10 @@ class ControlPlane:
         # — ``maybe_reconcile_turn`` throttles the read-path settle so a
         # busy/SSE-heavy plane doesn't pay poll+read_json on every read.
         self._reconcile_at: dict[str, float] = {}
+        self._reconcile_lock = threading.Lock()
+        self._reconciling: set[str] = set()
+        self._read_reconcile_pending: set[str] = set()
+        self._read_reconcile_pool: ThreadPoolExecutor | None = None
         # SOR-268: bounded executor for the remote teardown tail of
         # stop()/close() (proc kill, runner stop hook, open-run cancels,
         # sandbox terminate). The durable intent lands synchronously under
@@ -751,7 +757,18 @@ class ControlPlane:
                         and stored.status == "creating"
                         and stored.sandbox_tags.get("recovering") == "true"
                     ):
-                        self.store.put(rec)
+                        # Revert only the fields this reservation owns —
+                        # restoring the stale ``rec`` wholesale would
+                        # clobber writes that landed on the creating
+                        # record meanwhile (e.g. a queued follow-up whose
+                        # QUEUED ledger row already exists).
+                        stored.status = "suspended"
+                        stored.sandbox_id = rec.sandbox_id
+                        stored.sandbox_root = rec.sandbox_root
+                        stored.sandbox_tags = dict(stored.sandbox_tags)
+                        stored.sandbox_tags.pop("recovering", None)
+                        stored.updated_at = self.clock()
+                        self.store.put(stored)
             finally:
                 finish_reservation(False)
 
@@ -1624,6 +1641,20 @@ class ControlPlane:
                 self.store.put(stored)
 
     def reconcile_turn(self, session_id: str) -> bool:
+        # A read, cron, and mutation can discover the same orphaned turn.
+        # Only one may finish it: duplicate eager checkpoints would scrub
+        # and reattach credentials concurrently on the same sandbox.
+        with self._reconcile_lock:
+            if session_id in self._reconciling:
+                return False
+            self._reconciling.add(session_id)
+        try:
+            return self._reconcile_turn(session_id)
+        finally:
+            with self._reconcile_lock:
+                self._reconciling.discard(session_id)
+
+    def _reconcile_turn(self, session_id: str) -> bool:
         """Settle a ``running`` record whose in-process watcher is gone (SOR-139).
 
         A control-plane restart or deploy cutover drains the container and its
@@ -1676,21 +1707,51 @@ class ControlPlane:
         return True
 
     def maybe_reconcile_turn(self, session_id: str) -> bool:
-        """Read-path reconcile: at most one remote probe per cooldown.
+        """Bounded read-path settle; slow sandbox work continues off-request.
 
-        ``reconcile_turn`` costs two sandbox round-trips (``poll`` +
-        ``turns/<n>.json`` read) when it fires — the V2 settle path calls
-        it on every read of a running session, so list size × SSE clients
-        multiplied remote calls into the SOR-260 starvation findings.
-        Read callers use this throttled form; mutation paths (post /
-        stop / close) still call ``reconcile_turn`` directly — a cancel
-        must see fresh turn evidence, never a cached skip.
+        Cooldown alone does not bound a poll, evidence read, or eager
+        checkpoint. Keep at most four probes in flight, with no unbounded
+        queue, and let reads return the durable status after a short wait.
+        Fast local probes retain immediate convergence.
         """
-        if session_id in self._live:
+        done = threading.Event()
+        result = False
+        with self._reconcile_lock:
+            if (
+                session_id in self._live
+                or session_id in self._reconciling
+                or session_id in self._read_reconcile_pending
+                or len(self._read_reconcile_pending) >= _READ_RECONCILE_WORKERS
+                or time.monotonic() - self._reconcile_at.get(session_id, 0.0)
+                < _RECONCILE_COOLDOWN_S
+            ):
+                return False
+            self._read_reconcile_pending.add(session_id)
+            self._reconcile_at[session_id] = time.monotonic()
+            if self._read_reconcile_pool is None:
+                self._read_reconcile_pool = ThreadPoolExecutor(
+                    max_workers=_READ_RECONCILE_WORKERS,
+                    thread_name_prefix="sbx-reconcile",
+                )
+
+        def probe() -> None:
+            nonlocal result
+            try:
+                result = self.reconcile_turn(session_id)
+            except Exception:
+                pass
+            finally:
+                with self._reconcile_lock:
+                    self._read_reconcile_pending.discard(session_id)
+                done.set()
+
+        try:
+            self._read_reconcile_pool.submit(probe)
+        except Exception:
+            with self._reconcile_lock:
+                self._read_reconcile_pending.discard(session_id)
             return False
-        if time.monotonic() - self._reconcile_at.get(session_id, 0.0) < (_RECONCILE_COOLDOWN_S):
-            return False
-        return self.reconcile_turn(session_id)
+        return result if done.wait(_READ_RECONCILE_WAIT_S) else False
 
     def reconcile_turns(self) -> list[str]:
         """Settle every watcher-less ``running`` session from turn evidence.

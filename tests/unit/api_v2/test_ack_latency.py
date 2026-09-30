@@ -142,6 +142,19 @@ def test_message_acks_without_sandbox_exec(
     session = create_session(client, auth)["session"]
     wait_session(client, auth, session["id"], "finished")
 
+    # FINISHED publishes the run verdict before the eager checkpoint ends.
+    # This test gates dispatch, so wait for the agent to become runnable;
+    # otherwise a valid queued ACK can complete without touching exec.
+    task = v1_env.app.state.task_store.get(session["id"])
+    until = time.monotonic() + 5
+    while time.monotonic() < until:
+        rec = v1_env.app.state.plane.get(task.agent_id)
+        if rec.status == "idle" and rec.current_turn_id is None:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("agent did not finish checkpoint settlement")
+
     counting = _Counting(v1_env.app.state.task_store)
     v1_env.app.state.task_store = counting
     gate = _gate_backend(v1_env, monkeypatch, "exec", "poll")

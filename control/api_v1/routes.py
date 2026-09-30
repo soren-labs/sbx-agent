@@ -492,6 +492,11 @@ def _render_run(
                 status="CANCELLED",
                 error=_run_error_public("CANCELLED", cancelled=True, agent_status=rec.status),
             )
+        # These runs have not dispatched. A sandbox evidence read cannot
+        # settle them and can block every detail read during provisioning
+        # (or a queued follow-up behind a long-running provider turn).
+        if record.status in ("CREATING", "QUEUED") and rec.status not in TERMINAL_STATUSES:
+            return _record_public(record, pub, meta)
         payload = _turn_payload(plane, rec, n)
         if payload is not None:
             status, error, result_text, usage = outcome_from_turn_payload(payload)
