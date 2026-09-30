@@ -759,6 +759,7 @@ def create_session(
     Same idempotency semantics as ``POST /v1/tasks`` — the pin is
     ``v2:session:<key>`` so a V1 task and a V2 session can never collide.
     """
+    ack_deadline = time.monotonic() + _ack_budget(request)
     _list_memo_drop(task_store, key.id)
     v1_body = _to_task_request(body)
     fingerprint = request_fingerprint(v1_body)
@@ -891,12 +892,18 @@ def create_session(
                 _PRE_BIND_CANCELLED.discard(record.id)
         return created
 
-    done, box = _run_with_budget(_dispatch, _ack_budget(request))
+    # The optional dispatch wait shares the route's budget with mandatory
+    # dedup and persistence. Adding a fresh full wait after those RPCs made
+    # warm keyed creates exceed the SLO even after history scans were fixed.
+    done, box = _run_with_budget(_dispatch, max(0.0, ack_deadline - time.monotonic()))
     if done and "error" in box:
         if owned is not None:
             v1.idempotency.abandon(key.id, pin_key, owned)
         raise box["error"]
-    fresh = task_store.get(record.id) or record
+    # Once the wait expires, even a fresh task read (or a bound-session
+    # render) can add unbounded remote work to the ACK. The queued row was
+    # persisted before dispatch; reads will expose the worker's result.
+    fresh = (task_store.get(record.id) or record) if done else record
     if fresh.agent_id is not None:
         result = {
             "session": _view(

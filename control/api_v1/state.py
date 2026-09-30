@@ -326,6 +326,8 @@ class V1State:
     # Monotonic timestamp of the last ``reconcile_leases`` pass — throttle
     # state, not durable data (V1State is process-local by design).
     leases_reconciled_at: float = 0.0
+    recovering_leases: set[str] = field(default_factory=set)
+    lease_generations: dict[str, int] = field(default_factory=dict)
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:
         with self.lock:
@@ -337,6 +339,7 @@ class V1State:
 
     def set_lease(self, session_id: str, lease: Any) -> None:
         with self.lock:
+            self.lease_generations[session_id] = self.lease_generations.get(session_id, 0) + 1
             self.leases[session_id] = lease
 
     def pop_lease(self, session_id: str) -> Any | None:
@@ -364,9 +367,12 @@ class V1State:
             return 0
         self.leases_reconciled_at = now
         with self.lock:
-            pending = list(self.leases.items())
+            pending = [
+                (sid, lease, self.lease_generations.get(sid, 0))
+                for sid, lease in self.leases.items()
+            ]
         released = 0
-        for session_id, _lease in pending:
+        for session_id, observed_lease, generation in pending:
             try:
                 rec = store.get(session_id)
             except Exception:
@@ -379,7 +385,16 @@ class V1State:
                 and (rec.status != "suspended")
             ):
                 continue
-            popped = self.pop_lease(session_id)
+            with self.lock:
+                # Recovery may have reused this lease after our status read.
+                # Its creating reservation has not necessarily landed yet.
+                if (
+                    session_id in self.recovering_leases
+                    or self.lease_generations.get(session_id, 0) != generation
+                    or self.leases.get(session_id) is not observed_lease
+                ):
+                    continue
+                popped = self.leases.pop(session_id, None)
             if popped is None:
                 continue
             release = getattr(popped, "release", None)

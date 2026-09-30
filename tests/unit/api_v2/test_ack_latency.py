@@ -132,6 +132,58 @@ def test_create_dispatch_failure_keeps_error_contract(
     assert resp.json()["error"]["code"] == "provider_exhausted"
 
 
+def test_create_does_not_read_again_after_ack_deadline(
+    client: TestClient,
+    v1_env: V1Env,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bound row can land before the create worker finishes its reply."""
+    from control.api_v2 import routes
+
+    store = v1_env.app.state.task_store
+    published, finish = threading.Event(), threading.Event()
+    original_put, original_get = store.put, store.get
+    original_budget = routes._run_with_budget
+    ack_thread = None
+
+    def put(record):
+        original_put(record)
+        if record.agent_id is not None:
+            published.set()
+            assert finish.wait(5)
+
+    def budget(fn, seconds):
+        nonlocal ack_thread
+        done, box = original_budget(fn, seconds)
+        assert published.wait(5)
+        assert not done
+        ack_thread = threading.get_ident()
+        return done, box
+
+    def get(task_id):
+        assert threading.get_ident() != ack_thread, "post-deadline store read can block ACK"
+        return original_get(task_id)
+
+    monkeypatch.setattr(store, "put", put)
+    monkeypatch.setattr(store, "get", get)
+    monkeypatch.setattr(routes, "_run_with_budget", budget)
+    v1_env.app.state.v2_ack_budget_s = 0.1
+    try:
+        response = client.post(
+            "/v2/sessions",
+            headers=auth,
+            json={"prompt": "hello", "execution": {"provider": "codex"}},
+        )
+        assert response.status_code == 201, response.text
+        sid = response.json()["session"]["id"]
+        assert response.json()["session"]["status"] == "queued"
+    finally:
+        finish.set()
+    ack_thread = None
+    wait_session(client, auth, sid, "finished")
+
+
 def test_message_acks_without_sandbox_exec(
     client: TestClient,
     v1_env: V1Env,
@@ -141,6 +193,19 @@ def test_message_acks_without_sandbox_exec(
     """Follow-up dispatch (write_file + exec spawn) runs off the request."""
     session = create_session(client, auth)["session"]
     wait_session(client, auth, session["id"], "finished")
+
+    # FINISHED publishes the run verdict before the eager checkpoint ends.
+    # This test gates dispatch, so wait for the agent to become runnable;
+    # otherwise a valid queued ACK can complete without touching exec.
+    task = v1_env.app.state.task_store.get(session["id"])
+    until = time.monotonic() + 5
+    while time.monotonic() < until:
+        rec = v1_env.app.state.plane.get(task.agent_id)
+        if rec.status == "idle" and rec.current_turn_id is None:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("agent did not finish checkpoint settlement")
 
     counting = _Counting(v1_env.app.state.task_store)
     v1_env.app.state.task_store = counting
@@ -254,3 +319,46 @@ def test_session_converges_after_optimistic_ack(
     assert session["phase"] == "provisioning"
     settled = wait_session(client, auth, session["id"], "running", "finished")
     assert settled["session"]["id"] == session["id"]
+
+
+@pytest.mark.parametrize("persist_elapsed", [0.0, 0.2, 0.6])
+def test_create_worker_wait_uses_budget_remaining_after_persistence(
+    client: TestClient,
+    v1_env: V1Env,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    persist_elapsed: float,
+) -> None:
+    """Mandatory durable work must not be followed by a second full wait."""
+    from types import SimpleNamespace
+
+    from control.api_v2 import routes
+
+    clock = [10.0]
+    monkeypatch.setattr(
+        routes, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep)
+    )
+    v1_env.app.state.v2_ack_budget_s = 0.35
+    store = v1_env.app.state.task_store
+    original = store.put
+    persisted = []
+
+    def put(record):
+        original(record)
+        persisted.append(record.id)
+        clock[0] += persist_elapsed
+
+    def wait(fn, budget):
+        assert persisted and store.get(persisted[0]) is not None
+        assert budget == pytest.approx(max(0.0, 0.35 - persist_elapsed))
+        return False, {}
+
+    monkeypatch.setattr(store, "put", put)
+    monkeypatch.setattr(routes, "_run_with_budget", wait)
+    response = client.post(
+        "/v2/sessions",
+        headers={**auth, "Idempotency-Key": "remaining-budget"},
+        json={"prompt": "hello"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["session"]["status"] == "queued"

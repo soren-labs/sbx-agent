@@ -1630,6 +1630,31 @@ _TASK_GET_CACHE_TTL_S = env_float("SBX_TASK_GET_CACHE_TTL_S", 0.5)
 # final owner-doc RPC from polling without hiding this process's mutations.
 _TASK_LIST_CACHE_TTL_S = env_float("SBX_TASK_LIST_CACHE_TTL_S", 1.0)
 
+# Agent-less summaries are distrusted for live rows: a stale summary could
+# wedge a row at ``queued`` while ``task/<id>`` already went terminal
+# (SOR-271). A summary that already reports a *terminal* status cannot
+# wedge at queued, but a later retry can be hidden by an owner-doc lost
+# update. A bounded rotating validation batch below preserves eventual
+# convergence without a full history reread. Mirrors ``_tasks._TASK_TERMINAL`` (kept local: the v1
+# module imports this one).
+_SUMMARY_TERMINAL = frozenset({"finished", "error", "cancelled", "expired", "delivery_failed"})
+
+
+def _summary_trusted(summary: dict[str, Any]) -> bool:
+    """Owner-doc summary safe to serve as the listing row.
+
+    Bound rows are always trustworthy (the summary rides every ``put``).
+    Agent-less rows are trusted only at a terminal status — a live
+    agent-less summary could wedge a row at ``queued`` while ``task/<id>``
+    went terminal on a write that skipped the doc (SOR-271)."""
+    return summary.get("agent_id") is not None or summary.get("status") in _SUMMARY_TERMINAL
+
+
+def _record_heals(record: TaskRecord) -> bool:
+    """A freshly fetched row whose summary the doc would trust next read."""
+    return record.agent_id is not None or record.status in _SUMMARY_TERMINAL
+
+
 # Owner-doc summary cap: ``owner/<owner>`` embeds recent record summaries
 # so ``list`` is a single remote read; ids are never dropped — ids whose
 # summary aged out are fetched point-wise through a bounded pool.
@@ -1678,7 +1703,9 @@ class ModalDictTaskStore:
         self._lock = threading.Lock()
         self._get_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._owner_prefetch: dict[str, tuple[float, Any]] = {}
+        self._owner_versions: dict[str, int] = {}
         self._owner_list_cache: dict[str, tuple[float, list[str], dict[str, dict[str, Any]]]] = {}
+        self._terminal_validation_cursor: dict[str, int] = {}
 
     def _d(self) -> Any:
         if self._dict is None:
@@ -1735,6 +1762,32 @@ class ModalDictTaskStore:
             return [str(i) for i in raw], {}
         return [], {}
 
+    @staticmethod
+    def _idempotency_digest(record: TaskRecord) -> str | None:
+        key = (record.idempotency or {}).get("key")
+        return hashlib.sha256(key.encode("utf-8")).hexdigest() if isinstance(key, str) else None
+
+    @classmethod
+    def _owner_idempotency(cls, raw: Any) -> dict[str, str | None]:
+        """Compact immutable key metadata survives full-summary eviction.
+
+        Presence with None means a row is known to have no key. Legacy rows
+        without metadata are read once; status freshness is irrelevant here.
+        """
+        ids, summaries = cls._owner_doc(raw)
+        known = raw.get("idempotency_keys", {}) if isinstance(raw, dict) else {}
+        id_set = set(ids)
+        out = {tid: known[tid] for tid in ids if tid in known}
+        for tid, summary in summaries.items():
+            if tid in id_set and tid not in out and "idempotency" in summary:
+                key = (summary.get("idempotency") or {}).get("key")
+                out[tid] = (
+                    hashlib.sha256(key.encode("utf-8")).hexdigest()
+                    if isinstance(key, str)
+                    else None
+                )
+        return out
+
     def _trim_summaries(self, records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if len(records) <= _TASK_SUMMARY_MAX:
             return records
@@ -1750,28 +1803,45 @@ class ModalDictTaskStore:
         The V2 create path runs this concurrently with
         ``find_by_idempotency``: the two reads overlap, so the subsequent
         ``put`` only pays its ``Dict.update`` round trip (SOR-271). The
-        staged row is consumed once and only while fresh — a stale
-        prefetch can never silently starve another writer's owner-doc
-        entries any longer than the usual read-modify-write window.
+        staged row is consumed once and only while fresh. Local owner-doc
+        writes invalidate staged rows and in-flight observations, so a
+        prefetch cannot overwrite a newer local write.
         """
+        with self._lock:
+            version = self._owner_versions.get(owner, 0)
         try:
             raw = self._d().get(self._owner_key(owner))
         except Exception:
             return
         with self._lock:
+            if self._owner_versions.get(owner, 0) != version:
+                return
             if len(self._owner_prefetch) > 64:
                 self._owner_prefetch.clear()
             self._owner_prefetch[owner] = (time.monotonic(), raw)
 
+    def _owner_written(self, owner: str) -> None:
+        """Invalidate snapshots observed before a local owner-doc write.
+
+        Caller holds the write lock; an in-flight prefetch checks this
+        generation after its RPC before staging the observed snapshot.
+        """
+        self._owner_versions[owner] = self._owner_versions.get(owner, 0) + 1
+        self._owner_prefetch.pop(owner, None)
+
     def _owner_doc_for_write(
         self, owner: str, d: Any
-    ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    ) -> tuple[list[str], dict[str, dict[str, Any]], dict[str, str | None]]:
         """Owner doc for ``put``'s read-modify-write: a just-prefetched
         row if one was staged, else a fresh read."""
         hit = self._owner_prefetch.pop(owner, None)
-        if hit is not None and time.monotonic() - hit[0] < 2.0:
-            return self._owner_doc(hit[1])
-        return self._owner_doc(d.get(self._owner_key(owner)))
+        raw = (
+            hit[1]
+            if hit is not None and time.monotonic() - hit[0] < 2.0
+            else d.get(self._owner_key(owner))
+        )
+        ids, summaries = self._owner_doc(raw)
+        return ids, summaries, self._owner_idempotency(raw)
 
     def put(self, record: TaskRecord) -> None:
         d = self._d()
@@ -1790,17 +1860,24 @@ class ModalDictTaskStore:
             writes: dict[str, Any] = {task_key: raw}
             if record.owner:
                 owner_key = self._owner_key(record.owner)
-                ids, summaries = self._owner_doc_for_write(record.owner, d)
+                ids, summaries, key_meta = self._owner_doc_for_write(record.owner, d)
                 if record.id not in ids:
                     ids.append(record.id)
                 summaries[record.id] = _task_summary(record)
-                writes[owner_key] = {"ids": ids, "records": self._trim_summaries(summaries)}
+                key_meta[record.id] = self._idempotency_digest(record)
+                writes[owner_key] = {
+                    "ids": ids,
+                    "records": self._trim_summaries(summaries),
+                    "idempotency_keys": key_meta,
+                }
                 self._index_owner(record.owner, writes)
             if record.agent_id:
                 writes[self._agent_key(record.agent_id)] = record.id
             meta = record.idempotency or {}
             if isinstance(meta.get("key"), str) and record.owner:
                 writes[self._idem_key(record.owner, meta["key"])] = record.id
+            if record.owner:
+                self._owner_written(record.owner)
             self._batch(d, writes)
         with self._lock:
             self._get_cache[task_key] = (time.monotonic(), raw)
@@ -1902,10 +1979,14 @@ class ModalDictTaskStore:
         if rec is not None and rec.owner:
             owner_key = self._owner_key(rec.owner)
             with self._lock:
-                ids, summaries = self._owner_doc(d.get(owner_key))
+                owner_raw = d.get(owner_key)
+                ids, summaries = self._owner_doc(owner_raw)
+                key_meta = self._owner_idempotency(owner_raw)
+                key_meta.pop(task_id, None)
                 ids = [i for i in ids if i != task_id]
                 summaries.pop(task_id, None)
-                d.put(owner_key, {"ids": ids, "records": summaries})
+                self._owner_written(rec.owner)
+                d.put(owner_key, {"ids": ids, "records": summaries, "idempotency_keys": key_meta})
                 self._owner_list_cache.pop(rec.owner, None)
         with self._lock:
             self._get_cache.pop(task_key, None)
@@ -1917,6 +1998,76 @@ class ModalDictTaskStore:
         with ThreadPoolExecutor(max_workers=_TASK_DICT_FANOUT) as pool:
             raws = list(pool.map(self._get_uncached, task_ids))
         return [record_from_dict(raw) for raw in raws if isinstance(raw, dict)]
+
+    def _backfill_summaries(
+        self,
+        owner: str,
+        records: list[TaskRecord],
+        observed: dict[str, dict[str, Any]],
+        *,
+        key_records: list[TaskRecord] | None = None,
+    ) -> None:
+        """Merge fetched rows' summaries into the owner doc.
+
+        Best-effort self-heal: additive-only (entries are added or
+        refreshed, never removed) and serialized with ``put``'s owner-doc
+        read-modify-write through ``self._lock``, so it cannot drop a
+        concurrent writer's entries. No ``_trim_summaries`` here — a
+        transient over-cap doc is harmless and the next ``put`` re-trims;
+        trimming on this path would re-orphan the very rows the backfill
+        just healed.
+        """
+        try:
+            d = self._d()
+            owner_key = self._owner_key(owner)
+            with self._lock:
+                owner_raw = d.get(owner_key)
+                ids, summaries = self._owner_doc(owner_raw)
+                key_meta = self._owner_idempotency(owner_raw)
+                id_set = set(ids)
+                for rec in key_records if key_records is not None else records:
+                    if rec.id in id_set:
+                        key_meta[rec.id] = self._idempotency_digest(rec)
+                for rec in records:
+                    if rec.id not in id_set:
+                        # A concurrent ``delete`` dropped the index entry
+                        # between the listing read and this write —
+                        # re-adding it would resurrect a gone record as a
+                        # phantom row on every future list (its trusted
+                        # terminal summary would serve without a point
+                        # read against the deleted ``task/<id>``).
+                        continue
+                    # Point reads happen before this lock. A concurrent retry
+                    # may have published a newer summary in the meantime;
+                    # never overwrite it with the fetched terminal snapshot.
+                    if summaries.get(rec.id) != observed.get(rec.id):
+                        continue
+                    summaries[rec.id] = _task_summary(rec)
+                self._owner_written(owner)
+                self._batch(
+                    d, {owner_key: {"ids": ids, "records": summaries, "idempotency_keys": key_meta}}
+                )
+                self._owner_list_cache[owner] = (
+                    time.monotonic(),
+                    list(ids),
+                    dict(summaries),
+                )
+                # A create's ``put`` pops ``_owner_prefetch`` and rewrites
+                # the doc from it — a pre-heal staged read would clobber
+                # this backfill on every keyed create (the v23 create-ACK
+                # regression: ``find_by_idempotency`` re-walked the whole
+                # missing set per call). Re-stage the doc just written so
+                # the imminent ``put`` merges onto the healed view.
+                self._owner_prefetch[owner] = (
+                    time.monotonic(),
+                    {
+                        "ids": list(ids),
+                        "records": dict(summaries),
+                        "idempotency_keys": dict(key_meta),
+                    },
+                )
+        except Exception:
+            return
 
     def list(self, owner: str | None = None) -> list[TaskRecord]:
         if owner is None:
@@ -1937,9 +2088,27 @@ class ModalDictTaskStore:
                 self._owner_list_cache[owner] = (time.monotonic(), ids, summaries)
         out: list[TaskRecord] = []
         missing: list[str] = []
+        # Owner-doc RMWs can lose another container's retry update. Validate
+        # a bounded rotating batch so trusting terminal history never makes
+        # an old terminal summary permanent. The RPC count stays independent
+        # of total history; all unbound rows converge after a finite scan.
+        terminal_ids = [
+            tid
+            for tid in ids
+            if (summary := summaries.get(tid)) is not None
+            and summary.get("agent_id") is None
+            and summary.get("status") in _SUMMARY_TERMINAL
+        ]
+        with self._lock:
+            start = self._terminal_validation_cursor.get(owner, 0)
+            validate = {
+                terminal_ids[(start + i) % len(terminal_ids)]
+                for i in range(min(8, len(terminal_ids)))
+            }
+            self._terminal_validation_cursor[owner] = start + len(validate)
         for task_id in ids:
             summary = summaries.get(task_id)
-            if summary is not None and summary.get("agent_id") is not None:
+            if summary is not None and _summary_trusted(summary) and task_id not in validate:
                 record = record_from_dict(summary)
                 # The summary omits ``response`` — flag it so ``put``
                 # merges the stored value instead of writing a None that
@@ -1947,17 +2116,35 @@ class ModalDictTaskStore:
                 record._response_unloaded = True
                 out.append(record)
             else:
-                # Agent-less rows can never be trusted off the index: with
-                # no bound agent there is nothing to live-aggregate against,
-                # so a stale summary write (a lost owner-doc update) would
-                # wedge the row at ``queued`` while ``task/<id>`` already
-                # went terminal (SOR-271). Read the authoritative row.
+                # Agent-less *live* rows can never be trusted off the
+                # index: with no bound agent there is nothing to
+                # live-aggregate against, so a stale summary write (a
+                # lost owner-doc update) would wedge the row at
+                # ``queued`` while ``task/<id>`` already went terminal
+                # (SOR-271). Read the authoritative row.
                 missing.append(task_id)
-        out.extend(self._pooled_gets(missing))
+        fetched = self._pooled_gets(missing)
+        out.extend(fetched)
+        heal = [
+            r
+            for r in fetched
+            if (_record_heals(r) or r.id in validate) and _task_summary(r) != summaries.get(r.id)
+        ]
+        if heal:
+            # Backfill the fetched rows' summaries so the next listing
+            # does not re-pay the point reads — otherwise every pre-index
+            # or agent-less row costs one serialized remote get on every
+            # list call forever (the production Dict accumulates such
+            # rows across deploys; that re-read is the ~8x v23 list
+            # regression). Agent-less live rows are skipped: their fresh
+            # summary stays untrusted, so the write buys nothing.
+            self._backfill_summaries(owner, heal, summaries)
         return sorted(out, key=lambda r: r.created_at)
 
     def find_by_idempotency(self, owner: str, key: str) -> TaskRecord | None:
         d = self._d()
+        with self._lock:
+            version = self._owner_versions.get(owner, 0)
         # The point index and the pre-index owner scan are both reads —
         # issue them concurrently; the owner doc is then staged for the
         # imminent ``put``, so the whole dedup + write-warm costs one wall
@@ -1973,18 +2160,22 @@ class ModalDictTaskStore:
         with self._lock:
             if len(self._owner_prefetch) > 64:
                 self._owner_prefetch.clear()
-            self._owner_prefetch[owner] = (time.monotonic(), owner_raw)
+            if self._owner_versions.get(owner, 0) == version:
+                self._owner_prefetch[owner] = (time.monotonic(), owner_raw)
         ids, summaries = self._owner_doc(owner_raw)
-        # The summary's ``idempotency`` metadata is durable — unlike the
-        # status fields ``list`` distrusts on agent-less rows — so the key
-        # match runs on summaries directly; only rows with no summary at
-        # all (pre-index data) are resolved individually.
+        known = self._owner_idempotency(owner_raw)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         for tid in ids:
-            meta = (summaries.get(tid) or {}).get("idempotency") or {}
-            if meta.get("key") == key:
+            if known.get(tid) == digest:
                 return self.get_fresh(tid)
-        missing = [tid for tid in ids if tid not in summaries]
-        for rec in self._pooled_gets(missing):
+        # Only pre-migration rows lack immutable key metadata. Full summaries
+        # are bounded, but evicting one must not reintroduce a history scan.
+        missing = [tid for tid in ids if tid not in known]
+        fetched = self._pooled_gets(missing)
+        heal = [r for r in fetched if _record_heals(r)]
+        if fetched:
+            self._backfill_summaries(owner, heal, summaries, key_records=fetched)
+        for rec in fetched:
             meta = rec.idempotency or {}
             if meta.get("key") == key:
                 return self.get_fresh(rec.id) or rec

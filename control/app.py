@@ -51,7 +51,7 @@ from control.service import (
     format_sse,
     release_lease,
 )
-from control.store import InMemoryStore, SessionStore
+from control.store import InMemoryStore, SessionRecord, SessionStore
 from control.workflow_store import WorkflowStore
 
 security = HTTPBasic(auto_error=False)
@@ -575,6 +575,51 @@ def create_app(
     from control.api_v1.bootstrap import configure_v1_bootstrap
 
     configure_v1_bootstrap(app)
+
+    def reserve_recovery(rec: SessionRecord) -> Callable[[bool], None]:
+        from control.api_v1.deps import get_scheduler
+        from control.scheduler import ScheduleRefused
+
+        state = app.state.v1_state
+        with state.lock:
+            existing = state.leases.get(rec.id)
+            if existing is not None:
+                state.recovering_leases.add(rec.id)
+                state.lease_generations[rec.id] = state.lease_generations.get(rec.id, 0) + 1
+        account_id = rec.sandbox_tags.get("account_id", "auto")
+        if existing is not None:
+
+            def finish_existing(_success: bool) -> None:
+                with state.lock:
+                    state.recovering_leases.discard(rec.id)
+                    state.lease_generations[rec.id] = state.lease_generations.get(rec.id, 0) + 1
+
+            return finish_existing
+        if account_id == "auto":
+            return lambda _success: None
+        scheduler = get_scheduler(Request({"type": "http", "app": app}))
+        acquire = getattr(scheduler, "acquire", None)
+        if not callable(acquire):
+            decision = scheduler.decide(
+                provider=rec.sandbox_tags.get("provider", "codex"), account=account_id
+            )
+            if decision.error:
+                raise SessionConflict(decision.error)
+            return lambda _success: None
+        try:
+            lease = acquire(provider=rec.sandbox_tags.get("provider", "codex"), account=account_id)
+        except ScheduleRefused as exc:
+            raise SessionConflict(exc.error, exc.code) from None
+
+        def finish(success: bool) -> None:
+            if success:
+                state.set_lease(rec.id, lease)
+            else:
+                lease.release()
+
+        return finish
+
+    plane.recovery_reserve = reserve_recovery
 
     # SOR-147 (WP-H1): automatic OAuth credential write-back. The registry is
     # resolved lazily — bootstrap seeds ``app.state.account_registry`` above,

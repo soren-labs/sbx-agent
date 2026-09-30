@@ -747,6 +747,12 @@ def _create_task_once(
     facade passes its own ``sess_…`` minter so sessions and tasks share
     the durable store without sharing the id namespace.
     """
+    # The remote reaper cannot release this web process's leases. Settle
+    # them before eligibility filtering: if every account is at capacity,
+    # resolution refuses before the shared agent-create bind can do this.
+    # A cron transition can occur inside the bind's throttle interval, so
+    # this authoritative create worker needs a fresh check.
+    v1.reconcile_leases(getattr(plane, "store", None), interval_s=0.0)
     resolution = _resolve(
         body,
         registry=registry,

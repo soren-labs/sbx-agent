@@ -118,7 +118,11 @@ def session_running_source(store: Any) -> Callable[[str], int]:
             if rec.status == "creating":
                 # Mirror the reaper's staleness basis: an unbound create is
                 # judged from created_at, a bound one from updated_at.
-                basis = rec.updated_at if rec.sandbox_id else rec.created_at
+                basis = (
+                    rec.updated_at
+                    if rec.sandbox_id or rec.sandbox_tags.get("recovering") == "true"
+                    else rec.created_at
+                )
                 if basis is not None and (
                     (now - basis).total_seconds() >= lifecycle.create_grace_s
                 ):

@@ -97,6 +97,7 @@ def reap(
     account_registry: AccountRegistry | None = None,
     checkpoints: Any = None,
     on_action: Callable[[ReapAction], None] | None = None,
+    on_scan: Callable[[list[SessionRecord]], None] | None = None,
     deadline_s: float | None = None,
     stats: dict[str, Any] | None = None,
 ) -> list[ReapAction]:
@@ -266,6 +267,8 @@ def reap(
         # (the orphan pass below) to run on what it can enumerate.
         records_all = []
         emit("reap_error", None, None)
+    if on_scan is not None:
+        on_scan(records_all)
     if stats is not None:
         stats["records_seen"] = len(records_all)
     for rec in records_all:
@@ -282,7 +285,10 @@ def reap(
             continue
         if rec.status == "creating" and not rec.sandbox_id:
             # Record published before the sandbox bound (SOR-80 create order).
-            age_s = (now - rec.created_at).total_seconds()
+            basis = (
+                rec.updated_at if rec.sandbox_tags.get("recovering") == "true" else rec.created_at
+            )
+            age_s = (now - basis).total_seconds()
             if age_s < create_grace_s:
                 skip("creating")
                 continue
@@ -585,6 +591,25 @@ def sweep_plane(
             )
 
     remaining = sweep_bound_s - (time.monotonic() - started)
+    scan: dict[str, Any] = {
+        "store": getattr(plane.store, "_name", type(plane.store).__name__),
+        "backend": type(plane.backend).__name__,
+        "idle_timeout_s": lifecycle.idle_timeout_s,
+        "records": 0,
+        "by_status": {},
+        "expired_idle": 0,
+    }
+
+    def _on_scan(records: list[SessionRecord]) -> None:
+        scan["records"] = len(records)
+        for record in records:
+            counts = scan["by_status"]
+            counts[record.status] = counts.get(record.status, 0) + 1
+            last = record.last_activity_at or record.updated_at
+            if record.status == "idle" and (now - last).total_seconds() >= lifecycle.idle_timeout_s:
+                scan["expired_idle"] += 1
+        emit_log(f"[reap] scan {scan}")
+
     stats: dict[str, Any] = {"records_seen": 0, "handles_seen": 0, "skipped": {}}
     actions = reap(
         plane.store,
@@ -596,6 +621,7 @@ def sweep_plane(
         account_registry=account_registry,
         checkpoints=getattr(plane, "checkpoints", None),
         on_action=_on_action,
+        on_scan=_on_scan,
         deadline_s=max(1.0, remaining),
         stats=stats,
     )
@@ -614,6 +640,7 @@ def sweep_plane(
         "settled_turns": settled,
         "elapsed_s": elapsed,
         "now": now,
+        "scan": scan,
         "records_seen": stats["records_seen"],
         "handles_seen": stats["handles_seen"],
         "skipped": stats["skipped"],
