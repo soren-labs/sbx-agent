@@ -435,6 +435,16 @@ _LIST_MEMO_MAX = 64
 _LIST_MEMO_LOCK = threading.Lock()
 _LIST_MEMO: dict[tuple[Any, str, int, int], tuple[float, dict[str, Any]]] = {}
 
+# A post/retry request can time out its ACK while the accepted mutation is
+# still running on ``_HEAVY_POOL``. During that window the durable task row
+# may still look terminal even though new work has been committed. Track the
+# local mutation explicitly so a concurrent cancel cannot replay the stale
+# terminal row and lose the cancellation. The cancel request persists its
+# durable marker first, then defers the real cancel until the mutation exits.
+_MUTATION_LOCK = threading.Lock()
+_MUTATIONS_INFLIGHT: dict[str, int] = {}
+_CANCEL_AFTER_MUTATION: set[str] = set()
+
 
 def _list_memo_get(
     task_store: TaskStore, owner: str, limit: int, offset: int
@@ -465,6 +475,39 @@ def _list_memo_drop(task_store: TaskStore, owner: str) -> None:
     with _LIST_MEMO_LOCK:
         for key in [k for k in tuple(_LIST_MEMO) if k[0] is task_store and k[1] == owner]:
             _LIST_MEMO.pop(key, None)
+
+
+def _mutation_begin(session_id: str) -> None:
+    with _MUTATION_LOCK:
+        _MUTATIONS_INFLIGHT[session_id] = _MUTATIONS_INFLIGHT.get(session_id, 0) + 1
+
+
+def _mutation_active(session_id: str) -> bool:
+    with _MUTATION_LOCK:
+        return _MUTATIONS_INFLIGHT.get(session_id, 0) > 0
+
+
+def _defer_cancel_if_mutating(session_id: str) -> bool:
+    """Atomically arm a post-mutation cancel when work is still in flight."""
+    with _MUTATION_LOCK:
+        if _MUTATIONS_INFLIGHT.get(session_id, 0) <= 0:
+            return False
+        _CANCEL_AFTER_MUTATION.add(session_id)
+        return True
+
+
+def _mutation_finish(session_id: str) -> bool:
+    """Drop one mutation lease; True means this worker owns deferred cancel."""
+    with _MUTATION_LOCK:
+        count = _MUTATIONS_INFLIGHT.get(session_id, 0)
+        if count <= 1:
+            _MUTATIONS_INFLIGHT.pop(session_id, None)
+            if session_id in _CANCEL_AFTER_MUTATION:
+                _CANCEL_AFTER_MUTATION.remove(session_id)
+                return True
+            return False
+        _MUTATIONS_INFLIGHT[session_id] = count - 1
+        return False
 
 
 # Request-path prefetch staging (owner-doc reads the next store write
@@ -1056,21 +1099,48 @@ def post_message(
 
     v1_body = _tasks.CreateTaskRunRequest(prompt=Prompt(text=body.prompt), on_busy=body.on_busy)
 
-    def _post() -> dict[str, Any]:
-        return _tasks.create_task_run(
-            session_id,
-            v1_body,
-            key=key,
-            plane=plane,
-            v1=v1,
-            run_states=run_states,
-            scheduler=scheduler,
-            reporter=reporter,
-            workflows=workflows,
-            task_store=task_store,
-            idempotency_key=idempotency_key,
-        )
+    def _apply_deferred_cancel() -> None:
+        try:
+            _tasks.cancel_task(
+                session_id,
+                key=key,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                workflows=workflows,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            )
+        except Exception:
+            return
+        mark_applied = getattr(task_store, "mark_cancel_applied", None)
+        if callable(mark_applied):
+            try:
+                mark_applied(session_id)
+            except Exception:
+                pass
 
+    def _post() -> dict[str, Any]:
+        try:
+            return _tasks.create_task_run(
+                session_id,
+                v1_body,
+                key=key,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                scheduler=scheduler,
+                reporter=reporter,
+                workflows=workflows,
+                task_store=task_store,
+                idempotency_key=idempotency_key,
+            )
+        finally:
+            if _mutation_finish(session_id):
+                _apply_deferred_cancel()
+
+    _mutation_begin(session_id)
     done, box = _run_with_budget(_post, _ack_budget(request))
     if done:
         if "error" in box:
@@ -1127,7 +1197,7 @@ def cancel_session(
     """
     _list_memo_drop(task_store, key.id)
     record = _require_session_for_cancel_ack(task_store, key, session_id)
-    if record.status in _tasks._TASK_TERMINAL:
+    if record.status in _tasks._TASK_TERMINAL and not _mutation_active(session_id):
         return {
             "session": _optimistic_view(
                 record,
@@ -1169,6 +1239,20 @@ def cancel_session(
         except Exception:
             marked = False
         if marked:
+            # If a just-ACKed post/retry is still committing its new run,
+            # do not race a cancel worker against it. The mutation worker's
+            # ``finally`` owns the cancellation once it exits.
+            if _defer_cancel_if_mutating(session_id):
+                return {
+                    "session": _optimistic_view(
+                        record,
+                        aggregate_status="cancelled",
+                        aggregate_reason="task_cancelled",
+                        task_store=task_store,
+                        run_states=run_states,
+                        plane=plane,
+                    )
+                }
             mark_applied = getattr(task_store, "mark_cancel_applied", None)
 
             def _converge() -> None:
@@ -1197,6 +1281,13 @@ def cancel_session(
                     plane=plane,
                 )
             }
+
+    # Marker unavailable/failed: retain the legacy budgeted cancel semantics,
+    # but still arm the same-process handoff when a post/retry is in flight.
+    # That way a fast terminal replay from the legacy attempt cannot lose the
+    # cancel once the accepted mutation finally commits. A process crash in
+    # this fallback lane has exactly the pre-marker durability exposure.
+    _defer_cancel_if_mutating(session_id)
 
     done, box = _run_with_budget(_cancel, _ack_budget(request))
     if done and "error" in box:
@@ -1258,39 +1349,66 @@ def retry_session(
         on_busy=(body.on_busy if body else "queue"),
     )
 
-    def _retry() -> dict[str, Any]:
-        fresh = task_store.get(session_id) or record
-        if fresh.agent_id is None:
-            return _redrive_dispatch(
-                fresh,
-                prompt=(body.prompt if body else None),
-                delivery_mode=(body.mode == "delivery" if body else False),
+    def _apply_deferred_cancel() -> None:
+        try:
+            _tasks.cancel_task(
+                session_id,
                 key=key,
                 plane=plane,
-                registry=registry,
-                scheduler=scheduler,
                 v1=v1,
                 run_states=run_states,
                 workflows=workflows,
+                scheduler=scheduler,
                 reporter=reporter,
-                resources_registry=resources_registry,
-                capabilities=capabilities,
                 task_store=task_store,
-                resolver=resolver,
             )
-        return _tasks.retry_task(
-            session_id,
-            v1_body,
-            key=key,
-            plane=plane,
-            v1=v1,
-            run_states=run_states,
-            workflows=workflows,
-            scheduler=scheduler,
-            reporter=reporter,
-            task_store=task_store,
-        )
+        except Exception:
+            return
+        mark_applied = getattr(task_store, "mark_cancel_applied", None)
+        if callable(mark_applied):
+            try:
+                mark_applied(session_id)
+            except Exception:
+                pass
 
+    def _retry() -> dict[str, Any]:
+        try:
+            fresh = task_store.get(session_id) or record
+            if fresh.agent_id is None:
+                return _redrive_dispatch(
+                    fresh,
+                    prompt=(body.prompt if body else None),
+                    delivery_mode=(body.mode == "delivery" if body else False),
+                    key=key,
+                    plane=plane,
+                    registry=registry,
+                    scheduler=scheduler,
+                    v1=v1,
+                    run_states=run_states,
+                    workflows=workflows,
+                    reporter=reporter,
+                    resources_registry=resources_registry,
+                    capabilities=capabilities,
+                    task_store=task_store,
+                    resolver=resolver,
+                )
+            return _tasks.retry_task(
+                session_id,
+                v1_body,
+                key=key,
+                plane=plane,
+                v1=v1,
+                run_states=run_states,
+                workflows=workflows,
+                scheduler=scheduler,
+                reporter=reporter,
+                task_store=task_store,
+            )
+        finally:
+            if _mutation_finish(session_id):
+                _apply_deferred_cancel()
+
+    _mutation_begin(session_id)
     done, box = _run_with_budget(_retry, _ack_budget(request))
     if done:
         if "error" in box:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -174,6 +175,80 @@ def test_cancel_does_not_trust_expired_terminal_cache(monkeypatch: Any) -> None:
     while not called and time.monotonic() < deadline:
         time.sleep(0.01)
     assert called == ["sess_retry"]
+
+
+def test_terminal_cancel_waits_for_inflight_retry_then_cancels(monkeypatch: Any) -> None:
+    events: list[str] = []
+    retry_started = threading.Event()
+    retry_release = threading.Event()
+    cancelled = threading.Event()
+
+    class _IntentStore(_GetCountingTaskStore):
+        def mark_cancel_pending(self, task_id: str) -> bool:
+            events.append("mark")
+            return True
+
+        def mark_cancel_applied(self, task_id: str) -> None:
+            events.append("applied")
+
+    store = _IntentStore()
+    store.put(_task("sess_window", status="finished", agent_id="agent-r"))
+    plane = _FakePlane()
+
+    def _retry(task_id: str, *_args: Any, **_kw: Any) -> dict[str, Any]:
+        retry_started.set()
+        assert retry_release.wait(2)
+        rec = store.get(task_id)
+        assert rec is not None
+        rec.status = "queued"
+        store.put(rec)
+        events.append("retry-committed")
+        return {"run": None}
+
+    def _cancel(task_id: str, **_kw: Any) -> dict[str, Any]:
+        events.append("cancel")
+        rec = store.get(task_id)
+        assert rec is not None
+        rec.status = "cancelled"
+        store.put(rec)
+        cancelled.set()
+        return {"task": {}}
+
+    monkeypatch.setattr(v2_routes._tasks, "retry_task", _retry)
+    monkeypatch.setattr(v2_routes._tasks, "cancel_task", _cancel)
+
+    retry_out = v2_routes.retry_session(
+        "sess_window",
+        _req(budget=0.01),
+        key=_key(),
+        plane=plane,
+        v1=V1State(),
+        run_states=InMemoryRunStore(),
+        workflows=SimpleNamespace(),
+        scheduler=SimpleNamespace(),
+        reporter=None,
+        task_store=store,
+        registry=SimpleNamespace(),
+        resources_registry=SimpleNamespace(),
+        capabilities=SimpleNamespace(),
+        resolver=SimpleNamespace(),
+    )
+    assert retry_started.wait(1)
+    assert retry_out["session"]["status"] == "queued"
+
+    cancel_out = v2_routes.cancel_session("sess_window", _req(budget=0.01), **_deps(store, plane))
+    assert cancel_out["session"]["status"] == "cancelled"
+    assert events == ["mark"]
+    assert cancelled.is_set() is False
+
+    retry_release.set()
+    assert cancelled.wait(2)
+    deadline = time.monotonic() + 1.0
+    while "applied" not in events and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert events == ["mark", "retry-committed", "cancel", "applied"]
+    assert store.get("sess_window").status == "cancelled"
+    assert v2_routes._mutation_active("sess_window") is False
 
 
 def test_terminal_status_aggregate_never_touches_live_plane() -> None:
