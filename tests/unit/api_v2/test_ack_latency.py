@@ -319,3 +319,46 @@ def test_session_converges_after_optimistic_ack(
     assert session["phase"] == "provisioning"
     settled = wait_session(client, auth, session["id"], "running", "finished")
     assert settled["session"]["id"] == session["id"]
+
+
+@pytest.mark.parametrize("persist_elapsed", [0.0, 0.2, 0.6])
+def test_create_worker_wait_uses_budget_remaining_after_persistence(
+    client: TestClient,
+    v1_env: V1Env,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    persist_elapsed: float,
+) -> None:
+    """Mandatory durable work must not be followed by a second full wait."""
+    from types import SimpleNamespace
+
+    from control.api_v2 import routes
+
+    clock = [10.0]
+    monkeypatch.setattr(
+        routes, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep)
+    )
+    v1_env.app.state.v2_ack_budget_s = 0.35
+    store = v1_env.app.state.task_store
+    original = store.put
+    persisted = []
+
+    def put(record):
+        original(record)
+        persisted.append(record.id)
+        clock[0] += persist_elapsed
+
+    def wait(fn, budget):
+        assert persisted and store.get(persisted[0]) is not None
+        assert budget == pytest.approx(max(0.0, 0.35 - persist_elapsed))
+        return False, {}
+
+    monkeypatch.setattr(store, "put", put)
+    monkeypatch.setattr(routes, "_run_with_budget", wait)
+    response = client.post(
+        "/v2/sessions",
+        headers={**auth, "Idempotency-Key": "remaining-budget"},
+        json={"prompt": "hello"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["session"]["status"] == "queued"

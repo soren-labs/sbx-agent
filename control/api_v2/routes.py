@@ -759,6 +759,7 @@ def create_session(
     Same idempotency semantics as ``POST /v1/tasks`` — the pin is
     ``v2:session:<key>`` so a V1 task and a V2 session can never collide.
     """
+    ack_deadline = time.monotonic() + _ack_budget(request)
     _list_memo_drop(task_store, key.id)
     v1_body = _to_task_request(body)
     fingerprint = request_fingerprint(v1_body)
@@ -891,7 +892,10 @@ def create_session(
                 _PRE_BIND_CANCELLED.discard(record.id)
         return created
 
-    done, box = _run_with_budget(_dispatch, _ack_budget(request))
+    # The optional dispatch wait shares the route's budget with mandatory
+    # dedup and persistence. Adding a fresh full wait after those RPCs made
+    # warm keyed creates exceed the SLO even after history scans were fixed.
+    done, box = _run_with_budget(_dispatch, max(0.0, ack_deadline - time.monotonic()))
     if done and "error" in box:
         if owned is not None:
             v1.idempotency.abandon(key.id, pin_key, owned)
