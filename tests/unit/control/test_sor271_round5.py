@@ -42,7 +42,7 @@ def test_unbound_queued_rows_still_converge_from_authoritative_record() -> None:
 
     assert len(records) == 400
     assert all(r.status == "error" for r in records)
-    assert fake.gets == 2
+    assert fake.gets == 3  # owner + authoritative row + merge-only backfill
 
 
 def test_retry_publishes_new_unbound_status_and_invalidates_list_cache() -> None:
