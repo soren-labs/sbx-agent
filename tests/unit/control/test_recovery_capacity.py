@@ -176,3 +176,25 @@ def test_lease_decay_cannot_release_recovery_before_reservation_is_published(env
     assert scheduler.active_count == 1
     assert not state.recovering_leases
     assert store.get("suspended").status == "idle"
+
+
+def test_stale_lease_scan_cannot_release_completed_recovery(env):
+    app, _backend, store, scheduler, _checkpoints = env
+    state = app.state.v1_state
+    state.set_lease("suspended", scheduler.acquire(provider="codex", account="acct"))
+    original_get = store.get
+    restored = False
+
+    def old_read_then_restore(sid):
+        nonlocal restored
+        old = original_get(sid)
+        if sid == "suspended" and not restored:
+            restored = True
+            app.state.plane.recover_session(sid)
+        return old
+
+    store.get = old_read_then_restore
+    assert state.reconcile_leases(store, interval_s=0) == 0
+    assert original_get("suspended").status == "idle"
+    assert "suspended" in state.leases
+    assert scheduler.active_count == 1

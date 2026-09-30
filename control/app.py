@@ -585,12 +585,14 @@ def create_app(
             existing = state.leases.get(rec.id)
             if existing is not None:
                 state.recovering_leases.add(rec.id)
+                state.lease_generations[rec.id] = state.lease_generations.get(rec.id, 0) + 1
         account_id = rec.sandbox_tags.get("account_id", "auto")
         if existing is not None:
 
             def finish_existing(_success: bool) -> None:
                 with state.lock:
                     state.recovering_leases.discard(rec.id)
+                    state.lease_generations[rec.id] = state.lease_generations.get(rec.id, 0) + 1
 
             return finish_existing
         if account_id == "auto":
