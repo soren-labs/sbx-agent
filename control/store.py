@@ -369,6 +369,18 @@ class ModalDictStore:
                     out.append(record_from_dict(raw))
         return out
 
+    def list_all_scan(self) -> list[SessionRecord]:
+        """Authoritative ``items()`` enumeration — no index, no cache.
+
+        The indexed ``list_all`` can silently omit records when the id
+        manifest loses entries (a cross-container RMW race the periodic
+        rebuild only heals opportunistically). Callers that decide the
+        fate of live resources — the reaper — must enumerate the durable
+        truth rather than trust a listing that can make a record
+        invisible forever (SOR-271 round-5 zombie agents).
+        """
+        return self._list_scan_fallback()
+
     def _kick_refresh(self) -> None:
         """Repopulate the listing cache off the request path; deduped by
         ``_refresh_lock`` so stacked stale reads share one refetch."""
