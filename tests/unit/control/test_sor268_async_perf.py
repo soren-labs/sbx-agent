@@ -247,7 +247,7 @@ class TestTaskStoreIndexedWrites:
         assert {r.id: r.status for r in listed} == {"sess_a": "error", "sess_b": "queued"}
         # owner doc only — sess_a's healed summary is terminal-trusted and
         # sess_b is agent-bound (SOR-268 r5 self-heal).
-        assert fake.gets == 1
+        assert fake.gets == 2  # owner doc + bounded unbound-terminal validation
 
 
 class TestRunStoreReadCache:

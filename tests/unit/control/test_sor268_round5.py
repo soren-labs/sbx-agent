@@ -184,7 +184,7 @@ class TestSummaryTrust:
         assert len(rows) == 1 and rows[0].status == "finished"
         # One owner-doc read; the point-read distrust no longer applies
         # to a summary that already reports terminal.
-        assert fake.gets == 1
+        assert fake.gets == 2  # owner + bounded terminal validation
 
     def test_live_agentless_summary_still_point_reads(self) -> None:
         store, fake = _modal_task_store()

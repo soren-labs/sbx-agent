@@ -1,5 +1,7 @@
 """Production-shaped regressions for the round-5 performance gate."""
 
+import copy
+
 from control.tasks import ModalDictTaskStore
 from tests.acceptance.v2_perf_gate import ProbeResult, _percentile
 from tests.unit.control.test_sor268_async_perf import _BatchDict
@@ -14,7 +16,7 @@ def test_small_sample_p95_does_not_hide_slow_request() -> None:
         assert _percentile(list(samples), 0.95) == 1.6
 
 
-def test_unbound_terminal_history_uses_one_owner_read() -> None:
+def test_unbound_terminal_history_has_bounded_validation_reads() -> None:
     store = ModalDictTaskStore("test-tasks")
     fake = _BatchDict()
     store._dict = fake
@@ -25,7 +27,7 @@ def test_unbound_terminal_history_uses_one_owner_read() -> None:
     records = store.list("key_1")
 
     assert len(records) == 400
-    assert fake.gets == 1
+    assert fake.gets == 9  # one owner doc + eight rotating validation reads
     assert {r.status for r in records} == {"error", "cancelled"}
 
 
@@ -42,7 +44,7 @@ def test_unbound_queued_rows_still_converge_from_authoritative_record() -> None:
 
     assert len(records) == 400
     assert all(r.status == "error" for r in records)
-    assert fake.gets == 3  # owner + authoritative row + merge-only backfill
+    assert fake.gets == 11  # owner + queued + eight validations + backfill
 
 
 def test_retry_publishes_new_unbound_status_and_invalidates_list_cache() -> None:
@@ -57,3 +59,54 @@ def test_retry_publishes_new_unbound_status_and_invalidates_list_cache() -> None
     store.put(record)
 
     assert store.list("key_1")[0].status == "queued"
+
+
+def test_backfill_preserves_retry_published_after_point_read() -> None:
+    for lookup in ("list", "idempotency"):
+        store = ModalDictTaskStore("test-tasks")
+        fake = _BatchDict()
+        store._dict = fake
+        record = _task("sess_retry", status="error", agent_id=None)
+        store.put(record)
+        fake.data["owner/key_1"]["records"].pop(record.id)
+        original = store._pooled_gets
+
+        def fetched_then_retry(ids):
+            fetched = original(ids)
+            record.status = "queued"
+            record.updated_at = "2026-09-30T04:00:00+00:00"
+            store.put(record)
+            return fetched
+
+        store._pooled_gets = fetched_then_retry
+        if lookup == "list":
+            store.list("key_1")
+        else:
+            store.find_by_idempotency("key_1", "v2:session:new")
+        store._pooled_gets = original
+        store._owner_list_cache.clear()
+        assert fake.data["owner/key_1"]["records"][record.id]["status"] == "queued"
+        assert store.list("key_1")[0].status == "queued"
+
+
+def test_lost_cross_instance_retry_summary_eventually_converges() -> None:
+    class CopyDict(_BatchDict):
+        def get(self, key, default=None):
+            return copy.deepcopy(super().get(key, default))
+
+    fake = CopyDict()
+    first = ModalDictTaskStore("test-tasks")
+    second = ModalDictTaskStore("test-tasks")
+    first._dict = second._dict = fake
+    for i in range(17):
+        first.put(_task(f"sess_{i}", status="error", agent_id=None))
+    second.prefetch_owner("key_1")
+    retried = _task("sess_16", status="queued", agent_id=None)
+    first.put(retried)
+    second.put(_task("sess_other", status="finished", agent_id="agent-other"))
+    assert fake.data["owner/key_1"]["records"]["sess_16"]["status"] == "error"
+
+    for _ in range(3):
+        rows = first.list("key_1")
+    assert next(r for r in rows if r.id == "sess_16").status == "queued"
+    assert fake.data["owner/key_1"]["records"]["sess_16"]["status"] == "queued"
