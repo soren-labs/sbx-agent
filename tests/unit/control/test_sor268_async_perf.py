@@ -234,7 +234,10 @@ class TestTaskStoreIndexedWrites:
         fake.gets = 0
         listed = store.list("key_1")
         assert [r.status for r in listed] == ["error"]
-        assert fake.gets == 2  # owner doc + one authoritative point read
+        # owner doc + one authoritative point read + the backfill's own
+        # doc re-read inside the merge lock — the fetched row's terminal
+        # status is healable, so the summary is rewritten (SOR-268 r5).
+        assert fake.gets == 3
 
         # A bound record's summary still materializes without a point read.
         store.put(_task("sess_b"))
@@ -242,7 +245,9 @@ class TestTaskStoreIndexedWrites:
         fake.gets = 0
         listed = store.list("key_1")
         assert {r.id: r.status for r in listed} == {"sess_a": "error", "sess_b": "queued"}
-        assert fake.gets == 2  # owner doc + sess_a point read only
+        # owner doc only — sess_a's healed summary is terminal-trusted and
+        # sess_b is agent-bound (SOR-268 r5 self-heal).
+        assert fake.gets == 1
 
 
 class TestRunStoreReadCache:
