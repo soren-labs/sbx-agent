@@ -1862,6 +1862,21 @@ class ModalDictTaskStore:
             raw = self._get_uncached(task_id)
         return record_from_dict(raw) if raw is not None else None
 
+    def peek_cached(self, task_id: str) -> TaskRecord | None:
+        """Return the last local row without remote I/O, regardless of TTL.
+
+        This is intentionally an ACK-path primitive, not a mutation read.
+        Callers may rely only on immutable identity fields unless they have
+        an explicit race-safe rule for stale status (the V2 cancel route only
+        fast-paths cached non-terminal rows). Mutations keep using
+        ``get``/``get_fresh``.
+        """
+        with self._lock:
+            cached = self._get_cache.get(self._task_key(task_id))
+        if cached is None or cached[1] is None:
+            return None
+        return record_from_dict(cached[1])
+
     def get_fresh(self, task_id: str) -> TaskRecord | None:
         """Uncached point read for mutation paths (read-modify-write must
         not run on a cached row)."""

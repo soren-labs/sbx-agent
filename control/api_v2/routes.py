@@ -100,6 +100,29 @@ def _require_session(task_store: TaskStore, key: ApiKey, session_id: str) -> Tas
     return record
 
 
+def _require_session_for_cancel_ack(
+    task_store: TaskStore, key: ApiKey, session_id: str
+) -> TaskRecord:
+    """Cheap-but-safe record for the optimistic cancel ACK path.
+
+    Owner/id are immutable, so a locally cached *non-terminal* row can be
+    used even after its normal read TTL: the durable cancel marker makes the
+    request real before the response and ``cancel_task`` is idempotent if the
+    task happened to finish concurrently. A cached terminal row is different:
+    another control-plane instance may already have retried it back to
+    running, so terminal/no-op decisions always re-read through the normal
+    store path before returning.
+    """
+    peek = getattr(task_store, "peek_cached", None)
+    cached = peek(session_id) if callable(peek) else None
+    if cached is not None:
+        if cached.owner != key.id or not is_session_id(cached.id):
+            raise not_found("session not found")
+        if cached.status not in _tasks._TASK_TERMINAL:
+            return cached
+    return _require_session(task_store, key, session_id)
+
+
 def _prefetch_reads(record: TaskRecord, plane: Any) -> dict[str, Any]:
     """Concurrent remote reads the settle+view path needs: live session
     record, workspace doc, run-ledger rows.
@@ -1103,7 +1126,7 @@ def cancel_session(
     worker still converges the record to ``cancelled``.
     """
     _list_memo_drop(task_store, key.id)
-    record = _require_session(task_store, key, session_id)
+    record = _require_session_for_cancel_ack(task_store, key, session_id)
     if record.status in _tasks._TASK_TERMINAL:
         return {
             "session": _optimistic_view(

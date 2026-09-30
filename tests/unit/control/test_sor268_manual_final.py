@@ -82,6 +82,21 @@ def test_modal_cancel_marker_is_one_write_and_zero_reads() -> None:
     assert fake.data["cancel/sess_x"]["applied"] is False
 
 
+def test_cancel_ack_uses_expired_nonterminal_cache_without_remote_get() -> None:
+    store, fake = _modal_task_store()
+    store.put(_task("sess_cached", status="running", agent_id="agent-c"))
+    key = store._task_key("sess_cached")
+    with store._lock:
+        ts, raw = store._get_cache[key]
+        store._get_cache[key] = (ts - 60.0, raw)
+    fake.gets = 0
+
+    got = v2_routes._require_session_for_cancel_ack(store, _key(), "sess_cached")
+
+    assert got.status == "running"
+    assert fake.gets == 0
+
+
 def test_cancel_persists_marker_before_background_convergence(monkeypatch: Any) -> None:
     events: list[str] = []
 
@@ -146,12 +161,14 @@ def test_cancel_does_not_trust_expired_terminal_cache(monkeypatch: Any) -> None:
     monkeypatch.setattr(v2_routes, "_CANCEL_CONVERGE_DELAY_S", 0.0)
     monkeypatch.setattr(v2_routes._tasks, "cancel_task", _cancel)
 
+    fake.gets = 0
     out = v2_routes.cancel_session(
         "sess_retry",
         _req(budget=0.5),
         **_deps(store, _FakePlane()),
     )
     assert out["session"]["status"] == "cancelled"
+    assert fake.gets >= 1  # terminal cache forced an authoritative refresh
 
     deadline = time.monotonic() + 1.0
     while not called and time.monotonic() < deadline:
