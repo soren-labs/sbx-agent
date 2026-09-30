@@ -583,8 +583,17 @@ def create_app(
         state = app.state.v1_state
         with state.lock:
             existing = state.leases.get(rec.id)
+            if existing is not None:
+                state.recovering_leases.add(rec.id)
         account_id = rec.sandbox_tags.get("account_id", "auto")
-        if existing is not None or account_id == "auto":
+        if existing is not None:
+
+            def finish_existing(_success: bool) -> None:
+                with state.lock:
+                    state.recovering_leases.discard(rec.id)
+
+            return finish_existing
+        if account_id == "auto":
             return lambda _success: None
         scheduler = get_scheduler(Request({"type": "http", "app": app}))
         acquire = getattr(scheduler, "acquire", None)

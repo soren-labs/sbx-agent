@@ -8,7 +8,7 @@ from control.app import create_app
 from control.backend import LocalProcessBackend, SandboxSpec
 from control.ports import Account
 from control.reaper import reap
-from control.scheduler import AccountScheduler
+from control.scheduler import AccountScheduler, ScheduleRefused
 from control.service import ConcurrencyLimit, SessionConflict
 from control.store import InMemoryStore, SessionRecord
 from tests.fakes.fake_ports import InMemoryAccountRegistry
@@ -156,3 +156,23 @@ def test_recovery_refuses_when_global_capacity_is_full(env):
     with pytest.raises(SessionConflict, match="concurrency_limit"):
         plane.recover_session("suspended")
     assert checkpoints.calls == 0
+
+
+def test_lease_decay_cannot_release_recovery_before_reservation_is_published(env):
+    app, _backend, store, scheduler, _checkpoints = env
+    state = app.state.v1_state
+    state.set_lease("suspended", scheduler.acquire(provider="codex", account="acct"))
+    original_put = store.put
+
+    def decay_before_publish(rec):
+        if rec.status == "creating":
+            assert state.reconcile_leases(store, interval_s=0) == 0
+            with pytest.raises(ScheduleRefused, match="account_busy"):
+                scheduler.acquire(provider="codex", account="acct")
+        original_put(rec)
+
+    store.put = decay_before_publish
+    app.state.plane.recover_session("suspended")
+    assert scheduler.active_count == 1
+    assert not state.recovering_leases
+    assert store.get("suspended").status == "idle"

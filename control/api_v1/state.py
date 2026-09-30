@@ -326,6 +326,7 @@ class V1State:
     # Monotonic timestamp of the last ``reconcile_leases`` pass — throttle
     # state, not durable data (V1State is process-local by design).
     leases_reconciled_at: float = 0.0
+    recovering_leases: set[str] = field(default_factory=set)
 
     def set_meta(self, session_id: str, meta: AgentMeta) -> None:
         with self.lock:
@@ -379,7 +380,12 @@ class V1State:
                 and (rec.status != "suspended")
             ):
                 continue
-            popped = self.pop_lease(session_id)
+            with self.lock:
+                # Recovery may have reused this lease after our status read.
+                # Its creating reservation has not necessarily landed yet.
+                if session_id in self.recovering_leases:
+                    continue
+                popped = self.leases.pop(session_id, None)
             if popped is None:
                 continue
             release = getattr(popped, "release", None)
