@@ -28,7 +28,6 @@ from control.api_v2 import router as api_v2_router
 from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
     DEFAULT_MODEL,
-    MAX_CONCURRENT,
     RUN_ACTIVITY_DICT_NAME,
     RUNS_DICT_NAME,
     SESSIONS_DICT_NAME,
@@ -44,6 +43,7 @@ from control.config import (
 from control.run_activity import FileRunActivityStore, InMemoryRunActivityStore, RunActivityStore
 from control.run_store import RunLedger, RunStore
 from control.sandbox_io import sandbox_env
+from control.scheduler import DEFAULT_MAX_GLOBAL
 from control.service import (
     ConcurrencyLimit,
     ControlPlane,
@@ -408,9 +408,15 @@ def create_app(
         store,
         runner_cmd,
         clock=clock,
+        # SOR-271 round-4: the plane cap and the scheduler's global cap are
+        # the same design knob (v2 §3.3) — resolve both from
+        # ``SBX_MAX_CONCURRENT`` with the same ``DEFAULT_MAX_GLOBAL``
+        # fallback. The old ``MAX_CONCURRENT=2`` fallback silently held the
+        # production plane at 2 live agents whenever the env var was absent
+        # remotely (the ~2-live ``concurrency_limit`` wedge).
         max_concurrent=max_concurrent
         if max_concurrent is not None
-        else env_int("SBX_MAX_CONCURRENT", MAX_CONCURRENT),
+        else env_int("SBX_MAX_CONCURRENT", DEFAULT_MAX_GLOBAL),
         default_model=default_model or os.environ.get("SBX_DEFAULT_MODEL", DEFAULT_MODEL),
         idle_timeout_s=idle_timeout_s if idle_timeout_s is not None else lifecycle.idle_timeout_s,
         turn_max_seconds=turn_max_seconds

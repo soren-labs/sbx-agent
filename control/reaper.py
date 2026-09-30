@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from control.accounts import cooldown_expired
@@ -21,6 +22,24 @@ from control.store import SessionRecord, SessionStore
 # terminate + ``timed_out`` path; a late-landing checkpoint is a wasted
 # op, not a stuck sweep.
 _SUSPEND_BOUND_S = 120
+
+# SOR-271 round-4: the round-3 fix isolated *throwing* remote calls, but
+# the production wedge was a remote call that never *returns* — a sandbox
+# poll/read on a wedged sandbox or a stalled Dict RPC starves the sweep
+# identically and silently. Every remote call on the invocation path is
+# now time-bounded; a bound that trips degrades to "this record/op
+# skipped", never to a dead tick.
+_POLL_BOUND_S = 30
+_LIST_BOUND_S = 60
+_PUT_BOUND_S = 30
+_TERMINATE_BOUND_S = 60
+_ON_ACTION_BOUND_S = 60
+_REGISTRY_BOUND_S = 30
+_REBUILD_BOUND_S = 120
+_RECONCILE_BOUND_S = 120
+# Soft wall for one whole tick — below the 5-minute cron period so a tick
+# can never run into (or past) the next invocation.
+_SWEEP_BOUND_S = 240
 
 
 def _bounded_call(fn: Callable[[], Any], timeout_s: float) -> Any:
@@ -60,6 +79,7 @@ def reap(
     account_registry: AccountRegistry | None = None,
     checkpoints: Any = None,
     on_action: Callable[[ReapAction], None] | None = None,
+    deadline_s: float | None = None,
 ) -> list[ReapAction]:
     """Reconcile Dict records with live sandboxes.
 
@@ -112,6 +132,15 @@ def reap(
     pass, which is the pass that reclaims zombie sandboxes (SOR-271
     round-3: callbacks are part of the invocation path, not the rules).
 
+    SOR-271 round-4: every remote call on this path — store list/put,
+    backend poll/list/terminate, registry ops, ``rebuild_index``, and
+    ``on_action`` itself — is *time*-bounded, not just exception-guarded:
+    a call that never returns is a dead tick on every cron invocation,
+    which is exactly the "cron fires yet nothing ever reaps" production
+    symptom. ``deadline_s`` adds a soft wall for the whole sweep (checked
+    per record/handle); on expiry the sweep emits ``sweep_deadline`` and
+    returns what it settled instead of running into the next tick.
+
     Unset bounds resolve from ``lifecycle_config`` (SOR-132/SOR-134), so
     every caller — cron, local sweep, gate — shares the deploy's resolved
     values instead of the contract defaults.
@@ -134,24 +163,24 @@ def reap(
         action = ReapAction(kind, session_id, sandbox_id, account_id)
         actions.append(action)
         if on_action is not None:
-            try:
-                on_action(action)
-            except Exception:
-                # Isolate the callback: a remote throw (lease release or
-                # run-ledger settle) records the failure and lets the
-                # sweep continue. Appended directly — never re-invoke
-                # on_action or it can fail the same way forever.
+            # Isolate the callback — a remote throw (lease release or
+            # run-ledger settle) OR a call that never returns both record
+            # a failure and let the sweep continue. Appended directly —
+            # never re-invoke on_action or it can fail the same way
+            # forever.
+            delivered = _bounded_call(lambda: on_action(action) or True, _ON_ACTION_BOUND_S)
+            if delivered is None:
                 actions.append(ReapAction("reap_error", session_id, sandbox_id))
 
     def persist(rec: SessionRecord) -> bool:
         """``store.put`` that cannot kill the sweep — the record stays
-        non-terminal and the next sweep retries it."""
-        try:
-            store.put(rec)
-            return True
-        except Exception:
+        non-terminal and the next sweep retries it. Bounded too: a
+        stalled Dict write must not wedge the tick (SOR-271 round-4)."""
+        wrote = _bounded_call(lambda: store.put(rec) or True, _PUT_BOUND_S)
+        if wrote is None:
             emit("reap_error", rec.id, rec.sandbox_id)
             return False
+        return True
 
     # Index-doc self-heal: manifest RMW writes can lose entries across
     # containers, orphaning records from ``list_all`` — an agent invisible
@@ -160,36 +189,49 @@ def reap(
     # (a keys() enumeration on the cron, never on a request path).
     rebuild_index = getattr(store, "rebuild_index", None)
     if callable(rebuild_index):
-        try:
-            rebuild_index()
-        except Exception:
-            pass
+        # ``keys()`` enumeration is a serial remote walk — bound it so a
+        # stalled Dict RPC cannot consume the whole tick before records.
+        _bounded_call(lambda: rebuild_index() or True, _REBUILD_BOUND_S)
+
+    sweep_deadline = time.monotonic() + deadline_s if deadline_s is not None else None
+
+    def deadline_hit() -> bool:
+        return sweep_deadline is not None and time.monotonic() > sweep_deadline
 
     if account_registry is not None:
-        try:
-            accounts = list(account_registry.list())
-        except Exception:
+        listed = _bounded_call(lambda: list(account_registry.list()), _REGISTRY_BOUND_S)
+        if listed is None:
             accounts = []
             emit("reap_error", None, None)
+        else:
+            accounts = listed
         for acct in accounts:
+            if deadline_hit():
+                emit("sweep_deadline", None, None)
+                return actions
             if not cooldown_expired(acct, now):
                 continue
-            try:
-                account_registry.mark_status(acct.id, "active")
-            except (KeyError, ValueError):
+            marked = _bounded_call(
+                lambda: account_registry.mark_status(acct.id, "active") or True,
+                _REGISTRY_BOUND_S,
+            )
+            if marked is None:
                 # Missing — or a stored record whose id fails account_id
-                # validation (SOR-105): never usable, leave it.
+                # validation (SOR-105): never usable, leave it — or a
+                # wedged remote write; either way retry next sweep.
                 continue
             emit("account_recovered", None, None, account_id=acct.id)
 
-    try:
-        records_all = store.list_all()
-    except Exception:
+    records_all = _bounded_call(store.list_all, _LIST_BOUND_S)
+    if records_all is None:
         # No listing, no sweep — surface the failure and leave the rest
         # (the orphan pass below) to run on what it can enumerate.
         records_all = []
         emit("reap_error", None, None)
     for rec in records_all:
+        if deadline_hit():
+            emit("sweep_deadline", None, None)
+            return actions
         if rec.status in TERMINAL_STATUSES:
             continue
         if rec.status == "suspended":
@@ -208,13 +250,17 @@ def reap(
                 emit("lost", rec.id, None)
             continue
         handle = rec.handle()
-        try:
-            poll = backend.poll(handle) if handle is not None else None
-        except Exception:
+        poll = (
+            _bounded_call(lambda: backend.poll(handle), _POLL_BOUND_S)
+            if handle is not None
+            else None
+        )
+        if handle is not None and poll is None:
             # A wedged poll means UNKNOWN, not dead — skip this record.
             # Before this guard a single throwing poll aborted the whole
             # sweep every cron tick, so records after it were never
-            # reaped (SOR-268 zombie idle agents).
+            # reaped (SOR-268 zombie idle agents); the same applies to a
+            # poll that never returns (SOR-271 round-4).
             emit("reap_error", rec.id, rec.sandbox_id)
             continue
         alive = bool(poll and poll.alive)
@@ -251,14 +297,17 @@ def reap(
                 rec.current_turn_id = None
                 rec.current_turn_n = None
                 persisted = persist(rec)
-                try:
-                    checkpoints.fail(
-                        rec.id,
-                        "platform loss before checkpoint: "
-                        f"sandbox {rec.sandbox_id} gone, no usable snapshot",
-                    )
-                except Exception:
-                    pass
+                _bounded_call(
+                    lambda: (
+                        checkpoints.fail(
+                            rec.id,
+                            "platform loss before checkpoint: "
+                            f"sandbox {rec.sandbox_id} gone, no usable snapshot",
+                        )
+                        or True
+                    ),
+                    _REGISTRY_BOUND_S,
+                )
                 if persisted:
                     emit("platform_loss", rec.id, rec.sandbox_id)
                 continue
@@ -298,9 +347,10 @@ def reap(
                 if persist(rec):
                     emit("lost", rec.id, rec.sandbox_id)
                 if handle is not None:
-                    try:
-                        backend.terminate(handle)
-                    except Exception:
+                    terminated = _bounded_call(
+                        lambda: backend.terminate(handle) or True, _TERMINATE_BOUND_S
+                    )
+                    if terminated is None:
                         emit("cleanup_failed", rec.id, rec.sandbox_id)
             continue
 
@@ -317,18 +367,20 @@ def reap(
                 # first) → release the sandbox → recoverable ``suspended``
                 # rather than terminal ``timed_out``. A failed terminate
                 # leaves a sandbox the orphan pass reclaims next sweep.
-                try:
-                    backend.terminate(handle)
-                except Exception:
+                terminated = _bounded_call(
+                    lambda: backend.terminate(handle) or True, _TERMINATE_BOUND_S
+                )
+                if terminated is None:
                     emit("cleanup_failed", rec.id, rec.sandbox_id)
                 rec.status = "suspended"
                 rec.updated_at = now
                 if persist(rec):
                     emit("suspended", rec.id, rec.sandbox_id)
                 continue
-            try:
-                backend.terminate(handle)
-            except Exception:
+            terminated = _bounded_call(
+                lambda: backend.terminate(handle) or True, _TERMINATE_BOUND_S
+            )
+            if terminated is None:
                 emit("cleanup_failed", rec.id, rec.sandbox_id)
             rec.status = "timed_out"
             rec.ended_at = now
@@ -338,11 +390,11 @@ def reap(
             if persist(rec):
                 emit("timed_out", rec.id, rec.sandbox_id)
 
-    try:
-        records = {rec.id: rec for rec in store.list_all()}
-    except Exception:
+    listed = _bounded_call(store.list_all, _LIST_BOUND_S)
+    if listed is None:
         emit("reap_error", None, None)
         return actions
+    records = {rec.id: rec for rec in listed}
     bound_live = {
         rec.sandbox_id
         for rec in records.values()
@@ -352,12 +404,14 @@ def reap(
         # it owns no live sandbox, so a surviving handle is an orphan.
         and rec.status != "suspended"
     }
-    try:
-        handles = backend.list()
-    except Exception:
+    handles = _bounded_call(backend.list, _LIST_BOUND_S)
+    if handles is None:
         emit("reap_error", None, None)
         return actions
     for handle in handles:
+        if deadline_hit():
+            emit("sweep_deadline", None, None)
+            return actions
         if handle.id in bound_live:
             continue
         rec = _session_record(records, handle)
@@ -375,9 +429,8 @@ def reap(
         else:
             kind = "orphan_terminate"
             session_id = None
-        try:
-            backend.terminate(handle)
-        except Exception:
+        terminated = _bounded_call(lambda: backend.terminate(handle) or True, _TERMINATE_BOUND_S)
+        if terminated is None:
             emit("cleanup_failed", session_id, handle.id)
             continue
         emit(kind, session_id, handle.id)
@@ -395,3 +448,103 @@ def _session_record(
         if rec is not None:
             return rec
     return next((r for r in records.values() if r.sandbox_id == handle.id), None)
+
+
+def sweep_plane(
+    plane: Any,
+    *,
+    v1_state: Any = None,
+    account_registry: AccountRegistry | None = None,
+    now: datetime | None = None,
+    reconcile_bound_s: float = _RECONCILE_BOUND_S,
+    sweep_bound_s: float = _SWEEP_BOUND_S,
+    log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """One full reaper tick for a plane — the production cron's body.
+
+    Two phases, each *time*-bounded rather than merely exception-guarded
+    (SOR-271 round-4): a remote call that throws degrades to a skipped
+    stage, and so does one that never returns — the pre-fix wedge that
+    let a firing cron produce zero observable reaping for days.
+
+    1. ``plane.reconcile_turns()`` settles watcher-less ``running``
+       records from written turn evidence (so a provider success lands
+       FINISHED + idle instead of ``lost``). Bounded — on timeout the
+       leftover daemon thread finishes in the background and the tick
+       proceeds to the reaper regardless.
+    2. ``reap()`` under ``deadline_s`` (the remainder of
+       ``sweep_bound_s``), with ``on_action`` wiring ``/v1`` lease release
+       + orphaned-run settlement — the same wiring the cron carried,
+       moved here so the whole tick is exercised in unit tests.
+
+    ``log`` (default ``print`` when called with ``log=print`` — pass a
+    collector in tests) receives one line per phase boundary so the
+    deployed function's stdout proves the tick ran and what it did.
+    Returns a summary dict: ``actions`` (the emitted ``ReapAction``s),
+    ``action_kinds``, ``settled_turns``, ``elapsed_s``, ``now``.
+    """
+    from control.service import release_lease_for_action
+
+    emit_log = log if log is not None else (lambda _m: None)
+    started = time.monotonic()
+    now = now or datetime.now(UTC)
+    lifecycle = lifecycle_config()
+    emit_log(f"[reap] tick start at={now.isoformat()} bound_s={sweep_bound_s}")
+
+    reconcile = getattr(plane, "reconcile_turns", None)
+    settled = _bounded_call(lambda: reconcile(), reconcile_bound_s) if callable(reconcile) else []
+    if settled is None:
+        emit_log(
+            f"[reap] reconcile exceeded {reconcile_bound_s}s — proceeding "
+            "to sweep; a hung remote read must never starve the reaper"
+        )
+        settled = []
+    else:
+        emit_log(f"[reap] reconcile settled {len(settled)} turn(s)")
+
+    settle = getattr(plane, "settle_orphaned_runs", None)
+
+    def _on_action(action: ReapAction) -> None:
+        # A ``suspended`` agent keeps its account lease (recoverable);
+        # everything else releases like a terminal transition. Kinds that
+        # carry no session (``reap_error``, ``sweep_deadline``,
+        # ``account_recovered``) no-op through ``release_lease``.
+        if action.kind != "suspended":
+            release_lease_for_action(v1_state, action)
+        if (
+            action.kind in ("lost", "timed_out", "platform_loss")
+            and action.session_id
+            and callable(settle)
+        ):
+            # The session just went terminal — persist a terminal verdict
+            # for any still-open run so no record dangles RUNNING.
+            settle(
+                action.session_id,
+                session_status="lost" if action.kind == "platform_loss" else action.kind,
+            )
+
+    remaining = sweep_bound_s - (time.monotonic() - started)
+    actions = reap(
+        plane.store,
+        plane.backend,
+        now,
+        idle_timeout_s=lifecycle.idle_timeout_s,
+        create_grace_s=lifecycle.create_grace_s,
+        run_grace_s=lifecycle.run_stale_s,
+        account_registry=account_registry,
+        checkpoints=getattr(plane, "checkpoints", None),
+        on_action=_on_action,
+        deadline_s=max(1.0, remaining),
+    )
+    kinds: dict[str, int] = {}
+    for action in actions:
+        kinds[action.kind] = kinds.get(action.kind, 0) + 1
+    elapsed = time.monotonic() - started
+    emit_log(f"[reap] tick done elapsed_s={elapsed:.1f} actions={len(actions)} kinds={kinds}")
+    return {
+        "actions": actions,
+        "action_kinds": kinds,
+        "settled_turns": settled,
+        "elapsed_s": elapsed,
+        "now": now,
+    }

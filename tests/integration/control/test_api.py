@@ -93,7 +93,10 @@ def test_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
-def test_concurrency_limit_429(client: TestClient) -> None:
+def test_concurrency_limit_429(client: TestClient, control_env) -> None:
+    # Pin the plane cap — the default now resolves SBX_MAX_CONCURRENT → 8
+    # (SOR-271 round-4); this spec exercises cap enforcement itself.
+    control_env[0].state.plane.max_concurrent = 2
     a = client.post("/api/sessions", json={"title": "a"}, auth=AUTH)
     b = client.post("/api/sessions", json={"title": "b"}, auth=AUTH)
     assert a.status_code == 201
