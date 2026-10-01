@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 
@@ -204,6 +205,18 @@ def cmd_turn(
         argv = adapter.resume_argv(prompt, requested_id)
     else:
         argv = adapter.first_turn_argv(prompt, model if isinstance(model, str) and model else "")
+    # Custom/fake CODEX_BIN keeps its existing exec protocol unless opted in.
+    # Native Codex uses app-server deltas; SBX_CODEX_TRANSPORT=exec is a fallback.
+    transport = os.environ.get("SBX_CODEX_TRANSPORT", "")
+    if provider == "codex" and (
+        transport == "app-server" or (not transport and "CODEX_BIN" not in os.environ)
+    ):
+        argv = [sys.executable, "-m", "runtime.runner.codex_stream"]
+        if isinstance(model, str) and model:
+            argv += ["--model", model]
+        if requested_id:
+            argv += ["--resume", requested_id]
+        argv += ["--", prompt]
     stderr_path = root / "turns" / f"{n}.stderr"
     # SOR-174: provider CLIs run inside the declared workspace workdir
     # ($SBX_WORK/$SBX_WORKDIR) while runner state stays under ``root``.

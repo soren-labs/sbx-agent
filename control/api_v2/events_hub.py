@@ -240,7 +240,8 @@ class SessionEventsHub:
         def _reader() -> None:
             try:
                 for line in proc.stdout:
-                    self._inbox.put(("line", line))
+                    # Deliver text independently of slow remote status/store reads.
+                    self._ingest_raw(line)
             except Exception:
                 pass
             finally:

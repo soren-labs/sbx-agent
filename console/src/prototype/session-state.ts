@@ -5,6 +5,7 @@ export function mergeActivity(current: ActivityItem[], incoming: ActivityItem[])
   const rows = new Map(current.map(item => [item.id, item]));
   for (const item of incoming) {
     const prior = rows.get(item.id);
+    if (prior && ["finished","failed"].includes(prior.status ?? "") && item.status === "running") continue;
     rows.set(item.id, prior ? {...prior, ...item, seq: prior.seq, ts: prior.ts} : item);
   }
   return [...rows.values()].sort((a,b) => a.seq-b.seq);

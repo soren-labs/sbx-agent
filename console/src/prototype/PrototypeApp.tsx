@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -904,6 +905,11 @@ function SessionWorkspace({
   const [connectionEpoch,setConnectionEpoch]=useState(0);
   useEffect(()=>{const reconnect=()=>{setSession(null);setHistoryFloor(null);setConnectionEpoch(n=>n+1);setError("");};window.addEventListener("sbx-connection-change",reconnect);return()=>window.removeEventListener("sbx-connection-change",reconnect);},[]);
   const logRef = useRef<HTMLDivElement>(null);
+  const followLog = useRef(true);
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    if (el && followLog.current) el.scrollTop = el.scrollHeight;
+  }, [session]);
   useEffect(() => {
     let alive = true;
     let networkReady = false;
@@ -958,35 +964,28 @@ function SessionWorkspace({
                 : [...s.turns, turn],
             };
           }),
-        onActivity: (item) =>
-          setSession((s) => {
-            if (!s || (item.kind === "status" && !item.turnId)) return s;
-            const turnId =
-              item.turnId ?? `turn-${Math.max(1, item.n ?? s.turnCount ?? 1)}`;
-            const exists = s.turns.some((t) => t.id === turnId);
-            const placeholder: Turn = {
-              id: turnId,
-              index: Math.max(1, item.n ?? s.turnCount ?? 1),
-              prompt: (item.n ?? 1) === 1 ? s.prompt : "",
-              status: "running",
-              createdAt: item.ts,
-              startedAt: item.ts,
-              finishedAt: null,
-              result: null,
-              error: null,
-              activity: [item],
-            };
-            return {
-              ...s,
-              turns: exists
-                ? s.turns.map((t) =>
-                    t.id === turnId
-                      ? { ...t, activity: mergeActivity(t.activity, [item]) }
-                      : t,
-                  )
-                : [...s.turns, placeholder],
-            };
-          }),
+        onActivities: (items) => setSession(s=>{
+          if (!s) return s;
+          const turns = new Map(s.turns.map(t=>[t.id,t]));
+          const grouped = new Map<string, typeof items>();
+          for (const item of items) {
+            if (item.kind === "status" && !item.turnId) continue;
+            const turnId=item.turnId ?? `turn-${Math.max(1,item.n ?? s.turnCount ?? 1)}`;
+            grouped.set(turnId,[...(grouped.get(turnId) ?? []),item]);
+          }
+          for (const [turnId,rows] of grouped) {
+            const first=rows[0], prior=turns.get(turnId);
+            const placeholder: Turn = {id:turnId,index:Math.max(1,first.n ?? s.turnCount ?? 1),prompt:(first.n ?? 1)===1 ? s.prompt : "",status:"running",createdAt:first.ts,startedAt:first.ts,finishedAt:null,result:null,error:null,activity:[]};
+            const turn=prior ?? placeholder;
+            turns.set(turnId,{...turn,activity:mergeActivity(turn.activity,rows)});
+          }
+          return {...s,turns:[...turns.values()].sort((a,b)=>a.index-b.index)};
+        }),
+        // Fixture transports may emit single rows rather than batches.
+        onActivity: (item) => setSession(s=>{
+          if (!s || !item.turnId) return s;
+          return {...s,turns:s.turns.map(t=>t.id===item.turnId ? {...t,activity:mergeActivity(t.activity,[item])} : t)};
+        }),
         onOpen: () => setStream("connected"),
         onError: (e) => {
           setError(e.message);
@@ -1012,6 +1011,7 @@ function SessionWorkspace({
     if (!session || !api.getHistory || historyLoading) return;
     const before=Math.min(...session.turns.map(t=>t.index));
     const el=logRef.current, height=el?.scrollHeight ?? 0, top=el?.scrollTop ?? 0;
+    followLog.current = false;
     setHistoryLoading(true);setHistoryError("");
     try {
       const page=await api.getHistory(id,before);
@@ -1221,7 +1221,10 @@ function SessionWorkspace({
       </nav>
       <div className="session-split">
         <section className="conversation-pane" aria-label="Session worklog">
-          <div className="worklog-scroll" ref={logRef}>
+          <div className="worklog-scroll" ref={logRef} onScroll={event => {
+            const el = event.currentTarget;
+            followLog.current = el.scrollHeight - el.clientHeight - el.scrollTop < 64;
+          }}>
             {api.getHistory && hasMoreHistory && session.turns.length>0 && Math.min(...session.turns.map(t=>t.index))>1 && <div className="history-controls">
               <button className="button small" disabled={historyLoading} onClick={loadHistory}>{historyLoading ? "Loading earlier messages…" : "Load earlier messages"}</button>
               {historyError && <p role="alert">{historyError}</p>}

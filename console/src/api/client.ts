@@ -53,6 +53,7 @@ export interface SessionEventHandlers {
   onOpen?: () => void;
   onPhase?: (phase: SessionPhase) => void;
   onActivity?: (item: ActivityItem) => void;
+  onActivities?: (items: ActivityItem[]) => void;
   onTurn?: (turn: Turn) => void;
   onSession?: (session: Session) => void;
   /** session.meta frame — effective provider/model once resolved. */

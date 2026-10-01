@@ -678,14 +678,36 @@ export class HttpSessionApi implements SessionApi {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let sawDisconnect = false;
 
-    const emit = (item: ActivityItem | null) => {
-      if (item) handlers.onActivity?.(item);
+    const pending = new Map<string, ActivityItem>();
+    let paint: number | null = null;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (paint !== null) cancelAnimationFrame(paint);
+      if (fallback !== null) clearTimeout(fallback);
+      paint = null; fallback = null;
+      const items = [...pending.values()]; pending.clear();
+      if (!items.length || closed) return;
+      if (handlers.onActivities) handlers.onActivities(items);
+      else items.forEach(item=>handlers.onActivity?.(item));
     };
+    const emit = (item: ActivityItem | null) => {
+      if (!item) return;
+      const key = `${item.turnId}:${item.id}`;
+      const prior = pending.get(key);
+      if (prior && (prior.status === "finished" || prior.status === "failed") && item.status === "running") return;
+      pending.set(key, prior ? {...item,seq:prior.seq,ts:prior.ts} : item);
+      if (fallback === null) {
+        fallback = setTimeout(flush,50);
+        paint = requestAnimationFrame(flush);
+      }
+    };
+
 
     const handleFrame = (frame: any) => {
       const type = String(frame?.type ?? "");
       switch (type) {
         case "session.status": {
+          flush();
           // Fresh on every connect (no id) — always apply.
           const phase = normalizePhase(frame.phase, frame.status);
           handlers.onPhase?.(phase);
@@ -718,6 +740,7 @@ export class HttpSessionApi implements SessionApi {
         case "turn.finished":
         case "turn.completed":
         case "turn.failed": {
+          flush();
           const n = typeof frame.n === "number" ? frame.n : undefined;
           if (n != null) {
             handlers.onTurn?.({
@@ -826,12 +849,14 @@ export class HttpSessionApi implements SessionApi {
             }
           }
         }
+        flush();
         throw new ApiError("network", "event stream ended", {
           subcode: "eof",
           retryable: true,
         });
       } catch (e) {
         if (closed) return;
+        flush();
         if (e instanceof ApiError && [401, 403, 404].includes(e.httpStatus)) {
           handlers.onError?.(e);
           return; // session gone — don't retry
@@ -847,6 +872,9 @@ export class HttpSessionApi implements SessionApi {
     void open();
     return () => {
       closed = true;
+      pending.clear();
+      if (paint !== null) cancelAnimationFrame(paint);
+      if (fallback !== null) clearTimeout(fallback);
       if (retryTimer) clearTimeout(retryTimer);
       abort?.abort();
     };

@@ -111,6 +111,8 @@ class AcpBridge:
         self._next_id = 0
         self._tools: dict[str, dict[str, Any]] = {}
         self._usage: dict[str, Any] = {}
+        self._text_seq = 0
+        self._buf_id = ""
         self._buf_kind: str | None = None
         self._buf_text: list[str] = []
         self.prompting = False
@@ -125,13 +127,25 @@ class AcpBridge:
         self._buf_kind = None
         self._buf_text = []
         if text:
-            _emit({"type": kind, "text": text})
+            _emit({"type": kind, "id": self._buf_id, "status": "completed", "text": text})
 
     def _note_chunk(self, kind: str, text: str) -> None:
         if self._buf_kind != kind:
             self._flush_buffer()
             self._buf_kind = kind
+            self._buf_id = f"acp-text-{self._text_seq}"
+            self._text_seq += 1
+        if not text:
+            return
         self._buf_text.append(text)
+        _emit(
+            {
+                "type": kind,
+                "id": self._buf_id,
+                "status": "in_progress",
+                "text": "".join(self._buf_text),
+            }
+        )
 
     def _on_update(self, params: dict[str, Any]) -> None:
         if not self.prompting:

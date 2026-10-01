@@ -51,3 +51,30 @@ it("does not overwrite turn results from an older detail snapshot",()=>{
  const older=structuredClone(current);older.updatedAt="2026-10-01T00:00:00Z";older.turns[0].result="Older result";
  expect(mergeSession(current,older).turns[0].result).toBe("Latest result");
 });
+it("batches only real cumulative deltas, preserves split UTF-8, and flushes before terminal",async()=>{
+ vi.useFakeTimers();
+ const enc=new TextEncoder();
+ const wire=[
+  {type:"item.started",n:1,item:{id:"msg",type:"agent_message",text:"你"}},
+  {type:"item.updated",n:1,item:{id:"msg",type:"agent_message",text:"你好 **stre"}},
+  {type:"item.completed",n:1,item:{id:"msg",type:"agent_message",text:"你好 **stream**"}},
+  {type:"turn.completed",n:1}
+ ].map((event,i)=>`id: ${i+1}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+ const bytes=enc.encode(wire);let controller:ReadableStreamDefaultController<Uint8Array>;
+ vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(new ReadableStream({start(c){controller=c;}}),{status:200})));
+ const batch=vi.fn(), terminal=vi.fn(()=>expect(batch).toHaveBeenCalledWith([expect.objectContaining({text:"你好 **stream**",status:"finished"})]));
+ const stop=new HttpSessionApi().subscribe("session",{onActivities:batch,onTurn:terminal});
+ await vi.advanceTimersByTimeAsync(0);
+ // Split inside a Chinese UTF-8 sequence, then deliver without artificial time.
+ const cut=bytes.findIndex(b=>b===0xe4)+1;
+ controller!.enqueue(bytes.slice(0,cut));controller!.enqueue(bytes.slice(cut));
+ await vi.advanceTimersByTimeAsync(0);
+ expect(terminal).toHaveBeenCalledTimes(1);
+ expect(batch.mock.calls[0][0]).toHaveLength(1);
+ expect(batch.mock.calls[0][0][0].seq).toBeGreaterThan(0);
+ stop();await vi.advanceTimersByTimeAsync(100);expect(batch).toHaveBeenCalledTimes(1);
+});
+it("keeps completed text when a reconnect replays an earlier partial",()=>{
+ const final={...item,kind:"message" as const,text:"完整文本",status:"finished"};
+ expect(mergeActivity([final],[{...final,status:"running",text:"完整"}])).toEqual([final]);
+});

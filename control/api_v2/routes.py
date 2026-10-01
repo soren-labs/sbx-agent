@@ -1727,7 +1727,7 @@ def stream_session_events(
     def _start_tail(handle: Any) -> Any:
         return backend.exec(
             handle,
-            ["tail", "-n", "+1", "-F", str(handle.root / "events.jsonl")],
+            ["tail", "-n", "+1", "-F", "-s", "0.05", str(handle.root / "events.jsonl")],
             sandbox_env(handle),
         )
 
