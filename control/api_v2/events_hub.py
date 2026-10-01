@@ -72,7 +72,7 @@ class SessionEventsHub:
     - ``live_handle()`` -> ``(handle, poll) | (None, None)`` — sandbox +
       its liveness probe, resolved from the bound agent
     - ``agent_terminal()`` -> bool — bound agent record is gone/terminal
-      or every known run is terminal (sandbox will never produce again)
+      or every known run is terminal (durable replay when sandbox unavailable)
     - ``start_tail(handle)`` -> ``Process`` — the ``tail -F`` exec
     - ``replay_lines()`` -> ``list[str]`` — events.jsonl contents or the
       stitched durable run-activity frames (already normalized-entry
@@ -131,7 +131,10 @@ class SessionEventsHub:
         sub = _Subscriber(start_line)
         with self._lock:
             self._last_client_at = time.monotonic()
-            backlog = [frame for lineno, frame in self._frames if lineno >= start_line]
+            selected = [(lineno, frame) for lineno, frame in self._frames if lineno >= start_line]
+            backlog = [frame for _, frame in selected]
+            if selected:
+                sub.start_line = selected[-1][0] + 1
             opening = self._status[2] if self._status is not None else None
             self._subs.append(sub)
         return sub, opening, backlog
@@ -157,6 +160,10 @@ class SessionEventsHub:
             if len(self._frames) > _MAX_FRAMES:
                 del self._frames[: len(self._frames) - _MAX_FRAMES]
             subs = [sub for sub in self._subs if lineno >= sub.start_line]
+            for sub in subs:
+                # A fresh tail re-reads line1. Existing subscribers have
+                # already received older IDs; new subscribers retain replay.
+                sub.start_line = lineno + 1
         for sub in subs:
             sub.put(frame)
 
@@ -294,21 +301,21 @@ class SessionEventsHub:
                     next_status = now + _STATUS_POLL_S
                     self._status_tick()
 
+                # An idle/finished turn can accept a follow-up. Replay is
+                # not an absorbing state when that task becomes runnable.
+                if (
+                    self._state == "replay"
+                    and self._status
+                    and self._status[0] in ("running", "queued")
+                ):
+                    self._state = "waiting"
+                    self._reset_ingest()
+                    next_handle = 0.0
+
                 if self._state == "waiting" and now >= next_handle:
                     next_handle = now + _HANDLE_POLL_S
-                    record = None
-                    try:
-                        record = self._record_probe()
-                    except Exception:
-                        record = None
-                    if record is not None and self._is_terminal_record(record):
-                        self._state = "replay"
-                        self._resolve_replay()
-                        continue
-                    if self._agent_terminal():
-                        self._state = "replay"
-                        self._resolve_replay()
-                        continue
+                    # Prefer a live sandbox even when its last turn finished:
+                    # the same tail must carry subsequent follow-up deltas.
                     try:
                         handle, poll = self._live_handle()
                     except Exception:
@@ -319,6 +326,17 @@ class SessionEventsHub:
                             self._state = "live"
                         except Exception:
                             pass
+                        continue
+                    record = None
+                    try:
+                        record = self._record_probe()
+                    except Exception:
+                        record = None
+                    if (record is not None and self._is_terminal_record(record)) or (
+                        self._agent_terminal()
+                    ):
+                        self._state = "replay"
+                        self._resolve_replay()
         finally:
             proc, self._proc = self._proc, None
             if proc is not None:
