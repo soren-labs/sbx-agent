@@ -4050,3 +4050,9 @@ kbd {
     padding-left: 13px;
   }
 }
+
+.delivery-dialog { color:var(--ui-text); border:1px solid var(--ui-border); max-width:calc(100vw - 32px); }
+.delivery-dialog::backdrop { background:rgba(0,0,0,.6); }
+.delivery-dialog input[type="checkbox"] { width:auto; }
+
+.delivery-dialog p { overflow-wrap:anywhere; }

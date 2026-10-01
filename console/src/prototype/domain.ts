@@ -74,12 +74,15 @@ async function managementRequest(path: string, body?: unknown) {
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
-  if (!response.ok)
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({}));
     throw new Error(
-      response.status === 403
-        ? "Account management requires an administrator connection."
-        : `The connection could not be updated (${response.status}). Please try again.`,
+      failure.error?.message ??
+        (response.status === 403
+          ? "Account management requires an administrator connection."
+          : `The connection could not be updated (${response.status}). Please try again.`),
     );
+  }
   return response.json();
 }
 export const connections = {
@@ -177,7 +180,8 @@ export interface WorkGroup {
   running: boolean;
 }
 export type WorkEntry =
-  { type: "message"; item: ActivityItem } | { type: "group"; group: WorkGroup };
+  | { type: "message"; item: ActivityItem }
+  | { type: "group"; group: WorkGroup };
 /** Presentation grouping over the canonical normalized event kinds, never new SSE types. */
 export function groupActivity(activity: ActivityItem[]): WorkEntry[] {
   const entries: WorkEntry[] = [];
@@ -215,6 +219,7 @@ export interface ReviewRecord {
   reviewed_head_sha?: string;
   independent?: boolean;
   stale?: boolean;
+  created_at?: string;
 }
 const localReviews = new Map<string, ReviewRecord[]>();
 /** Session IDs are durable task IDs in the current Session facade. */
@@ -224,7 +229,9 @@ export const reviews = {
     const data = await managementRequest(
       `/tasks/${encodeURIComponent(sessionId)}/reviews${revision === undefined ? "" : `?revision=${revision}`}`,
     );
-    return data.reviews ?? [];
+    return (data.reviews ?? []).sort((a: ReviewRecord, b: ReviewRecord) =>
+      (a.created_at ?? "").localeCompare(b.created_at ?? ""),
+    );
   },
   async record(
     sessionId: string,

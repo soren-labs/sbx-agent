@@ -1193,6 +1193,9 @@ class RevisionService:
                 revision.delivery = {**existing_delivery, "pull_request": updated}
                 revision.updated_at = self._now()
                 self._store.put_revision(revision)
+                if record is not None and self._workspaces is not None:
+                    record.pull_request = updated
+                    self._workspaces.save(record)
             return revision
         try:
             kind, payload = self._payload(revision)

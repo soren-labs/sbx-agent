@@ -120,7 +120,7 @@ function deliveryOf(raw: any): Session["delivery"] {
   if (!raw || typeof raw !== "object") return null;
   const pr = raw.pull_request ?? null;
   const mode =
-    pr != null ? "pr" : raw.branch != null ? "branch" : "none";
+    pr != null ? (pr.draft ? "draft_pr" : "pr") : raw.branch != null ? "branch" : "none";
   return {
     mode,
     status: raw.status ?? undefined,
@@ -128,9 +128,10 @@ function deliveryOf(raw: any): Session["delivery"] {
     pushedHeadSha: raw.pushed_head_sha ?? undefined,
     prUrl: pr?.url ?? undefined,
     prNumber: pr?.number != null ? Number(pr.number) : undefined,
-    prState: pr?.state ?? undefined,
+    prState: pr?.draft ? "draft" : pr?.state ?? undefined,
     prHeadSha: pr?.head_sha ?? undefined,
     prBase: pr?.base ?? undefined,
+    merged: Boolean(raw.merge?.merged),
     error:
       raw.error != null
         ? typeof raw.error === "string"
@@ -165,6 +166,7 @@ function mapRevisionChange(raw: any): SessionChange {
     n: raw?.n != null ? Number(raw.n) : undefined,
     status: String(raw?.status ?? ""),
     deliveryStatus: delivery?.status ?? undefined,
+    merged: Boolean(delivery?.merge?.merged),
     summary: `revision ${raw?.n ?? "?"}`,
     ts: String(raw?.updated_at ?? raw?.created_at ?? ""),
     branch: delivery?.branch ?? undefined,
@@ -472,6 +474,8 @@ export class HttpSessionApi implements SessionApi {
     input?: DeliverInput,
   ): Promise<SessionDeliverResult> {
     const body: Record<string, any> = {
+      n: input?.n,
+      branch: input?.branch,
       pull_request: {
         title: input?.title ?? undefined,
         draft: input?.draft ?? false,
@@ -493,10 +497,11 @@ export class HttpSessionApi implements SessionApi {
   async getFileDiff(
     sessionId: string,
     path: string,
+    n?: number,
   ): Promise<SessionFileDiff> {
     const data = await this.request<any>(
       "GET",
-      PATHS.fileDiff(sessionId, path),
+      PATHS.fileDiff(sessionId, path) + (n === undefined ? "" : `&n=${n}`),
     );
     const file = (Array.isArray(data?.files) ? data.files : [])[0];
     if (!file || typeof file.diff !== "string") {

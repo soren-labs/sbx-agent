@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   Session,
   SessionChangesDiff,
@@ -27,6 +27,7 @@ export function Changes({
   const [diff, setDiff] = useState<SessionFileDiff | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     let alive = true;
     setSummary(null);
@@ -40,21 +41,32 @@ export function Changes({
           setPath(s.files[0]?.path ?? "");
         }
       })
-      .catch(() => {
+      .catch((e) => {
         if (alive)
-          setError("Changes will appear here once a snapshot is ready.");
+          setError(
+            e.subcode === "revision_not_found"
+              ? "Changes will appear here once a snapshot is ready."
+              : e.message,
+          );
       });
     return () => {
       alive = false;
     };
-  }, [api, session.id, session.hasChanges]);
+  }, [
+    api,
+    session.id,
+    session.hasChanges,
+    session.changes?.headSha,
+    session.turnCount,
+    refresh,
+  ]);
   useEffect(() => {
     if (!path) return;
     let alive = true;
     setDiff(null);
     setLoading(true);
     void api
-      .getFileDiff(session.id, path)
+      .getFileDiff(session.id, path, summary?.n)
       .then((d) => {
         if (alive) {
           setDiff(d);
@@ -63,7 +75,7 @@ export function Changes({
       })
       .catch(() => {
         if (alive)
-          setError("Could not load this file. Select it again to retry.");
+          setError("Could not load this file. Retry to load the diff.");
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -71,7 +83,7 @@ export function Changes({
     return () => {
       alive = false;
     };
-  }, [api, session.id, path]);
+  }, [api, session.id, path, summary?.n, refresh]);
   return (
     <div className="changes-panel">
       <div className="panel-heading">
@@ -159,7 +171,14 @@ export function Changes({
           <small>Available snapshots will appear here.</small>
         </div>
       )}
-      {error && <p className="panel-empty">{error}</p>}
+      {error && (
+        <div className="panel-empty" role="alert">
+          {error}
+          <button className="button" onClick={() => setRefresh((x) => x + 1)}>
+            Retry changes
+          </button>
+        </div>
+      )}
       <div className="changes-footer">
         <Icon name="shield" size={15} />
         <span>
@@ -248,6 +267,9 @@ export function Review({
       {delivered ? (
         <>
           <PRCard session={session} onReview={onChanges} />
+          <button className="button" disabled={busy} onClick={onDeliver}>
+            Update pull request
+          </button>
           <div className="review-section">
             <h3>What changed</h3>
             <p>
@@ -337,10 +359,14 @@ function ReviewActions({ session }: { session: Session }) {
     void api
       .listChangesDiff(session.id)
       .then(async (d) => {
-        const r = await reviews.list(session.id, d.n);
+        const [r, changes] = await Promise.all([
+          reviews.list(session.id, d.n),
+          api.listChanges(session.id),
+        ]);
         if (alive) {
           setRecords(r);
           setRevision(d.n);
+          setMerged(Boolean(changes.find((c) => c.n === d.n)?.merged));
         }
       })
       .catch((e) => {
@@ -349,11 +375,11 @@ function ReviewActions({ session }: { session: Session }) {
     return () => {
       alive = false;
     };
-  }, [api, session.id]);
-  const latestReview = records.at(-1);
+  }, [api, session.id, session.changes?.headSha, session.delivery?.prState]);
+  const latestReview = records.filter((r) => !r.stale).at(-1);
   const approved =
     latestReview?.verdict === "approve" &&
-    latestReview.independent !== false &&
+    latestReview.independent === true &&
     !latestReview.stale;
   const act = async (verdict: ReviewRecord["verdict"] | "merge") => {
     if (revision === undefined) return;
@@ -411,7 +437,7 @@ function ReviewActions({ session }: { session: Session }) {
           </button>
         </div>
       )}
-      {approved && !merged && (
+      {approved && !merged && session.delivery?.prState !== "draft" && (
         <button
           className="button full"
           disabled={busy}
@@ -420,6 +446,11 @@ function ReviewActions({ session }: { session: Session }) {
           Merge pull request
           <Icon name="pr" size={14} />
         </button>
+      )}
+      {approved && session.delivery?.prState === "draft" && (
+        <p className="fine-print">
+          Update this pull request to mark it ready before merging.
+        </p>
       )}
       {confirmMerge && (
         <div className="merge-confirm">
@@ -457,5 +488,134 @@ function ReviewActions({ session }: { session: Session }) {
           : "Revision approval is pinned to the reviewed commit. Merge requires an independent, current review."}
       </p>
     </div>
+  );
+}
+
+export function DeliveryDialog({
+  session,
+  onSubmit,
+  onClose,
+  busy,
+  error,
+}: {
+  session: Session;
+  onSubmit: (input: import("../api/types").DeliverInput) => Promise<void>;
+  onClose: () => void;
+  busy: boolean;
+  error: string;
+}) {
+  const api = useApi();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [title, setTitle] = useState(session.title);
+  const [target, setTarget] = useState(
+    session.delivery?.prBase ?? session.repo?.ref ?? "",
+  );
+  const [draft, setDraft] = useState(session.delivery?.prState !== "open");
+  const [n, setN] = useState<number>();
+  const [loadError, setLoadError] = useState("");
+  useEffect(() => {
+    const focus = document.activeElement as HTMLElement;
+    dialog.current?.showModal();
+    return () => focus?.focus();
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    void api
+      .listChangesDiff(session.id)
+      .then((s) => {
+        if (alive) setN(s.n);
+      })
+      .catch((e) => {
+        if (alive) setLoadError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, session.id]);
+  return (
+    <dialog
+      ref={dialog}
+      className="connect-modal delivery-dialog"
+      aria-labelledby="delivery-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!busy) onClose();
+      }}
+    >
+      <h2 id="delivery-title">
+        {session.delivery?.prNumber
+          ? "Update pull request"
+          : "Create pull request"}
+      </h2>
+      <p>
+        {n ? `Revision ${n}` : "Loading revision…"} · {session.repo?.name}
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void onSubmit({
+            n,
+            title: title.trim(),
+            draft,
+            ...(target.trim() ? { target: target.trim() } : {}),
+          });
+        }}
+      >
+        <label className="form-label">
+          Title
+          <input
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+        </label>
+        <label className="form-label">
+          Target branch
+          <input
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            required
+          />
+        </label>
+        <label className="form-label">
+          <span>
+            <input
+              type="checkbox"
+              checked={draft}
+              onChange={(e) => setDraft(e.target.checked)}
+            />{" "}
+            Draft pull request
+          </span>
+        </label>
+        {(error || loadError) && (
+          <p role="alert" className="negative">
+            {error || loadError}
+          </p>
+        )}
+        <div className="review-action-row">
+          <button
+            type="button"
+            className="button"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="button primary"
+            disabled={
+              busy || n === undefined || !title.trim() || !target.trim()
+            }
+          >
+            {busy
+              ? "Delivering…"
+              : session.delivery?.prNumber
+                ? "Update pull request"
+                : "Create pull request"}
+          </button>
+        </div>
+      </form>
+    </dialog>
   );
 }

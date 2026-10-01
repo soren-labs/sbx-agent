@@ -28,7 +28,7 @@ import { getToken, setToken } from "../api/http";
 import { Icon, Mark } from "./Icon";
 import { demoMode, providerNames } from "./demo";
 import { Status, Worklog } from "./Worklog";
-import { Changes, Progress, Review } from "./Panels";
+import { Changes, Progress, Review, DeliveryDialog } from "./Panels";
 import { Integrations } from "./Integrations";
 import "./prototype.css";
 import { mergeSession, mergeActivity, mergeTurn } from "./session-state";
@@ -75,7 +75,10 @@ export function PrototypeApp() {
   const refresh = useCallback(() => {
     void api
       .listSessions()
-      .then((rows) => { setSessions(rows); setListError(""); })
+      .then((rows) => {
+        setSessions(rows);
+        setListError("");
+      })
       .catch((e) => setListError(e.message))
       .finally(() => setListLoading(false));
   }, [api]);
@@ -83,7 +86,10 @@ export function PrototypeApp() {
     refresh();
     const timer = setInterval(refresh, 6000);
     window.addEventListener("sbx-connection-change", refresh);
-    return () => { clearInterval(timer); window.removeEventListener("sbx-connection-change", refresh); };
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("sbx-connection-change", refresh);
+    };
   }, [refresh]);
   useEffect(() => {
     setSidebarOpen(false);
@@ -252,7 +258,13 @@ export function PrototypeApp() {
             .filter((s) => !pinned.includes(s.id))
             .map(sessionLink)}
           {visibleSessions.length === 0 && (
-            <p className="sidebar-empty">{listLoading ? "Loading sessions…" : listError ? "Sessions unavailable" : "No sessions found."}</p>
+            <p className="sidebar-empty">
+              {listLoading
+                ? "Loading sessions…"
+                : listError
+                  ? "Sessions unavailable"
+                  : "No sessions found."}
+            </p>
           )}
         </div>
         <div className="sidebar-bottom">
@@ -268,7 +280,13 @@ export function PrototypeApp() {
           <div className="sidebar-runtime">
             <span className="status-dot" />
             <span>
-              {demoMode ? "Prototype workspace" : listError ? "Connection needs attention" : listLoading ? "Connecting…" : "Connected workspace"}
+              {demoMode
+                ? "Prototype workspace"
+                : listError
+                  ? "Connection needs attention"
+                  : listLoading
+                    ? "Connecting…"
+                    : "Connected workspace"}
             </span>
             <span className="small-tag">{demoMode ? "DEMO" : "LIVE"}</span>
           </div>
@@ -323,9 +341,31 @@ export function PrototypeApp() {
           </div>
         </header>
         <main id="workspace-main" tabIndex={-1}>
-          {listError && <div className="error-banner" role="alert">Could not load sessions. {listError} <button className="button small" onClick={refresh}>Try again</button> <Link to="/settings">Connection settings</Link></div>}
+          {listError && (
+            <div className="error-banner" role="alert">
+              Could not load sessions. {listError}{" "}
+              <button className="button small" onClick={refresh}>
+                Try again
+              </button>{" "}
+              <Link to="/settings">Connection settings</Link>
+            </div>
+          )}
           <Routes>
-            <Route path="/" element={<Home onCreated={refresh} recentRepos={[...new Set(sessions.map(s => s.repo?.name).filter((r): r is string => Boolean(r)))]} />} />
+            <Route
+              path="/"
+              element={
+                <Home
+                  onCreated={refresh}
+                  recentRepos={[
+                    ...new Set(
+                      sessions
+                        .map((s) => s.repo?.name)
+                        .filter((r): r is string => Boolean(r)),
+                    ),
+                  ]}
+                />
+              }
+            />
             <Route
               path="/sessions"
               element={<SessionList sessions={sessions} />}
@@ -401,7 +441,13 @@ function SessionRows({ sessions }: { sessions: Session[] }) {
     </div>
   );
 }
-function Home({ onCreated, recentRepos }: { onCreated: () => void; recentRepos: string[] }) {
+function Home({
+  onCreated,
+  recentRepos,
+}: {
+  onCreated: () => void;
+  recentRepos: string[];
+}) {
   const api = useApi();
   const navigate = useNavigate();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -412,7 +458,9 @@ function Home({ onCreated, recentRepos }: { onCreated: () => void; recentRepos: 
   const [provider, setProvider] = useState(demoMode ? "codex" : "auto");
   const [model, setModel] = useState(demoMode ? "gpt-6.1-sol" : "auto");
   const [effort, setEffort] = useState(demoMode ? "high" : "auto");
-  const [delivery, setDelivery] = useState<DeliveryMode>(demoMode ? "draft_pr" : "none");
+  const [delivery, setDelivery] = useState<DeliveryMode>(
+    demoMode ? "draft_pr" : "none",
+  );
   const [branch, setBranch] = useState("main");
   const [account, setAccount] = useState("auto");
   const [busy, setBusy] = useState(false);
@@ -531,21 +579,28 @@ function Home({ onCreated, recentRepos }: { onCreated: () => void; recentRepos: 
                     placeholder="owner/repository"
                   />
                 </label>
-                {(demoMode ? ["soren-labs/sbx-browser", "soren-labs/docs", "soren-labs/website"] : recentRepos).map((r) => (
-                    <button
-                      type="button"
-                      className="picker-option"
-                      key={r}
-                      onClick={() => {
-                        setRepo(r);
-                        closePickers();
-                      }}
-                    >
-                      <Icon name="github" size={14} />
-                      {r}
-                      {repo === r && <Icon name="check" size={13} />}
-                    </button>
-                  ))}
+                {(demoMode
+                  ? [
+                      "soren-labs/sbx-browser",
+                      "soren-labs/docs",
+                      "soren-labs/website",
+                    ]
+                  : recentRepos
+                ).map((r) => (
+                  <button
+                    type="button"
+                    className="picker-option"
+                    key={r}
+                    onClick={() => {
+                      setRepo(r);
+                      closePickers();
+                    }}
+                  >
+                    <Icon name="github" size={14} />
+                    {r}
+                    {repo === r && <Icon name="check" size={13} />}
+                  </button>
+                ))}
                 <p className="fine-print">
                   Use a repository available to your GitHub connection.
                 </p>
@@ -825,6 +880,7 @@ function SessionWorkspace({
   const [session, setSession] = useState<Session | null>(
     (location.state as { session?: Session } | null)?.session ?? null,
   );
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [context, setContext] = useState("changes");
   const [contextHidden, setContextHidden] = useState(false);
   const [mobilePane, setMobilePane] = useState("conversation");
@@ -861,7 +917,7 @@ function SessionWorkspace({
   useEffect(
     () =>
       api.subscribe(id, {
-        onSession: (next) => setSession(prev => mergeSession(prev, next)),
+        onSession: (next) => setSession((prev) => mergeSession(prev, next)),
         onPhase: (phase) => setSession((s) => (s ? { ...s, phase } : s)),
         onMeta: (meta) =>
           setSession((s) =>
@@ -881,9 +937,7 @@ function SessionWorkspace({
               ...s,
               turns: exists
                 ? s.turns.map((t) =>
-                    t.id === turn.id
-                      ? mergeTurn(t, turn)
-                      : t,
+                    t.id === turn.id ? mergeTurn(t, turn) : t,
                   )
                 : [...s.turns, turn],
             };
@@ -891,7 +945,8 @@ function SessionWorkspace({
         onActivity: (item) =>
           setSession((s) => {
             if (!s || (item.kind === "status" && !item.turnId)) return s;
-            const turnId = item.turnId ?? `turn-${Math.max(1, item.n ?? s.turnCount ?? 1)}`;
+            const turnId =
+              item.turnId ?? `turn-${Math.max(1, item.n ?? s.turnCount ?? 1)}`;
             const exists = s.turns.some((t) => t.id === turnId);
             const placeholder: Turn = {
               id: turnId,
@@ -917,14 +972,17 @@ function SessionWorkspace({
             };
           }),
         onOpen: () => setStream("connected"),
-        onError: (e) => { setError(e.message); setStream("unavailable"); },
+        onError: (e) => {
+          setError(e.message);
+          setStream("unavailable");
+        },
         onDisconnect: () => setStream("reconnecting"),
         onReconnect: () => {
           setStream("connected");
           setError("");
           void api
             .getSession(id)
-            .then((s) => setSession(prev => mergeSession(prev, s)))
+            .then((s) => setSession((prev) => mergeSession(prev, s)))
             .catch((e) => setError(e.message));
         },
       }),
@@ -948,7 +1006,7 @@ function SessionWorkspace({
           : action === "stop"
             ? await api.stopSession(id)
             : await api.retrySession(id);
-      setSession(prev => mergeSession(prev, next));
+      setSession((prev) => mergeSession(prev, next));
       onChanged();
       if (action === "deliver") showContext("review");
     } catch (e) {
@@ -1031,7 +1089,8 @@ function SessionWorkspace({
               <Icon name="stop" size={12} />
               Stop
             </button>
-          ) : (session.phase === "failed" || session.endReason === "cancelled") ? (
+          ) : session.phase === "failed" ||
+            session.endReason === "cancelled" ? (
             <button
               className="button small"
               disabled={busy}
@@ -1053,7 +1112,33 @@ function SessionWorkspace({
           )}
         </div>
       </header>
-      {error && (
+      {deliveryOpen && (
+        <DeliveryDialog
+          session={session}
+          busy={busy}
+          error={error}
+          onClose={() => {
+            setDeliveryOpen(false);
+            setError("");
+          }}
+          onSubmit={async (input) => {
+            setBusy(true);
+            setError("");
+            try {
+              const result = await api.deliverSession(id, input);
+              setSession((prev) => mergeSession(prev, result.session));
+              setDeliveryOpen(false);
+              showContext("review");
+              onChanged();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
+      {error && !deliveryOpen && (
         <div className="error-banner" role="alert">
           {error}
           <button
@@ -1068,13 +1153,21 @@ function SessionWorkspace({
       {session.phase === "failed" && (
         <div className="error-banner" role="alert">
           {session.error?.message ?? "This session needs attention."}
-          {toErrorKind(session.error?.code ?? "") === "provider_login" ? <Link to="/integrations">Reconnect account <Icon name="external" size={12} /></Link> : <Link to="/">Start a new session</Link>}
+          {toErrorKind(session.error?.code ?? "") === "provider_login" ? (
+            <Link to="/integrations">
+              Reconnect account <Icon name="external" size={12} />
+            </Link>
+          ) : (
+            <Link to="/">Start a new session</Link>
+          )}
         </div>
       )}
       {(stream === "reconnecting" || stream === "connecting") && (
         <div className="notice">
           <Icon name="refresh" size={14} />
-          {stream === "connecting" ? "Connecting to live activity…" : "Reconnecting to the session. Your work is preserved."}
+          {stream === "connecting"
+            ? "Connecting to live activity…"
+            : "Reconnecting to the session. Your work is preserved."}
         </div>
       )}
       <nav className="mobile-workspace-tabs" aria-label="Workspace panels">
@@ -1219,7 +1312,10 @@ function SessionWorkspace({
               <Changes
                 session={session}
                 busy={busy}
-                onDeliver={() => void act("deliver")}
+                onDeliver={() => {
+                  setError("");
+                  setDeliveryOpen(true);
+                }}
                 onReview={() => showContext("review")}
               />
             ) : (
@@ -1227,7 +1323,10 @@ function SessionWorkspace({
                 key={session.id}
                 session={session}
                 busy={busy}
-                onDeliver={() => void act("deliver")}
+                onDeliver={() => {
+                  setError("");
+                  setDeliveryOpen(true);
+                }}
                 onChanges={() => showContext("changes")}
               />
             )}

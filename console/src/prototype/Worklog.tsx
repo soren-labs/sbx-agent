@@ -162,10 +162,10 @@ export function PRCard({
       <span className="pr-card-footer">
         <span>
           <Icon name="check" size={13} />
-          {demoMode ? "Demo checks passed" : "Ready for review"}
+          {demoMode ? "Demo checks passed" : session.delivery?.merged ? "Merged" : "Ready for review"}
         </span>
         <span>
-          Review pull request <Icon name="external" size={12} />
+          Review changes <Icon name="chevron" size={12} />
         </span>
       </span>
     </button>

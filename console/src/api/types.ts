@@ -151,6 +151,7 @@ export interface SessionDelivery {
   prState?: string;
   prHeadSha?: string;
   prBase?: string;
+  merged?: boolean;
   /** Wire DeliveryView.error — {code,message} or a plain message. */
   error?: { code?: string; message?: string } | string;
 }
@@ -232,6 +233,7 @@ export interface ModelInfo {
 }
 
 export interface SessionChange {
+  merged?: boolean;
   id: string;
   kind: "workspace" | "revision" | "delivery" | "file";
   /** Revision sequence number when the row is a revision. */
@@ -284,6 +286,8 @@ export interface SessionFileDiff extends SessionDiffFile {
 
 /** Explicit POST .../deliver input — the console's "Create pull request". */
 export interface DeliverInput {
+  n?: number;
+  branch?: string;
   /** PR title — defaults to the session title server-side. */
   title?: string;
   /** Open as a draft pull request. */

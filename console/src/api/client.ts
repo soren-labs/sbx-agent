@@ -109,7 +109,7 @@ export interface SessionApi {
    */
   listChangesDiff(sessionId: string): Promise<SessionChangesDiff>;
   /** Lazy per-file diff text (GET .../changes/diff?path=). */
-  getFileDiff(sessionId: string, path: string): Promise<SessionFileDiff>;
+  getFileDiff(sessionId: string, path: string, n?: number): Promise<SessionFileDiff>;
   /** Subscribe to the session-scoped event stream. Returns an unsubscribe. */
   subscribe(sessionId: string, handlers: SessionEventHandlers): () => void;
 }
