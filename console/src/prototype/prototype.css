@@ -1,12 +1,12 @@
 :root {
-  --ui-bg: #fff;
-  --ui-side: #fafafa;
-  --ui-surface: #f6f6f6;
-  --ui-hover: #eeeeee;
-  --ui-border: #e6e6e6;
-  --ui-text: #222222;
-  --ui-muted: #737373;
-  --ui-dim: #555555;
+  --ui-bg: #fcfcfc;
+  --ui-side: #fcfcfc;
+  --ui-surface: rgba(0, 0, 0, 0.04);
+  --ui-hover: rgba(0, 0, 0, 0.06);
+  --ui-border: rgba(0, 0, 0, 0.06);
+  --ui-text: #191919;
+  --ui-muted: rgba(25, 25, 25, 0.56);
+  --ui-dim: rgba(25, 25, 25, 0.72);
   --ui-green: #357458;
   --ui-green-soft: #eef5ee;
   --ui-amber: #a3742b;
@@ -48,13 +48,14 @@ body,
 }
 body {
   font-family:
+    "Inter Variable",
     Inter,
     -apple-system,
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 16px;
+  line-height: 24px;
   color: var(--ui-text);
   background: var(--ui-bg);
   -webkit-font-smoothing: antialiased;
@@ -234,6 +235,9 @@ kbd {
   height: 23px;
 }
 .prototype {
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: -0.065px;
   display: flex;
   height: 100dvh;
   overflow: hidden;
@@ -4062,3 +4066,28 @@ kbd {
 .account-details p { margin: 8px 0; overflow-wrap:anywhere; }
 
 .assistant-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Measured from authenticated historical sessions. Mono uses local fallbacks. */
+.user-message {
+  border-radius: 16px 4px 16px 16px;
+}
+.user-message p,
+.assistant-message {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: -0.07px;
+  color: var(--ui-text);
+}
+.user-message p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.event-detail > pre,
+.raw-event pre,
+.diff-content {
+  font-family: var(--ui-mono);
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 400;
+}
