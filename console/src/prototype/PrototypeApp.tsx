@@ -1,0 +1,1355 @@
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import {
+  Link,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
+import { useApi } from "../state/api";
+import type {
+  ActivityItem,
+  DeliveryMode,
+  ModelInfo,
+  NewSessionInput,
+  ProviderInfo,
+  Session,
+  Turn,
+} from "../api/types";
+import { getToken, setToken } from "../api/http";
+import { Icon, Mark } from "./Icon";
+import { demoMode, providerNames } from "./demo";
+import { Status, Worklog } from "./Worklog";
+import { Changes, Progress, Review } from "./Panels";
+import { Integrations } from "./Integrations";
+import "./prototype.css";
+
+function age(date: string) {
+  const mins = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(date).getTime()) / 60_000),
+  );
+  return mins < 1
+    ? "Just now"
+    : mins < 60
+      ? `${mins}m ago`
+      : mins < 1440
+        ? `${Math.floor(mins / 60)}h ago`
+        : `${Math.floor(mins / 1440)}d ago`;
+}
+function mergeItems(items: ActivityItem[], incoming: ActivityItem) {
+  return [...new Map([...items, incoming].map((a) => [a.id, a])).values()].sort(
+    (a, b) => a.seq - b.seq,
+  );
+}
+const isActive = (s: Session) =>
+  ["running", "starting", "queued"].includes(s.phase);
+
+export function PrototypeApp() {
+  const api = useApi();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [search, setSearch] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [pinned, setPinned] = useState<string[]>(() => {
+    try {
+      return JSON.parse(
+        localStorage.getItem("sbx.prototype.pinned") ?? '["stream-reconnect"]',
+      );
+    } catch {
+      return ["stream-reconnect"];
+    }
+  });
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (sidebarOpen) requestAnimationFrame(() => searchRef.current?.focus());
+  }, [sidebarOpen]);
+  const refresh = useCallback(() => {
+    void api
+      .listSessions()
+      .then(setSessions)
+      .catch(() => {});
+  }, [api]);
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 6000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+  useEffect(() => {
+    setSidebarOpen(false);
+    if (!location.pathname.startsWith("/sessions/"))
+      document.title = "SBX Browser · Sessions";
+    document.getElementById("workspace-main")?.focus();
+  }, [location.pathname]);
+  useEffect(() => {
+    localStorage.setItem("sbx.prototype.pinned", JSON.stringify(pinned));
+  }, [pinned]);
+  useEffect(() => {
+    const keydown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCollapsed(false);
+        setSidebarOpen(true);
+        searchRef.current?.focus();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "o") {
+        e.preventDefault();
+        navigate("/");
+      }
+      if (e.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, []);
+  const selected = sessions.find(
+    (s) => location.pathname === `/sessions/${s.id}`,
+  );
+  const section = location.pathname.startsWith("/integrations")
+    ? "Connections"
+    : location.pathname === "/settings"
+      ? "Settings"
+      : "Sessions";
+  const togglePin = (id: string) =>
+    setPinned((ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+    );
+  const visibleSessions = sessions.filter((s) =>
+    s.title.toLowerCase().includes(search.toLowerCase()),
+  );
+  const sessionLink = (s: Session) => (
+    <div className="sidebar-session-row" key={s.id}>
+      <NavLink
+        key={s.id}
+        to={`/sessions/${s.id}`}
+        className={({ isActive }) =>
+          `sidebar-session ${isActive ? "selected" : ""}`
+        }
+      >
+        <span
+          className={`sidebar-session-state ${isActive(s) ? "live" : s.phase === "failed" ? "attention" : ""}`}
+        >
+          <Icon
+            name={isActive(s) ? "clock" : s.phase === "failed" ? "x" : "pr"}
+            size={14}
+          />
+        </span>
+        <span>
+          {s.title}
+          <small>
+            {isActive(s)
+              ? "Working"
+              : s.phase === "failed"
+                ? "Needs attention"
+                : s.endReason === "cancelled"
+                  ? "Stopped"
+                  : s.delivery?.status === "delivered"
+                    ? "PR ready"
+                    : "Finished"}{" "}
+            · {age(s.updatedAt)}
+          </small>
+        </span>
+        {isActive(s) && <span className="unread-dot" />}
+      </NavLink>
+      <button
+        className="row-pin icon-button"
+        aria-label={`${pinned.includes(s.id) ? "Unpin" : "Pin"} ${s.title} locally`}
+        title="Local sidebar preference"
+        aria-pressed={pinned.includes(s.id)}
+        onClick={() => togglePin(s.id)}
+      >
+        <Icon name="pin" size={12} />
+      </button>
+    </div>
+  );
+  return (
+    <div className={`prototype ${collapsed ? "sidebar-collapsed" : ""}`}>
+      <a className="skip-link" href="#workspace-main">
+        Skip to workspace
+      </a>
+      {sidebarOpen && (
+        <button
+          className="sidebar-scrim"
+          aria-label="Close navigation"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <aside
+        className={`workspace-sidebar ${sidebarOpen ? "mobile-open" : ""}`}
+      >
+        <div className="sidebar-org-row">
+          <Link className="workspace-brand" to="/">
+            <Mark small />
+            <span>SBX Browser</span>
+          </Link>
+          <button
+            className="icon-button"
+            aria-label="Collapse sidebar"
+            onClick={() => setCollapsed(true)}
+          >
+            <Icon name="menu" size={15} />
+          </button>
+        </div>
+        <Link to="/" className="new-session-button">
+          <Icon name="plus" size={17} />
+          New session<kbd>⌘ O</kbd>
+        </Link>
+        <label className="sidebar-search">
+          <Icon name="search" size={14} />
+          <input
+            ref={searchRef}
+            aria-label="Search sessions"
+            placeholder="Search sessions…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <kbd>⌘ K</kbd>
+        </label>
+        <NavLink to="/review" className="sessions-nav">
+          <Icon name="pr" />
+          Review
+          <span>
+            {sessions.filter((s) => s.delivery?.status === "delivered").length}
+          </span>
+        </NavLink>
+        <div className="sidebar-section-label sessions-section-title">
+          <Link to="/sessions">Sessions</Link>
+          <Link to="/" aria-label="New session">
+            <Icon name="plus" size={14} />
+          </Link>
+        </div>
+        <div className="sidebar-session-scroll">
+          {pinned.length > 0 && (
+            <>
+              <div className="sidebar-section-label">
+                <Icon name="pin" size={12} />
+                Pinned
+                <span>
+                  {visibleSessions.filter((s) => pinned.includes(s.id)).length}
+                </span>
+              </div>
+              {visibleSessions
+                .filter((s) => pinned.includes(s.id))
+                .map(sessionLink)}
+            </>
+          )}
+          <div className="sidebar-section-label">
+            Recent
+            <span>
+              {visibleSessions.filter((s) => !pinned.includes(s.id)).length}
+            </span>
+          </div>
+          {visibleSessions
+            .filter((s) => !pinned.includes(s.id))
+            .map(sessionLink)}
+          {visibleSessions.length === 0 && (
+            <p className="sidebar-empty">No sessions found.</p>
+          )}
+        </div>
+        <div className="sidebar-bottom">
+          <NavLink to="/integrations">
+            <Icon name="plug" />
+            Connections
+            <span className="integration-alert" />
+          </NavLink>
+          <NavLink to="/settings">
+            <Icon name="settings" />
+            Settings
+          </NavLink>
+          <div className="sidebar-runtime">
+            <span className="status-dot" />
+            <span>
+              {demoMode ? "Prototype workspace" : "Connected workspace"}
+            </span>
+            <span className="small-tag">{demoMode ? "DEMO" : "LIVE"}</span>
+          </div>
+          <div className="sidebar-user">
+            <span className="user-avatar avatar">S</span>
+            <span>
+              Soren<small>Sorenforge workspace</small>
+            </span>
+            <button
+              className="icon-button"
+              aria-label="Open settings"
+              onClick={() => navigate("/settings")}
+            >
+              <Icon name="settings" size={15} />
+            </button>
+          </div>
+        </div>
+      </aside>
+      <div className="workspace-body">
+        <header
+          className={`workspace-topbar ${selected ? "session-route" : ""} ${location.pathname === "/" ? "home-route" : ""}`}
+        >
+          <button
+            className="icon-button desktop-toggle"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            <Icon name="menu" size={17} />
+          </button>
+          <button
+            className="icon-button mobile-toggle"
+            aria-label="Open navigation"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Icon name="menu" size={18} />
+          </button>
+          <Link to="/sessions">{section}</Link>
+          {selected && (
+            <>
+              <Icon name="chevron" size={12} />
+              <span className="breadcrumb-title">{selected.title}</span>
+            </>
+          )}
+          <div className="topbar-right">
+            <span className="demo-indicator">
+              <span />
+              {demoMode ? "Prototype mode" : "Live workspace"}
+            </span>
+            <span className="small-tag">
+              {demoMode ? "Local data" : "Connected"}
+            </span>
+          </div>
+        </header>
+        <main id="workspace-main" tabIndex={-1}>
+          <Routes>
+            <Route path="/" element={<Home onCreated={refresh} />} />
+            <Route
+              path="/sessions"
+              element={<SessionList sessions={sessions} />}
+            />
+            <Route
+              path="/sessions/:id"
+              element={
+                <SessionWorkspace
+                  key={location.pathname}
+                  onChanged={refresh}
+                  pinned={selected ? pinned.includes(selected.id) : false}
+                  onPin={togglePin}
+                />
+              }
+            />
+            <Route
+              path="/review"
+              element={
+                <SessionList
+                  sessions={sessions.filter(
+                    (s) => s.delivery?.status === "delivered",
+                  )}
+                  review
+                />
+              }
+            />
+            <Route path="/integrations/*" element={<Integrations />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route
+              path="*"
+              element={
+                <div className="panel-empty">
+                  <h1>Page not found</h1>
+                  <Link className="button" to="/">
+                    Start a session
+                  </Link>
+                </div>
+              }
+            />
+          </Routes>
+        </main>
+      </div>
+    </div>
+  );
+}
+function SessionRows({ sessions }: { sessions: Session[] }) {
+  return (
+    <div className="session-rows">
+      {sessions.map((s) => (
+        <Link key={s.id} to={`/sessions/${s.id}`} className="session-row">
+          <span
+            className={`session-row-icon ${isActive(s) ? "live" : s.phase === "failed" ? "attention" : ""}`}
+          >
+            <Icon
+              name={isActive(s) ? "clock" : s.phase === "failed" ? "x" : "pr"}
+              size={17}
+            />
+          </span>
+          <span className="session-row-name">
+            <strong>{s.title}</strong>
+            <small>
+              <Icon name="github" size={11} />
+              {s.repo?.name ?? "No repository"}
+              <span>·</span>
+              {providerNames[s.provider ?? ""] ?? "Auto"}
+            </small>
+          </span>
+          <Status phase={s.phase} />
+          <span className="session-row-time">{age(s.updatedAt)}</span>
+          <Icon name="chevron" size={14} />
+        </Link>
+      ))}
+    </div>
+  );
+}
+function Home({ onCreated }: { onCreated: () => void }) {
+  const api = useApi();
+  const navigate = useNavigate();
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [prompt, setPrompt] = useState("");
+  const [repo, setRepo] = useState(demoMode ? "soren-labs/sbx-browser" : "");
+  const [provider, setProvider] = useState(demoMode ? "codex" : "auto");
+  const [model, setModel] = useState(demoMode ? "gpt-6.1-sol" : "auto");
+  const [effort, setEffort] = useState("high");
+  const [delivery, setDelivery] = useState<DeliveryMode>("draft_pr");
+  const [branch, setBranch] = useState("main");
+  const [account, setAccount] = useState("auto");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    void Promise.all([api.listProviders(), api.listModels()])
+      .then(([p, m]) => {
+        setProviders(p);
+        setModels(m);
+      })
+      .catch((e) => setError(e.message));
+  }, [api]);
+  useEffect(() => {
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      formRef.current?.querySelectorAll("details[open]").forEach((d) => {
+        if (
+          event instanceof KeyboardEvent ||
+          !d.contains(event.target as Node)
+        ) {
+          d.removeAttribute("open");
+          if (event instanceof KeyboardEvent)
+            (d.querySelector("summary") as HTMLElement)?.focus();
+        }
+      });
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, []);
+  const modelRows = models.filter((m) => m.provider === provider);
+  const selectedModel = modelRows.find((m) => m.model === model);
+  const efforts = selectedModel?.reasoningEfforts ?? ["low", "medium", "high"];
+  const closePickers = () =>
+    formRef.current?.querySelectorAll(".composer-picker[open]").forEach((d) => {
+      d.removeAttribute("open");
+      (d.querySelector("summary") as HTMLElement)?.focus();
+    });
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    if (!prompt.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const input: NewSessionInput = {
+        prompt: prompt.trim(),
+        provider,
+        model,
+        effort,
+        delivery,
+        ...(repo ? { repo, repoRef: branch } : {}),
+        ...(account !== "auto" ? { account } : {}),
+      };
+      const session = await api.createSession(input);
+      onCreated();
+      navigate(`/sessions/${session.id}`, { state: { session } });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="page-scroll home-page">
+      <div className="home-content">
+        <div className="home-composer-title">
+          <h1>
+            <Mark />
+            SBX <span>Browser</span>
+          </h1>
+          <span className="agent-mode">
+            <Icon name="code" size={13} />
+            Agent session
+          </span>
+        </div>
+        <form
+          ref={formRef}
+          className="session-composer"
+          onSubmit={(e) => void submit(e)}
+        >
+          <textarea
+            aria-label="Session task"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Describe the work you want to hand off…"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+          />
+          <div className="composer-mention">
+            <Icon name="github" size={12} />
+            {repo || "No repository selected"}
+          </div>
+          <div className="composer-tools">
+            <details className="composer-picker">
+              <summary title="Select repository">
+                <Icon name="plus" size={17} />
+                <span className="sr-only">Repository</span>
+              </summary>
+              <div className="picker-popover">
+                <h2>Repository</h2>
+                <label className="form-label">
+                  Repository name or URL
+                  <input
+                    aria-label="Repository"
+                    value={repo}
+                    onChange={(e) => setRepo(e.target.value)}
+                    placeholder="owner/repository"
+                  />
+                </label>
+                {demoMode &&
+                  [
+                    "soren-labs/sbx-browser",
+                    "soren-labs/docs",
+                    "soren-labs/website",
+                  ].map((r) => (
+                    <button
+                      type="button"
+                      className="picker-option"
+                      key={r}
+                      onClick={() => {
+                        setRepo(r);
+                        closePickers();
+                      }}
+                    >
+                      <Icon name="github" size={14} />
+                      {r}
+                      {repo === r && <Icon name="check" size={13} />}
+                    </button>
+                  ))}
+                <p className="fine-print">
+                  Use a repository available to your GitHub connection.
+                </p>
+                <button
+                  type="button"
+                  className="button small"
+                  onClick={closePickers}
+                >
+                  Done
+                </button>
+              </div>
+            </details>
+            <details className="composer-picker">
+              <summary title="Session configuration">
+                <Icon name="settings" size={17} />
+                <span className="sr-only">Session configuration</span>
+              </summary>
+              <div className="picker-popover config-picker">
+                <h2>Session configuration</h2>
+                <label className="form-label">
+                  Reasoning effort
+                  <select
+                    aria-label="Reasoning effort"
+                    value={effort}
+                    onChange={(e) => setEffort(e.target.value)}
+                  >
+                    <option value="auto">Automatic</option>
+                    {efforts.map((e) => (
+                      <option key={e} value={e}>
+                        {e}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-label">
+                  Delivery intent
+                  <select
+                    aria-label="Delivery intent"
+                    value={delivery}
+                    onChange={(e) =>
+                      setDelivery(e.target.value as DeliveryMode)
+                    }
+                  >
+                    <option value="draft_pr">Draft pull request</option>
+                    <option value="pr">Open pull request</option>
+                    <option value="branch">Push a branch</option>
+                    <option value="none">No delivery</option>
+                  </select>
+                </label>
+                <details className="advanced-config">
+                  <summary>Advanced</summary>
+                  <label className="form-label">
+                    Base branch
+                    <input
+                      value={branch}
+                      onChange={(e) => setBranch(e.target.value)}
+                    />
+                  </label>
+                  <label className="form-label">
+                    Account
+                    <select
+                      value={account}
+                      onChange={(e) => setAccount(e.target.value)}
+                    >
+                      <option value="auto">
+                        Automatic · healthy connection
+                      </option>
+                      {[
+                        ...new Set(
+                          modelRows.map((m) => m.account).filter(Boolean),
+                        ),
+                      ].map((a) => (
+                        <option key={a} value={a}>
+                          {a}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Link to="/integrations">Manage account connections</Link>
+                </details>
+              </div>
+            </details>
+            <span className="composer-configuration-label">
+              {effort} ·{" "}
+              {delivery === "draft_pr"
+                ? "Draft PR"
+                : delivery === "pr"
+                  ? "PR"
+                  : delivery === "branch"
+                    ? "Branch"
+                    : "No delivery"}
+            </span>
+            <details className="composer-picker model-picker">
+              <summary>
+                {selectedModel?.displayName ??
+                  (model === "auto"
+                    ? "Automatic model"
+                    : model.replace("gpt-6.1-sol", "GPT-6.1 Sol"))}
+                <Icon name="down" size={12} />
+              </summary>
+              <div className="picker-popover model-popover">
+                <h2>Agent & model</h2>
+                <label className="form-label">
+                  Provider
+                  <select
+                    aria-label="Provider"
+                    value={provider}
+                    onChange={(e) => {
+                      setProvider(e.target.value);
+                      setModel("auto");
+                      setAccount("auto");
+                      setEffort("auto");
+                    }}
+                  >
+                    <option value="auto">Automatic</option>
+                    {providers.map((p) => (
+                      <option
+                        key={p.id}
+                        value={p.id}
+                        disabled={!p.runtimeEnabled}
+                      >
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="picker-option"
+                  onClick={() => {
+                    setModel("auto");
+                    closePickers();
+                  }}
+                >
+                  Automatic model
+                  {model === "auto" && <Icon name="check" size={13} />}
+                </button>
+                {[...new Map(modelRows.map((m) => [m.model, m])).values()].map(
+                  (m) => (
+                    <button
+                      key={m.model}
+                      type="button"
+                      className={`picker-option ${m.model === model ? "selected" : ""}`}
+                      onClick={() => {
+                        setModel(m.model);
+                        setEffort(m.defaultEffort ?? "auto");
+                        closePickers();
+                      }}
+                    >
+                      {m.displayName ??
+                        m.model.replace("gpt-6.1-sol", "GPT-6.1 Sol")}
+                      {m.model === model && <Icon name="check" size={13} />}
+                    </button>
+                  ),
+                )}
+                <p className="fine-print">
+                  Models come from your connected providers.
+                </p>
+              </div>
+            </details>
+            <button
+              className="start-session-button"
+              aria-label={busy ? "Starting session" : "Start session"}
+              title="Start session · Ctrl/⌘ Enter"
+              disabled={!prompt.trim() || busy}
+              type="submit"
+            >
+              <Icon name={busy ? "clock" : "arrow"} size={17} />
+            </button>
+          </div>
+        </form>
+        {error && (
+          <div role="alert" className="error-banner">
+            {error}
+            <Link to="/integrations">Check connections</Link>
+          </div>
+        )}
+        {demoMode && (
+          <div className="home-demo-links">
+            <span className="small-tag">DEMO</span>
+            <Link to="/sessions/stream-reconnect">Follow active work</Link>
+            <span>·</span>
+            <Link to="/sessions/event-replay">Review a draft PR</Link>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function SessionList({
+  sessions,
+  review = false,
+}: {
+  sessions: Session[];
+  review?: boolean;
+}) {
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const shown = sessions.filter(
+    (s) =>
+      s.title.toLowerCase().includes(query.toLowerCase()) &&
+      (filter === "all" ||
+        (filter === "active" && isActive(s)) ||
+        (filter === "finished" && s.phase === "idle") ||
+        (filter === "attention" && s.phase === "failed")),
+  );
+  return (
+    <div className="page-scroll">
+      <div className="list-content">
+        <div className="page-eyebrow">YOUR WORKSPACE</div>
+        <div className="page-title-row">
+          <div>
+            <h1>{review ? "Review" : "Sessions"}</h1>
+            <p className="page-subtitle">
+              {review
+                ? "Delivered work ready for a closer look."
+                : "Work you’ve handed off, in one place."}
+            </p>
+          </div>
+          <Link className="button primary" to="/">
+            <Icon name="plus" size={15} />
+            New session
+          </Link>
+        </div>
+        <div className="list-toolbar">
+          <div className="filter-tabs">
+            {[
+              ["all", "All sessions"],
+              ["active", "Active"],
+              ["finished", "Finished"],
+              ["attention", "Needs attention"],
+            ].map(([id, label]) => (
+              <button
+                className={filter === id ? "selected" : ""}
+                key={id}
+                onClick={() => setFilter(id)}
+                aria-pressed={filter === id}
+              >
+                {label}
+                {id === "active" && (
+                  <span>{sessions.filter(isActive).length}</span>
+                )}
+              </button>
+            ))}
+          </div>
+          <label className="list-search">
+            <Icon name="search" size={14} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search sessions"
+              aria-label="Filter sessions"
+            />
+          </label>
+        </div>
+        <SessionRows sessions={shown} />
+        {!shown.length && (
+          <div className="panel-empty">No sessions match this view.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+function SessionWorkspace({
+  onChanged,
+  pinned,
+  onPin,
+}: {
+  onChanged: () => void;
+  pinned: boolean;
+  onPin: (id: string) => void;
+}) {
+  const api = useApi();
+  const { id = "" } = useParams();
+  const location = useLocation();
+  const [session, setSession] = useState<Session | null>(
+    (location.state as { session?: Session } | null)?.session ?? null,
+  );
+  const [context, setContext] = useState("changes");
+  const [contextHidden, setContextHidden] = useState(false);
+  const [mobilePane, setMobilePane] = useState("conversation");
+  const showContext = (tab: string) => {
+    setContext(tab);
+    setContextHidden(false);
+    setMobilePane("context");
+  };
+
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [stream, setStream] = useState("connected");
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let alive = true;
+    void api
+      .getSession(id)
+      .then((s) => {
+        if (alive) {
+          setSession(s);
+          if (s.delivery?.status === "delivered") setContext("review");
+          else if (!s.hasChanges) setContext("progress");
+        }
+      })
+      .catch((e) => {
+        if (alive) setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, id]);
+  useEffect(
+    () =>
+      api.subscribe(id, {
+        onSession: (next) =>
+          setSession((prev) => ({
+            ...prev,
+            ...next,
+            turns: next.turns.length ? next.turns : (prev?.turns ?? []),
+          })),
+        onPhase: (phase) => setSession((s) => (s ? { ...s, phase } : s)),
+        onMeta: (meta) =>
+          setSession((s) =>
+            s
+              ? {
+                  ...s,
+                  provider: meta.provider ?? s.provider,
+                  model: meta.model ?? s.model,
+                }
+              : s,
+          ),
+        onTurn: (turn) =>
+          setSession((s) => {
+            if (!s) return s;
+            const exists = s.turns.some((t) => t.id === turn.id);
+            return {
+              ...s,
+              turns: exists
+                ? s.turns.map((t) =>
+                    t.id === turn.id
+                      ? {
+                          ...t,
+                          ...turn,
+                          prompt: turn.prompt || t.prompt,
+                          activity: [
+                            ...new Map(
+                              [...t.activity, ...turn.activity].map((i) => [
+                                i.id,
+                                i,
+                              ]),
+                            ).values(),
+                          ].sort((a, b) => a.seq - b.seq),
+                        }
+                      : t,
+                  )
+                : [...s.turns, turn],
+            };
+          }),
+        onActivity: (item) =>
+          setSession((s) => {
+            if (!s) return s;
+            const turnId = item.turnId ?? `turn-${item.n ?? s.turnCount ?? 1}`;
+            const exists = s.turns.some((t) => t.id === turnId);
+            const placeholder: Turn = {
+              id: turnId,
+              index: item.n ?? s.turnCount ?? 1,
+              prompt: "",
+              status: "running",
+              createdAt: item.ts,
+              startedAt: item.ts,
+              finishedAt: null,
+              result: null,
+              error: null,
+              activity: [item],
+            };
+            return {
+              ...s,
+              turns: exists
+                ? s.turns.map((t) =>
+                    t.id === turnId
+                      ? { ...t, activity: mergeItems(t.activity, item) }
+                      : t,
+                  )
+                : [...s.turns, placeholder],
+            };
+          }),
+        onDisconnect: () => setStream("reconnecting"),
+        onReconnect: () => {
+          setStream("connected");
+          void api
+            .getSession(id)
+            .then(setSession)
+            .catch((e) => setError(e.message));
+        },
+        onError: (e) => setError(e.message),
+      }),
+    [api, id],
+  );
+  useEffect(() => {
+    document.title = session ? `${session.title} · SBX` : "Session · SBX";
+  }, [session?.title]);
+  const act = async (action: "stop" | "retry" | "deliver") => {
+    setBusy(true);
+    setError("");
+    try {
+      const next =
+        action === "deliver"
+          ? (
+              await api.deliverSession(id, {
+                draft: true,
+                title: session?.title,
+              })
+            ).session
+          : action === "stop"
+            ? await api.stopSession(id)
+            : await api.retrySession(id);
+      setSession(next);
+      onChanged();
+      if (action === "deliver") showContext("review");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async (e?: FormEvent) => {
+    e?.preventDefault();
+    if (!message.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await api.sendFollowUp(id, message.trim());
+      setSession(next.session);
+      setMessage("");
+      onChanged();
+      setTimeout(
+        () =>
+          logRef.current?.scrollTo({
+            top: logRef.current.scrollHeight,
+            behavior: "smooth",
+          }),
+        100,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!session)
+    return (
+      <div className="panel-empty">
+        {error || "Opening session…"}
+        {error && (
+          <Link to="/sessions" className="button">
+            Back to sessions
+          </Link>
+        )}
+      </div>
+    );
+  const active = isActive(session);
+  return (
+    <div
+      className={`session-workspace ${contextHidden ? "context-hidden" : ""} ${mobilePane === "context" ? "mobile-show-context" : ""}`}
+    >
+      <header className="session-header">
+        <div className="session-title">
+          <div>
+            <h1>{session.title}</h1>
+          </div>
+        </div>
+        <div className="session-header-actions">
+          <Status phase={session.phase} />
+          <button
+            className="icon-button"
+            title="Show progress and session details"
+            aria-label="Show session details"
+            onClick={() => showContext("progress")}
+          >
+            <Icon name="settings" size={15} />
+          </button>
+          <button
+            className={`icon-button ${pinned ? "is-pinned" : ""}`}
+            onClick={() => onPin(id)}
+            title={pinned ? "Unpin session" : "Pin session"}
+            aria-label={pinned ? "Unpin session" : "Pin session"}
+            aria-pressed={pinned}
+          >
+            <Icon name="pin" size={15} />
+          </button>
+          {active ? (
+            <button
+              className="button small"
+              disabled={busy}
+              onClick={() => void act("stop")}
+            >
+              <Icon name="stop" size={12} />
+              Stop
+            </button>
+          ) : session.phase === "failed" ? (
+            <button
+              className="button small"
+              disabled={busy}
+              onClick={() => void act("retry")}
+            >
+              <Icon name="refresh" size={13} />
+              Retry
+            </button>
+          ) : (
+            <button
+              className="button small"
+              onClick={() => showContext("review")}
+            >
+              <Icon name="pr" size={13} />
+              {session.delivery?.status === "delivered"
+                ? "Review PR"
+                : "Deliver"}
+            </button>
+          )}
+        </div>
+      </header>
+      {error && (
+        <div className="error-banner" role="alert">
+          {error}
+          <button
+            className="icon-button"
+            aria-label="Dismiss error"
+            onClick={() => setError("")}
+          >
+            <Icon name="x" />
+          </button>
+        </div>
+      )}
+      {session.phase === "failed" && (
+        <div className="error-banner" role="alert">
+          {session.error?.message ?? "This session needs attention."}
+          <Link to="/integrations">
+            Reconnect account
+            <Icon name="external" size={12} />
+          </Link>
+        </div>
+      )}
+      {stream === "reconnecting" && (
+        <div className="notice">
+          <Icon name="refresh" size={14} />
+          Reconnecting to the session. Your work is preserved.
+        </div>
+      )}
+      <nav className="mobile-workspace-tabs" aria-label="Workspace panels">
+        <button
+          className={mobilePane === "conversation" ? "selected" : ""}
+          onClick={() => setMobilePane("conversation")}
+        >
+          <Icon name="sessions" size={14} />
+          Worklog
+        </button>
+        {[
+          ["progress", "clock", "Progress"],
+          ["changes", "code", "Changes"],
+          ["review", "pr", "Review"],
+        ].map(([tab, icon, label]) => (
+          <button
+            key={tab}
+            className={
+              mobilePane === "context" && context === tab ? "selected" : ""
+            }
+            onClick={() => showContext(tab)}
+          >
+            <Icon name={icon} size={14} />
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div className="session-split">
+        <section className="conversation-pane" aria-label="Session worklog">
+          <div className="worklog-scroll" ref={logRef}>
+            <Worklog session={session} onContext={showContext} />
+          </div>
+          <div className="followup-container">
+            <form className="followup-composer" onSubmit={(e) => void send(e)}>
+              <textarea
+                aria-label="Follow-up message"
+                placeholder={
+                  session.phase === "ended"
+                    ? "This session has stopped"
+                    : "Send a follow-up or steer the work…"
+                }
+                value={message}
+                disabled={
+                  session.phase === "ended" || session.phase === "failed"
+                }
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.nativeEvent.isComposing
+                  ) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+              />
+              <div className="followup-tools">
+                <span>
+                  <Icon name="code" size={13} />
+                  {session.model ??
+                    providerNames[session.provider ?? ""] ??
+                    "Auto"}
+                  <span className="meta-dot">·</span>
+                  {session.effort ?? "Auto"} effort
+                </span>
+                <button
+                  className="send-followup"
+                  type={active && !message.trim() ? "button" : "submit"}
+                  onClick={
+                    active && !message.trim()
+                      ? () => void act("stop")
+                      : undefined
+                  }
+                  aria-label={
+                    active && !message.trim()
+                      ? "Stop session"
+                      : "Send follow-up"
+                  }
+                  disabled={
+                    busy ||
+                    (!active && !message.trim()) ||
+                    session.phase === "failed" ||
+                    session.phase === "ended"
+                  }
+                >
+                  <Icon
+                    name={active && !message.trim() ? "stop" : "arrow"}
+                    size={15}
+                  />
+                </button>
+              </div>
+            </form>
+            <div className="followup-caption">
+              <span>
+                {active
+                  ? "Follow-ups are added to this session’s work."
+                  : "Continue with a follow-up in the same workspace."}
+              </span>
+              <span>Enter ↵</span>
+            </div>
+          </div>
+        </section>
+        <section className="context-pane" aria-label="Session workspace tools">
+          <div className="pane-toolbar context-toolbar">
+            <div className="pane-tabs">
+              {[
+                ["progress", "clock", "Progress"],
+                ["changes", "code", "Changes"],
+                ["review", "pr", "Review"],
+              ].map(([tab, icon, label]) => (
+                <button
+                  key={tab}
+                  onClick={() => setContext(tab)}
+                  className={context === tab ? "selected" : ""}
+                  aria-pressed={context === tab}
+                >
+                  <Icon name={icon} size={14} />
+                  {label}
+                  {tab === "changes" && session.hasChanges && (
+                    <span className="tab-count">{demoMode ? "4" : "•"}</span>
+                  )}
+                  {tab === "review" &&
+                    session.delivery?.status === "delivered" && (
+                      <span className="unread-dot" />
+                    )}
+                </button>
+              ))}
+            </div>
+            <button
+              className="icon-button"
+              aria-label="Hide context panel"
+              onClick={() => setContextHidden(true)}
+            >
+              <Icon name="x" size={15} />
+            </button>
+          </div>
+          <div className="context-scroll">
+            {context === "progress" ? (
+              <Progress session={session} />
+            ) : context === "changes" ? (
+              <Changes
+                session={session}
+                busy={busy}
+                onDeliver={() => void act("deliver")}
+                onReview={() => showContext("review")}
+              />
+            ) : (
+              <Review
+                key={session.id}
+                session={session}
+                busy={busy}
+                onDeliver={() => void act("deliver")}
+                onChanges={() => showContext("changes")}
+              />
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+function Settings() {
+  const [theme, setTheme] = useState(
+    document.documentElement.dataset.theme ?? "light",
+  );
+  const [saved, setSaved] = useState(false);
+  const [token, setApiToken] = useState("");
+  return (
+    <div className="page-scroll">
+      <div className="settings-content">
+        <div className="page-eyebrow">WORKSPACE</div>
+        <h1>Settings</h1>
+        <p className="page-subtitle">Make this workspace yours.</p>
+        <section className="settings-section">
+          <h2>Appearance</h2>
+          <p>Choose how SBX looks on your screen.</p>
+          <div className="theme-options">
+            {["light", "dark"].map((t) => (
+              <button
+                className={theme === t ? "selected" : ""}
+                key={t}
+                onClick={() => {
+                  setTheme(t);
+                  document.documentElement.dataset.theme = t;
+                  localStorage.setItem("sbx.console.theme", t);
+                }}
+                aria-pressed={theme === t}
+              >
+                <Icon name={t === "light" ? "sun" : "moon"} />
+                {t[0].toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
+        </section>
+        <section className="settings-section">
+          <h2>Workspace connection</h2>
+          <p>
+            {demoMode
+              ? "You’re exploring the local prototype with demo sessions and accounts."
+              : "This workspace uses your configured control plane."}
+          </p>
+          <span className="small-tag">
+            {demoMode ? "PROTOTYPE MODE" : "LIVE MODE"}
+          </span>
+          <p className="fine-print">
+            Session activity, changes, and delivery share one product interface
+            with provider accounts and GitHub integrations.
+          </p>
+          {!demoMode && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (token) setToken(token);
+                setApiToken("");
+                setSaved(true);
+              }}
+            >
+              <label className="form-label">
+                API connection key
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={token}
+                  onChange={(e) => setApiToken(e.target.value)}
+                  placeholder={
+                    getToken()
+                      ? "Connection key is configured"
+                      : "Enter connection key"
+                  }
+                />
+              </label>
+              <button className="button primary">Save connection</button>
+              {saved && <span role="status">Connection saved.</span>}
+            </form>
+          )}
+        </section>
+        <section className="settings-section">
+          <h2>Keyboard shortcuts</h2>
+          <div className="shortcut-row">
+            <span>Find a session</span>
+            <kbd>⌘ / Ctrl K</kbd>
+          </div>
+          <div className="shortcut-row">
+            <span>Start a new session</span>
+            <kbd>⌘ / Ctrl Enter</kbd>
+          </div>
+          <div className="shortcut-row">
+            <span>Send a follow-up</span>
+            <kbd>Enter</kbd>
+          </div>
+          <div className="shortcut-row">
+            <span>New line in a follow-up</span>
+            <kbd>Shift Enter</kbd>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
