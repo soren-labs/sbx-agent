@@ -9,9 +9,8 @@ import type { SessionApi } from "./client";
  */
 export function createApi(): SessionApi {
   const mode = import.meta.env.VITE_API_MODE as string | undefined;
-  const base = import.meta.env.VITE_API_BASE as string | undefined;
-  if (mode === "http" || (mode !== "mock" && base)) return new HttpSessionApi();
-  return new PrototypeSessionApi();
+  if (mode === "mock") return new PrototypeSessionApi();
+  return new HttpSessionApi();
 }
 
 export const api: SessionApi = createApi();

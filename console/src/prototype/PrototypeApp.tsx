@@ -59,6 +59,8 @@ export function PrototypeApp() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [search, setSearch] = useState("");
+  const [listError, setListError] = useState("");
+  const [listLoading, setListLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [pinned, setPinned] = useState<string[]>(() => {
@@ -77,13 +79,15 @@ export function PrototypeApp() {
   const refresh = useCallback(() => {
     void api
       .listSessions()
-      .then(setSessions)
-      .catch(() => {});
+      .then((rows) => { setSessions(rows); setListError(""); })
+      .catch((e) => setListError(e.message))
+      .finally(() => setListLoading(false));
   }, [api]);
   useEffect(() => {
     refresh();
     const timer = setInterval(refresh, 6000);
-    return () => clearInterval(timer);
+    window.addEventListener("sbx-connection-change", refresh);
+    return () => { clearInterval(timer); window.removeEventListener("sbx-connection-change", refresh); };
   }, [refresh]);
   useEffect(() => {
     setSidebarOpen(false);
@@ -252,7 +256,7 @@ export function PrototypeApp() {
             .filter((s) => !pinned.includes(s.id))
             .map(sessionLink)}
           {visibleSessions.length === 0 && (
-            <p className="sidebar-empty">No sessions found.</p>
+            <p className="sidebar-empty">{listLoading ? "Loading sessions…" : listError ? "Sessions unavailable" : "No sessions found."}</p>
           )}
         </div>
         <div className="sidebar-bottom">
@@ -268,7 +272,7 @@ export function PrototypeApp() {
           <div className="sidebar-runtime">
             <span className="status-dot" />
             <span>
-              {demoMode ? "Prototype workspace" : "Connected workspace"}
+              {demoMode ? "Prototype workspace" : listError ? "Connection needs attention" : listLoading ? "Connecting…" : "Connected workspace"}
             </span>
             <span className="small-tag">{demoMode ? "DEMO" : "LIVE"}</span>
           </div>
@@ -323,8 +327,9 @@ export function PrototypeApp() {
           </div>
         </header>
         <main id="workspace-main" tabIndex={-1}>
+          {listError && <div className="error-banner" role="alert">Could not load sessions. {listError} <button className="button small" onClick={refresh}>Try again</button> <Link to="/settings">Connection settings</Link></div>}
           <Routes>
-            <Route path="/" element={<Home onCreated={refresh} />} />
+            <Route path="/" element={<Home onCreated={refresh} recentRepos={[...new Set(sessions.map(s => s.repo?.name).filter((r): r is string => Boolean(r)))]} />} />
             <Route
               path="/sessions"
               element={<SessionList sessions={sessions} />}
@@ -400,17 +405,18 @@ function SessionRows({ sessions }: { sessions: Session[] }) {
     </div>
   );
 }
-function Home({ onCreated }: { onCreated: () => void }) {
+function Home({ onCreated, recentRepos }: { onCreated: () => void; recentRepos: string[] }) {
   const api = useApi();
   const navigate = useNavigate();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [prompt, setPrompt] = useState("");
   const [repo, setRepo] = useState(demoMode ? "soren-labs/sbx-browser" : "");
   const [provider, setProvider] = useState(demoMode ? "codex" : "auto");
   const [model, setModel] = useState(demoMode ? "gpt-6.1-sol" : "auto");
-  const [effort, setEffort] = useState("high");
-  const [delivery, setDelivery] = useState<DeliveryMode>("draft_pr");
+  const [effort, setEffort] = useState(demoMode ? "high" : "auto");
+  const [delivery, setDelivery] = useState<DeliveryMode>(demoMode ? "draft_pr" : "none");
   const [branch, setBranch] = useState("main");
   const [account, setAccount] = useState("auto");
   const [busy, setBusy] = useState(false);
@@ -422,7 +428,8 @@ function Home({ onCreated }: { onCreated: () => void }) {
         setProviders(p);
         setModels(m);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setCatalogLoading(false));
   }, [api]);
   useEffect(() => {
     const close = (event: Event) => {
@@ -447,7 +454,7 @@ function Home({ onCreated }: { onCreated: () => void }) {
   }, []);
   const modelRows = models.filter((m) => m.provider === provider);
   const selectedModel = modelRows.find((m) => m.model === model);
-  const efforts = selectedModel?.reasoningEfforts ?? ["low", "medium", "high"];
+  const efforts = selectedModel?.reasoningEfforts ?? [];
   const closePickers = () =>
     formRef.current?.querySelectorAll(".composer-picker[open]").forEach((d) => {
       d.removeAttribute("open");
@@ -455,7 +462,7 @@ function Home({ onCreated }: { onCreated: () => void }) {
     });
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
-    if (!prompt.trim() || busy) return;
+    if (!prompt.trim() || busy || catalogLoading) return;
     setBusy(true);
     setError("");
     try {
@@ -528,12 +535,7 @@ function Home({ onCreated }: { onCreated: () => void }) {
                     placeholder="owner/repository"
                   />
                 </label>
-                {demoMode &&
-                  [
-                    "soren-labs/sbx-browser",
-                    "soren-labs/docs",
-                    "soren-labs/website",
-                  ].map((r) => (
+                {(demoMode ? ["soren-labs/sbx-browser", "soren-labs/docs", "soren-labs/website"] : recentRepos).map((r) => (
                     <button
                       type="button"
                       className="picker-option"
@@ -669,7 +671,7 @@ function Home({ onCreated }: { onCreated: () => void }) {
                         value={p.id}
                         disabled={!p.runtimeEnabled}
                       >
-                        {p.label}
+                        {p.label} · {p.readiness?.replaceAll("_", " ")}
                       </option>
                     ))}
                   </select>
@@ -691,6 +693,7 @@ function Home({ onCreated }: { onCreated: () => void }) {
                       key={m.model}
                       type="button"
                       className={`picker-option ${m.model === model ? "selected" : ""}`}
+                      disabled={m.availability === "unavailable"}
                       onClick={() => {
                         setModel(m.model);
                         setEffort(m.defaultEffort ?? "auto");
@@ -712,7 +715,7 @@ function Home({ onCreated }: { onCreated: () => void }) {
               className="start-session-button"
               aria-label={busy ? "Starting session" : "Start session"}
               title="Start session · Ctrl/⌘ Enter"
-              disabled={!prompt.trim() || busy}
+              disabled={!prompt.trim() || busy || catalogLoading}
               type="submit"
             >
               <Icon name={busy ? "clock" : "arrow"} size={17} />
@@ -1306,9 +1309,10 @@ function Settings() {
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                if (token) setToken(token);
+                setToken(token.trim());
                 setApiToken("");
                 setSaved(true);
+                window.dispatchEvent(new Event("sbx-connection-change"));
               }}
             >
               <label className="form-label">

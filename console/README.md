@@ -83,8 +83,7 @@ and Delivery; transport versions never appear in the UI.
   Review refers to the exact snapshot sequence. Existing agent workspace review
   APIs and older operator components remain intact; no remote tooling is added.
 
-Default or `VITE_API_MODE=mock` uses demo mode. `VITE_API_MODE=http` (optional
-`VITE_API_BASE`) selects the live client. Management operations retain existing
+The default uses the live HTTP client on the same origin. Set `VITE_API_MODE=mock` explicitly for demo mode. `VITE_API_BASE` optionally selects a separate control plane. Management operations retain existing
 permissions. Provider credentials are never pasted into the product UI.
 Live integration completeness is outside this prototype's validation scope.
 No backend runtime, routes, or contract files were modified.

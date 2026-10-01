@@ -15,9 +15,7 @@ import { PROVIDERS } from "../api/fixtures";
 
 const start = Date.now() - 8 * 60_000;
 const ts = (seconds: number) => new Date(start + seconds * 1000).toISOString();
-export const demoMode =
-  import.meta.env.VITE_API_MODE !== "http" &&
-  (import.meta.env.VITE_API_MODE === "mock" || !import.meta.env.VITE_API_BASE);
+export const demoMode = import.meta.env.VITE_API_MODE === "mock";
 export const providerNames: Record<string, string> = {
   codex: "Codex",
   devin: "Devin",
