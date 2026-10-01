@@ -923,7 +923,7 @@ function SessionWorkspace({
         }
       })
       .catch((e) => {
-        if (alive) setError(e.message);
+        if (alive) {setError(e.message);setStream("unavailable");}
       });
     return () => {
       alive = false;
