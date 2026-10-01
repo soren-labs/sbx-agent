@@ -1,4 +1,4 @@
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { it, expect, vi } from 'vitest';
 import { PrototypeApp } from '../prototype/PrototypeApp';
@@ -14,7 +14,7 @@ it('can recover an initial detail failure when a cached transcript is visible', 
  vi.spyOn(client,'listModels').mockResolvedValue([]);
  vi.spyOn(client,'readSessionCache').mockResolvedValue(session);
  vi.spyOn(client,'writeSessionCache').mockResolvedValue(undefined);
- vi.spyOn(client,'getSession').mockRejectedValueOnce(new Error('Temporary detail outage')).mockResolvedValue(session);
+ const detail=vi.spyOn(client,'getSession').mockRejectedValueOnce(new Error('Temporary detail outage')).mockResolvedValue(session);
  const sub=vi.spyOn(client,'subscribe').mockImplementation((_id,handlers)=>{handlers.onOpen?.();return ()=>{};});
  const view=render(<ApiProvider client={client}><MemoryRouter initialEntries={['/sessions/'+session.id]}><PrototypeApp/></MemoryRouter></ApiProvider>);
  await screen.findByText('Temporary detail outage');
