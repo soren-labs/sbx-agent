@@ -1,3 +1,4 @@
+import { mergeActivity } from "../prototype/session-state";
 import { cacheScope, readSessionCache, writeSessionCache } from "../prototype/session-cache";
 import { ApiError, type SessionApi, type SessionEventHandlers } from "./client";
 import {
@@ -429,7 +430,7 @@ export class HttpSessionApi implements SessionApi {
     for (const entry of data.events ?? []) {
       const item = normalizeEvent(entry.event, id);
       const turn = turns.find(t=>t.id===item?.turnId);
-      if (item && turn) turn.activity.push(item);
+      if (item && turn) turn.activity = mergeActivity(turn.activity, [item]);
     }
     return {turns,hasMore:Boolean(data.has_more)};
   }
