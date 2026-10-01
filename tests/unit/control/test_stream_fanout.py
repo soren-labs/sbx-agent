@@ -60,3 +60,14 @@ def test_tail_delivers_while_status_probe_is_blocked(monkeypatch):
         feed.put(None)
         hub._thread.join(timeout=3)
         hub.unsubscribe(sub)
+
+
+def test_subscriber_notification_follows_queue_visibility():
+    from control.api_v2.events_hub import _Subscriber
+
+    sub = _Subscriber(1)
+    seen = []
+    sub.wake = lambda: seen.append(sub.q.get_nowait())
+    sub.put("first")
+    sub.put("second")
+    assert seen == ["first", "second"]

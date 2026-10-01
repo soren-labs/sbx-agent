@@ -1727,7 +1727,7 @@ def stream_session_events(
     def _start_tail(handle: Any) -> Any:
         return backend.exec(
             handle,
-            ["tail", "-n", "+1", "-F", "-s", "0.05", str(handle.root / "events.jsonl")],
+            ["tail", "-n", "+1", "-F", "-s", "0.02", str(handle.root / "events.jsonl")],
             sandbox_env(handle),
         )
 
@@ -1804,6 +1804,16 @@ def stream_session_events(
         return True
 
     async def gen() -> AsyncIterator[str]:
+        wake = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def notify() -> None:
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:
+                pass  # disconnected client loop has already closed
+
+        sub.wake = notify
         try:
             yield ": keepalive\n\n"
             if opening is not None:
@@ -1818,6 +1828,9 @@ def stream_session_events(
                 yield "".join(f for f in backlog[i : i + _SSE_BATCH] if visible(f))
             next_ka = time.monotonic() + keepalive_s
             while True:
+                # Clear before draining: arrival between drain and wait sets
+                # the event, so no frame can wait until the keepalive deadline.
+                wake.clear()
                 items: list[Any] = []
                 try:
                     while True:
@@ -1829,7 +1842,10 @@ def stream_session_events(
                     if now >= next_ka:
                         yield ": keepalive\n\n"
                         next_ka = now + keepalive_s
-                    await asyncio.sleep(0.05)
+                    try:
+                        await asyncio.wait_for(wake.wait(), max(0.001, next_ka - now))
+                    except TimeoutError:
+                        pass
                     continue
                 closing = False
                 out: list[str] = []
@@ -1844,6 +1860,7 @@ def stream_session_events(
                 if closing:
                     return
         finally:
+            sub.wake = None
             hub.unsubscribe(sub)
 
     return DisconnectAwareStreamingResponse(

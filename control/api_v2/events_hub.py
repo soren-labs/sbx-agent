@@ -46,11 +46,17 @@ _CLOSE = object()  # queue sentinel: end-of-stream for current subscribers
 
 
 class _Subscriber:
-    __slots__ = ("q", "start_line")
+    __slots__ = ("q", "start_line", "wake")
 
     def __init__(self, start_line: int) -> None:
         self.q: queue.Queue[Any] = queue.Queue()
         self.start_line = start_line
+        self.wake: Callable[[], None] | None = None
+
+    def put(self, item: Any) -> None:
+        self.q.put(item)
+        if self.wake is not None:
+            self.wake()
 
 
 class SessionEventsHub:
@@ -141,7 +147,7 @@ class SessionEventsHub:
         with self._lock:
             subs = list(self._subs)
         for sub in subs:
-            sub.q.put(item)
+            sub.put(item)
 
     def _append_frame(self, lineno: int, norm: dict[str, Any]) -> None:
         frame = format_sse(lineno, norm)
@@ -151,7 +157,7 @@ class SessionEventsHub:
                 del self._frames[: len(self._frames) - _MAX_FRAMES]
             subs = [sub for sub in self._subs if lineno >= sub.start_line]
         for sub in subs:
-            sub.q.put(frame)
+            sub.put(frame)
 
     def _status_tick(self) -> None:
         try:
