@@ -411,7 +411,14 @@ def test_probe_account_credential_marks_active(
     from control.ports import Account
 
     registry.put(
-        Account(id="acct-p", provider="codex", label="p", status="unverified", secret_name="test-account-secret", created_at=_iso())
+        Account(
+            id="acct-p",
+            provider="codex",
+            label="p",
+            status="unverified",
+            secret_name="test-account-secret",
+            created_at=_iso(),
+        )
     )
 
     class _Proc:
@@ -514,8 +521,10 @@ def test_pair_secret_leak_no_raw_ticket_in_store(
 
 
 def test_probe_without_account_credential_does_not_use_deployment_default(registry):
-    from control.ports import Account
     from unittest.mock import Mock
+
+    from control.ports import Account
+
     registry.put(Account(id="acct-empty", provider="codex", label="empty", status="unverified"))
     plane = Mock()
     updated = probe_account_credential(plane, registry, registry.get("acct-empty"))

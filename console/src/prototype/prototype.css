@@ -4060,3 +4060,5 @@ kbd {
 .account-details { grid-column: 1 / -1; color: var(--ui-muted); font-size: 12px; }
 .account-details summary { cursor: pointer; }
 .account-details p { margin: 8px 0; overflow-wrap:anywhere; }
+
+.assistant-message { white-space: pre-wrap; overflow-wrap: anywhere; }

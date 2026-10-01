@@ -42,3 +42,12 @@ it("does not repeatedly retry an unauthorized event stream",async()=>{
   const error=vi.fn();const stop=new HttpSessionApi().subscribe("session",{onError:error});
   await vi.advanceTimersByTimeAsync(30000);expect(fetchMock).toHaveBeenCalledTimes(1);expect(error).toHaveBeenCalled();stop();
 });
+it("does not regress a completed turn when replay starts earlier in history",()=>{
+ const turn=structuredClone(SESSIONS[0].turns[0]);turn.status="finished";turn.finishedAt="2026-10-01T01:00:00Z";
+ const replay={...turn,status:"running" as const,finishedAt:null};expect(mergeTurn(turn,replay)).toMatchObject({status:"finished",finishedAt:turn.finishedAt});
+});
+it("does not overwrite turn results from an older detail snapshot",()=>{
+ const current=structuredClone(SESSIONS[0]);current.updatedAt="2026-10-01T01:00:00Z";current.turns[0].result="Latest result";
+ const older=structuredClone(current);older.updatedAt="2026-10-01T00:00:00Z";older.turns[0].result="Older result";
+ expect(mergeSession(current,older).turns[0].result).toBe("Latest result");
+});

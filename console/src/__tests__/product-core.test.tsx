@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { PrototypeApp } from "../prototype/PrototypeApp";
@@ -35,4 +35,9 @@ describe("live product shell", () => {
     expect(screen.getByLabelText("Session task")).toHaveValue("Read the API");
     expect(create).toHaveBeenCalledWith(expect.objectContaining({prompt:"Read the API",provider:"auto",model:"auto",effort:"auto",delivery:"none"}));
   });
+});
+it("does not overlap a slow session list with polling or connection refresh", async()=>{
+ vi.useFakeTimers();const client=new HttpSessionApi();let resolve!:(value:[])=>void;
+ const list=vi.spyOn(client,"listSessions").mockImplementation(()=>new Promise(r=>{resolve=r;}));vi.spyOn(client,"listProviders").mockResolvedValue([]);vi.spyOn(client,"listModels").mockResolvedValue([]);
+ const view=open(client);await act(async()=>{await vi.advanceTimersByTimeAsync(18000);window.dispatchEvent(new Event("sbx-connection-change"));});expect(list).toHaveBeenCalledTimes(1);await act(async()=>{resolve([]);await vi.advanceTimersByTimeAsync(6000);});expect(list).toHaveBeenCalledTimes(2);view.unmount();vi.useRealTimers();
 });

@@ -15,14 +15,16 @@ export function mergeTurn(current: Turn | undefined, incoming: Turn): Turn {
     prompt: incoming.prompt || current.prompt,
     createdAt: incoming.createdAt || current.createdAt,
     startedAt: incoming.startedAt || current.startedAt,
+    finishedAt: incoming.finishedAt ?? current.finishedAt,
+    status: ["finished","failed","cancelled"].includes(current.status) && ["queued","running"].includes(incoming.status) ? current.status : incoming.status,
     result: incoming.result ?? current.result,
     activity: mergeActivity(current.activity, incoming.activity),
   };
 }
 export function mergeSession(current: Session | null, incoming: Session): Session {
   if (!current || current.id !== incoming.id) return incoming;
-  const turns = new Map(current.turns.map(turn => [turn.id, turn]));
-  for (const turn of incoming.turns) turns.set(turn.id, mergeTurn(turns.get(turn.id), turn));
   const stale = new Date(incoming.updatedAt).getTime() < new Date(current.updatedAt).getTime();
+  const turns = new Map(current.turns.map(turn => [turn.id, turn]));
+  for (const turn of incoming.turns) { const prior=turns.get(turn.id);turns.set(turn.id,stale && prior ? {...prior,activity:mergeActivity(prior.activity,turn.activity)} : mergeTurn(prior,turn)); }
   return {...current, ...(stale ? {} : incoming), turns:[...turns.values()].sort((a,b)=>a.index-b.index)};
 }

@@ -9,6 +9,7 @@ import { demoMode, demoModels, providerNames } from "./demo";
 import type { ProviderInfo, IntegrationStatus } from "../api/types";
 import { Icon } from "./Icon";
 
+function commandArgument(value:string) { return "'" + value.replaceAll("'", "'\\''") + "'"; }
 export function Integrations() {
   const api = useApi();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -18,6 +19,7 @@ export function Integrations() {
       ? "GitHub installation connected."
       : "",
   );
+  const connectionGeneration=useRef(0);
   const focusOrigin = useRef<HTMLElement | null>(null);
   const [accounts, setAccounts] = useState<AccountConnection[]>([]);
   const [error, setError] = useState(
@@ -104,6 +106,7 @@ export function Integrations() {
     };
   }, [pair?.id, pair?.state]);
   const close = () => {
+    connectionGeneration.current+=1;
     if (pair)
       void connections.cancel(pair.id).catch((e) => setError(e.message));
     setPair(null);
@@ -118,7 +121,7 @@ export function Integrations() {
       setNotice(
         action === "verify"
           ? "Connection verified."
-          : `Credential refresh: ${result?.result ?? "complete"}.`,
+          : `Credential refresh: ${String(result?.result ?? "complete").replace("skipped:not_due", "healthy; refresh not due").replace("skipped:static_credential", "this account uses a static credential").replaceAll("_"," ")}.`,
       );
       if (demoMode)
         setAccounts((list) =>
@@ -135,12 +138,14 @@ export function Integrations() {
         );
       else await refresh();
     } catch (e) {
+      if(!demoMode)await refresh();
       setError((e as Error).message);
     } finally {
       setBusy("");
     }
   };
   const openConnect = (a?: AccountConnection) => {
+    connectionGeneration.current+=1;
     focusOrigin.current = document.activeElement as HTMLElement;
     setError("");
     setProvider(a?.provider ?? "codex");
@@ -150,20 +155,14 @@ export function Integrations() {
     setConnecting(true);
   };
   const begin = async () => {
-    setBusy("connect");
+    const generation=connectionGeneration.current;
+    setBusy("connect");setError("");
     try {
-      setPair(
-        await connections.begin(
-          provider,
-          label || `${providerNames[provider]} account`,
-          target,
-        ),
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy("");
-    }
+      const flow=await connections.begin(provider,label||`${providerNames[provider]} account`,target);
+      if(generation!==connectionGeneration.current){await connections.cancel(flow.id);return;}
+      setPair(flow);
+    } catch(e){if(generation===connectionGeneration.current)setError((e as Error).message);}
+    finally{setBusy("");}
   };
   const completeDemo = () => {
     if (!demoMode) return;
@@ -605,7 +604,7 @@ export function Integrations() {
                   </a>
                 )}
                 {pair.pair_command && (
-                  <pre className="pair-command">{pair.pair_command}</pre>
+                  <pre className="pair-command">{pair.pair_command}{` --base-url ${commandArgument(String(import.meta.env.VITE_API_BASE || window.location.origin).replace(/\/+$/, ""))}`}</pre>
                 )}
                 {demoMode ? (
                   <button

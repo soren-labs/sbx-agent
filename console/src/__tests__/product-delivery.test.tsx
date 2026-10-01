@@ -101,3 +101,8 @@ it("restores a merge result from the actual delivery.merge projection", async ()
   expect((await new HttpSessionApi().listChanges("s"))[0].merged).toBe(true);
   fetch.mockRestore();
 });
+it("shows loading rather than a false empty changes state while the snapshot is pending", async()=>{
+ const client=new HttpSessionApi();vi.spyOn(client,"listChangesDiff").mockImplementation(()=>new Promise(()=>{}));
+ render(<ApiProvider client={client}><Changes session={SESSIONS[0]} onDeliver={()=>{}} onReview={()=>{}} busy={false}/></ApiProvider>);
+ expect(screen.getByRole("status")).toHaveTextContent("Loading changes");expect(screen.queryByText("No file changes yet.")).not.toBeInTheDocument();
+});

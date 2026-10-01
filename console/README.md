@@ -1,13 +1,13 @@
-# SBX Browser frontend prototype
+# SBX Browser Session frontend
 
-Second design pass of the React / TypeScript / Vite Session frontend, based on
-hands-on research of authenticated Devin Cloud. Default mode uses explicitly
-labeled local demo data for existing SBX capabilities.
+React / TypeScript / Vite Session product UI, based on hands-on research of
+authenticated Devin Cloud. The normal path uses real SBX data and actions.
+Local demo data is available only with `VITE_API_MODE=mock`.
 
 ```bash
 cd console
 npm ci
-npm run dev -- --host 0.0.0.0 --port 5174 --strictPort
+SBX_API_PROXY_TARGET=http://127.0.0.1:8787 npm run dev -- --host 0.0.0.0 --port 5174 --strictPort
 ```
 
 Open **http://localhost:5174/**. Dark is the new default; Settings also offers light.
@@ -15,12 +15,17 @@ Open **http://localhost:5174/**. Dark is the new default; Settings also offers l
 - `/`: compact new-session composer; repository, provider/model, reasoning effort,
   delivery intent; base branch and account behind configuration / Advanced.
 - `/sessions`: searchable Sessions with active, finished, and attention filters.
+Demo-only examples (`VITE_API_MODE=mock`):
+
 - `/sessions/stream-reconnect`: active coding session; collapsed completed work,
   expanded current work, compact command evidence, follow-up and cancellation.
 - `/sessions/event-replay`: completed coding session with a draft PR outcome.
 - `/sessions/account-health`: account error, reconnect and retry.
+Live routes:
+
+- `/sessions/:id`: real workstream, follow-up, cancel/retry, Changes and delivery.
 - `/review`: delivered Session list. Session Review records a revision verdict and
-  demonstrates the existing review-gated merge flow, with an explicit final action.
+  uses the existing review-gated merge flow, with an explicit final confirmation.
 - `/integrations`: Connections for multiple subscription accounts, verify,
   credential refresh, secure connect/pair, model catalog refresh, GitHub App sync.
 - `/settings`: appearance and shortcuts; connection key in live mode.
@@ -85,12 +90,34 @@ and Delivery; transport versions never appear in the UI.
 
 The default uses the live HTTP client on the same origin. Set `VITE_API_MODE=mock` explicitly for demo mode. `VITE_API_BASE` optionally selects a separate control plane. Management operations retain existing
 permissions. Provider credentials are never pasted into the product UI.
-Live integration completeness is outside this prototype's validation scope.
-No backend runtime, routes, or contract files were modified.
+Account verification/refresh responses are checked for actual outcomes, not HTTP
+success alone. GitHub App installation and deployment credentials have distinct
+status. Small backend fixes preserve workspace state after PR updates and prevent
+credential-less probes from inheriting a deployment default. No runtime architecture
+or frozen contract changes.
 
 ## Lightweight validation
 
 `npm run build` performs TypeScript checking, Vite compilation and build-manifest
 creation. Local `agent-browser` checks cover desktop/mobile, menus, Session
 progress, commands, changes, PR/review, follow-up, cancellation and Connections.
-No new runtime dependencies; no full backend test/acceptance gate; no push or merge.
+No new runtime dependencies; no full backend test/acceptance gate. Product work is
+delivered as stacked PRs; only a disposable test PR was merged to a disposable branch.
+
+## Real backend walkthrough
+
+Set an isolated deployment URL and API key in your environment, plus
+`SBX_E2E_REPO` and `SBX_E2E_REF` (a disposable branch beginning `sbx-ui-`).
+Run `python3 scripts/live-walkthrough.py` from `console/`. It uses the installed
+`agent-browser` CLI against `SBX_UI_URL` (default `http://localhost:5174`), creates
+one Markdown file, checks real SSE/reload/follow-up/diff, delivers a draft PR to
+that disposable branch, records approval and checks Connections. It never merges.
+It fails closed on a non-isolated deployment or target branch and never prints
+credentials. Delete/close the resulting test resources after inspection.
+
+Round-three validation includes live Session creation, streaming/reconnect,
+cancel/retry, error recovery, revision-pinned diffs, draft-to-ready delivery,
+independent review and merge into a disposable target, and isolated account
+pairing/verify/refresh/cancel/retry/removal. GitHub installation completion still
+requires authenticated GitHub browser access; the real handoff was exercised,
+but a new installation was not fabricated. Research artifacts are ignored.

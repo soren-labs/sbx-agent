@@ -46,6 +46,7 @@ function age(date: string) {
         ? `${Math.floor(mins / 60)}h ago`
         : `${Math.floor(mins / 1440)}d ago`;
 }
+const shortcutModifier = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 const isActive = (s: Session) =>
   ["running", "starting", "queued"].includes(s.phase);
 
@@ -69,18 +70,14 @@ export function PrototypeApp() {
     }
   });
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRequest = useRef<Promise<void> | null>(null);
   useEffect(() => {
     if (sidebarOpen) requestAnimationFrame(() => searchRef.current?.focus());
   }, [sidebarOpen]);
   const refresh = useCallback(() => {
-    void api
-      .listSessions()
-      .then((rows) => {
-        setSessions(rows);
-        setListError("");
-      })
-      .catch((e) => setListError(e.message))
-      .finally(() => setListLoading(false));
+    if (listRequest.current) return listRequest.current;
+    const request = api.listSessions().then(rows=>{setSessions(rows);setListError("");}).catch(e=>setListError(e.message)).finally(()=>{setListLoading(false);listRequest.current=null;});
+    listRequest.current=request;return request;
   }, [api]);
   useEffect(() => {
     refresh();
@@ -158,7 +155,9 @@ export function PrototypeApp() {
                 ? "Needs attention"
                 : s.endReason === "cancelled"
                   ? "Stopped"
-                  : s.delivery?.status === "delivered"
+                  : s.delivery?.merged
+                    ? "Merged"
+                    : s.delivery?.status === "delivered"
                     ? "PR ready"
                     : "Finished"}{" "}
             · {age(s.updatedAt)}
@@ -207,7 +206,7 @@ export function PrototypeApp() {
         </div>
         <Link to="/" className="new-session-button">
           <Icon name="plus" size={17} />
-          New session<kbd>⌘ O</kbd>
+          New session<kbd>{shortcutModifier} O</kbd>
         </Link>
         <label className="sidebar-search">
           <Icon name="search" size={14} />
@@ -218,7 +217,7 @@ export function PrototypeApp() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <kbd>⌘ K</kbd>
+          <kbd>{shortcutModifier} K</kbd>
         </label>
         <NavLink to="/review" className="sessions-nav">
           <Icon name="pr" />
@@ -293,7 +292,7 @@ export function PrototypeApp() {
           <div className="sidebar-user">
             <span className="user-avatar avatar">S</span>
             <span>
-              Soren<small>Sorenforge workspace</small>
+              {demoMode ? "Soren" : "SBX"}<small>{demoMode ? "Sorenforge workspace" : "Session workspace"}</small>
             </span>
             <button
               className="icon-button"
@@ -336,7 +335,7 @@ export function PrototypeApp() {
               {demoMode ? "Prototype mode" : "Live workspace"}
             </span>
             <span className="small-tag">
-              {demoMode ? "Local data" : "Connected"}
+              {demoMode ? "Local data" : listError ? "Needs attention" : listLoading ? "Connecting" : "Connected"}
             </span>
           </div>
         </header>
@@ -375,6 +374,7 @@ export function PrototypeApp() {
               element={
                 <SessionWorkspace
                   key={location.pathname}
+                  summary={selected}
                   onChanged={refresh}
                   pinned={selected ? pinned.includes(selected.id) : false}
                   onPin={togglePin}
@@ -654,7 +654,7 @@ function Home({
                   <summary>Advanced</summary>
                   <label className="form-label">
                     Base branch
-                    <input
+                    <input aria-label="Base branch"
                       value={branch}
                       onChange={(e) => setBranch(e.target.value)}
                     />
@@ -866,10 +866,12 @@ function SessionList({
   );
 }
 function SessionWorkspace({
+  summary,
   onChanged,
   pinned,
   onPin,
 }: {
+  summary?: Session;
   onChanged: () => void;
   pinned: boolean;
   onPin: (id: string) => void;
@@ -880,6 +882,7 @@ function SessionWorkspace({
   const [session, setSession] = useState<Session | null>(
     (location.state as { session?: Session } | null)?.session ?? null,
   );
+  useEffect(()=>{if(summary)setSession(current=>mergeSession(current,summary));},[summary]);
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [context, setContext] = useState("changes");
   const [contextHidden, setContextHidden] = useState(false);
@@ -894,6 +897,8 @@ function SessionWorkspace({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [stream, setStream] = useState("connecting");
+  const [connectionEpoch,setConnectionEpoch]=useState(0);
+  useEffect(()=>{const reconnect=()=>{setConnectionEpoch(n=>n+1);setError("");};window.addEventListener("sbx-connection-change",reconnect);return()=>window.removeEventListener("sbx-connection-change",reconnect);},[]);
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let alive = true;
@@ -913,7 +918,7 @@ function SessionWorkspace({
     return () => {
       alive = false;
     };
-  }, [api, id]);
+  }, [api, id, connectionEpoch]);
   useEffect(
     () =>
       api.subscribe(id, {
@@ -986,29 +991,18 @@ function SessionWorkspace({
             .catch((e) => setError(e.message));
         },
       }),
-    [api, id],
+    [api, id, connectionEpoch],
   );
   useEffect(() => {
     document.title = session ? `${session.title} · SBX` : "Session · SBX";
   }, [session?.title]);
-  const act = async (action: "stop" | "retry" | "deliver") => {
+  const act = async (action: "stop" | "retry") => {
     setBusy(true);
     setError("");
     try {
-      const next =
-        action === "deliver"
-          ? (
-              await api.deliverSession(id, {
-                draft: true,
-                title: session?.title,
-              })
-            ).session
-          : action === "stop"
-            ? await api.stopSession(id)
-            : await api.retrySession(id);
+      const next = action === "stop" ? await api.stopSession(id) : await api.retrySession(id);
       setSession((prev) => mergeSession(prev, next));
       onChanged();
-      if (action === "deliver") showContext("review");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1041,8 +1035,9 @@ function SessionWorkspace({
   };
   if (!session)
     return (
-      <div className="panel-empty">
+      <div className="panel-empty" role={error ? "alert" : "status"}>
         {error || "Opening session…"}
+        {error && <button className="button" onClick={()=>{setError("");setStream("connecting");setConnectionEpoch(n=>n+1);}}>Retry opening session</button>}
         {error && (
           <Link to="/sessions" className="button">
             Back to sessions
@@ -1141,6 +1136,7 @@ function SessionWorkspace({
       {error && !deliveryOpen && (
         <div className="error-banner" role="alert">
           {error}
+          {stream === "unavailable" && <button className="button small" onClick={()=>{setStream("connecting");setError("");setConnectionEpoch(n=>n+1);}}>Retry connection</button>}
           <button
             className="icon-button"
             aria-label="Dismiss error"
@@ -1327,6 +1323,7 @@ function SessionWorkspace({
                   setError("");
                   setDeliveryOpen(true);
                 }}
+                onChanged={()=>{void api.getSession(id).then(next=>setSession(prev=>mergeSession(prev,next))).catch(e=>setError(e.message));onChanged();}}
                 onChanges={() => showContext("changes")}
               />
             )}

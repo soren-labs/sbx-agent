@@ -372,7 +372,7 @@ export class HttpSessionApi implements SessionApi {
     if (!res.ok) {
       // Wire error body: {error: {code, message, retryable, action}}.
       let code = "internal";
-      let message = `${method} ${path} → ${res.status}`;
+      let message = `The request could not be completed (${res.status}). Please try again.`;
       let retryable = false;
       let retryAfter: number | undefined;
       try {

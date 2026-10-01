@@ -23,6 +23,7 @@ export function Changes({
 }) {
   const api = useApi();
   const [summary, setSummary] = useState<SessionChangesDiff | null>(null);
+  const [summaryLoading,setSummaryLoading]=useState(true);
   const [path, setPath] = useState("");
   const [diff, setDiff] = useState<SessionFileDiff | null>(null);
   const [error, setError] = useState("");
@@ -31,17 +32,20 @@ export function Changes({
   useEffect(() => {
     let alive = true;
     setSummary(null);
+    setSummaryLoading(true);
     setError("");
     setPath("");
     void api
       .listChangesDiff(session.id)
       .then((s) => {
         if (alive) {
+          setSummaryLoading(false);
           setSummary(s);
           setPath(s.files[0]?.path ?? "");
         }
       })
       .catch((e) => {
+        if (alive) setSummaryLoading(false);
         if (alive)
           setError(
             e.subcode === "revision_not_found"
@@ -111,7 +115,7 @@ export function Changes({
         <Icon name="chevron" size={12} />
         <code>{session.delivery?.branch ?? "Session branch"}</code>
       </div>
-      {summary && session.hasChanges && (
+      {summary && summary.files.length > 0 && (
         <div className="changes-content">
           <div className="file-list" aria-label="Changed files">
             {summary.files.map((file) => (
@@ -164,7 +168,7 @@ export function Changes({
           </div>
         </div>
       )}
-      {(!session.hasChanges || !summary?.files.length) && (
+      {summaryLoading ? <div className="panel-empty" role="status">Loading changes…</div> : (!summary?.files.length && !error) && (
         <div className="panel-empty">
           <Icon name="file" size={24} />
           <p>No file changes yet.</p>
@@ -186,7 +190,7 @@ export function Changes({
             ? "Work is in progress. Changes may update."
             : "Changes are ready to review."}
         </span>
-        {session.hasChanges && (
+        {!!summary?.files.length && (
           <button
             className="button primary"
             disabled={busy}
@@ -243,11 +247,13 @@ export function Review({
   session,
   onDeliver,
   onChanges,
+  onChanged,
   busy,
 }: {
   session: Session;
   onDeliver: () => void;
   onChanges: () => void;
+  onChanged?: () => void;
   busy: boolean;
 }) {
   const delivered = session.delivery?.status === "delivered";
@@ -255,7 +261,7 @@ export function Review({
     <div className="review-panel">
       <div className="panel-heading">
         <div>
-          <h2>{delivered ? "Ready for your review" : "Deliver the work"}</h2>
+          <h2>{session.delivery?.merged ? "Pull request merged" : delivered ? "Ready for your review" : "Deliver the work"}</h2>
           <p>
             {delivered
               ? "From a session to a pull request."
@@ -267,9 +273,9 @@ export function Review({
       {delivered ? (
         <>
           <PRCard session={session} onReview={onChanges} />
-          <button className="button" disabled={busy} onClick={onDeliver}>
+          {!session.delivery?.merged && <button className="button" disabled={busy} onClick={onDeliver}>
             Update pull request
-          </button>
+          </button>}
           <div className="review-section">
             <h3>What changed</h3>
             <p>
@@ -311,7 +317,7 @@ export function Review({
               </p>
             )}
           </div>
-          <ReviewActions session={session} />
+          <ReviewActions session={session} onChanged={onChanged} />
         </>
       ) : (
         <div className="delivery-empty">
@@ -346,7 +352,7 @@ export function Review({
   );
 }
 
-function ReviewActions({ session }: { session: Session }) {
+function ReviewActions({ session, onChanged }: { session: Session; onChanged?:()=>void }) {
   const api = useApi();
   const [records, setRecords] = useState<ReviewRecord[]>([]);
   const [revision, setRevision] = useState<number>();
@@ -390,6 +396,7 @@ function ReviewActions({ session }: { session: Session }) {
         await reviews.merge(session.id, revision);
         setMerged(true);
         setConfirmMerge(false);
+        onChanged?.();
       } else {
         await reviews.record(session.id, revision, verdict);
         setRecords(await reviews.list(session.id, revision));
