@@ -1056,6 +1056,53 @@ def get_session(
     )
 
 
+@router.get("/sessions/{session_id}/history")
+def get_session_history(
+    session_id: str,
+    request: Request,
+    before_n: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=10, ge=1, le=25),
+    key: ApiKey = Depends(agents_key),
+    plane: Any = Depends(get_plane),
+    v1: V1State = Depends(get_v1_state),
+    run_states: RunStateStore = Depends(get_run_states),
+    scheduler: Scheduler = Depends(get_scheduler),
+    reporter: Any = Depends(get_run_reporter),
+    task_store: TaskStore = Depends(get_task_store),
+) -> dict[str, Any]:
+    """Older turns and their durable activity, fetched only on demand.
+
+    Cursor is a turn number, so newly appended turns do not shift pages.
+    The existing detail and event contracts are unchanged.
+    """
+    from control.api_v2.events import normalize
+
+    record = _require_session(task_store, key, session_id)
+    rec = plane.get(record.agent_id) if record.agent_id else None
+    rows = _tasks._task_runs(plane, rec, v1, run_states, scheduler, reporter) if rec else []
+    rows = [run_view(r) for r in rows]
+    eligible = sorted(
+        (r for r in rows if before_n is None or int(r["n"]) < before_n),
+        key=lambda r: int(r["n"]),
+    )
+    page = eligible[-limit:]
+    activity = getattr(request.app.state, "run_activity", None)
+    events: list[dict[str, Any]] = []
+    if activity is not None and record.agent_id:
+        for row in page:
+            n = int(row["n"])
+            for entry in activity.get(record.agent_id, n) or []:
+                frame = normalize(entry["event"], n)
+                if frame is not None:
+                    events.append({"id": entry["id"], "event": frame})
+    return {
+        "runs": page,
+        "events": events,
+        "has_more": len(eligible) > len(page),
+        "next_before_n": int(page[0]["n"]) if page else None,
+    }
+
+
 @router.post(
     "/sessions/{session_id}/messages",
     status_code=202,
@@ -1601,6 +1648,7 @@ def stream_session_events(
     request: Request,
     session_id: str,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    after_n: int = Query(default=0, ge=0),
     key: ApiKey = Depends(agents_key),
     plane: Any = Depends(get_plane),
     v1: V1State = Depends(get_v1_state),
@@ -1746,6 +1794,15 @@ def stream_session_events(
     if opening is None:
         opening = hub.opening_status()
 
+    def visible(frame: str) -> bool:
+        if not after_n:
+            return True
+        for line in frame.splitlines():
+            if line.startswith("data: "):
+                payload = json.loads(line[6:])
+                return int(payload.get("n") or after_n + 1) > after_n
+        return True
+
     async def gen() -> AsyncIterator[str]:
         try:
             yield ": keepalive\n\n"
@@ -1758,7 +1815,7 @@ def stream_session_events(
             # client reconnect herd re-ingesting a long transcript no
             # longer floods the loop with per-frame sends (SOR-271 r2).
             for i in range(0, len(backlog), _SSE_BATCH):
-                yield "".join(backlog[i : i + _SSE_BATCH])
+                yield "".join(f for f in backlog[i : i + _SSE_BATCH] if visible(f))
             next_ka = time.monotonic() + keepalive_s
             while True:
                 items: list[Any] = []
@@ -1780,7 +1837,8 @@ def stream_session_events(
                     if item is _hub_mod._CLOSE:
                         closing = True
                         break
-                    out.append(item)
+                    if visible(item):
+                        out.append(item)
                 if out:
                     yield "".join(out)
                 if closing:

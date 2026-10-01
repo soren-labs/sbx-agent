@@ -883,6 +883,10 @@ function SessionWorkspace({
     (location.state as { session?: Session } | null)?.session ?? null,
   );
   useEffect(()=>{if(summary)setSession(current=>mergeSession(current,summary));},[summary]);
+  const [historyFloor, setHistoryFloor] = useState<number | null>(null);
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [context, setContext] = useState("changes");
   const [contextHidden, setContextHidden] = useState(false);
@@ -898,15 +902,21 @@ function SessionWorkspace({
   const [error, setError] = useState("");
   const [stream, setStream] = useState("connecting");
   const [connectionEpoch,setConnectionEpoch]=useState(0);
-  useEffect(()=>{const reconnect=()=>{setConnectionEpoch(n=>n+1);setError("");};window.addEventListener("sbx-connection-change",reconnect);return()=>window.removeEventListener("sbx-connection-change",reconnect);},[]);
+  useEffect(()=>{const reconnect=()=>{setSession(null);setHistoryFloor(null);setConnectionEpoch(n=>n+1);setError("");};window.addEventListener("sbx-connection-change",reconnect);return()=>window.removeEventListener("sbx-connection-change",reconnect);},[]);
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let alive = true;
+    let networkReady = false;
+    void api.readSessionCache?.(id).then(cached=>{
+      if (alive && !networkReady && cached) setSession(prev=>mergeSession(prev,cached));
+    }).catch(()=>undefined);
     void api
       .getSession(id)
       .then((s) => {
         if (alive) {
+          networkReady = true;
           setError("");
+          setHistoryFloor(s.turns.length ? Math.max(0, Math.min(...s.turns.map(t=>t.index))-1) : 0);
           setSession((prev) => mergeSession(prev, s));
           if (s.delivery?.status === "delivered") setContext("review");
           else if (!s.hasChanges) setContext("progress");
@@ -919,9 +929,10 @@ function SessionWorkspace({
       alive = false;
     };
   }, [api, id, connectionEpoch]);
-  useEffect(
-    () =>
-      api.subscribe(id, {
+  useEffect(() => {
+    if (historyFloor === null) return;
+    return api.subscribe(id, {
+        historyAfterTurn: historyFloor,
         onSession: (next) => setSession((prev) => mergeSession(prev, next)),
         onPhase: (phase) => setSession((s) => (s ? { ...s, phase } : s)),
         onMeta: (meta) =>
@@ -990,9 +1001,26 @@ function SessionWorkspace({
             .then((s) => setSession((prev) => mergeSession(prev, s)))
             .catch((e) => setError(e.message));
         },
-      }),
-    [api, id, connectionEpoch],
-  );
+      });
+  }, [api, id, connectionEpoch, historyFloor]);
+  useEffect(()=>{
+    if (!session || session.id!==id) return;
+    const timer=setTimeout(()=>{void api.writeSessionCache?.(session).catch(()=>undefined);},500);
+    return ()=>clearTimeout(timer);
+  },[api,id,session]);
+  const loadHistory=async()=>{
+    if (!session || !api.getHistory || historyLoading) return;
+    const before=Math.min(...session.turns.map(t=>t.index));
+    const el=logRef.current, height=el?.scrollHeight ?? 0, top=el?.scrollTop ?? 0;
+    setHistoryLoading(true);setHistoryError("");
+    try {
+      const page=await api.getHistory(id,before);
+      setHasMoreHistory(page.hasMore);
+      setSession(current=>current ? {...current,turns:[...page.turns,...current.turns.filter(t=>!page.turns.some(p=>p.id===t.id))]} : current);
+      requestAnimationFrame(()=>{if(el)el.scrollTop=top+el.scrollHeight-height;});
+    } catch(e) {setHistoryError((e as Error).message);}
+    finally {setHistoryLoading(false);}
+  };
   useEffect(() => {
     document.title = session ? `${session.title} · SBX` : "Session · SBX";
   }, [session?.title]);
@@ -1036,7 +1064,7 @@ function SessionWorkspace({
   if (!session)
     return (
       <div className="panel-empty" role={error ? "alert" : "status"}>
-        {error || "Opening session…"}
+        {error || <SessionLoading />} 
         {error && <button className="button" onClick={()=>{setError("");setStream("connecting");setConnectionEpoch(n=>n+1);}}>Retry opening session</button>}
         {error && (
           <Link to="/sessions" className="button">
@@ -1194,6 +1222,10 @@ function SessionWorkspace({
       <div className="session-split">
         <section className="conversation-pane" aria-label="Session worklog">
           <div className="worklog-scroll" ref={logRef}>
+            {api.getHistory && hasMoreHistory && session.turns.length>0 && Math.min(...session.turns.map(t=>t.index))>1 && <div className="history-controls">
+              <button className="button small" disabled={historyLoading} onClick={loadHistory}>{historyLoading ? "Loading earlier messages…" : "Load earlier messages"}</button>
+              {historyError && <p role="alert">{historyError}</p>}
+            </div>}
             <Worklog session={session} onContext={showContext} />
           </div>
           <div className="followup-container">
@@ -1431,4 +1463,11 @@ function Settings() {
       </div>
     </div>
   );
+}
+
+function SessionLoading() {
+  return <div className="session-loading" role="status" aria-label="Opening session">
+    <span className="loading-orbit" aria-hidden="true"><i/><i/><i/></span>
+    <span>Opening session…</span>
+  </div>;
 }

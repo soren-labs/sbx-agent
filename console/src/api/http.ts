@@ -1,3 +1,4 @@
+import { cacheScope, readSessionCache, writeSessionCache } from "../prototype/session-cache";
 import { ApiError, type SessionApi, type SessionEventHandlers } from "./client";
 import {
   endReasonOf,
@@ -412,8 +413,25 @@ export class HttpSessionApi implements SessionApi {
   async getSession(id: string): Promise<Session> {
     // Detail envelope: {session, runs: RunView[], run_count, truncated}
     const data = await this.request<any>("GET", PATHS.session(id));
-    const runs = Array.isArray(data?.runs) ? data.runs.map(mapRun) : [];
+    const runs = Array.isArray(data?.runs) ? data.runs.slice(-10).map(mapRun) : [];
     return mapSession(data?.session ?? {}, runs);
+  }
+
+  async readSessionCache(id: string) {
+    return readSessionCache(await cacheScope(this.base, getToken()), id);
+  }
+  async writeSessionCache(session: Session) {
+    writeSessionCache(await cacheScope(this.base, getToken()), session);
+  }
+  async getHistory(id: string, before: number) {
+    const data = await this.request<any>("GET", `${PATHS.session(id)}/history?before_n=${before}&limit=10`);
+    const turns: Turn[] = (data.runs ?? []).map(mapRun);
+    for (const entry of data.events ?? []) {
+      const item = normalizeEvent(entry.event, id);
+      const turn = turns.find(t=>t.id===item?.turnId);
+      if (item && turn) turn.activity.push(item);
+    }
+    return {turns,hasMore:Boolean(data.has_more)};
   }
 
   async createSession(input: NewSessionInput): Promise<Session> {
@@ -738,7 +756,7 @@ export class HttpSessionApi implements SessionApi {
       if (closed) return;
       abort = new AbortController();
       try {
-        const res = await fetch(`${this.base}${PATHS.events(sessionId)}`, {
+        const res = await fetch(`${this.base}${PATHS.events(sessionId)}${handlers.historyAfterTurn ? `?after_n=${handlers.historyAfterTurn}` : ""}`, {
           headers: {
             ...this.headers(),
             Accept: "text/event-stream",
