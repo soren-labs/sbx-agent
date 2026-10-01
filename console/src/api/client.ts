@@ -49,6 +49,7 @@ export function isApiError(e: unknown): e is ApiError {
 
 /** Live event surface for one session (SSE or fixture emitter). */
 export interface SessionEventHandlers {
+  onOpen?: () => void;
   onPhase?: (phase: SessionPhase) => void;
   onActivity?: (item: ActivityItem) => void;
   onTurn?: (turn: Turn) => void;

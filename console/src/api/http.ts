@@ -708,8 +708,8 @@ export class HttpSessionApi implements SessionApi {
                       ? "finished"
                       : normalizeTurnStatus(frame.status),
               createdAt: "",
-              startedAt: type === "turn.started" ? new Date().toISOString() : null,
-              finishedAt: type === "turn.started" ? null : new Date().toISOString(),
+              startedAt: null,
+              finishedAt: null,
               result: null,
               error: toTurnError(frame.error),
               usage: usageOf(frame.usage),
@@ -753,7 +753,7 @@ export class HttpSessionApi implements SessionApi {
             retryable: res.status >= 500,
           });
         }
-        attempt = 0;
+        handlers.onOpen?.();
         if (sawDisconnect) {
           sawDisconnect = false;
           handlers.onReconnect?.();
@@ -773,6 +773,7 @@ export class HttpSessionApi implements SessionApi {
           if (!data) return;
           try {
             handleFrame(JSON.parse(data));
+            attempt = 0;
           } catch {
             /* malformed frame — skip */
           }
@@ -804,7 +805,7 @@ export class HttpSessionApi implements SessionApi {
         });
       } catch (e) {
         if (closed) return;
-        if (e instanceof ApiError && e.httpStatus === 404) {
+        if (e instanceof ApiError && [401, 403, 404].includes(e.httpStatus)) {
           handlers.onError?.(e);
           return; // session gone — don't retry
         }

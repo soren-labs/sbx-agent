@@ -72,7 +72,11 @@ function WorkBlock({
   group,
   active,
   onContext,
+  startedAt,
+  finishedAt,
 }: {
+  startedAt?: string | null;
+  finishedAt?: string | null;
   group: WorkGroup;
   active: boolean;
   onContext: (tab: string) => void;
@@ -80,18 +84,10 @@ function WorkBlock({
   const running = active;
   const [open, setOpen] = useState(running);
   useEffect(() => setOpen(running), [running]);
-  const duration = Math.max(
-    1,
-    Math.round(
-      ((running ? Date.now() : new Date(group.items.at(-1)!.ts).getTime()) -
-        new Date(group.items[0].ts).getTime()) /
-        1000,
-    ),
-  );
-  const elapsed =
-    duration < 60
-      ? `${duration}s`
-      : `${Math.floor(duration / 60)}m ${duration % 60}s`;
+  const start = startedAt ? new Date(startedAt).getTime() : NaN;
+  const end = running ? Date.now() : finishedAt ? new Date(finishedAt).getTime() : NaN;
+  const duration = Number.isFinite(start) && Number.isFinite(end) ? Math.max(1, Math.round((end-start)/1000)) : null;
+  const elapsed = duration === null ? null : duration < 60 ? `${duration}s` : `${Math.floor(duration/60)}m ${duration%60}s`;
   const outputs = group.items.map((i) => i.output ?? "").join(" ");
   const passed = /(?:Tests\s+|^)(\d+) passed/m.exec(outputs)?.[1];
   return (
@@ -106,7 +102,7 @@ function WorkBlock({
         >
           <Icon name="chevron" className={open ? "rotated" : ""} size={13} />
           <strong>
-            {running ? "Working" : "Worked"} for {elapsed}
+            {running ? "Working" : "Worked"}{elapsed ? ` for ${elapsed}` : ""}
           </strong>
           {running && <span className="working-ring" />}
           {passed && <span className="work-result">{passed} tests passed</span>}
@@ -190,6 +186,7 @@ export function Worklog({
       <div className="timeline-day">
         Today <span>{demoMode ? "Demo session" : "Session worklog"}</span>
       </div>
+      {!session.turns.length && !progressOnly && <article className="message user-message"><p>{session.prompt}</p></article>}
       {session.turns.map((turn) => (
         <div key={turn.id} className="turn">
           {!progressOnly && (
@@ -244,6 +241,8 @@ export function Worklog({
                       turn.status === "running" &&
                       index === entries.length - 1
                     }
+                    startedAt={entries.filter(e => e.type === "group").length === 1 || (active && turn.status === "running" && index === entries.length - 1) ? turn.startedAt : null}
+                    finishedAt={turn.finishedAt}
                     onContext={onContext}
                   />
                 ) : null,

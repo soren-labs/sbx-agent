@@ -16,7 +16,6 @@ import {
 } from "react-router-dom";
 import { useApi } from "../state/api";
 import type {
-  ActivityItem,
   DeliveryMode,
   ModelInfo,
   NewSessionInput,
@@ -24,6 +23,7 @@ import type {
   Session,
   Turn,
 } from "../api/types";
+import { toErrorKind } from "../api/normalize";
 import { getToken, setToken } from "../api/http";
 import { Icon, Mark } from "./Icon";
 import { demoMode, providerNames } from "./demo";
@@ -31,6 +31,7 @@ import { Status, Worklog } from "./Worklog";
 import { Changes, Progress, Review } from "./Panels";
 import { Integrations } from "./Integrations";
 import "./prototype.css";
+import { mergeSession, mergeActivity, mergeTurn } from "./session-state";
 
 function age(date: string) {
   const mins = Math.max(
@@ -44,11 +45,6 @@ function age(date: string) {
       : mins < 1440
         ? `${Math.floor(mins / 60)}h ago`
         : `${Math.floor(mins / 1440)}d ago`;
-}
-function mergeItems(items: ActivityItem[], incoming: ActivityItem) {
-  return [...new Map([...items, incoming].map((a) => [a.id, a])).values()].sort(
-    (a, b) => a.seq - b.seq,
-  );
 }
 const isActive = (s: Session) =>
   ["running", "starting", "queued"].includes(s.phase);
@@ -841,7 +837,7 @@ function SessionWorkspace({
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [stream, setStream] = useState("connected");
+  const [stream, setStream] = useState("connecting");
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let alive = true;
@@ -849,7 +845,8 @@ function SessionWorkspace({
       .getSession(id)
       .then((s) => {
         if (alive) {
-          setSession(s);
+          setError("");
+          setSession((prev) => mergeSession(prev, s));
           if (s.delivery?.status === "delivered") setContext("review");
           else if (!s.hasChanges) setContext("progress");
         }
@@ -864,12 +861,7 @@ function SessionWorkspace({
   useEffect(
     () =>
       api.subscribe(id, {
-        onSession: (next) =>
-          setSession((prev) => ({
-            ...prev,
-            ...next,
-            turns: next.turns.length ? next.turns : (prev?.turns ?? []),
-          })),
+        onSession: (next) => setSession(prev => mergeSession(prev, next)),
         onPhase: (phase) => setSession((s) => (s ? { ...s, phase } : s)),
         onMeta: (meta) =>
           setSession((s) =>
@@ -890,19 +882,7 @@ function SessionWorkspace({
               turns: exists
                 ? s.turns.map((t) =>
                     t.id === turn.id
-                      ? {
-                          ...t,
-                          ...turn,
-                          prompt: turn.prompt || t.prompt,
-                          activity: [
-                            ...new Map(
-                              [...t.activity, ...turn.activity].map((i) => [
-                                i.id,
-                                i,
-                              ]),
-                            ).values(),
-                          ].sort((a, b) => a.seq - b.seq),
-                        }
+                      ? mergeTurn(t, turn)
                       : t,
                   )
                 : [...s.turns, turn],
@@ -910,13 +890,13 @@ function SessionWorkspace({
           }),
         onActivity: (item) =>
           setSession((s) => {
-            if (!s) return s;
-            const turnId = item.turnId ?? `turn-${item.n ?? s.turnCount ?? 1}`;
+            if (!s || (item.kind === "status" && !item.turnId)) return s;
+            const turnId = item.turnId ?? `turn-${Math.max(1, item.n ?? s.turnCount ?? 1)}`;
             const exists = s.turns.some((t) => t.id === turnId);
             const placeholder: Turn = {
               id: turnId,
-              index: item.n ?? s.turnCount ?? 1,
-              prompt: "",
+              index: Math.max(1, item.n ?? s.turnCount ?? 1),
+              prompt: (item.n ?? 1) === 1 ? s.prompt : "",
               status: "running",
               createdAt: item.ts,
               startedAt: item.ts,
@@ -930,21 +910,23 @@ function SessionWorkspace({
               turns: exists
                 ? s.turns.map((t) =>
                     t.id === turnId
-                      ? { ...t, activity: mergeItems(t.activity, item) }
+                      ? { ...t, activity: mergeActivity(t.activity, [item]) }
                       : t,
                   )
                 : [...s.turns, placeholder],
             };
           }),
+        onOpen: () => setStream("connected"),
+        onError: (e) => { setError(e.message); setStream("unavailable"); },
         onDisconnect: () => setStream("reconnecting"),
         onReconnect: () => {
           setStream("connected");
+          setError("");
           void api
             .getSession(id)
-            .then(setSession)
+            .then((s) => setSession(prev => mergeSession(prev, s)))
             .catch((e) => setError(e.message));
         },
-        onError: (e) => setError(e.message),
       }),
     [api, id],
   );
@@ -966,7 +948,7 @@ function SessionWorkspace({
           : action === "stop"
             ? await api.stopSession(id)
             : await api.retrySession(id);
-      setSession(next);
+      setSession(prev => mergeSession(prev, next));
       onChanged();
       if (action === "deliver") showContext("review");
     } catch (e) {
@@ -982,7 +964,7 @@ function SessionWorkspace({
     setError("");
     try {
       const next = await api.sendFollowUp(id, message.trim());
-      setSession(next.session);
+      setSession((prev) => mergeSession(prev, next.session));
       setMessage("");
       onChanged();
       setTimeout(
@@ -1049,7 +1031,7 @@ function SessionWorkspace({
               <Icon name="stop" size={12} />
               Stop
             </button>
-          ) : session.phase === "failed" ? (
+          ) : (session.phase === "failed" || session.endReason === "cancelled") ? (
             <button
               className="button small"
               disabled={busy}
@@ -1086,16 +1068,13 @@ function SessionWorkspace({
       {session.phase === "failed" && (
         <div className="error-banner" role="alert">
           {session.error?.message ?? "This session needs attention."}
-          <Link to="/integrations">
-            Reconnect account
-            <Icon name="external" size={12} />
-          </Link>
+          {toErrorKind(session.error?.code ?? "") === "provider_login" ? <Link to="/integrations">Reconnect account <Icon name="external" size={12} /></Link> : <Link to="/">Start a new session</Link>}
         </div>
       )}
-      {stream === "reconnecting" && (
+      {(stream === "reconnecting" || stream === "connecting") && (
         <div className="notice">
           <Icon name="refresh" size={14} />
-          Reconnecting to the session. Your work is preserved.
+          {stream === "connecting" ? "Connecting to live activity…" : "Reconnecting to the session. Your work is preserved."}
         </div>
       )}
       <nav className="mobile-workspace-tabs" aria-label="Workspace panels">
