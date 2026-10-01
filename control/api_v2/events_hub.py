@@ -55,8 +55,9 @@ class _Subscriber:
 
     def put(self, item: Any) -> None:
         self.q.put(item)
-        if self.wake is not None:
-            self.wake()
+        wake = self.wake
+        if wake is not None:
+            wake()
 
 
 class SessionEventsHub:
