@@ -3,6 +3,7 @@ import type { ActivityItem, Session } from "../api/types";
 import { groupActivity, type WorkGroup } from "./domain";
 import { Icon, Mark } from "./Icon";
 import { demoMode } from "./demo";
+import { Markdown } from "./Markdown";
 
 export function Status({ phase }: { phase: Session["phase"] }) {
   const labels = {
@@ -228,9 +229,7 @@ export function Worklog({
               {groupActivity(turn.activity).map((entry, index, entries) =>
                 entry.type === "message" ? (
                   !progressOnly && (
-                    <p key={entry.item.id} className="assistant-message">
-                      {entry.item.text}
-                    </p>
+                    <Markdown key={entry.item.id} text={entry.item.text ?? ""} />
                   )
                 ) : entry.type === "group" ? (
                   <WorkBlock
@@ -253,7 +252,7 @@ export function Worklog({
                   (item) =>
                     item.kind === "message" &&
                     item.text?.trim() === turn.result?.trim(),
-                ) && <p className="assistant-message">{turn.result}</p>}
+                ) && <Markdown text={turn.result} />}
               {turn.status === "queued" && (
                 <p className="muted">
                   <span className="working-ring" />
