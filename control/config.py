@@ -342,6 +342,7 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_DEVIN_BURST_SLOTS",
     "SBX_RUNNER_CMD",
     "SBX_DEVIN_TRANSPORT",
+    "SBX_CODEX_TRANSPORT",
     "SBX_GITHUB_EPHEMERAL",
     "SBX_GITHUB_SECRET_NAME",
     # SOR-177 GitHub App authorization: app identity, store naming and API
