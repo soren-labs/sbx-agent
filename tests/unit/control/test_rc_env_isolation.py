@@ -43,13 +43,16 @@ class _FakeModal:
 def test_remote_env_overlay_only_forwards_allowlisted_names() -> None:
     env = {
         "SBX_SESSIONS_DICT": "rc-sessions",
+        "SBX_TASKS_DICT": "rc-tasks",
+        "SBX_REVISIONS_DICT": "rc-revisions",
+        "SBX_RUN_ACTIVITY_DICT": "rc-activity",
         "SBX_IMAGE_GROK": "rc-runtime-grok",
         "SBX_ACCOUNT_SECRET_PREFIX": "rc-acct-",
         "SBX_PROVIDERS": "devin,grok",
         "SBX_DEVIN_ACCOUNT_ID": "devin-rc-1",
         # credential material — must never enter a function env
-        "SBX_API_KEY": "sbx_deadbeef",
-        "SBX_V1_BOOTSTRAP_KEY": "sbx_deadbeef",
+        "SBX_API_KEY": "REDACTED",
+        "SBX_V1_BOOTSTRAP_KEY": "REDACTED",
         "SBX_BASIC_PASS": "REDACTED",
         "SBX_BASIC_USER": "sbx",
         "SBX_ACCOUNT_CREDENTIAL": '{"files": {}}',
@@ -60,6 +63,9 @@ def test_remote_env_overlay_only_forwards_allowlisted_names() -> None:
     out = remote_env_overlay(env, app_name="sbx-control-release01-rc")
     assert out["SBX_MODAL_APP_NAME"] == "sbx-control-release01-rc"
     assert out["SBX_SESSIONS_DICT"] == "rc-sessions"
+    assert out["SBX_TASKS_DICT"] == "rc-tasks"
+    assert out["SBX_REVISIONS_DICT"] == "rc-revisions"
+    assert out["SBX_RUN_ACTIVITY_DICT"] == "rc-activity"
     assert out["SBX_IMAGE_GROK"] == "rc-runtime-grok"
     assert out["SBX_ACCOUNT_SECRET_PREFIX"] == "rc-acct-"
     assert out["SBX_PROVIDERS"] == "devin,grok"

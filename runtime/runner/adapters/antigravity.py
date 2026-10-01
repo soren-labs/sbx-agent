@@ -337,7 +337,7 @@ class AntigravityAdapter:
         return [_NOOP]
 
     def _text_step(self, step: dict[str, Any], item_type: str, state: str) -> list[dict[str, Any]]:
-        """Buffer ``text_delta`` per step; emit one item.completed at DONE.
+        """Emit cumulative ``text_delta`` updates with one identity through DONE.
 
         ``text_delta`` fragments arrive across ACTIVE and DONE updates of the
         same ``step_index``; concatenated they equal that step's share of the
