@@ -1,13 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "../state/api";
-import { connections, type AccountConnection } from "./domain";
+import {
+  connections,
+  connectionTerminal,
+  type AccountConnection,
+} from "./domain";
 import { demoMode, demoModels, providerNames } from "./demo";
+import type { ProviderInfo, IntegrationStatus } from "../api/types";
 import { Icon } from "./Icon";
 
 export function Integrations() {
   const api = useApi();
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [githubState, setGithubState] = useState<IntegrationStatus["github"]>();
+  const [notice, setNotice] = useState(
+    new URLSearchParams(location.search).get("broker") === "connected"
+      ? "GitHub installation connected."
+      : "",
+  );
+  const focusOrigin = useRef<HTMLElement | null>(null);
   const [accounts, setAccounts] = useState<AccountConnection[]>([]);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(
+    new URLSearchParams(location.search).has("broker_error")
+      ? "GitHub authorization did not complete. Try connecting again."
+      : "",
+  );
   const [busy, setBusy] = useState("");
   const [modelRefresh, setModelRefresh] = useState("");
   const [synced, setSynced] = useState(
@@ -37,6 +54,8 @@ export function Integrations() {
     void api
       .getIntegrations()
       .then((s) => {
+        setProviders(s.providers);
+        setGithubState(s.github);
         setGithub(s.github.connected);
         if (!demoMode && s.github.accounts.length)
           setGithubLabel(s.github.accounts.join(" · "));
@@ -50,33 +69,57 @@ export function Integrations() {
     if (accounts.length) connections.rememberDemo(accounts);
   }, [accounts]);
   useEffect(() => {
-    if (!pair || demoMode) return;
-    const timer = setInterval(() => {
-      void connections
-        .poll(pair.id)
-        .then((p) => {
-          setPair(p);
-          if (["verified"].includes(p.state)) {
-            setConnecting(false);
-            setPair(null);
-            void refresh();
-          }
-        })
-        .catch((e) => setError(e.message));
-    }, 2500);
-    return () => clearInterval(timer);
-  }, [pair?.id]);
+    if (!pair || demoMode || connectionTerminal(pair.state)) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const p = await connections.poll(pair.id);
+        if (!active) return;
+        setPair((prev) => ({ ...prev, ...p }));
+        if (["verified", "materialized"].includes(p.state)) {
+          setNotice(
+            p.state === "verified"
+              ? "Account connected and verified."
+              : "Account saved. Verify it before starting a session.",
+          );
+          setConnecting(false);
+          setPair(null);
+          void refresh();
+          focusOrigin.current?.focus();
+        } else if (!connectionTerminal(p.state)) {
+          timer = setTimeout(poll, 2500);
+        }
+      } catch (e) {
+        if (active) {
+          setError((e as Error).message);
+          timer = setTimeout(poll, 5000);
+        }
+      }
+    };
+    timer = setTimeout(poll, 1200);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [pair?.id, pair?.state]);
   const close = () => {
     if (pair)
       void connections.cancel(pair.id).catch((e) => setError(e.message));
     setPair(null);
     setConnecting(false);
+    focusOrigin.current?.focus();
   };
   const check = async (a: AccountConnection, action: "verify" | "refresh") => {
     setBusy(a.id + action);
     setError("");
     try {
-      await connections.check(a.id, action);
+      const result = await connections.check(a.id, action);
+      setNotice(
+        action === "verify"
+          ? "Connection verified."
+          : `Credential refresh: ${result?.result ?? "complete"}.`,
+      );
       if (demoMode)
         setAccounts((list) =>
           list.map((row) =>
@@ -98,6 +141,8 @@ export function Integrations() {
     }
   };
   const openConnect = (a?: AccountConnection) => {
+    focusOrigin.current = document.activeElement as HTMLElement;
+    setError("");
     setProvider(a?.provider ?? "codex");
     setLabel(a?.label ?? "");
     setTarget(a?.id);
@@ -160,6 +205,11 @@ export function Integrations() {
             Connect account
           </button>
         </div>
+        {notice && (
+          <div className="notice" role="status">
+            {notice}
+          </div>
+        )}
         {error && (
           <div className="error-banner" role="alert">
             {error}
@@ -183,42 +233,63 @@ export function Integrations() {
                 className={`status ${github ? "status-idle" : "status-failed"}`}
               >
                 <span className="status-dot" />
-                {github ? "Connected" : "Not connected"}
+                {github
+                  ? "Connected"
+                  : githubState?.bridgeToken
+                    ? "Credential available"
+                    : "Not connected"}
               </span>
             </h3>
             <p>
               {github
                 ? githubLabel
-                : "Connect your repositories to create and review pull requests."}
+                : githubState?.bridgeToken
+                  ? "Repository access uses the deployment’s GitHub credential. Connect an App installation to manage repository access here."
+                  : "Connect your repositories to create and review pull requests."}
             </p>
             <small>{synced}</small>
           </div>
           <button
             className="button"
             disabled={busy === "github"}
-            onClick={() => {
+            onClick={async () => {
+              const popup =
+                !github && !demoMode
+                  ? window.open("about:blank", "_blank")
+                  : null;
+              if (popup) popup.opener = null;
               setBusy("github");
-              void (
-                github
-                  ? connections.syncGithub()
-                  : demoMode
-                    ? Promise.resolve()
-                    : api.beginGithubAuthorize().then((r) => {
-                        window.open(r.url, "_blank", "noopener,noreferrer");
-                      })
-              )
-                .then(() => {
-                  if (demoMode) setGithub(true);
-                  setSynced(
-                    github
-                      ? "Synced just now"
-                      : demoMode
-                        ? "Connected in demo"
-                        : "Complete installation in GitHub, then sync",
+              setError("");
+              try {
+                if (github) {
+                  await connections.syncGithub();
+                  const status = await api.getIntegrations();
+                  setGithub(status.github.connected);
+                  setGithubState(status.github);
+                  setGithubLabel(
+                    status.github.accounts.join(" · ") ||
+                      "GitHub App connected",
                   );
-                })
-                .catch((e) => setError(e.message))
-                .finally(() => setBusy(""));
+                  setSynced("Synced just now");
+                } else if (demoMode) {
+                  setGithub(true);
+                } else {
+                  const r = await api.beginGithubAuthorize();
+                  if (popup) {
+                    popup.location.href = r.url;
+                    setSynced(
+                      "Complete installation in GitHub, then check status.",
+                    );
+                  } else {
+                    window.location.assign(r.url);
+                  }
+                }
+              } catch (e) {
+                popup?.close();
+                setError((e as Error).message);
+              } finally {
+                setBusy("");
+              }
             }}
           >
             <Icon name="refresh" size={14} />
@@ -228,6 +299,28 @@ export function Integrations() {
                 ? "Sync repositories"
                 : "Connect GitHub"}
           </button>
+          {!github && !demoMode && (
+            <button
+              className="button small"
+              onClick={async () => {
+                try {
+                  const status = await api.getIntegrations();
+                  setGithub(status.github.connected);
+                  setGithubState(status.github);
+                  setGithubLabel(status.github.accounts.join(" · "));
+                  setSynced(
+                    status.github.connected
+                      ? "Installation connected"
+                      : "No installation connected yet",
+                  );
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            >
+              Check status
+            </button>
+          )}
         </section>
         <div className="section-header">
           <h2>AI providers</h2>
@@ -238,7 +331,10 @@ export function Integrations() {
           start a session.
         </p>
         <div className="provider-list">
-          {Object.entries(providerNames).map(([id, name]) => {
+          {(demoMode
+            ? Object.entries(providerNames)
+            : providers.map((p) => [p.id, p.label] as [string, string])
+          ).map(([id, name]) => {
             const rows = accounts.filter((a) => a.provider === id);
             const healthy = rows.some((a) => a.health === "ready");
             return (
@@ -275,7 +371,11 @@ export function Integrations() {
                     className={`status ${healthy ? "status-idle" : "status-failed"}`}
                   >
                     <span className="status-dot" />
-                    {healthy ? "Ready" : "Needs login"}
+                    {healthy
+                      ? "Ready"
+                      : rows.length
+                        ? "Needs attention"
+                        : "Not connected"}
                   </span>
                   <button
                     className="icon-button"
@@ -339,36 +439,17 @@ export function Integrations() {
                         <small>{a.lastVerified}</small>
                       </div>
                       <div className="account-actions">
-                        {a.health === "needs_login" ? (
-                          <button
-                            className="button attention-button"
-                            onClick={() => openConnect(a)}
-                          >
-                            Reconnect
-                          </button>
-                        ) : (
-                          <>
-                            <button
-                              className="button small"
-                              disabled={!!busy}
-                              onClick={() => void check(a, "verify")}
-                            >
-                              {busy === a.id + "verify"
-                                ? "Checking…"
-                                : "Verify"}
-                            </button>
-                            <button
-                              className="icon-button"
-                              disabled={!!busy}
-                              aria-label={`Refresh ${a.label}`}
-                              title="Refresh credentials"
-                              onClick={() => void check(a, "refresh")}
-                            >
-                              <Icon name="refresh" size={14} />
-                            </button>
-                          </>
-                        )}
+                        <button className="button small" disabled={!!busy} onClick={()=>void check(a,"verify")}>{busy===a.id+"verify"?"Checking…":"Verify"}</button>
+                        {a.health==="needs_login" ? <button className="button attention-button" onClick={()=>openConnect(a)}>Reconnect</button> : <button className="icon-button" disabled={!!busy} aria-label={`Refresh ${a.label}`} title="Refresh credentials" onClick={()=>void check(a,"refresh")}><Icon name="refresh" size={14}/></button>}
                       </div>
+                      <AccountDetails
+                        account={a}
+                        onRemoved={() => {
+                          setAccounts((rows) =>
+                            rows.filter((row) => row.id !== a.id),
+                          );
+                        }}
+                      />
                     </div>
                   ))}
                   {!rows.length && (
@@ -464,7 +545,12 @@ export function Integrations() {
                     onChange={(e) => setProvider(e.target.value)}
                     disabled={!!target}
                   >
-                    {Object.entries(providerNames).map(([id, name]) => (
+                    {(demoMode
+                      ? Object.entries(providerNames)
+                      : providers.map(
+                          (p) => [p.id, p.label] as [string, string],
+                        )
+                    ).map(([id, name]) => (
                       <option key={id} value={id}>
                         {name}
                       </option>
@@ -477,7 +563,7 @@ export function Integrations() {
                     ref={labelRef}
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
-                    placeholder="e.g. Soren · work"
+                    placeholder="e.g. Engineering · work"
                   />
                 </label>
                 <button
@@ -491,7 +577,22 @@ export function Integrations() {
               </>
             ) : (
               <>
-                <div className="pair-code">{pair.user_code ?? pair.state}</div>
+                <div className="pair-code">
+                  {pair.user_code ??
+                    (pair.state === "authenticating"
+                      ? "Awaiting sign-in"
+                      : pair.state)}
+                </div>
+                {pair.error && (
+                  <p className="negative" role="alert">
+                    {pair.error.message ?? pair.error.code}
+                  </p>
+                )}
+                {pair.expires_at && (
+                  <p className="fine-print">
+                    Expires {new Date(pair.expires_at).toLocaleTimeString()}
+                  </p>
+                )}
                 {pair.browser_url && (
                   <a
                     className="button primary full"
@@ -514,8 +615,30 @@ export function Integrations() {
                     Complete demo connection
                     <Icon name="check" size={15} />
                   </button>
+                ) : connectionTerminal(pair.state) ? (
+                  <button
+                    className="button primary full"
+                    disabled={!!busy}
+                    onClick={async () => {
+                      setBusy("connect");
+                      try {
+                        setPair(await connections.retry(pair.id));
+                        setError("");
+                      } catch (e) {
+                        setError((e as Error).message);
+                      } finally {
+                        setBusy("");
+                      }
+                    }}
+                  >
+                    Try connecting again
+                  </button>
                 ) : (
-                  <p className="muted">Waiting for authorization…</p>
+                  <p className="muted">
+                    {pair.kind === "pair"
+                      ? "Run this command in a terminal configured for this SBX deployment. The local CLI signs in and pairs securely."
+                      : "Waiting for authorization…"}
+                  </p>
                 )}
               </>
             )}
@@ -528,5 +651,87 @@ export function Integrations() {
         </div>
       )}
     </div>
+  );
+}
+
+function AccountDetails({
+  account,
+  onRemoved,
+}: {
+  account: AccountConnection;
+  onRemoved: () => void;
+}) {
+  const [details, setDetails] = useState<{
+    state?: string;
+    refreshable?: boolean;
+    verified_at?: number;
+    last_error?: string;
+    generation?: number;
+  }>();
+  const [error, setError] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <details
+      className="account-details"
+      onToggle={(e) => {
+        if (e.currentTarget.open && !demoMode)
+          void connections
+            .lifecycle(account.id)
+            .then((d) => setDetails(d.credential_lifecycle))
+            .catch((e) => setError(e.message));
+      }}
+    >
+      <summary>Connection details</summary>
+      <p>
+        {account.authState ?? account.status ?? account.health}
+        {details?.state && ` · ${details.state.replaceAll("_", " ")}`}
+      </p>
+      {details && (
+        <p>
+          {details.refreshable
+            ? "Refresh supported"
+            : "No OAuth refresh channel"}{" "}
+          · Generation {details.generation ?? 0}
+        </p>
+      )}
+      {(error || account.lastError || details?.last_error) && (
+        <p className="negative" role="alert">
+          {error || account.lastError || details?.last_error}
+        </p>
+      )}
+      {confirm ? (
+        <div>
+          <p>
+            Remove this account from SBX? Future sessions will use another ready
+            account.
+          </p>
+          <button className="button small" onClick={() => setConfirm(false)}>
+            Keep account
+          </button>
+          <button
+            className="button small"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await connections.remove(account.id);
+                onRemoved();
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Confirm removal
+          </button>
+        </div>
+      ) : (
+        <button className="text-button" onClick={() => setConfirm(true)}>
+          Remove account
+        </button>
+      )}
+    </details>
   );
 }

@@ -310,6 +310,9 @@ export interface IntegrationStatus {
     connected: boolean;
     /** account_login of each installation (metadata only). */
     accounts: string[];
+    bridgeToken?: boolean;
+    brokerBound?: boolean;
+    brokerHealthy?: boolean;
     appSlug?: string;
     source?: string;
   };

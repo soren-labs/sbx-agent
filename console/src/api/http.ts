@@ -51,7 +51,7 @@ const PATHS = {
   providers: "/v1/providers",
   models: "/v1/models",
   githubApp: "/v1/github/app",
-  githubAuthorize: "/v1/github/app/authorize",
+  githubAuthorize: "/v1/github/install",
 } as const;
 
 const DEFAULT_BASE = (
@@ -589,7 +589,10 @@ export class HttpSessionApi implements SessionApi {
       github: {
         configured: Boolean(gh?.configured),
         installable: Boolean(gh?.installable ?? gh?.configured),
-        connected: accounts.length > 0,
+        connected: accounts.length > 0 || Boolean(gh?.broker?.bound),
+        bridgeToken: Boolean(gh?.bridge_token),
+        brokerBound: Boolean(gh?.broker?.bound),
+        brokerHealthy: Boolean(gh?.broker?.healthy),
         accounts,
         appSlug: gh?.app_slug ?? undefined,
         source: gh?.source ?? undefined,

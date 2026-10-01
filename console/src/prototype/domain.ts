@@ -10,6 +10,9 @@ export interface AccountConnection {
   health: AccountHealth;
   lastVerified: string;
   models: string[];
+  status?: string;
+  authState?: string;
+  lastError?: string;
 }
 export const initialAccounts: AccountConnection[] = [
   {
@@ -64,10 +67,14 @@ export const initialAccounts: AccountConnection[] = [
 let demoAccounts = structuredClone(initialAccounts);
 
 /** Product facade: transport versions never appear in the workspace. */
-async function managementRequest(path: string, body?: unknown) {
+async function managementRequest(
+  path: string,
+  body?: unknown,
+  method?: string,
+) {
   const base = String(import.meta.env.VITE_API_BASE ?? "").replace(/\/+$/, "");
   const response = await fetch(base + "/v1" + path, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${getToken()}`,
@@ -83,8 +90,23 @@ async function managementRequest(path: string, body?: unknown) {
           : `The connection could not be updated (${response.status}). Please try again.`),
     );
   }
-  return response.json();
+  return response.status === 204 ? null : response.json();
 }
+export interface ConnectFlow {
+  id: string;
+  state: string;
+  kind?: "pair" | "hosted";
+  account_id?: string;
+  browser_url?: string;
+  pair_command?: string;
+  user_code?: string;
+  expires_at?: string;
+  error?: { code?: string; message?: string };
+}
+export const connectionTerminal = (state: string) =>
+  ["verified", "materialized", "failed", "cancelled", "expired"].includes(
+    state,
+  );
 export const connections = {
   rememberDemo(accounts: AccountConnection[]) {
     if (demoMode) demoAccounts = structuredClone(accounts);
@@ -98,6 +120,8 @@ export const connections = {
         label: string;
         status: string;
         models: string[];
+        auth_state?: string;
+        last_error?: string;
       }[];
     };
     return data.accounts.map((a) => ({
@@ -105,7 +129,11 @@ export const connections = {
       provider: a.provider,
       label: a.label,
       models: a.models ?? [],
-      lastVerified: "Check connection",
+      status: a.status,
+      authState: a.auth_state,
+      lastError: a.last_error,
+      lastVerified:
+        a.auth_state === "verified" ? "Verified connection" : "Not verified",
       health:
         a.status === "active"
           ? "ready"
@@ -119,8 +147,41 @@ export const connections = {
       await new Promise((resolve) => setTimeout(resolve, 650));
       return;
     }
-    await managementRequest(
+    const result = await managementRequest(
       `/accounts/${encodeURIComponent(id)}/${action === "verify" ? "verify" : "lifecycle/refresh"}`,
+      {},
+    );
+    if (action === "verify" && (result.status !== "active" || result.last_error))
+      throw new Error(
+        result.last_error ??
+          "This account could not be verified. Reconnect it and try again.",
+      );
+    if (
+      action === "refresh" &&
+      ["auth_invalid", "revoked"].includes(result.result)
+    )
+      throw new Error(
+        "Refresh requires a new sign-in. Reconnect this account.",
+      );
+    return result;
+  },
+  async lifecycle(id: string) {
+    return managementRequest(`/accounts/${encodeURIComponent(id)}/lifecycle`);
+  },
+  async remove(id: string) {
+    if (demoMode) {
+      demoAccounts = demoAccounts.filter((a) => a.id !== id);
+      return;
+    }
+    await managementRequest(
+      `/accounts/${encodeURIComponent(id)}`,
+      undefined,
+      "DELETE",
+    );
+  },
+  async retry(id: string): Promise<ConnectFlow> {
+    return managementRequest(
+      `/auth/connect/${encodeURIComponent(id)}/retry`,
       {},
     );
   },
@@ -128,13 +189,7 @@ export const connections = {
     provider: string,
     label: string,
     accountId?: string,
-  ): Promise<{
-    id: string;
-    state: string;
-    browser_url?: string;
-    pair_command?: string;
-    user_code?: string;
-  }> {
+  ): Promise<ConnectFlow> {
     if (demoMode)
       return { id: "demo-pair", state: "awaiting_user", user_code: "SBX-DEMO" };
     return managementRequest("/auth/connect", {

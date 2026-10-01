@@ -411,7 +411,7 @@ def test_probe_account_credential_marks_active(
     from control.ports import Account
 
     registry.put(
-        Account(id="acct-p", provider="codex", label="p", status="unverified", created_at=_iso())
+        Account(id="acct-p", provider="codex", label="p", status="unverified", secret_name="test-account-secret", created_at=_iso())
     )
 
     class _Proc:
@@ -511,3 +511,14 @@ def test_pair_secret_leak_no_raw_ticket_in_store(
     service.complete_pair(sess["pair_ticket"], _blob("codex"), verify=lambda _a: False)
     raw_files = "\n".join(p.read_text() for p in (tmp_path / "conn").glob("*.json") if p.is_file())
     assert "REDACTED" not in raw_files
+
+
+def test_probe_without_account_credential_does_not_use_deployment_default(registry):
+    from control.ports import Account
+    from unittest.mock import Mock
+    registry.put(Account(id="acct-empty", provider="codex", label="empty", status="unverified"))
+    plane = Mock()
+    updated = probe_account_credential(plane, registry, registry.get("acct-empty"))
+    assert updated.status == "unverified"
+    assert updated.last_error == "credential_missing"
+    plane.backend.create.assert_not_called()
