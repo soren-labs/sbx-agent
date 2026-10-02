@@ -105,8 +105,15 @@ auth_database = "sbx-auth-database"
 ```
 
 The URL must stay in the Secret, including its password and TLS settings. The app
-mounts the named Secret and applies numbered schema migrations on first access.
-Missing database configuration fails closed on Modal. Local development uses a
+mounts the named Secret and requires database/schema initialization at startup,
+before the bootstrap deployment probe can succeed. Connection, migration-permission
+and unsupported-schema failures prevent startup.
+
+Use a separate auth database Secret. Never co-locate `DATABASE_URL` in the bootstrap
+Secret: bootstrap rotation replaces its contents. Config validation rejects an
+auth database Secret name equal to the configured bootstrap Secret name (default
+`sbx-v1-bootstrap`). Missing database configuration fails closed on Modal. Local
+development uses a
 SQLite file at `$XDG_STATE_HOME/sbx-browser/auth.sqlite3` by default, overridable
 with an absolute `SBX_AUTH_DB_PATH`; this file must not be used in a disposable
 Modal container. The database is separate from operator bootstrap credentials

@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -429,7 +430,27 @@ def create_app(
         handoffs=handoffs,
     )
 
-    app = FastAPI(title="sbx-control", version="0.1.1")
+    credential_refresher_factory: Callable[[], Any] | None = None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Construction stays lazy for the import-time app, but the server
+        # cannot serve even bootstrap /v1/me until durable auth is ready.
+        # Run bounded, synchronous initialization before starting the refresher
+        # or yielding readiness; startup needs no thread-pool round trip.
+        app.state.auth_store.database.initialize()
+        refresher = credential_refresher_factory() if credential_refresher_factory else None
+        if refresher is not None:
+            plane.credential_refresher = refresher
+        try:
+            if refresher is not None:
+                refresher.start()
+            yield
+        finally:
+            if refresher is not None:
+                refresher.stop()
+
+    app = FastAPI(title="sbx-control", version="0.1.1", lifespan=lifespan)
     app.include_router(api_v1_router)  # empty shell until P2-D (SOR-64)
     app.include_router(api_v2_router)  # Session-first facade (SOR-256)
     app.state.plane = plane
@@ -652,15 +673,17 @@ def create_app(
         # Proactive OAuth refresh: a per-account claim + the official CLI's
         # own refresh path inside a throwaway sandbox, committed via the
         # SOR-147 CAS write-back (store blob + managed Secret).
-        plane.credential_refresher = CredentialRefresher(
-            registry_source=lambda: getattr(app.state, "account_registry", None),
-            backend=backend,
-            runner_cmd=runner_cmd,
-            sync=plane.credential_sync,
-            lifecycle=plane.credential_lifecycle,
-            default_model=getattr(plane, "default_model", None) or "gpt-5.6-luna",
-        )
-        plane.credential_refresher.start()
+        # Each server lifespan owns a fresh worker. Merely constructing an
+        # app (including the import-time app and reaper cron) starts no refresher.
+        def credential_refresher_factory() -> CredentialRefresher:
+            return CredentialRefresher(
+                registry_source=lambda: getattr(app.state, "account_registry", None),
+                backend=backend,
+                runner_cmd=runner_cmd,
+                sync=plane.credential_sync,
+                lifecycle=plane.credential_lifecycle,
+                default_model=getattr(plane, "default_model", None) or "gpt-5.6-luna",
+            )
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:

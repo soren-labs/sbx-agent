@@ -64,6 +64,36 @@ def test_auth_database_config_only_persists_secret_name(tmp_path) -> None:
     assert "REDACTED" not in path.read_text()
 
 
+@pytest.mark.parametrize("secret_name", [V1_BOOTSTRAP_SECRET_NAME, "tenant-bootstrap"])
+def test_auth_database_secret_cannot_share_bootstrap_secret(secret_name) -> None:
+    from control.config import app_secret_names
+
+    with pytest.raises(BootstrapError) as error:
+        BootstrapConfig(bootstrap_secret=secret_name, auth_database_secret=secret_name)
+    assert error.value.code == "auth_database_secret_conflict"
+    # The direct Modal deploy entry must also reject conflicting env names.
+    with pytest.raises(ValueError, match="must differ"):
+        app_secret_names(
+            {
+                "SBX_V1_BOOTSTRAP_SECRET_NAME": secret_name,
+                "SBX_AUTH_DATABASE_SECRET_NAME": secret_name,
+            }
+        )
+
+
+def test_auth_database_secret_conflict_is_rejected_from_file_and_env(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[secrets]\nbootstrap = "shared"\nauth_database = "shared"\n')
+    with pytest.raises(BootstrapError, match="must differ"):
+        load_file_values(path)
+    with pytest.raises(BootstrapError, match="must differ"):
+        load(path, env={})
+    # Env overrides can create a conflict with a valid file configuration.
+    save(BootstrapConfig(auth_database_secret="sbx-auth-database"), path)
+    with pytest.raises(BootstrapError, match="must differ"):
+        load(path, env={"SBX_AUTH_DATABASE_SECRET_NAME": V1_BOOTSTRAP_SECRET_NAME})
+
+
 def test_env_overrides_beat_file(tmp_path) -> None:
     save(
         BootstrapConfig(modal_profile="file-profile", modal_app_name="file-app"),

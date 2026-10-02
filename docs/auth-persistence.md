@@ -35,11 +35,21 @@ auth_database = "sbx-auth-database"
 
 Equivalent deploy-host setting: `SBX_AUTH_DATABASE_SECRET_NAME=sbx-auth-database`.
 The named Secret must contain `DATABASE_URL`; `sbx deploy` checks that the Secret
-exists and the control app mounts it. Alternatively, add `DATABASE_URL` to an
-existing mounted control-plane Secret. Never place the URL in `config.toml`,
-deployment env metadata, a sandbox Secret, source code or logs. The URL is absent
+exists and the control app mounts it. Use a separate auth database Secret;
+**never put `DATABASE_URL` in the bootstrap Secret**. Bootstrap rotation replaces
+that Secret with only `SBX_V1_BOOTSTRAP_KEY`. Config validation rejects
+`secrets.auth_database` / `SBX_AUTH_DATABASE_SECRET_NAME` equal to the configured
+bootstrap Secret name, including its default `sbx-v1-bootstrap`. Never place the
+URL in `config.toml`, deployment env metadata, a sandbox Secret, source code or
+logs. The URL is absent
 from the remote-env allowlist. It is not forwarded to sandbox runners.
 
+Server startup requires successful database/schema initialization before accepting
+any requests, including the bootstrap `/v1/me` deployment probe. An unreachable
+database, missing migration privileges or unsupported schema prevents startup.
+Initialization runs synchronously before lifespan readiness. The credential
+refresher starts only after it succeeds and stops on lifespan shutdown, including
+when a nested router fails. Importing or constructing an app starts no refresher.
 Modal auth fails closed if `DATABASE_URL` is absent or invalid; it never falls back
 to SQLite or an in-memory store. PostgreSQL uses psycopg 3 with bounded connection,
 statement and lock timeouts. Each operation opens and closes a short transaction;
@@ -56,7 +66,8 @@ storage without Modal or cloud connections.
 ## Migrations and rollout
 
 `AuthDatabase.initialize()` applies missing numbered migrations transactionally;
-normal operations call it lazily before the first database access. A PostgreSQL
+server startup requires it before serving requests, while construction remains
+lazy for module imports. Normal operations also ensure initialization. A PostgreSQL
 transaction advisory lock (SQLite `BEGIN IMMEDIATE` locally) serializes concurrent
 cold starts. `auth_schema_migrations` records each applied version. Reopening is
 idempotent; a failed migration rolls back, and newer/noncontiguous schemas are

@@ -94,8 +94,9 @@ def _expiry(now: float, ttl_s: float) -> float:
 class AuthDatabase:
     """Connection factory with transactional, serialized schema versioning.
 
-    Construction is lazy (control.app has an import-time app). initialize()
-    is also available explicitly for deployment preflight/migration tooling.
+    Construction is lazy (control.app has an import-time app). Server startup
+    requires initialize() to succeed before accepting requests; the method is
+    also available explicitly for deployment preflight/migration tooling.
     """
 
     def __init__(self, *, path: Path | None = None, database_url: str | None = None) -> None:

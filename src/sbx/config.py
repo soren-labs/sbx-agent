@@ -40,6 +40,7 @@ from control.config import (
     V1_BOOTSTRAP_SECRET_NAME,
     WORKFLOWS_DICT_NAME,
     WORKSPACES_DICT_NAME,
+    validate_auth_database_secret,
 )
 from control.ports import ProviderId
 
@@ -184,7 +185,7 @@ class BootstrapConfig:
     basic_secret: str = BASIC_SECRET_NAME
     bootstrap_secret: str = V1_BOOTSTRAP_SECRET_NAME
     # Only the name is persisted. DATABASE_URL lives in this operator-managed
-    # Secret, or in an existing mounted control-plane Secret.
+    # Secret. It must never share the bootstrap Secret, which rotation replaces.
     auth_database_secret: str = ""
     image_codex: str = RUNTIME_IMAGE_NAME
     image_devin: str = DEVIN_IMAGE_NAME
@@ -233,6 +234,16 @@ class BootstrapConfig:
     control_scaledown_window_s: int | None = None
     control_min_containers: int | None = None
     control_buffer_containers: int | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            validate_auth_database_secret(self.auth_database_secret, self.bootstrap_secret)
+        except ValueError as exc:
+            raise BootstrapError(
+                str(exc),
+                hint="store DATABASE_URL in a separate Secret and set secrets.auth_database",
+                code="auth_database_secret_conflict",
+            ) from None
 
     def image_name(self, provider: str) -> str:
         """Published Modal image name for ``provider``."""
