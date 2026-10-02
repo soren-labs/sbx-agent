@@ -280,6 +280,11 @@ def app_secret_names(env: Mapping[str, str] | None = None) -> list[str]:
     github_app_secret = env.get("SBX_GITHUB_APP_SECRET_NAME")
     if github_app_secret:
         names.append(github_app_secret)
+    # DATABASE_URL is secret material. Mount it by name rather than baking a
+    # database password into deployment env/image metadata.
+    auth_database_secret = env.get("SBX_AUTH_DATABASE_SECRET_NAME")
+    if auth_database_secret:
+        names.append(auth_database_secret)
     return names
 
 
@@ -328,6 +333,7 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_CODEX_SECRET_NAME",
     "SBX_BASIC_SECRET_NAME",
     "SBX_V1_BOOTSTRAP_SECRET_NAME",
+    "SBX_AUTH_DATABASE_SECRET_NAME",
     "SBX_ACCOUNT_SECRET_PREFIX",
     "SBX_PROVIDERS",
     "SBX_MAX_CONCURRENT",

@@ -78,6 +78,7 @@ _FIELD_MAP: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
     "codex_secret": (("secrets", "codex"), ("SBX_CODEX_SECRET_NAME",)),
     "basic_secret": (("secrets", "basic"), ("SBX_BASIC_SECRET_NAME",)),
     "bootstrap_secret": (("secrets", "bootstrap"), ("SBX_V1_BOOTSTRAP_SECRET_NAME",)),
+    "auth_database_secret": (("secrets", "auth_database"), ("SBX_AUTH_DATABASE_SECRET_NAME",)),
     "github_ephemeral": (("github", "ephemeral"), ("SBX_GITHUB_EPHEMERAL",)),
     "github_secret_name": (("github", "secret_name"), ("SBX_GITHUB_SECRET_NAME",)),
     # SOR-177 GitHub App one-click auth: app identity + the *name* of the
@@ -182,6 +183,9 @@ class BootstrapConfig:
     codex_secret: str = CODEX_SECRET_NAME
     basic_secret: str = BASIC_SECRET_NAME
     bootstrap_secret: str = V1_BOOTSTRAP_SECRET_NAME
+    # Only the name is persisted. DATABASE_URL lives in this operator-managed
+    # Secret, or in an existing mounted control-plane Secret.
+    auth_database_secret: str = ""
     image_codex: str = RUNTIME_IMAGE_NAME
     image_devin: str = DEVIN_IMAGE_NAME
     image_antigravity: str = ANTIGRAVITY_IMAGE_NAME
@@ -242,6 +246,8 @@ class BootstrapConfig:
         carry per-account ``<account_secret_prefix><id>`` Secrets instead.
         """
         names = [self.basic_secret, self.bootstrap_secret]
+        if self.auth_database_secret:
+            names.append(self.auth_database_secret)
         if "codex" in self.providers:
             names.insert(0, self.codex_secret)
         return tuple(names)
@@ -335,6 +341,8 @@ class BootstrapConfig:
             out["SBX_GITHUB_APP_SLUG"] = self.github_app_slug
         if self.github_app_secret_name:
             out["SBX_GITHUB_APP_SECRET_NAME"] = self.github_app_secret_name
+        if self.auth_database_secret:
+            out["SBX_AUTH_DATABASE_SECRET_NAME"] = self.auth_database_secret
         # SOR-220: replay only an explicit override — an absent value lets
         # the remote default broker URL apply, and "off" disables the lane.
         if self.github_broker_url:

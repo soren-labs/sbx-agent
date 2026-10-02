@@ -25,6 +25,7 @@ from starlette.types import Receive, Scope, Send
 
 from control.api_v1 import router as api_v1_router
 from control.api_v2 import router as api_v2_router
+from control.auth_store import AuthStore, configure_auth
 from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
     DEFAULT_MODEL,
@@ -363,6 +364,7 @@ def create_app(
     workflow_store: WorkflowStore | None = None,
     task_store: Any | None = None,
     revision_store: Any | None = None,
+    auth_store: AuthStore | None = None,
     runner_cmd: list[str] | None = None,
     basic_user: str | None = None,
     basic_password: str | None = None,
@@ -570,10 +572,11 @@ def create_app(
     app.state.basic_password = basic_password
     app.state.keepalive_s = keepalive
 
-    # P2.1 real-gate wiring is opt-in via a Modal Secret. Local/tests without
-    # SBX_V1_BOOTSTRAP_KEY keep the existing lazy in-memory /v1 defaults.
+    # Product credentials always use durable storage. The operator bootstrap
+    # Secret adds a separate credential overlay and provider account seeding.
     from control.api_v1.bootstrap import configure_v1_bootstrap
 
+    configure_auth(app, auth=auth_store)
     configure_v1_bootstrap(app)
 
     def reserve_recovery(rec: SessionRecord) -> Callable[[bool], None]:

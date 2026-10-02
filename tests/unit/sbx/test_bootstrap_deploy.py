@@ -59,6 +59,27 @@ def test_deploy_happy_path(tmp_path) -> None:
     assert report.key_created and not report.key_rotated
 
 
+def test_deploy_requires_configured_auth_database_secret(tmp_path) -> None:
+    plane = FakePlane()
+    config = BootstrapConfig(auth_database_secret="sbx-auth-database")
+    with pytest.raises(BootstrapError) as error:
+        _deploy(tmp_path, plane, config=config)
+    assert error.value.code == "auth_database_secret_missing"
+    assert plane.image_calls == []
+    assert plane.apps == {}
+
+
+def test_deploy_forwards_database_secret_name_without_url(tmp_path) -> None:
+    plane = FakePlane()
+    plane.secrets["sbx-auth-database"] = {"DATABASE_URL": "REDACTED"}
+    report, _, _ = _deploy(
+        tmp_path, plane, config=BootstrapConfig(auth_database_secret="sbx-auth-database")
+    )
+    assert report.base_url
+    assert plane.deploy_env["SBX_AUTH_DATABASE_SECRET_NAME"] == "sbx-auth-database"
+    assert "DATABASE_URL" not in plane.deploy_env
+
+
 def test_deploy_is_idempotent(tmp_path) -> None:
     plane = FakePlane()
     plane.secrets["sbx-codex-auth"] = {"CODEX_AUTH_JSON": "REDACTED"}

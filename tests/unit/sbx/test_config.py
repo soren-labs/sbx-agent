@@ -47,6 +47,23 @@ def test_save_and_reload_roundtrip(tmp_path) -> None:
     assert cfg.sources["providers"] == "file"
 
 
+def test_auth_database_config_only_persists_secret_name(tmp_path) -> None:
+    from control.config import app_secret_names, remote_env_overlay
+
+    config = BootstrapConfig(auth_database_secret="sbx-auth-database")
+    path = tmp_path / "config.toml"
+    save(config, path)
+    restored = load(path, env={}).config
+    assert restored.auth_database_secret == "sbx-auth-database"
+    assert "sbx-auth-database" in restored.secret_names()
+    env = {**restored.deploy_env(), "DATABASE_URL": "REDACTED"}
+    assert "sbx-auth-database" in app_secret_names(env)
+    assert remote_env_overlay(env)["SBX_AUTH_DATABASE_SECRET_NAME"] == "sbx-auth-database"
+    assert "DATABASE_URL" not in restored.deploy_env()
+    assert "DATABASE_URL" not in remote_env_overlay(env)
+    assert "REDACTED" not in path.read_text()
+
+
 def test_env_overrides_beat_file(tmp_path) -> None:
     save(
         BootstrapConfig(modal_profile="file-profile", modal_app_name="file-app"),
