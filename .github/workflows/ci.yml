@@ -40,19 +40,20 @@ jobs:
       - run: npm --prefix docs-site ci
       - run: npm --prefix docs-site run check
 
-  e2e:
+  frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: uv sync
+          cache: npm
+          cache-dependency-path: console/package-lock.json
       - run: npm ci
-        working-directory: web
-      - run: npx playwright install --with-deps chromium
-        working-directory: web
-      - run: make test-e2e
+        working-directory: console
+      - run: npm run typecheck
+        working-directory: console
+      - run: npm test
+        working-directory: console
+      - run: npm run build
+        working-directory: console
