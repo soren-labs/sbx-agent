@@ -196,18 +196,15 @@ class TestVerifyCredentialAttach:
     def test_empty_credential_injects_no_blob(
         self, client, admin_auth, v1_env, spy_backend
     ) -> None:
-        # No Secret, no stored blob: codex keeps the CODEX_AUTH_JSON path and
-        # init must not receive an SBX_ACCOUNT_CREDENTIAL placeholder.
-        seed_account(v1_env, "acct-codex-empty", provider="codex")
+        # A deployment default secret cannot verify an unbound account.
+        seed_account(v1_env, "acct-codex-empty", provider="codex", status="cooling")
         resp = client.post("/v1/accounts/acct-codex-empty/verify", headers=admin_auth)
         assert resp.status_code == 200, resp.text
-        assert resp.json()["status"] == "active"
-
-        argv, env = spy_backend.execs[0]
-        assert _argv_opt(argv, "--provider") == "codex"
-        assert _argv_opt(argv, "--model") == "gpt-5.6-luna"
-        assert "SBX_ACCOUNT_CREDENTIAL" not in env
-        assert spy_backend.specs[0].secrets == []
+        assert resp.json()["status"] == "cooling"
+        assert resp.json()["last_error"] == "credential_missing"
+        assert spy_backend.specs == []
+        assert spy_backend.execs == []
+        assert spy_backend.terminated == []
 
     def test_empty_stored_blob_does_not_shadow_secret(
         self, client, admin_auth, v1_env, spy_backend
@@ -237,7 +234,7 @@ class TestVerifyExitCodes:
     def test_init_failure_marks_account_invalid(self, client, admin_auth, v1_env, tmp_path) -> None:
         backend = FakeVerifyBackend(tmp_path, code=2)
         v1_env.app.state.plane.backend = backend
-        seed_account(v1_env, "acct-grok-bad", provider="grok")
+        seed_account(v1_env, "acct-grok-bad", provider="grok", secret_name="sbx-test-verify")
         resp = client.post("/v1/accounts/acct-grok-bad/verify", headers=admin_auth)
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -250,7 +247,7 @@ class TestVerifyExitCodes:
     ) -> None:
         backend = FakeVerifyBackend(tmp_path, exec_error=RuntimeError("exec exploded"))
         v1_env.app.state.plane.backend = backend
-        seed_account(v1_env, "acct-devin-cool", provider="devin")
+        seed_account(v1_env, "acct-devin-cool", provider="devin", secret_name="sbx-test-verify")
         v1_env.registry.mark_status("acct-devin-cool", "cooling")
         resp = client.post("/v1/accounts/acct-devin-cool/verify", headers=admin_auth)
         assert resp.status_code == 200, resp.text
@@ -264,7 +261,7 @@ class TestVerifyExitCodes:
             tmp_path, code=0, terminate_error=RuntimeError("terminate exploded")
         )
         v1_env.app.state.plane.backend = backend
-        seed_account(v1_env, "acct-agy-term", provider="antigravity")
+        seed_account(v1_env, "acct-agy-term", provider="antigravity", secret_name="sbx-test-verify")
         resp = client.post("/v1/accounts/acct-agy-term/verify", headers=admin_auth)
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "active"

@@ -86,7 +86,12 @@ def test_success_turn(tmp_path: Path, repo_root: Path) -> None:
     assert "tool_result" in types
     assert "assistant_message" in types
     assert types[-1] == "turn.completed"
-    message = next(e for e in events if e["type"] == "assistant_message")
+    messages = [e for e in events if e["type"] == "assistant_message"]
+    message = messages[-1]
+    assert messages[0]["text"] == "Hello "
+    assert messages[0]["status"] == "in_progress"
+    assert len({e["id"] for e in messages}) == 1
+    assert message["status"] == "completed"
     assert message["text"] == "Hello world"
     tool_call = next(e for e in events if e["type"] == "tool_call")
     assert tool_call["id"] == "exec:0"

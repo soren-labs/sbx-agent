@@ -165,6 +165,7 @@ class DevinAdapter:
     credential_files: tuple[str, ...] = (CREDENTIALS_TOML,)
 
     def __init__(self) -> None:
+        self._stream_text_ids: set[str] = set()
         self._item_seq = 0
         self._open_tools: dict[str, dict[str, Any]] = {}
         self._last_tool_id: str | None = None
@@ -221,6 +222,30 @@ class DevinAdapter:
             return [_NOOP]
         if event_type == "turn.started":
             return [{"type": "turn.started"}]
+        if event_type in ("assistant_message", "reasoning") and obj.get("id"):
+            text = obj.get("text")
+            if not isinstance(text, str) or not text:
+                return [_NOOP]
+            item_id = str(obj["id"])
+            completed = obj.get("status") == "completed"
+            stage = (
+                "item.completed"
+                if completed
+                else ("item.updated" if item_id in self._stream_text_ids else "item.started")
+            )
+            self._stream_text_ids.add(item_id)
+            return [
+                {
+                    "type": stage,
+                    "item": {
+                        "id": item_id,
+                        "type": "agent_message"
+                        if event_type == "assistant_message"
+                        else "reasoning",
+                        "text": text,
+                    },
+                }
+            ]
         if event_type == "assistant_message":
             text = obj.get("text")
             if not isinstance(text, str) or not text:

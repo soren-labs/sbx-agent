@@ -39,6 +39,7 @@ _SANDBOX_PYTHONPATH = "/opt/sbx"  # runtime.image.PYTHONPATH_REMOTE
 _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
     "codex": (
         "CODEX_BIN",
+        "SBX_CODEX_TRANSPORT",
         "SBX_PROVIDER_API_KEY",
         "SBX_PROVIDER_BASE_URL",
         "FAKE_CODEX_SCENARIO",

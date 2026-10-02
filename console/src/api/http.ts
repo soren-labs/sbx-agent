@@ -1,3 +1,5 @@
+import { mergeActivity } from "../prototype/session-state";
+import { cacheScope, readSessionCache, writeSessionCache } from "../prototype/session-cache";
 import { ApiError, type SessionApi, type SessionEventHandlers } from "./client";
 import {
   endReasonOf,
@@ -51,7 +53,7 @@ const PATHS = {
   providers: "/v1/providers",
   models: "/v1/models",
   githubApp: "/v1/github/app",
-  githubAuthorize: "/v1/github/app/authorize",
+  githubAuthorize: "/v1/github/install",
 } as const;
 
 const DEFAULT_BASE = (
@@ -120,7 +122,7 @@ function deliveryOf(raw: any): Session["delivery"] {
   if (!raw || typeof raw !== "object") return null;
   const pr = raw.pull_request ?? null;
   const mode =
-    pr != null ? "pr" : raw.branch != null ? "branch" : "none";
+    pr != null ? (pr.draft ? "draft_pr" : "pr") : raw.branch != null ? "branch" : "none";
   return {
     mode,
     status: raw.status ?? undefined,
@@ -128,9 +130,10 @@ function deliveryOf(raw: any): Session["delivery"] {
     pushedHeadSha: raw.pushed_head_sha ?? undefined,
     prUrl: pr?.url ?? undefined,
     prNumber: pr?.number != null ? Number(pr.number) : undefined,
-    prState: pr?.state ?? undefined,
+    prState: pr?.draft ? "draft" : pr?.state ?? undefined,
     prHeadSha: pr?.head_sha ?? undefined,
     prBase: pr?.base ?? undefined,
+    merged: Boolean(raw.merge?.merged),
     error:
       raw.error != null
         ? typeof raw.error === "string"
@@ -165,6 +168,7 @@ function mapRevisionChange(raw: any): SessionChange {
     n: raw?.n != null ? Number(raw.n) : undefined,
     status: String(raw?.status ?? ""),
     deliveryStatus: delivery?.status ?? undefined,
+    merged: Boolean(delivery?.merge?.merged),
     summary: `revision ${raw?.n ?? "?"}`,
     ts: String(raw?.updated_at ?? raw?.created_at ?? ""),
     branch: delivery?.branch ?? undefined,
@@ -370,7 +374,7 @@ export class HttpSessionApi implements SessionApi {
     if (!res.ok) {
       // Wire error body: {error: {code, message, retryable, action}}.
       let code = "internal";
-      let message = `${method} ${path} → ${res.status}`;
+      let message = `The request could not be completed (${res.status}). Please try again.`;
       let retryable = false;
       let retryAfter: number | undefined;
       try {
@@ -410,8 +414,25 @@ export class HttpSessionApi implements SessionApi {
   async getSession(id: string): Promise<Session> {
     // Detail envelope: {session, runs: RunView[], run_count, truncated}
     const data = await this.request<any>("GET", PATHS.session(id));
-    const runs = Array.isArray(data?.runs) ? data.runs.map(mapRun) : [];
+    const runs = Array.isArray(data?.runs) ? data.runs.slice(-10).map(mapRun) : [];
     return mapSession(data?.session ?? {}, runs);
+  }
+
+  async readSessionCache(id: string) {
+    return readSessionCache(await cacheScope(this.base, getToken()), id);
+  }
+  async writeSessionCache(session: Session) {
+    writeSessionCache(await cacheScope(this.base, getToken()), session);
+  }
+  async getHistory(id: string, before: number) {
+    const data = await this.request<any>("GET", `${PATHS.session(id)}/history?before_n=${before}&limit=10`);
+    const turns: Turn[] = (data.runs ?? []).map(mapRun);
+    for (const entry of data.events ?? []) {
+      const item = normalizeEvent(entry.event, id);
+      const turn = turns.find(t=>t.id===item?.turnId);
+      if (item && turn) turn.activity = mergeActivity(turn.activity, [item]);
+    }
+    return {turns,hasMore:Boolean(data.has_more)};
   }
 
   async createSession(input: NewSessionInput): Promise<Session> {
@@ -472,6 +493,8 @@ export class HttpSessionApi implements SessionApi {
     input?: DeliverInput,
   ): Promise<SessionDeliverResult> {
     const body: Record<string, any> = {
+      n: input?.n,
+      branch: input?.branch,
       pull_request: {
         title: input?.title ?? undefined,
         draft: input?.draft ?? false,
@@ -493,10 +516,11 @@ export class HttpSessionApi implements SessionApi {
   async getFileDiff(
     sessionId: string,
     path: string,
+    n?: number,
   ): Promise<SessionFileDiff> {
     const data = await this.request<any>(
       "GET",
-      PATHS.fileDiff(sessionId, path),
+      PATHS.fileDiff(sessionId, path) + (n === undefined ? "" : `&n=${n}`),
     );
     const file = (Array.isArray(data?.files) ? data.files : [])[0];
     if (!file || typeof file.diff !== "string") {
@@ -584,7 +608,10 @@ export class HttpSessionApi implements SessionApi {
       github: {
         configured: Boolean(gh?.configured),
         installable: Boolean(gh?.installable ?? gh?.configured),
-        connected: accounts.length > 0,
+        connected: accounts.length > 0 || Boolean(gh?.broker?.bound),
+        bridgeToken: Boolean(gh?.bridge_token),
+        brokerBound: Boolean(gh?.broker?.bound),
+        brokerHealthy: Boolean(gh?.broker?.healthy),
         accounts,
         appSlug: gh?.app_slug ?? undefined,
         source: gh?.source ?? undefined,
@@ -651,14 +678,36 @@ export class HttpSessionApi implements SessionApi {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let sawDisconnect = false;
 
-    const emit = (item: ActivityItem | null) => {
-      if (item) handlers.onActivity?.(item);
+    const pending = new Map<string, ActivityItem>();
+    let paint: number | null = null;
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (paint !== null) cancelAnimationFrame(paint);
+      if (fallback !== null) clearTimeout(fallback);
+      paint = null; fallback = null;
+      const items = [...pending.values()]; pending.clear();
+      if (!items.length || closed) return;
+      if (handlers.onActivities) handlers.onActivities(items);
+      else items.forEach(item=>handlers.onActivity?.(item));
     };
+    const emit = (item: ActivityItem | null) => {
+      if (!item) return;
+      const key = `${item.turnId}:${item.id}`;
+      const prior = pending.get(key);
+      if (prior && (prior.status === "finished" || prior.status === "failed") && item.status === "running") return;
+      pending.set(key, prior ? {...item,seq:prior.seq,ts:prior.ts} : item);
+      if (fallback === null) {
+        fallback = setTimeout(flush,50);
+        paint = requestAnimationFrame(flush);
+      }
+    };
+
 
     const handleFrame = (frame: any) => {
       const type = String(frame?.type ?? "");
       switch (type) {
         case "session.status": {
+          flush();
           // Fresh on every connect (no id) — always apply.
           const phase = normalizePhase(frame.phase, frame.status);
           handlers.onPhase?.(phase);
@@ -691,6 +740,7 @@ export class HttpSessionApi implements SessionApi {
         case "turn.finished":
         case "turn.completed":
         case "turn.failed": {
+          flush();
           const n = typeof frame.n === "number" ? frame.n : undefined;
           if (n != null) {
             handlers.onTurn?.({
@@ -708,8 +758,8 @@ export class HttpSessionApi implements SessionApi {
                       ? "finished"
                       : normalizeTurnStatus(frame.status),
               createdAt: "",
-              startedAt: type === "turn.started" ? new Date().toISOString() : null,
-              finishedAt: type === "turn.started" ? null : new Date().toISOString(),
+              startedAt: null,
+              finishedAt: null,
               result: null,
               error: toTurnError(frame.error),
               usage: usageOf(frame.usage),
@@ -730,7 +780,7 @@ export class HttpSessionApi implements SessionApi {
       if (closed) return;
       abort = new AbortController();
       try {
-        const res = await fetch(`${this.base}${PATHS.events(sessionId)}`, {
+        const res = await fetch(`${this.base}${PATHS.events(sessionId)}${handlers.historyAfterTurn ? `?after_n=${handlers.historyAfterTurn}` : ""}`, {
           headers: {
             ...this.headers(),
             Accept: "text/event-stream",
@@ -753,7 +803,7 @@ export class HttpSessionApi implements SessionApi {
             retryable: res.status >= 500,
           });
         }
-        attempt = 0;
+        handlers.onOpen?.();
         if (sawDisconnect) {
           sawDisconnect = false;
           handlers.onReconnect?.();
@@ -773,6 +823,7 @@ export class HttpSessionApi implements SessionApi {
           if (!data) return;
           try {
             handleFrame(JSON.parse(data));
+            attempt = 0;
           } catch {
             /* malformed frame — skip */
           }
@@ -798,13 +849,15 @@ export class HttpSessionApi implements SessionApi {
             }
           }
         }
+        flush();
         throw new ApiError("network", "event stream ended", {
           subcode: "eof",
           retryable: true,
         });
       } catch (e) {
         if (closed) return;
-        if (e instanceof ApiError && e.httpStatus === 404) {
+        flush();
+        if (e instanceof ApiError && [401, 403, 404].includes(e.httpStatus)) {
           handlers.onError?.(e);
           return; // session gone — don't retry
         }
@@ -819,6 +872,9 @@ export class HttpSessionApi implements SessionApi {
     void open();
     return () => {
       closed = true;
+      pending.clear();
+      if (paint !== null) cancelAnimationFrame(paint);
+      if (fallback !== null) clearTimeout(fallback);
       if (retryTimer) clearTimeout(retryTimer);
       abort?.abort();
     };

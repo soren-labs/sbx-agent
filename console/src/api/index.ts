@@ -1,4 +1,4 @@
-import { FixtureSessionApi } from "./mock";
+import { PrototypeSessionApi } from "../prototype/demo";
 import { HttpSessionApi } from "./http";
 import type { SessionApi } from "./client";
 
@@ -9,9 +9,8 @@ import type { SessionApi } from "./client";
  */
 export function createApi(): SessionApi {
   const mode = import.meta.env.VITE_API_MODE as string | undefined;
-  const base = import.meta.env.VITE_API_BASE as string | undefined;
-  if (mode === "http" || (mode !== "mock" && base)) return new HttpSessionApi();
-  return new FixtureSessionApi();
+  if (mode === "mock") return new PrototypeSessionApi();
+  return new HttpSessionApi();
 }
 
 export const api: SessionApi = createApi();

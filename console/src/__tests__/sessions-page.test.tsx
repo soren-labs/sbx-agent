@@ -62,13 +62,11 @@ describe("NewSessionPage", () => {
   it("create → optimistic navigation to the session shell", async () => {
     const api = makeApi();
     renderApp(<App />, { api });
-    await screen.findByTestId("composer");
-    await userEvent.type(screen.getByTestId("composer-prompt"), "Ship it");
-    await userEvent.click(screen.getByTestId("composer-send"));
-    // lands on the session page with queued/starting banner
-    await waitFor(
-      () => expect(screen.getByTestId("phase-banner")).toBeInTheDocument(),
-      { timeout: 3000 },
-    );
+    const prompt=await screen.findByRole("textbox",{name:"Session task"});
+    await userEvent.type(prompt,"Ship it");
+    await userEvent.click(screen.getByRole("button",{name:"Start session"}));
+    expect(await screen.findByRole("textbox",{name:"Follow-up message"})).toBeInTheDocument();
+    expect(screen.getByRole("heading",{name:"Ship it"})).toBeInTheDocument();
+
   });
 });

@@ -218,6 +218,7 @@ class GrokAdapter:
         # Contiguous text segment being buffered: "reasoning" | "agent_message".
         self._seg_type: str | None = None
         self._seg_buf: list[str] = []
+        self._seg_id: str | None = None
         # Open tool calls: item_id -> {name, kind, raw_input}; plus a
         # name -> item_id index for the WP0 fake's tool_result pairing.
         self._open_tools: dict[str, dict[str, Any]] = {}
@@ -353,12 +354,23 @@ class GrokAdapter:
         events = self._ensure_turn_started()
         if self._seg_type is not None and self._seg_type != item_type:
             events.extend(self._flush_segment())
+        first = self._seg_id is None
+        if first:
+            self._seg_id = self._next_item_id()
         self._seg_type = item_type
         self._seg_buf.append(data)
-        return events or [_NOOP]
+        events.append(
+            {
+                "type": "item.started" if first else "item.updated",
+                "item": {"id": self._seg_id, "type": item_type, "text": "".join(self._seg_buf)},
+            }
+        )
+        return events
 
     def _flush_segment(self) -> list[dict[str, Any]]:
         text = "".join(self._seg_buf)
+        item_id = self._seg_id
+        self._seg_id = None
         self._seg_buf = []
         seg_type = self._seg_type
         self._seg_type = None
@@ -369,7 +381,7 @@ class GrokAdapter:
         return [
             {
                 "type": "item.completed",
-                "item": {"id": self._next_item_id(), "type": seg_type, "text": text},
+                "item": {"id": item_id, "type": seg_type, "text": text},
             }
         ]
 

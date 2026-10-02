@@ -1201,6 +1201,9 @@ class TestDeliverPullRequestBranch:
         # The durable record holds the update, so a later merge gates on it.
         stored = revision_store.get_revision(again.revision_id)
         assert stored.delivery["pull_request"]["base"] == "release"
+        workspace = workspaces.get(again.agent_id)
+        assert workspace.pull_request["base"] == "release"
+        assert workspace.pull_request["draft"] is False
 
     def test_deliver_replay_override_failure_surfaces_without_breaking_delivery(
         self, revisions, revision_store, monkeypatch, artifacts, workspaces

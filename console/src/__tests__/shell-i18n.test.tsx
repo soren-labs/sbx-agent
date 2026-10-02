@@ -44,7 +44,7 @@ describe("AppShell information architecture", () => {
 describe("routing", () => {
   it("/ renders the composer, /sessions renders the list", async () => {
     renderApp(<App />, { route: "/" });
-    expect(await screen.findByTestId("composer")).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", {name:"Session task"})).toBeInTheDocument();
   });
 });
 

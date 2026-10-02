@@ -151,6 +151,9 @@ class TestAccounts:
             headers=admin_auth,
         )
         account_id = resp.json()["id"]
+        v1_env.registry.put_credential_blob(
+            account_id, {"provider": "codex", "files": {".codex/auth.json": "REDACTED"}}
+        )
         v1_env.registry.mark_status(account_id, "cooling")
         resp = client.post(f"/v1/accounts/{account_id}/verify", headers=admin_auth)
         assert resp.status_code == 200, resp.text

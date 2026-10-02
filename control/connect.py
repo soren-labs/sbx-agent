@@ -452,6 +452,9 @@ def probe_account_credential(
             cooldown_until=account.cooldown_until,
             last_error="probe_unavailable",
         )
+    if not blob and not account.secret_name:
+        # A deployment-wide default secret is not this account's credential.
+        return registry.mark_status(account_id, account.status, last_error="credential_missing")
     handle = None
     try:
         from control.backend import SandboxSpec

@@ -220,7 +220,7 @@ export function normalizeEvent(frame: any, sessionId: string): ActivityItem | nu
 
     switch (String(item.type ?? "")) {
       case "agent_message":
-        // completed only — assistant text appended to the conversation.
+        // Cumulative partials replace the same item through completion.
         return {
           id: itemId, seq: nextSeq(), ts, turnId, n,
           kind: "message", role: "assistant",

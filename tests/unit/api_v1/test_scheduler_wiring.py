@@ -220,7 +220,9 @@ class TestCooldownFailover:
         client.delete(f"/v1/agents/{agent['id']}", headers=auth)
 
     def test_all_cooling_exhausts_with_retry_after(self, client, auth, v1_env) -> None:
-        scheduler = _multi_codex(v1_env)
+        # A wall-clock correction must not change the requested cooldown bound.
+        now = datetime(2026, 10, 1, tzinfo=UTC)
+        scheduler = _multi_codex(v1_env, clock=lambda: now)
         for account_id in ("acct-codex-a", "acct-codex-b"):
             scheduler.report_failure(account_id, "rate_limited", retry_after=45.0)
 

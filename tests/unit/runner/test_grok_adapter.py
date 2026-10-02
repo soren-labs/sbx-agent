@@ -176,13 +176,13 @@ def test_translate_real_success_fixture() -> None:
     assert completed[WRITE_CALL]["changes"][0]["path"] == "/work/marker.txt"
     assert completed[WRITE_CALL]["status"] == "completed"
 
-    messages = [i for i in items if i["type"] == "agent_message"]
+    messages = [i for i in completed.values() if i["type"] == "agent_message"]
     # text.data deltas across each segment concatenate into whole items.
     assert [m["text"] for m in messages] == [
         "I'll create `marker.txt` with the exact contents you specified, then run `pwd`.",
         "DONE",
     ]
-    reasoning = [i for i in items if i["type"] == "reasoning"]
+    reasoning = [i for i in completed.values() if i["type"] == "reasoning"]
     assert len(reasoning) == 2
     assert reasoning[0]["text"].startswith("The user wants me to")
 

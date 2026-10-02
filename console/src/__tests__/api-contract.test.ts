@@ -422,9 +422,9 @@ describe("HttpSessionApi — V2 wire shapes", () => {
     });
   });
 
-  it("beginGithubAuthorize returns POST /v1/github/app/authorize url", async () => {
+  it("beginGithubAuthorize returns the default installation URL", async () => {
     const fetchSpy = stubFetch((path, init) => {
-      expect(path).toBe("/v1/github/app/authorize");
+      expect(path).toBe("/v1/github/install");
       expect(init?.method).toBe("POST");
       return okJson({ authorize_url: "https://github.com/apps/x", state: "s", expires_at: "e" }, 201);
     });

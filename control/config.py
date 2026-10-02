@@ -313,6 +313,9 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_PROVIDERS",
     "SBX_SESSIONS_DICT",
     "SBX_RUNS_DICT",
+    "SBX_RUN_ACTIVITY_DICT",
+    "SBX_TASKS_DICT",
+    "SBX_REVISIONS_DICT",
     "SBX_ACCOUNTS_DICT",
     "SBX_WORKFLOWS_DICT",
     "SBX_ARTIFACTS_DICT",
@@ -341,6 +344,7 @@ REMOTE_ENV_KEYS: tuple[str, ...] = (
     "SBX_DEVIN_BURST_SLOTS",
     "SBX_RUNNER_CMD",
     "SBX_DEVIN_TRANSPORT",
+    "SBX_CODEX_TRANSPORT",
     "SBX_GITHUB_EPHEMERAL",
     "SBX_GITHUB_SECRET_NAME",
     # SOR-177 GitHub App authorization: app identity, store naming and API

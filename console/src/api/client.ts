@@ -49,8 +49,11 @@ export function isApiError(e: unknown): e is ApiError {
 
 /** Live event surface for one session (SSE or fixture emitter). */
 export interface SessionEventHandlers {
+  historyAfterTurn?: number;
+  onOpen?: () => void;
   onPhase?: (phase: SessionPhase) => void;
   onActivity?: (item: ActivityItem) => void;
+  onActivities?: (items: ActivityItem[]) => void;
   onTurn?: (turn: Turn) => void;
   onSession?: (session: Session) => void;
   /** session.meta frame — effective provider/model once resolved. */
@@ -65,6 +68,9 @@ export interface SessionEventHandlers {
 export interface SessionApi {
   listSessions(): Promise<Session[]>;
   getSession(id: string): Promise<Session>;
+  getHistory?(id: string, before: number): Promise<{ turns: Turn[]; hasMore: boolean }>;
+  readSessionCache?(id: string): Promise<Session | null>;
+  writeSessionCache?(session: Session): Promise<void>;
   /**
    * Create a session. Resolves once the session shell exists (queued or
    * starting) — the UI navigates to it optimistically and follows live
@@ -108,7 +114,7 @@ export interface SessionApi {
    */
   listChangesDiff(sessionId: string): Promise<SessionChangesDiff>;
   /** Lazy per-file diff text (GET .../changes/diff?path=). */
-  getFileDiff(sessionId: string, path: string): Promise<SessionFileDiff>;
+  getFileDiff(sessionId: string, path: string, n?: number): Promise<SessionFileDiff>;
   /** Subscribe to the session-scoped event stream. Returns an unsubscribe. */
   subscribe(sessionId: string, handlers: SessionEventHandlers): () => void;
 }

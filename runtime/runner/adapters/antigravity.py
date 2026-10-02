@@ -195,6 +195,7 @@ class AntigravityAdapter:
         self._turn_started = False
         self._emitted_agent_message = False
         self._text_buf: dict[tuple[str, Any], list[str]] = {}
+        self._text_ids: dict[tuple[str, Any], str] = {}
         self._open_tools: dict[Any, str] = {}
 
     def prepare_home(self, home: Path, model: str) -> None:
@@ -336,7 +337,7 @@ class AntigravityAdapter:
         return [_NOOP]
 
     def _text_step(self, step: dict[str, Any], item_type: str, state: str) -> list[dict[str, Any]]:
-        """Buffer ``text_delta`` per step; emit one item.completed at DONE.
+        """Emit cumulative ``text_delta`` updates with one identity through DONE.
 
         ``text_delta`` fragments arrive across ACTIVE and DONE updates of the
         same ``step_index``; concatenated they equal that step's share of the
@@ -346,8 +347,24 @@ class AntigravityAdapter:
         delta = step.get("text_delta")
         if isinstance(delta, str) and delta:
             self._text_buf.setdefault(key, []).append(delta)
-        if state not in ("DONE", "FAILED"):
+        if key not in self._text_ids and not self._text_buf.get(key):
             return [_NOOP]
+        first = key not in self._text_ids
+        item_id = (
+            self._text_ids.setdefault(key, self._next_item_id()) if first else self._text_ids[key]
+        )
+        if state not in ("DONE", "FAILED"):
+            return [
+                {
+                    "type": "item.started" if first else "item.updated",
+                    "item": {
+                        "id": item_id,
+                        "type": item_type,
+                        "text": "".join(self._text_buf.get(key, [])),
+                    },
+                }
+            ]
+        self._text_ids.pop(key, None)
         text = "".join(self._text_buf.pop(key, []))
         if not text:
             return [_NOOP]
@@ -356,7 +373,7 @@ class AntigravityAdapter:
         return [
             {
                 "type": "item.completed",
-                "item": {"id": self._next_item_id(), "type": item_type, "text": text},
+                "item": {"id": item_id, "type": item_type, "text": text},
             }
         ]
 
@@ -466,7 +483,8 @@ class AntigravityAdapter:
     def _flush_text(self) -> list[dict[str, Any]]:
         """Emit buffered text for steps that ended without a DONE update."""
         events: list[dict[str, Any]] = []
-        for (item_type, _idx), parts in self._text_buf.items():
+        for key, parts in self._text_buf.items():
+            item_type, _idx = key
             text = "".join(parts)
             if not text:
                 continue
@@ -475,7 +493,7 @@ class AntigravityAdapter:
             events.append(
                 {
                     "type": "item.completed",
-                    "item": {"id": self._next_item_id(), "type": item_type, "text": text},
+                    "item": {"id": self._text_ids.pop(key), "type": item_type, "text": text},
                 }
             )
         self._text_buf.clear()
