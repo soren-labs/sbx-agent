@@ -307,20 +307,24 @@ class AuthStore:
         return [OAuthAccount(**dict(row)) for row in rows]
 
     def create_session(self, user_id: str, *, ttl_s: float = 86400) -> tuple[UserSession, str]:
+        with self.database.transaction() as conn:
+            return self._create_session(conn, user_id, ttl_s=ttl_s)
+
+    def _create_session(self, conn: Any, user_id: str, *, ttl_s: float) -> tuple[UserSession, str]:
+        """Also used to atomically finish hosted registration with its session."""
         now = self.clock()
         expires = _expiry(now, ttl_s)
         token = f"sbx_session_{secrets.token_urlsafe(32)}"
         record = UserSession(
             f"usess_{uuid.uuid4().hex}", user_id, _digest(token), _iso(now), expires
         )
-        with self.database.transaction() as conn:
-            self._require_user(conn, user_id)
-            self.database.execute(
-                conn,
-                "INSERT INTO user_sessions "
-                "(id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-                (record.id, user_id, record.token_hash, record.created_at, expires),
-            )
+        self._require_user(conn, user_id)
+        self.database.execute(
+            conn,
+            "INSERT INTO user_sessions "
+            "(id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (record.id, user_id, record.token_hash, record.created_at, expires),
+        )
         return record, token
 
     def lookup_session(self, token: str) -> UserSession | None:

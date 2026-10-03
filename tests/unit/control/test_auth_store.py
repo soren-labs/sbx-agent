@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from control.auth_schema import MIGRATIONS
 from control.auth_store import (
     AuthDatabase,
     AuthStorageUnavailable,
@@ -209,7 +210,9 @@ def test_concurrent_schema_initialization_is_idempotent(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _: AuthDatabase(path=path).initialize(), range(16)))
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT version FROM auth_schema_migrations").fetchall() == [(1,)]
+        assert conn.execute("SELECT version FROM auth_schema_migrations").fetchall() == [
+            (n,) for n in range(1, len(MIGRATIONS) + 1)
+        ]
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
@@ -219,6 +222,9 @@ def test_concurrent_schema_initialization_is_idempotent(tmp_path):
         "oauth_accounts",
         "api_keys",
         "auth_schema_migrations",
+        "password_credentials",
+        "email_verification_challenges",
+        "auth_rate_limits",
     }
 
 
@@ -228,6 +234,25 @@ def test_newer_or_noncontiguous_schema_is_rejected(auth):
         conn.execute("INSERT INTO auth_schema_migrations VALUES (3, 'now')")
     with pytest.raises(AuthStorageUnavailable, match="schema version"):
         reopen(auth).database.initialize()
+
+
+def test_stage_one_migration_preserves_existing_users_sessions_and_keys(tmp_path, monkeypatch):
+    import control.auth_store as module
+
+    path = tmp_path / "upgrade.sqlite3"
+    monkeypatch.setattr(module, "MIGRATIONS", MIGRATIONS[:1])
+    original = AuthStore(AuthDatabase(path=path))
+    user = original.create_user(email="upgrade@example.test")
+    session, session_token = original.create_session(user.id)
+    key, key_token = PersistentApiKeyStore(original).create(user_id=user.id)
+    monkeypatch.setattr(module, "MIGRATIONS", MIGRATIONS)
+    upgraded = AuthStore(AuthDatabase(path=path))
+    assert upgraded.get_user(user.id) == user
+    assert upgraded.lookup_session(session_token) == session
+    assert PersistentApiKeyStore(upgraded).lookup(key_token) == key
+    with upgraded.database.transaction() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM password_credentials").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM email_verification_challenges").fetchone()[0] == 0
 
 
 def test_failed_migration_rolls_back_and_can_be_retried(auth, monkeypatch):

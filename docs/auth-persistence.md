@@ -1,7 +1,8 @@
 # Persistent user/auth foundation
 
 Product auth uses `control/auth_store.py` and the append-only migrations in
-`control/auth_schema.py`. This foundation adds no login routes or UI.
+`control/auth_schema.py`. [Hosted Stage 1 auth](hosted-auth.md) extends this
+foundation with email verification, password login and secure browser sessions.
 
 | Table | Authority |
 | --- | --- |
@@ -9,6 +10,9 @@ Product auth uses `control/auth_store.py` and the append-only migrations in
 | `user_sessions` | User ID, SHA-256 token verifier, absolute expiry, revocation |
 | `oauth_accounts` | Unique `(provider, provider_subject)` mapped to one user |
 | `api_keys` | SHA-256 key verifier, optional user ID, scopes, expiry, revocation |
+| `password_credentials` | Argon2id password hash and verified-email timestamp per user |
+| `email_verification_challenges` | Salted OTP hash, expiry, attempts, resend cooldown, one-use registration grant |
+| `auth_rate_limits` | Durable email/IP request counters; hashed bucket identifiers |
 
 These are separate from sandbox session records and operator-managed AI-provider
 accounts. Email is metadata, not verified identity. Linking an OAuth identity
@@ -93,7 +97,7 @@ and exchange requires issuing another ticket. Redeemed keys now survive restart.
 Legacy operator-issued keys and console keys have a null user ID; they are not
 automatically assigned to a future end user.
 
-## Server-side primitives and PR2
+## Server-side primitives and hosted auth
 
 - `AuthStore.create_user/get_user/find_user_by_email` manage user records.
 - `create_session/lookup_session/revoke_session` manage user sessions. Tokens use
@@ -107,14 +111,12 @@ automatically assigned to a future end user.
   filter listing/revocation by owner. Keys also use 256 random bits. Only creation
   returns plaintext; list/lookup never recover it. Revoked rows retain metadata.
 
-PR2 should add email/password credential hashing and verification, verified-email
-policy, Google/GitHub authorization callbacks with state/PKCE, explicit identity
-linking, secure cookie/CSRF handling, logout and user-scoped key endpoints. Use
-the authenticated user ID with the owner-filtered key primitives; existing admin
-routes remain operator-wide. Additive migrations can extend the existing user
-model for password/verification metadata. Provider connections, password reset,
-email delivery, credential cleanup/retention jobs and production AI-provider OAuth
-are separate follow-ups. No such flows are implemented here.
+Stage 1 adds verified email/password registration, login, cookie/CSRF handling
+and logout. It does not link existing identities by email or authorize operator
+routes with a browser session. Alpha has no Google/GitHub login. User ownership
+of sandbox resources, API-key management and console integration belong to later
+stages. Password reset, real email delivery and credential cleanup/retention jobs
+remain separate follow-ups.
 
 For optional cloud-free driver verification, point `SBX_TEST_POSTGRES_BIN` at local
 PostgreSQL binaries and run

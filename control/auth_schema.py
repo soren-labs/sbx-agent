@@ -42,4 +42,30 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )""",
         "CREATE INDEX api_keys_user_idx ON api_keys(user_id)",
     ),
+    (
+        """CREATE TABLE password_credentials (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            password_hash TEXT NOT NULL,
+            email_verified_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE email_verification_challenges (
+            email TEXT PRIMARY KEY,
+            id TEXT NOT NULL UNIQUE,
+            code_hash TEXT,
+            created_at DOUBLE PRECISION NOT NULL,
+            expires_at DOUBLE PRECISION NOT NULL,
+            resend_after DOUBLE PRECISION NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            verified_at TEXT,
+            registration_hash TEXT UNIQUE,
+            registration_expires_at DOUBLE PRECISION,
+            consumed_at TEXT
+        )""",
+        """CREATE TABLE auth_rate_limits (
+            bucket_hash TEXT PRIMARY KEY,
+            window_start DOUBLE PRECISION NOT NULL,
+            attempts INTEGER NOT NULL
+        )""",
+    ),
 )

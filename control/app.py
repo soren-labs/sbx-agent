@@ -26,6 +26,7 @@ from starlette.types import Receive, Scope, Send
 
 from control.api_v1 import router as api_v1_router
 from control.api_v2 import router as api_v2_router
+from control.auth_email import EmailSender, MockEmailSender, UnconfiguredEmailSender
 from control.auth_store import AuthStore, configure_auth
 from control.backend import LocalProcessBackend, SandboxBackend
 from control.config import (
@@ -42,6 +43,8 @@ from control.config import (
     env_str,
     lifecycle_config,
 )
+from control.hosted_auth import AuthRateLimiter, HostedAuthService
+from control.hosted_auth_routes import router as hosted_auth_router
 from control.run_activity import FileRunActivityStore, InMemoryRunActivityStore, RunActivityStore
 from control.run_store import RunLedger, RunStore
 from control.sandbox_io import sandbox_env
@@ -125,7 +128,7 @@ class SPAStaticFiles(StaticFiles):
     Content-hashed ``assets/*`` cache immutably; everything else revalidates.
     """
 
-    _API_PREFIXES = ("v1", "v2", "api", ".well-known")
+    _API_PREFIXES = ("v1", "v2", "api", "auth", ".well-known")
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
@@ -366,6 +369,8 @@ def create_app(
     task_store: Any | None = None,
     revision_store: Any | None = None,
     auth_store: AuthStore | None = None,
+    email_sender: EmailSender | None = None,
+    auth_rate_limiter: AuthRateLimiter | None = None,
     runner_cmd: list[str] | None = None,
     basic_user: str | None = None,
     basic_password: str | None = None,
@@ -453,6 +458,7 @@ def create_app(
     app = FastAPI(title="sbx-control", version="0.1.1", lifespan=lifespan)
     app.include_router(api_v1_router)  # empty shell until P2-D (SOR-64)
     app.include_router(api_v2_router)  # Session-first facade (SOR-256)
+    app.include_router(hosted_auth_router)
     app.state.plane = plane
     app.state.run_store = run_store
     app.state.run_ledger = plane.run_ledger
@@ -598,6 +604,18 @@ def create_app(
     from control.api_v1.bootstrap import configure_v1_bootstrap
 
     configure_auth(app, auth=auth_store)
+    if email_sender is None:
+        # Mock delivery is explicit on Modal; local dev uses it by default.
+        # Until a production adapter is configured, cloud registration fails closed.
+        email_mode = os.environ.get(
+            "SBX_AUTH_EMAIL_MODE", "disabled" if backend_kind == "modal" else "mock"
+        )
+        if email_mode not in {"mock", "disabled"}:
+            raise ValueError("SBX_AUTH_EMAIL_MODE must be mock or disabled")
+        email_sender = MockEmailSender() if email_mode == "mock" else UnconfiguredEmailSender()
+    app.state.hosted_auth = HostedAuthService(
+        app.state.auth_store, email_sender, limiter=auth_rate_limiter
+    )
     configure_v1_bootstrap(app)
 
     def reserve_recovery(rec: SessionRecord) -> Callable[[bool], None]:
