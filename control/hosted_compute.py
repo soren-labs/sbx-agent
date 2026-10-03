@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import socket
 import threading
@@ -175,6 +176,7 @@ class HostedModalBackend:
                 "SBX_RUNTIME_CONNECT_KEY": key,
                 "SBX_RUNTIME_OWNER": context.user_id,
                 "SBX_RUNTIME_AGENT_ID": spec.tags["session_id"],
+                "SBX_BROWSER_ORIGINS": os.environ.get("SBX_BROWSER_ORIGINS", ""),
             },
         )
         handle = self.provider.create(context, spec, runtime)

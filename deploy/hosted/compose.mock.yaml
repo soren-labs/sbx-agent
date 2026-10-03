@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sbx
+      POSTGRES_PASSWORD: REDACTED
+      POSTGRES_DB: sbx
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sbx -d sbx"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/hosted/Dockerfile
+      target: mock
+    environment:
+      DATABASE_URL: postgresql://sbx:REDACTED@postgres:5432/sbx
+    ports:
+      - "127.0.0.1:8791:8000"
+    volumes:
+      - api:/state
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/hosted/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+volumes:
+  postgres:
+  api:

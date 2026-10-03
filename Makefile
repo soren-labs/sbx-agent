@@ -93,3 +93,13 @@ test-e2e-modal:
 	else \
 		echo "tests/e2e_modal is owned by WP2-H (SOR-42); not implemented in WP1-A."; \
 	fi
+
+# Hosted Alpha: credential-free local UI/provider fakes and full acceptance.
+.PHONY: hosted-mock test-hosted-alpha
+hosted-mock:
+	VITE_HOSTED=1 npm --prefix console run build
+	uv run python deploy/hosted/mock_server.py
+
+test-hosted-alpha:
+	VITE_HOSTED=1 npm --prefix console run build
+	uv run --with playwright pytest tests/e2e/test_hosted_alpha_gate.py -q

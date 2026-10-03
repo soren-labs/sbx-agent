@@ -8,7 +8,7 @@ export function AccountSettings() {
   const logout = async () => {
     try {
       await hostedRequest("/auth/logout", {});
-      window.location.assign(String(import.meta.env.VITE_API_BASE ?? "") + "/auth");
+      window.location.assign("/");
     } catch(e) {setError((e as Error).message);}
   };
   return <section className="settings-section"><h2>Your account</h2><p>{email}</p>{error && <p role="alert">{error}</p>}<button className="button" onClick={() => void logout()}>Sign out</button></section>;

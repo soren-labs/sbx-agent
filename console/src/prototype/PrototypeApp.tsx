@@ -16,6 +16,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { hostedMode, hostedRequest } from "../hosted/api";
+import { ApiKeys } from "../hosted/ApiKeys";
 import { AccountSettings } from "../hosted/AccountSettings";
 import { useApi } from "../state/api";
 import type {
@@ -1405,7 +1406,7 @@ function Settings() {
             ))}
           </div>
         </section>
-        {hostedMode && <AccountSettings />}
+        {hostedMode && <><AccountSettings /><ApiKeys /></>}
         {!hostedMode && <section className="settings-section">
           <h2>Workspace connection</h2>
           <p>

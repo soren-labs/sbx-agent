@@ -237,3 +237,19 @@ def test_hosted_creation_requires_users_ready_modal_runtime(hosted_app):
         )
         assert response.status_code == 409
         assert app.state.task_store.list(owner=users[0].id) == []
+
+
+def test_hosted_key_cannot_delete_another_users_agent(hosted_app):
+    factory, _, users, tokens, _ = hosted_app
+    app = factory()
+    with TestClient(app, base_url="https://testserver") as client:
+        session = create_session(client, headers(tokens[0]))["session"]["id"]
+        wait_session(client, headers(tokens[0]), session, "finished", "failed")
+        task = app.state.task_store.get(session)
+        agent = app.state.plane.store.get(task.agent_id)
+        assert agent.owner == users[0].id
+        assert app.state.plane.backend.poll(agent.handle()).alive
+        response = client.delete(f"/v1/agents/{task.agent_id}", headers=headers(tokens[1]))
+        assert response.status_code == 404
+        assert app.state.plane.backend.poll(agent.handle()).alive
+        assert client.get(f"/v2/sessions/{session}", headers=headers(tokens[0])).status_code == 200

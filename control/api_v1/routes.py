@@ -1632,6 +1632,10 @@ def delete_agent(
     v1: V1State = Depends(get_v1_state),
     workflows: WorkflowService = Depends(get_workflow_service),
 ) -> dict[str, Any]:
+    from control.ownership import ScopedControlPlane
+
+    if isinstance(plane, ScopedControlPlane):
+        _require_agent(plane, agent_id)
     try:
         rec = plane.close(agent_id)
     except KeyError:

@@ -55,6 +55,16 @@ class ScopedControlPlane:
             return None
         return self.source.get(session_id)
 
+    def close(self, session_id: str) -> Any:
+        if self.store.get(session_id) is None:
+            raise KeyError("session not found")
+        return self.source.close(session_id)
+
+    def stop(self, session_id: str) -> Any:
+        if self.store.get(session_id) is None:
+            raise KeyError("session not found")
+        return self.source.stop(session_id)
+
 
 class ScopedArtifactStore:
     def __init__(self, source: Any, sessions: ScopedSessionStore) -> None:

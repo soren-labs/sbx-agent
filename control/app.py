@@ -561,6 +561,9 @@ def create_app(
     app.include_router(hosted_router)
     app.state.plane = plane
     app.state.hosted_mode = hosted
+    from control.hosted_deployment import configure_browser_origins
+
+    configure_browser_origins(app, os.environ.get("SBX_BROWSER_ORIGINS", "") if hosted else "")
     app.state.database_records = database_records
     app.state.compute_provider = compute_provider
     app.state.run_store = run_store
@@ -723,8 +726,8 @@ def create_app(
         email_mode = os.environ.get(
             "SBX_AUTH_EMAIL_MODE", "disabled" if backend_kind == "modal" else "mock"
         )
-        if email_mode not in {"mock", "disabled"}:
-            raise ValueError("SBX_AUTH_EMAIL_MODE must be mock or disabled")
+        if email_mode not in {"mock", "disabled", "production"}:
+            raise ValueError("SBX_AUTH_EMAIL_MODE must be mock, disabled or production")
         email_sender = MockEmailSender() if email_mode == "mock" else UnconfiguredEmailSender()
     app.state.hosted_auth = HostedAuthService(
         app.state.auth_store, email_sender, limiter=auth_rate_limiter
@@ -887,6 +890,8 @@ def create_app(
     ) -> str:
         import secrets
 
+        if hosted and os.environ.get("SBX_OPERATOR_AUTH_ENABLED") != "1":
+            raise _http_error(404, "not_found")
         if credentials is None:
             raise _http_error(
                 401,

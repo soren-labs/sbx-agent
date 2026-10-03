@@ -9,7 +9,7 @@ from pydantic import Field, SecretStr
 
 from control.api_v1.deps import agents_key
 from control.hosted_auth import HostedAuthError
-from control.hosted_auth_routes import AuthBody, AuthRoute, same_origin_json
+from control.hosted_auth_routes import AuthBody, AuthRoute, current_user, same_origin_json
 from control.ports import ApiKey
 
 router = APIRouter(
@@ -242,3 +242,69 @@ def list_review_sessions(session_id: str, request: Request, owner: str = Depends
             if row["author_session_id"] == session_id
         ]
     }
+
+
+class PersonalKeyBody(AuthBody):
+    label: str = Field(default="", max_length=80)
+    scopes: list[str] = Field(default_factory=lambda: ["agents"], min_length=1, max_length=1)
+    expires_in_days: int | None = Field(default=90, ge=1, le=365)
+
+
+def personal_key_public(record):
+    from control.api_v1.schemas import api_key_public
+    from control.auth_store import _iso
+
+    return {
+        **api_key_public(record),
+        "expires_at": _iso(record.expires_at) if record.expires_at is not None else None,
+    }
+
+
+@router.get("/api-keys")
+def list_personal_keys(request: Request, user=Depends(current_user)):
+    from control.auth_store import PersistentApiKeyStore
+
+    return {
+        "api_keys": [
+            personal_key_public(record)
+            for record in PersistentApiKeyStore(request.app.state.auth_store).list(user_id=user.id)
+        ]
+    }
+
+
+@router.post("/api-keys", status_code=201)
+def create_personal_key(body: PersonalKeyBody, request: Request, user=Depends(current_user)):
+    from control.auth_store import PersistentApiKeyStore
+
+    if body.scopes != ["agents"]:
+        raise HostedAuthError("invalid_scope", 422)
+    record, plaintext = PersistentApiKeyStore(request.app.state.auth_store).create(
+        user_id=user.id,
+        label=body.label.strip(),
+        scopes=body.scopes,
+        ttl_s=body.expires_in_days * 86400 if body.expires_in_days is not None else None,
+    )
+    return {**personal_key_public(record), "key": plaintext}
+
+
+@router.delete("/api-keys/{key_id}", status_code=204)
+def revoke_personal_key(key_id: str, request: Request, user=Depends(current_user)):
+    from fastapi import Response
+
+    from control.auth_store import PersistentApiKeyStore
+
+    store = PersistentApiKeyStore(request.app.state.auth_store)
+    record = next((record for record in store.list(user_id=user.id) if record.id == key_id), None)
+    if record is None:
+        raise HostedAuthError("not_found", 404)
+    if record.revoked_at is None:
+        store.revoke(key_id, user_id=user.id)
+    return Response(status_code=204)
+
+
+@router.get("/health")
+def hosted_health(request: Request):
+    auth = request.app.state.auth_store
+    with auth.database.transaction() as conn:
+        auth.database.execute(conn, "SELECT 1").fetchone()
+    return {"status": "ready"}

@@ -37,6 +37,11 @@ def complete_coding_loop(page, base, playwright, repo):
     playwright.expect(
         page.get_by_text("Greeting fixed; 1 passed.", exact=False).first
     ).to_be_visible(timeout=15000)
+    page.get_by_role("button", name="Changes", exact=True).last.click()
+    playwright.expect(page.get_by_label("Diff for hello.txt")).to_contain_text(
+        "hello fixed", timeout=15000
+    )
+    page.get_by_role("button", name="Review", exact=True).last.click()
     page.get_by_role("button", name="Update pull request", exact=True).click()
     page.get_by_role("checkbox", name="Draft pull request").uncheck()
     page.get_by_role("dialog").get_by_role("button", name="Update pull request", exact=True).click()

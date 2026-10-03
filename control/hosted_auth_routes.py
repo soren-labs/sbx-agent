@@ -65,7 +65,8 @@ def same_origin_json(request: Request) -> None:
         return
     origin = request.headers.get("origin")
     expected = f"{request.url.scheme}://{request.url.netloc}"
-    if (origin is not None and origin != expected) or request.headers.get(
+    allowed = {expected, *getattr(request.app.state, "browser_origins", ())}
+    if (origin is not None and origin not in allowed) or request.headers.get(
         "sec-fetch-site"
     ) == "cross-site":
         raise HostedAuthError("invalid_origin", 403)
