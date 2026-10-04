@@ -16,7 +16,7 @@
 python_version=3.12
 node_major=22
 codex_npm=@openai/codex
-codex_version=0.153.0
+codex_version=0.159.2
 
 # Devin-only fast path (SOR-74): standalone CLI bundle from static.devin.ai.
 # devin-<ver>-<target>.tar.gz sha256 pins come from cli/<ver>/manifest.json.

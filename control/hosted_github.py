@@ -320,7 +320,37 @@ class GitHubScopedBackend:
                 outgoing = rewrite_env(
                     service.mock_repo(repo), canonicalize_repo(repo).canonical, outgoing
                 )
-        return self.source.exec(handle, argv, env=outgoing)
+        process = self.source.exec(handle, argv, env=outgoing)
+        if broker is not None and ("turn" in argv or "resume" in argv):
+            from control.codex_process import RetryCodexProcess
+
+            owner = handle.tags.get("owner", "")
+
+            def refresh(version):
+                fresh = broker.lease(owner, rejected_version=version)
+                retry_env = {**outgoing, "SBX_ACCOUNT_CREDENTIAL": json.dumps(fresh.blob())}
+                return self.source.exec(handle, argv, env=retry_env), fresh.credential_version
+
+            process = RetryCodexProcess(
+                process,
+                lease.credential_version,
+                refresh,
+                lambda version: broker.reject(owner, version),
+            )
+        if broker is not None and any(command in argv for command in ("init", "turn", "resume")):
+            from control.codex_process import AccessOnlyProcess
+
+            def cleanup():
+                # Fixed runtime paths, no grant or ambient environment in this exec.
+                command = (
+                    f"import pathlib; root=pathlib.Path({str(handle.root)!r}); "
+                    "[(root/p).unlink(missing_ok=True) for p in "
+                    "('home/.codex/auth.json','.codex/auth.json','auth.json')]"
+                )
+                self.source.exec(handle, ["python", "-c", command], env={}).wait()
+
+            process = AccessOnlyProcess(process, cleanup)
+        return process
 
 
 class FakeGitHubRemote:

@@ -8,6 +8,7 @@ export function CodexConnection() {
   const [mock, setMock] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [authorization, setAuthorization] = useState<{state: string; user_code: string; authorization_url: string} | null>(null);
   const refresh = async () => {
     const status = await hostedRequest("/hosted/connections/codex");
     setConnection(status.connection); setConfigured(status.configured); setMock(status.mock);
@@ -26,6 +27,15 @@ export function CodexConnection() {
     const timer = setInterval(() => void refresh().catch(() => {}), 5000);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (!authorization) return;
+    const timer = setInterval(() => {
+      void hostedRequest("/hosted/connections/codex/poll", {state: authorization.state}).then(async result => {
+        if (!result.pending) { setAuthorization(null); await refresh(); }
+      }).catch(e => { setError(e.message); setAuthorization(null); });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [authorization]);
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true); setError("");
     try { await work(); } catch(e) { setError((e as Error).message); }
@@ -34,6 +44,7 @@ export function CodexConnection() {
   const connect = () => void act(async () => {
     const authorization = await hostedRequest("/hosted/connections/codex/authorize", {});
     if (authorization.mock) await hostedRequest("/hosted/connections/codex/mock-approve", {state: authorization.state});
+    else if (authorization.device) setAuthorization(authorization);
     else window.location.assign(authorization.authorization_url);
   });
   return <section className="settings-section" aria-label="Codex connection">
@@ -43,6 +54,7 @@ export function CodexConnection() {
     {mock && <p>Mock Codex authorization and rotation for Alpha development.</p>}
     {!configured && <p>Codex authorization is not configured for this deployment.</p>}
     {error && <p role="alert">{error}</p>}
+    {authorization && <p>Open <a href={authorization.authorization_url} target="_blank" rel="noreferrer">ChatGPT authorization</a> and enter <strong>{authorization.user_code}</strong>. This page will update after you authorize.</p>}
     <button disabled={busy || !configured} onClick={connect}>{connection?.state === "reauth_required" ? "Reconnect Codex" : "Connect Codex"}</button>
     {connection && <><button disabled={busy} onClick={() => void act(() => hostedRequest("/hosted/connections/codex/refresh", {}))}>Check Codex connection</button>
       <button disabled={busy} onClick={() => void act(() => hostedRequest("/hosted/connections/codex", {}, "DELETE"))}>Disable Codex</button></>}

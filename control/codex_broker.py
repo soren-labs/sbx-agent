@@ -153,16 +153,33 @@ class AccessLease:
 
     def blob(self):
         import json
+        from datetime import UTC, datetime
 
         tokens = {"access_token": self.access_token, "account_id": self.account_id}
         if self.id_token:
             tokens["id_token"] = self.id_token
-        return {"provider": "codex", "files": {".codex/auth.json": json.dumps({"tokens": tokens})}}
+        # Official external-token mode disables native refresh in the sandbox.
+        # TokenData requires the field, but its value contains no refresh grant.
+        tokens["refresh_token"] = ""
+        return {
+            "provider": "codex",
+            "files": {
+                ".codex/auth.json": json.dumps(
+                    {
+                        "auth_mode": "chatgptAuthTokens",
+                        "tokens": tokens,
+                        "last_refresh": datetime.now(UTC).isoformat(),
+                    }
+                )
+            },
+        }
 
 
 class CodexBroker:
     def __init__(self, store: ConnectionStore, provider: CodexProvider, *, wait_seconds=20):
         self.store, self.provider, self.wait_seconds = store, provider, wait_seconds
+        if callable(getattr(type(provider), "bind_store", None)):
+            provider.bind_store(store)
         self._stop = threading.Event()
         self._worker = None
 
@@ -170,6 +187,8 @@ class CodexBroker:
         if not self.provider.configured:
             raise HostedAuthError("codex_not_configured", 503)
         state = self.store.begin_authorization(owner, "codex")
+        if callable(getattr(type(self.provider), "authorize", None)):
+            return self.provider.authorize(owner, state)
         return {
             "state": state,
             "authorization_url": self.provider.authorization_url(state),
@@ -303,6 +322,14 @@ class CodexBroker:
             record.state, record.credential_cipher, record.metadata = "disabled", None, {}
             return self.store.save(record, conn=conn)
 
+    def reject(self, owner, version):
+        with _write(self.store.auth, f"connection:{owner}:codex") as conn:
+            record = self.store.get(owner, "codex", conn=conn)
+            if record and record.metadata.get("credential_version") == version:
+                record.state = "reauth_required"
+                record.metadata["error"] = "access_rejected"
+                self.store.save(record, conn=conn)
+
     def refresh_due(self):
         with self.store.auth.database.transaction() as conn:
             rows = self.store.auth.database.execute(
@@ -334,3 +361,5 @@ class CodexBroker:
         self._stop.set()
         if self._worker:
             self._worker.join(timeout=self.wait_seconds + 20)
+        if callable(getattr(type(self.provider), "stop", None)):
+            self.provider.stop()

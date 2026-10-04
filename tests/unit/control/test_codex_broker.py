@@ -1,5 +1,6 @@
 """Rotating grants, durable claims, three contenders and ambiguous refresh recovery."""
 
+import json
 import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -49,7 +50,7 @@ def test_three_sessions_use_one_rotation_across_broker_reconstruction(setup):
     current = broker.store.credentials(broker.store.get(user.id, "codex"))
     assert current["refresh_token"] != old_refresh
     for lease in leases:
-        assert "refresh_token" not in str(lease.blob())
+        assert not json.loads(lease.blob()["files"][".codex/auth.json"])["tokens"]["refresh_token"]
         assert lease.access_token not in repr(lease)
         assert lease.access_token.encode() not in broker.store.auth.database._path.read_bytes()
     restored_store = ConnectionStore(

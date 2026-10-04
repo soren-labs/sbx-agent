@@ -40,7 +40,7 @@ DOCKER_SKIP_REASON = (
     "docker is not available in this environment. "
     "No-cloud verification when docker is present: "
     "`docker build -f Dockerfile.local -t sbx-runtime:local .` then assert "
-    "`codex --version` == 'codex-cli 0.153.0', `node --version` starts with v22, "
+    "`codex --version` == 'codex-cli 0.159.2', `node --version` starts with v22, "
     "and `kill -TERM` on the entrypoint exits within 5s. "
     "True `modal run` / Sandbox.create is executed by the orchestrator on WSL (SOR-29)."
 )
@@ -69,8 +69,8 @@ def test_packages_txt_pins_p0_recipe() -> None:
     assert spec.python_version == "3.12"
     assert spec.node_major == "22"
     assert spec.codex_npm == "@openai/codex"
-    assert spec.codex_version == "0.153.0"
-    assert spec.codex_npm_spec == "@openai/codex@0.153.0"
+    assert spec.codex_version == "0.159.2"
+    assert spec.codex_npm_spec == "@openai/codex@0.159.2"
     assert spec.nodesource_setup_url == "https://deb.nodesource.com/setup_22.x"
     for pkg in REQUIRED_APT:
         assert pkg in spec.apt

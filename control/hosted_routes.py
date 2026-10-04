@@ -175,6 +175,18 @@ def codex_callback(body: CallbackBody, request: Request, owner: str = Depends(us
     return {"connection": record.public()}
 
 
+@router.post("/connections/codex/poll")
+def codex_poll(body: StateBody, request: Request, owner: str = Depends(user_id)):
+    broker = request.app.state.codex_broker
+    if not callable(getattr(type(broker.provider), "poll", None)):
+        raise HostedAuthError("not_found", 404)
+    state = body.state.get_secret_value()
+    if not broker.provider.poll(owner, state):
+        return {"pending": True}
+    record = broker.callback(owner, state, state)
+    return {"pending": False, "connection": record.public()}
+
+
 @router.post("/connections/codex/mock-approve")
 def codex_mock_approve(body: StateBody, request: Request, owner: str = Depends(user_id)):
     broker = request.app.state.codex_broker
