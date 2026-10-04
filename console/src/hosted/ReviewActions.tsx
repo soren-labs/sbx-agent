@@ -48,5 +48,6 @@ export function HostedReviewActions({ session, onChanged }: {session: Session; o
     {approved && !merged && !session.delivery?.merged && (session.delivery?.prState === "draft" ? <p>Update this pull request to mark it ready before merging.</p> : <button className="button primary" disabled={busy} onClick={() => setConfirm(true)}>Merge pull request</button>)}
     {confirm && <div className="merge-confirm"><p>Merge this reviewed commit into its target branch?</p><button className="button" onClick={() => setConfirm(false)}>Cancel</button><button className="button primary" disabled={busy} onClick={() => void act(true)}>Confirm merge</button></div>}
     {(merged || session.delivery?.merged) && <p>Pull request merged.</p>}
+    {session.delivery?.prUrl && <a className="button full" href={session.delivery.prUrl} target="_blank" rel="noreferrer">Open on GitHub</a>}
   </section>;
 }

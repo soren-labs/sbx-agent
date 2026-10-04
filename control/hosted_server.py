@@ -58,4 +58,12 @@ def create_hosted_app():
     # Factory injection supplies real adapters without writing credentials to images.
     from control.app import create_app
 
-    return create_app(hosted=True, state_backend="postgres", connection_vault=vault, **adapters)
+    return create_app(
+        hosted=True,
+        state_backend="postgres",
+        connection_vault=vault,
+        # Compute executes inside the user image, not this VPS virtualenv.
+        runner_cmd=["python", "-m", "runtime.runner"],
+        max_concurrent=5,
+        **adapters,
+    )

@@ -28,6 +28,7 @@ auth.json
 .modal.toml
 .codex/
 .wrangler/
+.cloudflare/
 
 # Editors / OS
 .idea/

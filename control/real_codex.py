@@ -181,7 +181,7 @@ class NativeCodexProvider:
         import_root=None,
     ):
         self.binary = binary or os.environ.get("SBX_CODEX_CONTROL_BIN") or shutil.which("codex")
-        if not self.binary:
+        if not self.binary or (rpc_factory is NativeRPC and not os.access(self.binary, os.X_OK)):
             raise ValueError("install the pinned official Codex CLI on the control plane")
         self.root = Path(
             root or os.environ.get("SBX_CODEX_BROKER_TMP", "/dev/shm/sbx-codex-broker")

@@ -187,3 +187,8 @@ def test_native_access_cache_cleanup_runs_once_on_finish_or_cancel():
     scoped.kill()
     assert scoped.wait() == 0
     assert cleaned == ["cleared", "cancelled"]
+
+
+def test_missing_native_executable_is_not_reported_as_configured(tmp_path):
+    with pytest.raises(ValueError, match="official Codex CLI"):
+        NativeCodexProvider(binary=str(tmp_path / "missing-codex"))

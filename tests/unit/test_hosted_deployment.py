@@ -75,3 +75,49 @@ def test_mock_launcher_private_key_and_email_inbox_reconstruction(tmp_path, monk
     restored = launcher.build_app(tmp_path)
     assert (tmp_path / "connection-vault.key").read_bytes() == key
     assert restored.state.auth_store.database._path == app.state.auth_store.database._path
+
+
+def test_real_factory_uses_one_user_scoped_compute_adapter(monkeypatch):
+    from control import production_adapters as factory
+
+    instances = {name: object() for name in ("compute", "email", "github", "codex")}
+    monkeypatch.setattr(factory, "RealModalProvider", lambda: instances["compute"])
+    monkeypatch.setattr(factory.ResendEmailSender, "from_env", lambda: instances["email"])
+    monkeypatch.setattr(factory, "GitHubFactory", lambda: instances["github"])
+    monkeypatch.setattr(factory, "NativeCodexProvider", lambda: instances["codex"])
+    adapters = factory.create_adapters()
+    assert adapters["compute_provider"] is adapters["modal_provider"] is instances["compute"]
+    assert set(adapters) == {
+        "email_sender",
+        "modal_provider",
+        "compute_provider",
+        "github_factory",
+        "codex_provider",
+    }
+
+
+def test_production_runs_user_image_python_instead_of_vps_virtualenv(monkeypatch):
+    import importlib
+
+    from control import hosted_server, production_adapters
+
+    app = importlib.import_module("control.app")
+
+    for name, value in production_env().items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SBX_HOSTED_ADAPTER_FACTORY", "control.production_adapters:create_adapters")
+    adapters = {
+        name: object()
+        for name in (
+            "email_sender",
+            "modal_provider",
+            "compute_provider",
+            "github_factory",
+            "codex_provider",
+        )
+    }
+    monkeypatch.setattr(production_adapters, "create_adapters", lambda: adapters)
+    monkeypatch.setattr(app, "create_app", lambda **kwargs: kwargs)
+    result = hosted_server.create_hosted_app()
+    assert result["runner_cmd"] == ["python", "-m", "runtime.runner"]
+    assert result["max_concurrent"] == 5

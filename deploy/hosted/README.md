@@ -74,7 +74,8 @@ migrations run transactionally at server startup. Never substitute SQLite,
 Modal Dicts, or a new encryption key on a production restart.
 
 `control.hosted_server:create_hosted_app` validates the topology and requires a
-credentialed `SBX_HOSTED_ADAPTER_FACTORY=module:callable`. That callable returns
+credentialed `SBX_HOSTED_ADAPTER_FACTORY=control.production_adapters:create_adapters`.
+The included callable returns
 exactly `email_sender`, `modal_provider`, `github_factory`, `codex_provider`, and
 `compute_provider`, implementing the existing seams in `auth_email.py`,
 `modal_connection.py`, `hosted_github.py`, `codex_broker.py`, and
@@ -85,41 +86,72 @@ access-only Codex leases enter sandboxes. Browser keys authorize the owning
 user's connections. Personal keys support the `agents` scope and optional expiry;
 they cannot mint administrator credentials or manage other keys.
 
-Real provider adapters/credentials are intentionally required before production
-acceptance. The build package's fake providers prove state and API contracts,
-not real Modal ingress, GitHub permissions, or Codex subscription behavior. The
-production factory refuses mock mode or missing adapters. Hosted operator Basic
+The production adapters use Resend, explicit user Modal SDK credentials,
+repository-scoped GitHub App installation tokens, and official native Codex
+app-server authorization/refresh. GitHub owner association is approved by the
+trusted operator; an arbitrary browser-supplied installation ID cannot claim it.
+Codex supports native device consent or a trusted encrypted migration of the
+previously authorized dedicated test-user connection. See
+[GitHub integration](../../docs/hosted-github.md) and
+[Codex integration](../../docs/hosted-codex.md) for the authorization boundaries.
+The production factory refuses mock mode, missing adapters, or a missing native
+Codex executable. Hosted operator Basic
 auth is disabled by default; a migration operator can explicitly enable it with
 separate strong credentials. End-user browser login uses only email/password.
 
-## VPS and static asset rollout preparation
+## Prepared VPS and Cloudflare Pages rollout
 
-1. Install Python 3.12+, Git, PostgreSQL and `uv` on the VPS. Create service user
-   `sbx`, check out the reviewed build to `/opt/sbx-browser`, and run
-   `uv sync --frozen --no-dev`. Alternatively build the Dockerfile's `api` target
-   and supply the same external environment contract.
-2. Install credentialed adapters and the protected env file. Install
-   `sbx-hosted.service`; it runs one worker because the runner watcher/scheduler
-   lifecycle is process-local. Bind only to loopback behind the supplied
-   `Caddyfile`. Trust forwarded headers only from that local proxy. Access logs
-   are disabled, and neither cookie nor bearer headers belong in proxy logs.
-3. Run `build_frontend.sh`. It sets `VITE_HOSTED=1` and
-   `VITE_API_BASE=https://api.sbx-agent.com`; no provider credentials are frontend
-   build inputs. `wrangler.toml` is an assets-only Cloudflare target, with SPA
-   fallback and no account/token embedded. Review the generated assets, then
-   separately deploy using the operator's authenticated Cloudflare environment.
-4. Provision DNS/TLS for the two hosts. Do not use credential forwarding through
-   an edge worker. Exact-origin CORS allows credentialed requests only from
-   `https://sbx-agent.com`; the API still enforces JSON/origin CSRF checks. The
-   browser cookie remains host-only, HttpOnly, Secure and SameSite=Lax; the two
-   production hosts are same-site. Runtime image launchers receive that explicit
-   browser origin for direct SSE CORS. `/hosted/health` probes the database.
-5. Validate real email delivery, Modal workspace/image/ingress, user-bound GitHub
-   installation permissions and repository-token expiry, Codex OAuth/refresh/
-   revocation and three concurrent Sessions, direct-stream reconnect/expiry,
-   backup restoration and the full coding/PR/review/merge gate. Real production
-   deployment, DNS changes, independent review and merging these build PRs are
-   separate later work.
+The production VPS uses local PostgreSQL peer authentication for OS user `sbx`,
+a loopback API on `127.0.0.1:8000`, and the existing `sbx-cloudflared` connector.
+The tunnel targets `http://localhost:8000`; it does not take the public port 443
+owned by the existing sing-box workload. Preserve both existing services.
+
+The explicit operator command below uploads only source plus selected service
+secrets over SSH stdin. It preserves the stable encryption key, existing database,
+Git histories and tunnel. It never reads development-agent Codex auth, uploads a
+raw native cache, or exports ambient cloud/test-workspace credentials. The root
+installer uses Python 3.12/uv and installs the pinned official ARM64 Codex CLI
+0.159.2. Both initial deployment and redeployment restart the systemd service.
+
+```sh
+# Source the protected operator env quietly; never enable shell tracing.
+set -a
+source /home/zheng/.config/sbx/real-integration.env
+uv run python -m deploy.hosted.rollout
+bash deploy/hosted/build_frontend.sh
+# From a directory without a conflicting Worker config:
+npm exec --yes --package=wrangler -- wrangler pages deploy /absolute/path/to/console/dist --project-name sbx-agent --branch main --commit-dirty=true
+```
+
+The protected environment/private key live outside `/opt/sbx-browser`, with mode
+0600 and owner `sbx`. Native refresh caches exist only under the service's private
+`/run/sbx-hosted` tmpfs and are removed after each operation. Systemd restricts
+writes to that runtime directory and `/var/lib/sbx-hosted`. PostgreSQL migrations
+run at startup. One worker retains the current scheduler/watcher model.
+
+Cloudflare Pages serves `sbx-agent.com`; its custom domain must be active and point
+to `sbx-agent.pages.dev`. The existing tunnel serves `api.sbx-agent.com`. Exact-origin
+CORS permits credentialed requests only from `https://sbx-agent.com`; JSON/origin
+CSRF checks remain active. The browser cookie is host-only, HttpOnly, Secure,
+SameSite=Lax. User runtime images receive this exact origin for direct SSE CORS.
+No provider credentials are frontend build inputs. `/hosted/health` verifies the
+database; HTTPS on both hosts must validate normal certificates.
+
+The opt-in production gate performs real browser OTP/password login and Modal
+connection, trusted App/native bootstrap, native coding and direct live SSE,
+App PR delivery, independent native review, intended test-repository merge,
+personal-key API Session, native rotation and control-plane restart persistence:
+
+```sh
+uv run --with playwright python -m deploy.hosted.gates.production
+```
+
+Its resumable private state is mode 0600 under `/home/zheng/.config/sbx/` and is
+never an artifact. Once imported credentials rotate on the VPS, its encrypted
+PostgreSQL connection is canonical; do not reimport the stale dedicated local
+refresh grant. Implementation PRs remain unmerged; product merge acceptance is
+restricted to a disposable branch in `soren-labs/sbx-e2e-test`. Gate output includes
+only bounded status/evidence. See the stage review records for external limits.
 
 ## Programmatic use
 
