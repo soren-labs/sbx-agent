@@ -122,6 +122,9 @@ class HostedLifecycle:
 
     def sweep(self):
         state = self.app.state
+        auto_delivery = getattr(state, "auto_delivery", None)
+        if auto_delivery is not None:
+            _bounded_call(auto_delivery.reconcile, 5)
         # Upgrade the image for new creates while existing handles keep their
         # immutable runtime_image. Provisioning is idempotent per build.
         with state.auth_store.database.transaction() as conn:

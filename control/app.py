@@ -657,6 +657,13 @@ def create_app(
         )
 
     plane.revision_hook = _revision_on_finish
+    if hosted:
+        from control.hosted_delivery import HostedAutoDelivery
+
+        app.state.auto_delivery = HostedAutoDelivery(
+            plane, task_store, github_connections, revisions
+        )
+        plane.auto_delivery_hook = app.state.auto_delivery.deliver
 
     # SOR-180: same-agent checkpoint / suspend / recovery — always armed
     # (not opt-in): an idle agent past its retention is checkpointed +

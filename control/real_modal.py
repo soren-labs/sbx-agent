@@ -9,6 +9,7 @@ from pathlib import Path
 from control.backend import SandboxHandle, SandboxPoll
 from control.config import lifecycle_config
 from control.hosted_auth import HostedAuthError
+from control.modal_tags import modal_tags
 
 ENVIRONMENT = "sbx-compute"
 APP = "sbx-compute"
@@ -212,7 +213,7 @@ class RealModalProvider:
             env=env,
             secrets=[],
             workdir="/work",
-            tags=dict(spec.tags),
+            tags=modal_tags(spec.tags),
             cpu=spec.cpu or 1,
             memory=spec.memory_mib or 1024,
             timeout=life.sandbox_timeout_s,
@@ -271,7 +272,9 @@ class RealModalProvider:
     @_safe
     def list(self, context, tags):
         client = self._client(context)
-        wanted = {**tags, "owner": context.user_id, "modal_connection": context.connection_id}
+        wanted = modal_tags(
+            {**tags, "owner": context.user_id, "modal_connection": context.connection_id}
+        )
         return [
             SandboxHandle(sb.object_id, Path("/work"), dict(sb.get_tags()))
             for sb in self.sdk.Sandbox.list(

@@ -1607,6 +1607,13 @@ class ControlPlane:
         ``publish_error`` on the workspace record for real failures, so
         this hook only guards against unforeseen ones.
         """
+        hook = getattr(self, "auto_delivery_hook", None)
+        if hook is not None:
+            try:
+                hook(session_id)
+            except Exception:
+                pass
+            return
         if self.workspaces is None or handle is None:
             return
         record = self.workspaces.get(session_id)

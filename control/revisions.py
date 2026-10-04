@@ -658,6 +658,7 @@ class RevisionService:
         env_for_repo: Any = None,
         push_payload_fn: Any = None,
         ls_remote_fn: Any = None,
+        refresh_delivery: bool = False,
     ) -> None:
         self._store = store
         self._artifacts = artifacts
@@ -668,6 +669,7 @@ class RevisionService:
         self._ls_remote = ls_remote_fn
         self._remote = remote
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._refresh_delivery = refresh_delivery
         self._lock = threading.Lock()
 
     # -- internals ---------------------------------------------------------
@@ -1134,6 +1136,23 @@ class RevisionService:
         return policy
 
     def deliver(
+        self,
+        revision: Revision,
+        *,
+        overrides: Mapping[str, Any] | None = None,
+        automatic: bool = False,
+    ) -> Revision:
+        # Explicit requests and restart/finish workers share this lock. Reload
+        # the durable row after acquiring it so simultaneous retries converge.
+        with self._lock:
+            current = self.get(revision.revision_id) if self._refresh_delivery else revision
+            # Automatic intent is fulfilled once delivered. Later explicit
+            # edits (for example marking a draft ready) must survive sweeps.
+            if automatic and (current.delivery or {}).get("status") == "delivered":
+                return current
+            return self._deliver(current, overrides=overrides)
+
+    def _deliver(
         self,
         revision: Revision,
         *,
