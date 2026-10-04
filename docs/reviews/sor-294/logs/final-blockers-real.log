@@ -1,0 +1,86 @@
+SOR-294 final blockers: real Modal / native Codex / owner GitHub App / deployed Agent Browser
+Source 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+No manual /deliver fallback; no ambient service GH_TOKEN/GITHUB_TOKEN/SBX_GITHUB_EPHEMERAL.
+
+[manifest-final-blockers-product.log]
+Exact backend committed-byte manifest PASS: {"sha": "7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f", "source_files_verified": 288}
+Exact public frontend manifest and all 10 deployed file hashes PASS: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+*:443 users:(("sing-box",pid=2224,fd=10))
+
+[real-final-blockers-initial.log]
+FINAL-001 real Modal explicit low effort native startup PASS; provider tag count=8; identity retained; execution metadata durable
+FINAL-002 real owner GitHub App automatic draft PR PASS; no ambient credentials; captured uncommitted source files; diff_files=4; base HEAD unchanged; delivered SHA=5e967028ef1d4a90cf95e51e1ad7d70484650ac8; PR=16; branch=sbx/51f0d0a1e0eb4fc1875e7ffb18e0ea09
+REV-003 native sandbox access cache absent after operation PASS
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[real-final-blockers-author-final.log]
+Session sess_5c22e526d01246d7 run 1 : finished
+Real Codex low effort and automatic owner-App delivery terminal success PASS; PR=16
+
+[real-final-blockers-inspect-final.log]
+FINAL-001 real Modal explicit low effort native startup PASS; provider tag count=8; identity retained; execution metadata durable
+FINAL-002 real owner GitHub App automatic draft PR PASS; no ambient credentials; captured uncommitted source files; diff_files=2; base HEAD unchanged; delivered SHA=3b3e8db618e8d1f81bace4e466750032c916d637; PR=16; branch=sbx/51f0d0a1e0eb4fc1875e7ffb18e0ea09
+REV-003 native sandbox access cache absent after operation PASS
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[real-final-blockers-review.log]
+Session sess_62789c530d0a47ef run 1 : running
+Session sess_62789c530d0a47ef run 1 : finished
+Independent real Codex disposable PR review approves PASS
+
+[real-final-blockers-reconstruction.log]
+FINAL-002 reconstructed worker automatic reconciliation/replay PASS: same PR and SHA, exactly one upstream PR
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[real-final-blockers-suspended2.log]
+REV-001 automatic worker checkpoint/reaped this author; durable status=suspended PASS
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[real-final-blockers-restart-replay.log]
+FINAL-002 reconstructed worker automatic reconciliation/replay PASS: same PR and SHA, exactly one upstream PR
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[real-final-blockers-restored-followup.log]
+Session sess_5c22e526d01246d7 run 3 : queued
+Session sess_5c22e526d01246d7 run 3 : running
+Session sess_5c22e526d01246d7 run 3 : finished
+REV-008 real restart/checkpoint native follow-up durable ACK, terminal success and replay PASS
+
+[real-final-blockers-restore.log]
+FINAL-001 real checkpoint restore with explicit low effort PASS; immutable owned snapshot image; tag count=8
+FINAL-001 real Modal explicit low effort native startup PASS; provider tag count=8; identity retained; execution metadata durable
+FINAL-002 real owner GitHub App automatic draft PR PASS; no ambient credentials; captured uncommitted source files; diff_files=2; base HEAD unchanged; delivered SHA=3b3e8db618e8d1f81bace4e466750032c916d637; PR=16; branch=sbx/51f0d0a1e0eb4fc1875e7ffb18e0ea09
+REV-003 native sandbox access cache absent after operation PASS
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[real-final-blockers-cleanup.log]
+Disposable PR closed and its exact branch removed PASS: 16 sbx/51f0d0a1e0eb4fc1875e7ffb18e0ea09
+Exact backend source commit: 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f
+
+[agent-browser-final-start2.log]
+Agent Browser explicit low effort Codex/owner repository/automatic draft PR submitted: sess_5c22e526d01246d7
+
+[agent-browser-final-clean-delivery.log]
+Agent Browser deployed delivery state recorded PASS
+
+[agent-browser-final-review-start.log]
+Agent Browser launched independent real Codex reviewer for automatic App PR: sess_62789c530d0a47ef
+
+[agent-browser-final-review-result.log]
+Agent Browser deployed review state recorded PASS
+
+[Real foreign owner]
+GET author detail/history, POST connect/deliver and GET real reviewer: five 404 responses; foreign list empty; temporary key revoked.
+
+[Real service restart and leak checks]
+Hosted service, SBX tunnel, PostgreSQL, sing-box all active; sing-box PID 2224 retained. Native production event-check and journal log-check: PASS.
+WebM 09-explicit-effort-startup.webm {"format": {"duration": "18.900000", "size": "463692"}, "programs": [], "streams": [{"codec_name": "vp8", "height": 900, "width": 1280}]}
+WebM 10-automatic-owner-app-delivery.webm {"format": {"duration": "7.700000", "size": "257532"}, "programs": [], "streams": [{"codec_name": "vp8", "height": 900, "width": 1280}]}
+WebM 11-automatic-owner-app-review-start.webm {"format": {"duration": "11.000000", "size": "328414"}, "programs": [], "streams": [{"codec_name": "vp8", "height": 900, "width": 1280}]}
+WebM 12-automatic-owner-app-review.webm {"format": {"duration": "7.500000", "size": "253604"}, "programs": [], "streams": [{"codec_name": "vp8", "height": 900, "width": 1280}]}

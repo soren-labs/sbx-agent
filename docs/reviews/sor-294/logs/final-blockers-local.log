@@ -1,0 +1,24 @@
+SOR-294 FINAL-001/002 local verification — sanitized summaries
+Source 7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f; isolated HOME/XDG; no cloud credentials; no frozen contract diff.
+Before fix: focused tag/provider boundary and ambient auto delivery regressions: 11 failed / 2 dependency warnings / 2.51s.
+make lint: ruff check PASS; format check PASS; 548 files.
+Final make test: 3502 passed, 14 skipped, 2 warnings, 410.46s; process exit 0.
+Timing retry: prior full run 3501 passed / one unchanged timing test at 5.11s versus 5s; isolated retry 1 passed / 1.15s; final full rerun green. No code/test threshold changes.
+Targeted: uv run pytest tests/unit/control/test_sor294_final_blockers.py tests/unit/control/test_sor294_remediation.py tests/unit/control/test_reaper.py tests/unit/control/test_sor271_capacity_reaper.py tests/unit/api_v2/test_sor294_durability.py tests/unit/api_v2/test_ack_latency.py -q
+Result: 106 passed / 2 warnings / 23.72s.
+Extended: uv run pytest tests/unit/control/test_sor294_final_blockers.py tests/unit/control/test_revisions.py tests/unit/test_hosted_workflow.py -q
+Result: 93 passed / 2 warnings / 18.67s.
+New blocker tests: 28 real-SDK-boundary parameter cases; 7 hosted create/restore/reattach cases; 3 automatic dirty-artifact/reconstruction/two-owner cases = 38.
+Efforts covered: none, minimal, low, medium, high, xhigh, max.
+All create/restore calls <=10 tags; CPU=2/memory=2048 are actual sizing arguments; resources/recovering/lifecycle claims and execution surfaces stay durable; owner isolation preserved.
+No ambient GitHub credentials; uncommitted native fixture leaves HEAD at base; artifact branch contains changed hello.txt and draft PR. Explicit draft=false survives automatic replay.
+Crash after upstream PR before delivered record: reconstructed app converges on same PR/head; repeat replay creates one PR.
+Two owners: distinct App installations and repository tokens; foreign deliver=404; corrupt foreign repo fails closed without minting other-owner token.
+Console: npm test -- --run: 16 files / 133 tests PASS (8.17s), regular environment.
+Console: npm run typecheck PASS.
+Console: VITE_HOSTED=1 VITE_API_MODE=http VITE_API_BASE=https://api.sbx-agent.com VITE_BUILD_SHA=7b6ac5c73de4416b9f8c39d18783a0aa65b38a5f npm run build PASS; 10 manifest files; primary hash e3931b0bb5c362c4e030d74364d3d20a560e6573457c33417f665daf8e414b36.
+Browser: uv run --with playwright pytest tests/e2e/test_sor294_mobile.py tests/e2e/test_hosted_workflow_browser.py tests/e2e/test_hosted_alpha_gate.py -q
+Result: 4 passed / 1 optional PostgreSQL skip / 2 warnings / 24.17s. Mock fixture merge only; actual PR #162 unmerged.
+Browser initially failed at merge button after auto replay re-drafted an explicitly ready PR. The root automatic fulfilled-intent guard and regression fix resolve it.
+Implementation staged Gitleaks PASS; git diff --check PASS.
+Raw full logs stay in /home/zheng/.local/state/sbx-sor294-remediation/logs, outside Git.
