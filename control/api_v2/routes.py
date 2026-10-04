@@ -621,6 +621,7 @@ def _redrive_dispatch(
     capabilities: Any,
     task_store: TaskStore,
     resolver: Any,
+    startup: Any = None,
 ) -> dict[str, Any]:
     """Re-drive the create dispatch for a session that failed before an
     agent ever bound (SOR-271).
@@ -654,11 +655,19 @@ def _redrive_dispatch(
     # queued so the window between here and the bind reads honestly —
     # a cancel that lands during the dispatch re-adds itself to
     # ``_PRE_BIND_CANCELLED`` and is caught post-bind below.
+    from copy import deepcopy
+
+    expected = deepcopy(record)
     _PRE_BIND_CANCELLED.discard(record.id)
     record.transitions.append({"status": "queued", "reason": "retry_dispatch", "at": _iso_now()})
     record.status = "queued"
     record.updated_at = _iso_now()
-    task_store.put(record)
+    if startup is not None:
+        startup.retry(expected, record)
+        dispatch_store = startup.guarded(record, plane, v1)
+    else:
+        task_store.put(record)
+        dispatch_store = task_store
     get_fresh = getattr(task_store, "get_fresh", None) or task_store.get
     fresh = get_fresh(record.id)
     if fresh is None or fresh.status == "cancelled":
@@ -676,17 +685,17 @@ def _redrive_dispatch(
             reporter=reporter,
             resources_registry=resources_registry,
             capabilities=capabilities,
-            task_store=task_store,
+            task_store=dispatch_store,
             resolver=resolver,
             idempotency_key=idem.get("key"),
             idempotency_fingerprint=idem.get("fingerprint"),
             new_id=lambda: record.id,
         )
     except Exception as exc:
-        _mark_dispatch_failed(task_store, record.id, exc)
+        _mark_dispatch_failed(dispatch_store, record.id, exc)
         raise
     bound = task_store.get(record.id)
-    if bound is not None:
+    if bound is not None and startup is None:
         bound.transitions = [*record.transitions, *bound.transitions]
         task_store.put(bound)
     if record.id in _PRE_BIND_CANCELLED:
@@ -841,7 +850,11 @@ def create_session(
             {"key_id": key.id, "key": pin_key, "fingerprint": fingerprint} if pin_key else None
         ),
     )
+    startup = getattr(request.app.state, "startup_dispatch", None)
+    if startup is not None:
+        startup.prepare(record)
     task_store.put(record)
+    dispatch_store = startup.guarded(record, plane, v1) if startup else task_store
 
     on_provisioned = None
     if owned is not None:
@@ -851,6 +864,8 @@ def create_session(
 
     def _dispatch() -> dict[str, Any]:
         try:
+            if startup is not None:
+                dispatch_store.require_current()
             created = _tasks._create_task_once(
                 v1_body,
                 key,
@@ -863,7 +878,7 @@ def create_session(
                 reporter=reporter,
                 resources_registry=resources_registry,
                 capabilities=capabilities,
-                task_store=task_store,
+                task_store=dispatch_store,
                 resolver=resolver,
                 idempotency_key=pin_key,
                 idempotency_fingerprint=fingerprint,
@@ -871,7 +886,7 @@ def create_session(
                 new_id=lambda: record.id,
             )
         except Exception as exc:
-            _mark_dispatch_failed(task_store, record.id, exc)
+            _mark_dispatch_failed(dispatch_store, record.id, exc)
             raise
         if record.id in _PRE_BIND_CANCELLED:
             # A cancel landed while the agent was still being bound — the
@@ -1476,6 +1491,7 @@ def retry_session(
                     capabilities=capabilities,
                     task_store=task_store,
                     resolver=resolver,
+                    startup=getattr(request.app.state, "startup_dispatch", None),
                 )
             return _tasks.retry_task(
                 session_id,

@@ -537,6 +537,8 @@ def create_app(
         # or yielding readiness; startup needs no thread-pool round trip.
         app.state.auth_store.database.initialize()
         if hosted:
+            if app.state.startup_dispatch is not None:
+                app.state.startup_dispatch.reconcile()
             app.state.codex_broker.start()
             from control.hosted_lifecycle import HostedLifecycle
 
@@ -716,6 +718,11 @@ def create_app(
 
     app.state.workflow_store = workflow_store
     app.state.task_store = task_store
+    from control.startup_dispatch import StartupDispatch
+
+    app.state.startup_dispatch = (
+        StartupDispatch(task_store) if hosted and hasattr(task_store, "compare_put") else None
+    )
     # SOR-82 integration: the durable run ledger is the source of truth, and
     # the /v1 run-state seam (begin/get/list/transition) binds to it by
     # default. Tests may still inject a substitute on app.state.run_states or
