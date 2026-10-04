@@ -144,6 +144,49 @@ def idle(app, agent_id):
     pytest.fail("agent did not settle idle")
 
 
+@pytest.mark.parametrize(
+    "status,bound", [("creating", False), ("creating", True), ("running", True), ("idle", True)]
+)
+def test_rev001_create_after_sweep_listing_is_not_orphan_killed(monkeypatch, status, bound):
+    from control.backend import LocalProcessBackend
+    from control.reaper import reap
+    from control.store import InMemoryStore, SessionRecord
+
+    backend, store = LocalProcessBackend(), InMemoryStore()
+    now = datetime.now(UTC)
+    handles = []
+
+    def publish_after_record_listing():
+        handle = backend.create(SandboxSpec(tags={"session_id": "late", "owner": "owner"}))
+        handles.append(handle)
+        store.put(
+            SessionRecord(
+                id="late",
+                title="late",
+                status=status,
+                created_at=now,
+                updated_at=now,
+                model="gpt-6.1-sol",
+                turns=0,
+                usage=None,
+                messages=[],
+                owner="owner",
+                sandbox_id=handle.id if bound else None,
+                sandbox_root=str(handle.root) if bound else None,
+                sandbox_tags=handle.tags,
+            )
+        )
+        return [handle]
+
+    monkeypatch.setattr(backend, "list", publish_after_record_listing)
+    try:
+        assert reap(store, backend, now) == []
+        assert backend.poll(handles[0]).alive
+    finally:
+        for handle in handles:
+            backend.terminate(handle)
+
+
 def test_rev001_sweep_releases_capacity_preserves_history_and_recovers_owned_compute(workflow_app):
     app, owner, headers, repo = workflow_app
     with TestClient(app, base_url="https://testserver") as client:
@@ -181,6 +224,59 @@ def test_rev001_sweep_releases_capacity_preserves_history_and_recovers_owned_com
         assert runs[-1].status == "FINISHED"
         assert idle(app, rec.id).sandbox_id != old_id
         assert len(client.get(f"/v2/sessions/{sid}/history", headers=headers).json()["runs"]) == 2
+
+
+def test_rev001_new_turn_supersedes_stale_idle_termination(monkeypatch):
+    from control.backend import LocalProcessBackend
+    from control.hosted_lifecycle import SweepPlane
+    from control.reaper import reap
+    from control.store import InMemoryStore, SessionRecord
+
+    backend, store = LocalProcessBackend(), InMemoryStore()
+    now = datetime.now(UTC)
+    before = now - timedelta(hours=1)
+    handle = backend.create(SandboxSpec(tags={"session_id": "race", "owner": "owner"}))
+    store.put(
+        SessionRecord(
+            id="race",
+            title="race",
+            status="idle",
+            created_at=before,
+            updated_at=before,
+            model="gpt-6.1-sol",
+            turns=1,
+            usage=None,
+            messages=[],
+            owner="owner",
+            sandbox_id=handle.id,
+            sandbox_root=str(handle.root),
+            sandbox_tags=handle.tags,
+        )
+    )
+    original_poll = backend.poll
+
+    def begin_turn_during_poll(handle):
+        current = store.get("race")
+        current.status, current.updated_at = "running", now
+        current.current_turn_id = "turn-2"
+        store.put(current)
+        return original_poll(handle)
+
+    monkeypatch.setattr(backend, "poll", begin_turn_during_poll)
+    plane = SimpleNamespace(
+        store=store,
+        backend=backend,
+        _lock=threading.RLock(),
+        clock=lambda: now,
+        checkpoints=SimpleNamespace(suspend=lambda *a: False),
+    )
+    sweep = SweepPlane(plane)
+    try:
+        reap(sweep.store, sweep.backend, now, checkpoints=sweep.checkpoints)
+        assert store.get("race").status == "running"
+        assert original_poll(handle).alive
+    finally:
+        backend.terminate(handle)
 
 
 def test_rev002_hosted_picker_and_execution_share_provider_truth(workflow_app, monkeypatch):

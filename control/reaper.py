@@ -494,6 +494,25 @@ def reap(
             skip("bound_live")
             continue
         rec = _session_record(records, handle)
+        tagged_session = (handle.tags or {}).get("session_id")
+        if tagged_session:
+            # A create can publish after the record listing but before the
+            # backend listing. Its record exists before its sandbox does;
+            # a point read after enumeration distinguishes it from an orphan.
+            fresh = _bounded_call(lambda: (store.get(tagged_session),), _LIST_BOUND_S)
+            if fresh is None:
+                # Unknown durable ownership must never authorize destruction.
+                emit("reap_error", tagged_session, handle.id)
+                continue
+            rec = fresh[0]
+            if (
+                rec is not None
+                and rec.status not in TERMINAL_STATUSES
+                and rec.status != "suspended"
+                and rec.sandbox_id == handle.id
+            ):
+                skip("bound_live")
+                continue
         if rec is not None and rec.status not in TERMINAL_STATUSES:
             # Same-session record without a bound sandbox id → in-flight
             # create in the record-publication window; never orphan-kill it.

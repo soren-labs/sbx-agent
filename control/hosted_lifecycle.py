@@ -23,9 +23,34 @@ class SweepPlane:
         self.source = plane
         self.store = SweepStore(plane)
         self.checkpoints = SweepCheckpoints(plane)
+        self.backend = SweepBackend(plane)
 
     def __getattr__(self, name):
         return getattr(self.source, name)
+
+
+class SweepBackend:
+    """A stale idle scan must not terminate a turn that started meanwhile."""
+
+    def __init__(self, plane):
+        self.plane = plane
+
+    def __getattr__(self, name):
+        return getattr(self.plane.backend, name)
+
+    def terminate(self, handle):
+        session_id = handle.tags.get("session_id")
+        if session_id:
+            with self.plane._lock:
+                current = self.plane.store.get(session_id)
+                if (
+                    current is not None
+                    and current.sandbox_id in (None, handle.id)
+                    and current.status in {"idle", "running", "creating"}
+                    and not current.sandbox_tags.get("lifecycle_claim")
+                ):
+                    raise RuntimeError("lifecycle termination superseded")
+        return self.plane.backend.terminate(handle)
 
 
 class SweepStore:
