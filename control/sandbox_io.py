@@ -14,9 +14,16 @@ from control.backend import Process, SandboxBackend, SandboxHandle
 
 
 def drain(proc: Process) -> int:
-    for _ in proc.stdout:
-        pass
-    return proc.wait()
+    try:
+        for _ in proc.stdout:
+            pass
+        return proc.wait()
+    except BaseException:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
 
 
 def is_local_root(handle: SandboxHandle) -> bool:

@@ -1,0 +1,34 @@
+Final tested product implementation: 2adff83b63802edf16c36ebefe2522bd3ed771a4
+
+$ make lint
+All checks passed!
+545 files already formatted
+
+$ make test (stripped environment; isolated HOME/XDG)
+=========== 3464 passed, 14 skipped, 3 warnings in 403.98s (0:06:43) ===========
+
+$ pytest REV-001..009 backend regressions
+25 passed, 2 warnings in 12.00s
+
+$ pytest lifecycle/reaper/durability/hosted ownership
+64 passed, 2 warnings in 18.49s
+
+$ npm test -- --run (regular test environment)
+ Test Files  16 passed (16)
+      Tests  133 passed (133)
+   Duration  7.89s (transform 2.30s, setup 4.27s, collect 7.38s, tests 14.78s, environment 11.97s, prepare 2.29s)
+
+$ npm run typecheck
+> tsc --noEmit
+exit 0
+
+$ hosted npm run build; explicit production API and source SHA
+> tsc --noEmit && vite build && node scripts/build-manifest.mjs
+✓ built in 1.25s
+console build-manifest: 10 files, primary assets/index-DtJ8PBuv.js e3931b0bb5c3… @ 2adff83b63802edf16c36ebefe2522bd3ed771a4
+
+$ Chromium auth/mobile, complete mock workflow, hosted Alpha gate
+4 passed, 1 skipped, 2 warnings in 23.52s
+
+Browser rerun setup note: production-origin bundle was rebuilt for loopback before local browser gates.
+Full backend warning note: two dependency deprecations plus the existing intentionally corrupt-record fixture background warning; all tests passed.

@@ -51,6 +51,7 @@ from control.api_v2.projection import (
     is_session_id,
     latest_run_error,
     live_extras,
+    map_run_status,
     map_session_status,
     new_session_id,
     revision_view,
@@ -620,6 +621,7 @@ def _redrive_dispatch(
     capabilities: Any,
     task_store: TaskStore,
     resolver: Any,
+    startup: Any = None,
 ) -> dict[str, Any]:
     """Re-drive the create dispatch for a session that failed before an
     agent ever bound (SOR-271).
@@ -653,11 +655,19 @@ def _redrive_dispatch(
     # queued so the window between here and the bind reads honestly —
     # a cancel that lands during the dispatch re-adds itself to
     # ``_PRE_BIND_CANCELLED`` and is caught post-bind below.
+    from copy import deepcopy
+
+    expected = deepcopy(record)
     _PRE_BIND_CANCELLED.discard(record.id)
     record.transitions.append({"status": "queued", "reason": "retry_dispatch", "at": _iso_now()})
     record.status = "queued"
     record.updated_at = _iso_now()
-    task_store.put(record)
+    if startup is not None:
+        startup.retry(expected, record)
+        dispatch_store = startup.guarded(record, plane, v1)
+    else:
+        task_store.put(record)
+        dispatch_store = task_store
     get_fresh = getattr(task_store, "get_fresh", None) or task_store.get
     fresh = get_fresh(record.id)
     if fresh is None or fresh.status == "cancelled":
@@ -675,17 +685,17 @@ def _redrive_dispatch(
             reporter=reporter,
             resources_registry=resources_registry,
             capabilities=capabilities,
-            task_store=task_store,
+            task_store=dispatch_store,
             resolver=resolver,
             idempotency_key=idem.get("key"),
             idempotency_fingerprint=idem.get("fingerprint"),
             new_id=lambda: record.id,
         )
     except Exception as exc:
-        _mark_dispatch_failed(task_store, record.id, exc)
+        _mark_dispatch_failed(dispatch_store, record.id, exc)
         raise
     bound = task_store.get(record.id)
-    if bound is not None:
+    if bound is not None and startup is None:
         bound.transitions = [*record.transitions, *bound.transitions]
         task_store.put(bound)
     if record.id in _PRE_BIND_CANCELLED:
@@ -840,7 +850,11 @@ def create_session(
             {"key_id": key.id, "key": pin_key, "fingerprint": fingerprint} if pin_key else None
         ),
     )
+    startup = getattr(request.app.state, "startup_dispatch", None)
+    if startup is not None:
+        startup.prepare(record)
     task_store.put(record)
+    dispatch_store = startup.guarded(record, plane, v1) if startup else task_store
 
     on_provisioned = None
     if owned is not None:
@@ -850,6 +864,8 @@ def create_session(
 
     def _dispatch() -> dict[str, Any]:
         try:
+            if startup is not None:
+                dispatch_store.require_current()
             created = _tasks._create_task_once(
                 v1_body,
                 key,
@@ -862,7 +878,7 @@ def create_session(
                 reporter=reporter,
                 resources_registry=resources_registry,
                 capabilities=capabilities,
-                task_store=task_store,
+                task_store=dispatch_store,
                 resolver=resolver,
                 idempotency_key=pin_key,
                 idempotency_fingerprint=fingerprint,
@@ -870,7 +886,7 @@ def create_session(
                 new_id=lambda: record.id,
             )
         except Exception as exc:
-            _mark_dispatch_failed(task_store, record.id, exc)
+            _mark_dispatch_failed(dispatch_store, record.id, exc)
             raise
         if record.id in _PRE_BIND_CANCELLED:
             # A cancel landed while the agent was still being bound — the
@@ -1124,12 +1140,10 @@ def post_message(
 ) -> dict[str, Any]:
     """Queue a follow-up turn; long provider work stays async (202).
 
-    SOR-265: ``create_task_run`` serializes ``reconcile_turn`` /
-    ``_dispatch_turn`` sandbox ops before returning, so it runs on a worker
-    under ``_ack_budget``. The cheap refusals (dead agent, terminal agent,
-    busy + ``on_busy=reject``) stay synchronous so the route never lies
-    202; a timeout answers ``message: null`` — accepted, allocation still
-    landing — which the schema already permits.
+    Persist the prompt, numbered run and idempotency binding before ACK.
+    Reconciliation and dispatch run under ``_ack_budget`` on a worker;
+    timeout returns the durable queued run, which restart reconciliation
+    can dispatch or finish with a queryable terminal error.
     """
     _list_memo_drop(task_store, key.id)
     record = _require_session(task_store, key, session_id)
@@ -1137,12 +1151,23 @@ def post_message(
     if agent_id is None:
         raise V1ApiError(409, "session_not_runnable", "session is still provisioning")
     rec = plane.get(agent_id)
-    if rec is None or rec.status in TERMINAL_STATUSES:
+    prior = None
+    if idempotency_key and plane.run_ledger is not None:
+        prior = plane.run_ledger.find_by_idempotency(
+            agent_id,
+            key.id,
+            f"task:{session_id}:run:{idempotency_key}",
+        )
+    if rec is None or (rec.status in TERMINAL_STATUSES and prior is None):
         raise V1ApiError(409, "session_not_runnable", "session's agent is not runnable")
-    if body.on_busy == "reject" and (
-        rec.status == "running"
-        or rec.current_turn_id is not None
-        or agent_id in getattr(plane, "_first_turn_pending", ())
+    if (
+        prior is None
+        and body.on_busy == "reject"
+        and (
+            rec.status == "running"
+            or rec.current_turn_id is not None
+            or agent_id in getattr(plane, "_first_turn_pending", ())
+        )
     ):
         raise V1ApiError(
             409,
@@ -1175,33 +1200,54 @@ def post_message(
             except Exception:
                 pass
 
-    def _post() -> dict[str, Any]:
+    class IntentPlane:
+        # Allocation uses durable stores only. Remote recovery/dispatch starts
+        # after this transaction path has returned an identifiable run.
+        def __getattr__(self, name):
+            return getattr(plane, name)
+
+        def post_message(self, *args, **kwargs):
+            return plane.post_message(*args, **kwargs, defer_dispatch=True)
+
+    _mutation_begin(session_id)
+    try:
+        result = _tasks.create_task_run(
+            session_id,
+            v1_body,
+            key=key,
+            plane=IntentPlane(),
+            v1=v1,
+            run_states=run_states,
+            scheduler=scheduler,
+            reporter=reporter,
+            workflows=workflows,
+            task_store=task_store,
+            idempotency_key=idempotency_key,
+        )
+    except BaseException:
+        if _mutation_finish(session_id):
+            _apply_deferred_cancel()
+        raise
+
+    message = run_view(result["run"])
+    if prior is not None:
+        # In-memory idempotency responses can predate completion. The
+        # persisted pin/run wins for replay, including after dead compute.
+        message["status"] = map_run_status(prior.status)
+
+    def _post() -> None:
         try:
-            return _tasks.create_task_run(
-                session_id,
-                v1_body,
-                key=key,
-                plane=plane,
-                v1=v1,
-                run_states=run_states,
-                scheduler=scheduler,
-                reporter=reporter,
-                workflows=workflows,
-                task_store=task_store,
-                idempotency_key=idempotency_key,
-            )
+            plane.reconcile_turn(agent_id)
+            plane.drain_queued(agent_id)
         finally:
             if _mutation_finish(session_id):
                 _apply_deferred_cancel()
 
-    _mutation_begin(session_id)
     done, box = _run_with_budget(_post, _ack_budget(request))
     if done:
-        if "error" in box:
-            raise box["error"]
-        result = box["result"]
+        # Dispatch failures belong to the allocated run, never a request-local
+        # error box. A crash here leaves QUEUED intent for lifespan reconciliation.
         record_now = task_store.get(session_id) or record
-        run = run_view(result["run"]) if result.get("run") else None
         # Same bounded-ACK rule as cancel: the worker converged the record
         # — one point read, no live view rebuild on the request path.
         return {
@@ -1213,7 +1259,7 @@ def post_message(
                 run_states=run_states,
                 plane=plane,
             ),
-            "message": ({"n": run["n"], "status": run["status"]} if run else None),
+            "message": {"n": message["n"], "status": message["status"]},
         }
     agg = record.status if record.status in ("running", "delivering") else "queued"
     return {
@@ -1225,7 +1271,7 @@ def post_message(
             run_states=run_states,
             plane=plane,
         ),
-        "message": None,
+        "message": {"n": message["n"], "status": message["status"]},
     }
 
 
@@ -1445,6 +1491,7 @@ def retry_session(
                     capabilities=capabilities,
                     task_store=task_store,
                     resolver=resolver,
+                    startup=getattr(request.app.state, "startup_dispatch", None),
                 )
             return _tasks.retry_task(
                 session_id,

@@ -83,6 +83,25 @@ class DatabaseRecords:
             AuthStore(self.database)._require_user(conn, user_id)
         self.put(namespace, key, value, owner=user_id)
 
+    def compare_put(self, namespace, key, expected, value, *, owner):
+        """Replace a detached row only if its durable version still matches."""
+        with self.database.transaction() as conn:
+            row = self.database.execute(
+                conn,
+                "SELECT payload, version FROM control_records "
+                "WHERE namespace = ? AND id = ? AND owner = ?",
+                (namespace, key, owner),
+            ).fetchone()
+            if row is None or json.loads(row["payload"]) != expected:
+                return False
+            cursor = self.database.execute(
+                conn,
+                "UPDATE control_records SET payload = ?, version = version + 1 "
+                "WHERE namespace = ? AND id = ? AND owner = ? AND version = ?",
+                (json.dumps(value, ensure_ascii=False), namespace, key, owner, row["version"]),
+            )
+            return cursor.rowcount == 1
+
 
 class DatabaseMapping(MutableMapping):
     """Durable mapping used by existing typed adapters; values are detached JSON."""
@@ -149,6 +168,19 @@ class PostgresTaskStore(InMemoryTaskStore):
     def __init__(self, records: DatabaseRecords) -> None:
         super().__init__()
         self._items = DatabaseMapping(records, "tasks")
+
+    def compare_put(self, expected, record):
+        from control.tasks import record_to_dict
+
+        if expected.id != record.id or expected.owner != record.owner:
+            raise IdentityConflict("startup ownership is immutable")
+        return self._items.records.compare_put(
+            "tasks",
+            self._items._key(record.id),
+            record_to_dict(expected),
+            record_to_dict(record),
+            owner=record.owner,
+        )
 
 
 class PostgresWorkspaceStore(InMemoryWorkspaceStore):

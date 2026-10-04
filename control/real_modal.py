@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import uuid
 from pathlib import Path
 
 from control.backend import SandboxHandle, SandboxPoll
 from control.config import lifecycle_config
 from control.hosted_auth import HostedAuthError
+from control.modal_tags import modal_tags
 
 ENVIRONMENT = "sbx-compute"
 APP = "sbx-compute"
@@ -125,13 +125,9 @@ class RealModalProvider:
     def publish_runtime(self, context, namespace, version):
         client = self._client(context)
         app = self._app(client)
-        root = Path(__file__).resolve().parents[1] / "runtime"
-        digest = hashlib.sha256(version.encode())
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and path.suffix in {".py", ".sh", ".txt"}:
-                digest.update(str(path.relative_to(root)).encode())
-                digest.update(path.read_bytes())
-        name = f"sbx-runtime-{digest.hexdigest()[:20]}"
+        # version is the immutable desired build identity already persisted
+        # by ModalConnectionService. Publication and reconciliation share it.
+        name = f"sbx-runtime-{version[:40]}"
         try:
             image = self.sdk.Image.from_name(name, environment_name=ENVIRONMENT, client=client)
             image.build(app=app)
@@ -217,7 +213,7 @@ class RealModalProvider:
             env=env,
             secrets=[],
             workdir="/work",
-            tags=dict(spec.tags),
+            tags=modal_tags(spec.tags),
             cpu=spec.cpu or 1,
             memory=spec.memory_mib or 1024,
             timeout=life.sandbox_timeout_s,
@@ -225,6 +221,19 @@ class RealModalProvider:
             encrypted_ports=[PORT],
         )
         return SandboxHandle(sandbox.object_id, Path("/work"), dict(spec.tags))
+
+    def restore(self, context, spec, runtime):
+        return self.create(context, spec, runtime)
+
+    @_safe
+    def snapshot(self, context, handle):
+        from control.config import ENV_SNAPSHOT_TIMEOUT_S, ENV_SNAPSHOT_TTL_S
+
+        image = self._sandbox(context, handle).snapshot_filesystem(
+            timeout=ENV_SNAPSHOT_TIMEOUT_S,
+            ttl=ENV_SNAPSHOT_TTL_S,
+        )
+        return image.object_id
 
     @_safe
     def exec(self, context, handle, argv, env):
@@ -263,7 +272,9 @@ class RealModalProvider:
     @_safe
     def list(self, context, tags):
         client = self._client(context)
-        wanted = {**tags, "owner": context.user_id, "modal_connection": context.connection_id}
+        wanted = modal_tags(
+            {**tags, "owner": context.user_id, "modal_connection": context.connection_id}
+        )
         return [
             SandboxHandle(sb.object_id, Path("/work"), dict(sb.get_tags()))
             for sb in self.sdk.Sandbox.list(

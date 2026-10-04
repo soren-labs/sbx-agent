@@ -283,6 +283,21 @@ def reap(
             # a follow-up message restores it via the checkpoint service.
             skip("suspended")
             continue
+        if rec.status == "creating" and rec.sandbox_tags.get("lifecycle_claim"):
+            # A VPS restart can interrupt capture after the checkpoint landed
+            # but before the released state was persisted. No turn can dispatch
+            # under this claim, so the durable checkpoint safely wins.
+            ready = _bounded_call(lambda: checkpoints.has_checkpoint(rec.id), _SUSPEND_BOUND_S)
+            if ready:
+                handle = rec.handle()
+                if handle is not None:
+                    _bounded_call(lambda: backend.terminate(handle) or True, _TERMINATE_BOUND_S)
+                rec.status = "suspended"
+                rec.sandbox_tags.pop("lifecycle_claim", None)
+                rec.updated_at = now
+                if persist(rec):
+                    emit("suspended", rec.id, rec.sandbox_id)
+                continue
         if rec.status == "creating" and not rec.sandbox_id:
             # Record published before the sandbox bound (SOR-80 create order).
             basis = (
@@ -479,6 +494,25 @@ def reap(
             skip("bound_live")
             continue
         rec = _session_record(records, handle)
+        tagged_session = (handle.tags or {}).get("session_id")
+        if tagged_session:
+            # A create can publish after the record listing but before the
+            # backend listing. Its record exists before its sandbox does;
+            # a point read after enumeration distinguishes it from an orphan.
+            fresh = _bounded_call(lambda: (store.get(tagged_session),), _LIST_BOUND_S)
+            if fresh is None:
+                # Unknown durable ownership must never authorize destruction.
+                emit("reap_error", tagged_session, handle.id)
+                continue
+            rec = fresh[0]
+            if (
+                rec is not None
+                and rec.status not in TERMINAL_STATUSES
+                and rec.status != "suspended"
+                and rec.sandbox_id == handle.id
+            ):
+                skip("bound_live")
+                continue
         if rec is not None and rec.status not in TERMINAL_STATUSES:
             # Same-session record without a bound sandbox id → in-flight
             # create in the record-publication window; never orphan-kill it.

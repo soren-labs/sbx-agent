@@ -224,9 +224,9 @@ def test_message_acks_without_sandbox_exec(
     # session get on the request path + the worker's own lookup — bounded
     # while the dispatch is stalled at the gated exec.
     assert counting.calls <= 4, counting.calls
-    # Worker still in flight at ACK → the nullable message slot carries
-    # the optimistic accept.
-    assert body["message"] is None
+    # Worker still in flight at ACK, but the allocated intent is already
+    # durable and queryable (REV-008).
+    assert body["message"] == {"n": 2, "status": "queued"}
     assert body["session"]["status"] in ("queued", "running")
 
     gate.set()

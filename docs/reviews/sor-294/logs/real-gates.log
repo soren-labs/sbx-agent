@@ -1,0 +1,211 @@
+
+[production-before.log]
+BASE REV-002 Codex readiness: disabled
+BASE available Codex models: 2
+BASE retained Session status counts: {'queued': 0, 'running': 0, 'finished': 4, 'failed': 5}
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+
+
+[production-after.log]
+BASE REV-002 Codex readiness: ready
+BASE available Codex models: 2
+BASE retained Session status counts: {'queued': 0, 'running': 0, 'finished': 4, 'failed': 5}
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+
+
+[runtime-active-upgrade.log]
+REV-004 changed immutable build published/smoked, active old sandbox alive PASS
+Canonical reviewed runtime build restored/reused PASS
+
+REV-004 identical immutable build reused without republishing PASS
+
+
+[cleanup-real.log]
+Real Modal cleanup exit 0 PASS
+Real Modal cleanup exit 7 PASS
+Real Modal cleanup wait-error/kill PASS
+Real Modal cleanup stdout transport-error PASS
+Real Modal stale callback/new lease and cancellation cleanup PASS
+
+
+[cross-user.log]
+Cross-user denied: GET /v2/sessions/sess_8cb0f7591df544c4 404
+Cross-user denied: GET /v2/sessions/sess_8cb0f7591df544c4/history 404
+Cross-user denied: POST /hosted/sessions/sess_8cb0f7591df544c4/connect 404
+Cross-user denied: GET /hosted/review-sessions/sess_5244741f6ff34bb6 404
+Cross-user denied: POST /v2/sessions/sess_8cb0f7591df544c4/deliver 404
+Cross-user listing/integrations isolation PASS
+
+
+[production-secret-check.log]
+Production credential leak scan PASS: event-check
+Production credential leak scan PASS: event-check
+Production credential leak scan PASS: log-check
+
+[review-terminal.log]
+REV-009 persisted unbound startup failure: provider_exhausted retryable: True PASS
+Independent reviewer: sess_13cff0b224864107 approve PASS
+Independent reviewer: sess_9f89ac88c2c64ef3 approve PASS
+Both mobile-created personal keys revoked PASS
+
+[real-workflow.log confirmed results]
+REV-001 full idle capacity catalog: {'gpt-5.6-luna': 'busy', 'gpt-6.1-sol': 'busy'}
+All three real native Sessions completed PASS
+GitHub App author PR delivered PASS
+Independent native review: approve PASS
+
+[recovery-real.log confirmed results]
+REV-001 after lifecycle cleanup: all Codex models available PASS
+Fresh author via mobile-created personal API key: sess_ed2a937a4efd45e4
+Personal API key real native author after cleanup PASS
+Restart follow-up durable ACK: {'n': 2, 'status': 'queued'}
+Restart + owner checkpoint restore + native follow-up + idempotent replay PASS
+Fresh recovered author real PR delivered PASS
+REV-001 fresh author + real PR + independent native reviewer after lifecycle cleanup PASS
+Personal key revocation enforced PASS
+
+[dead-followup.log confirmed results]
+Dead compute accepted durable numbered run: {'n': 3, 'status': 'queued'}
+REV-008 terminal failed run, retained prompt, idempotent replay/conflict PASS
+REV-008 PostgreSQL retains accepted prompt, numbered run 3 and terminal error PASS
+
+[native-cleanup.log confirmed results]
+REV-003 sandbox caches absent after native operation PASS: sess_8cb0f7591df544c4
+REV-003 unauthorized operation triggers one real native refresh/retry PASS
+{"native_refresh": "PASS", "credential_version": 8}
+
+[Lifecycle durable summary after automatic checkpoint/reaping]
+{"modal_state": "ready", "build_id": "e1dda9c0727cca4986fe3f0c2f38ed34c24238228c04b48b2aacf21f2ea9fed9", "desired_build": "e1dda9c0727cca4986fe3f0c2f38ed34c24238228c04b48b2aacf21f2ea9fed9", "image": "im-GDasU6K5iUuHwDskyjyRsU", "step": "smoke", "error": null, "sweep": {"action_kinds": {"suspended": 1}, "settled_turns": [], "elapsed_s": 10.605141274631023, "scan": {"store": "SweepStore", "backend": "GitHubScopedBackend", "idle_timeout_s": 300, "records": 7, "by_status": {"lost": 4, "closed": 1, "idle": 2}, "expired_idle": 1}, "records_seen": 7, "handles_seen": 1, "skipped": {"terminal": 5, "idle_fresh": 1, "bound_live": 1}, "at": "2026-10-04T09:18:01.930650+00:00"}}
+
+[Final implementation deployment]
+Production source uploaded; artifact SHA256 ce62808a43da663c995f9bc55800101cdd66c41070fcb5de8c023d2191b1ad3b
+Production service and PostgreSQL health PASS
+Production uploaded source manifest verified PASS
+
+🌎 Deploying...
+✨ Deployment complete! Take a peek over at https://802cb457.sbx-agent.pages.dev
+
+[Final preserved service checks]
+BASE REV-002 Codex readiness: ready
+BASE available Codex models: 2
+BASE retained Session status counts: {'queued': 0, 'running': 0, 'finished': 9, 'failed': 7}
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+
+
+[mobile-390.log]
+{
+  "controls": [
+    {
+      "height": 44,
+      "left": 23,
+      "right": 357
+    },
+    {
+      "height": 44,
+      "left": 23,
+      "right": 357
+    },
+    {
+      "height": 44,
+      "left": 23,
+      "right": 357
+    },
+    {
+      "height": 44,
+      "left": 23,
+      "right": 357
+    }
+  ],
+  "scrollWidth": 390,
+  "width": 390
+}
+
+
+[mobile-320.log]
+{
+  "controls": [
+    {
+      "height": 44,
+      "left": 23,
+      "right": 287
+    },
+    {
+      "height": 44,
+      "left": 23,
+      "right": 287
+    },
+    {
+      "height": 44,
+      "left": 23,
+      "right": 287
+    },
+    {
+      "height": 44,
+      "left": 23,
+      "right": 287
+    }
+  ],
+  "scrollWidth": 320,
+  "width": 320
+}
+
+[Final race-fixed product deployment and acceptance: 2adff83b63802edf16c36ebefe2522bd3ed771a4]
+
+[deploy-backend-ci-race.log]
+Production source uploaded; artifact SHA256 6de6cf548867c1e69c529c964a07c22d3fc621d6d660f88c0a5c321e8a8a0bc6
+Production service and PostgreSQL health PASS
+Production uploaded source manifest verified PASS
+
+[post-guard-real.log]
+Final lifecycle capacity and connected Codex readiness PASS
+Session sess_ba24dce5a049485c run 1 : queued
+Session sess_ba24dce5a049485c run 1 : running
+Session sess_ba24dce5a049485c run 1 : finished
+Final deployment real native startup/finish and retained direct connection PASS: sess_ba24dce5a049485c
+
+[post-guard-browser.log]
+Final product Agent Browser authenticated /auth return reaches Session workspace PASS
+Final product Agent Browser connected Codex and both models selectable PASS
+Final product Agent Browser real native Session output rendered PASS
+
+[ui-ci-race-product.log]
+Final PR HEAD Agent Browser: terminal review failure + successful retry visible PASS
+Final PR HEAD Agent Browser mobile 390 layout/touch targets PASS
+Final PR HEAD Agent Browser mobile 320 layout/touch targets PASS
+
+[services-ci-race-product.log]
+BASE REV-002 Codex readiness: ready
+BASE available Codex models: 2
+BASE retained Session status counts: {'queued': 0, 'running': 1, 'finished': 9, 'failed': 7}
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+
+
+[production-secret-ci-race.log]
+Production credential leak scan PASS: event-check
+Production credential leak scan PASS: event-check
+Production credential leak scan PASS: log-check
+
+[Production frontend publication]
+
+🌎 Deploying...
+✨ Deployment complete! Take a peek over at https://dec1d487.sbx-agent.pages.dev

@@ -388,21 +388,10 @@ def get_revisions(request: Request) -> Any:
     seams: ``app.state.revisions`` when the app wired one, else built over
     the same stores a test injected."""
     if getattr(request.app.state, "hosted_mode", False):
-        from control.revisions import RevisionService
+        from control.hosted_delivery import owner_revision_service
 
         github = get_github_app(request)
-        service = RevisionService(
-            get_revision_store(request),
-            get_artifact_store(request),
-            workspaces=get_workspaces(request),
-            env={},
-            remote=github.remote,
-            env_for_repo=github.git_env,
-            push_payload_fn=github.push_payload if github.mock else None,
-            ls_remote_fn=github.ls_remote if github.mock else None,
-        )
-        service._lock = request.app.state.revisions._lock
-        return service
+        return owner_revision_service(request.app.state.revisions, github)
     service = getattr(request.app.state, "revisions", None)
     if service is None:
         from control.revisions import RevisionService

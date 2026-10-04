@@ -869,6 +869,7 @@ class ControlPlane:
         output_contract: dict[str, Any] | None = None,
         queue: bool = False,
         idempotency: dict[str, Any] | None = None,
+        defer_dispatch: bool = False,
     ) -> str:
         """Post a user message; ``queue=True`` parks it durably when busy.
 
@@ -883,11 +884,13 @@ class ControlPlane:
         # A ``running`` record with no in-process watcher is a stranded turn
         # (control-plane cutover); reconcile it from evidence first so a
         # finished provider run frees the agent instead of 409ing forever.
-        self.reconcile_turn(session_id)
+        if not defer_dispatch:
+            self.reconcile_turn(session_id)
         # SOR-180: a suspended agent owns no live sandbox; restore it from
         # its checkpoint before the runnable checks so a follow-up lands on
         # the same Agent id / filesystem / native provider session.
-        self.recover_session(session_id)
+        if not defer_dispatch:
+            self.recover_session(session_id)
         enqueued = False
         with self._lock:
             rec = self._store_get(session_id)
@@ -903,7 +906,7 @@ class ControlPlane:
             if busy and not queue:
                 raise SessionConflict("turn_in_progress")
             queued_backlog = bool(self._queued_ns(session_id)) if queue else False
-            if (busy or queued_backlog) and queue:
+            if defer_dispatch or ((busy or queued_backlog) and queue):
                 if self.run_ledger is None:
                     # A queued follow-up is only durable when the ledger is
                     # attached; without it the old refusal is the honest answer.
@@ -977,7 +980,8 @@ class ControlPlane:
         if enqueued:
             # Idle agents with a backlog start the head of the queue now;
             # a busy agent drains when its turn finishes.
-            self.drain_queued(session_id)
+            if not defer_dispatch:
+                self.drain_queued(session_id)
             return turn_id
         try:
             return self._dispatch_turn(session_id, turn_id, n, handle, text, drop_message=True)
@@ -1026,11 +1030,35 @@ class ControlPlane:
             try:
                 self.recover_session(session_id)
             except Exception:
+                self.run_ledger.finish(
+                    session_id,
+                    ns[0],
+                    status="ERROR",
+                    error=run_error(
+                        "runtime_error",
+                        "checkpoint recovery failed",
+                        source="control",
+                        retryable=True,
+                    ),
+                )
                 return None
             n = ns[0]
             turn_id = f"turn-{n}"
             with self._lock:
                 rec = self._store_get(session_id)
+                if rec is None or rec.status in TERMINAL_STATUSES:
+                    self.run_ledger.finish(
+                        session_id,
+                        n,
+                        status="ERROR",
+                        error=run_error(
+                            "runtime_error",
+                            "session is no longer runnable",
+                            source="control",
+                            retryable=True,
+                        ),
+                    )
+                    continue
                 if (
                     rec is None
                     or rec.status != "idle"
@@ -1218,6 +1246,15 @@ class ControlPlane:
             )
         except Exception:
             self._rollback_turn(session_id, turn_id, handle, drop_message=drop_message)
+            if self.run_ledger is not None and not drop_message:
+                self.run_ledger.finish(
+                    session_id,
+                    n,
+                    status="ERROR",
+                    error=run_error(
+                        "runtime_error", "turn failed to start", source="control", retryable=True
+                    ),
+                )
             raise
         dead_on_arrival = False
         with self._lock:
@@ -1570,6 +1607,13 @@ class ControlPlane:
         ``publish_error`` on the workspace record for real failures, so
         this hook only guards against unforeseen ones.
         """
+        hook = getattr(self, "auto_delivery_hook", None)
+        if hook is not None:
+            try:
+                hook(session_id)
+            except Exception:
+                pass
+            return
         if self.workspaces is None or handle is None:
             return
         record = self.workspaces.get(session_id)
@@ -1781,7 +1825,7 @@ class ControlPlane:
                 continue
             if reconciled:
                 settled.append(rec.id)
-            elif rec.status == "idle":
+            elif rec.status in ("idle", "suspended"):
                 # SOR-224: queued turns outlive a control-plane restart
                 # (ledger + session messages are durable); an idle agent
                 # with parked work dispatches its queue head here.

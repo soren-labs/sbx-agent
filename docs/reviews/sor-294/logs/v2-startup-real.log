@@ -1,0 +1,66 @@
+FINAL-V2-001 real acceptance on exact deployed product 38adb47d91647d3a961bc2f80c3ef01ffb11010a
+
+v2-deploy-product.log
+Production source uploaded; artifact SHA256 1cc4958c448c968999bba654bfcf233ce9bda02efde866ac016c20ff6cbcadaa
+Production service and PostgreSQL health PASS
+Production uploaded source manifest verified PASS
+
+v2-manifest-product.log
+Exact backend committed-byte manifest PASS: {"sha": "38adb47d91647d3a961bc2f80c3ef01ffb11010a", "source_files_verified": 295}
+Exact public frontend manifest and all 10 deployed file hashes PASS: 38adb47d91647d3a961bc2f80c3ef01ffb11010a
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+*:443 users:(("sing-box",pid=2224,fd=10))
+
+
+v2-real-author.log
+Session sess_c0234c43c1b24ef6 run 1 : running
+Session sess_c0234c43c1b24ef6 run 1 : finished
+FINAL-001/002 real explicit low native author and automatic owner-App draft PR PASS; PR=18
+
+v2-real-inspect.log
+FINAL-001/002 preserved in real acceptance: low effort; 8 identity tags; two actual uncommitted files delivered by owner App; no ambient credentials; replay retains one PR PASS
+FINAL-V2-001 preflight: zero unbound queued intents; no foreign sessions targeted PASS
+
+
+v2-real-crash-corrected.log
+FINAL-V2-001 preflight: zero unbound queued intents; no foreign sessions targeted PASS
+
+FINAL-V2-001 real public HTTP201 accepted review; paused queued dispatch; reviewer=sess_a4f666882fba4f12
+FINAL-V2-001 second keyed public HTTP201 startup durably accepted before process loss PASS
+FINAL-V2-001 real durable create replay retains SAME accepted failed intent; conflict 409 PASS
+FINAL-V2-001 actual process loss after public ACK: durable terminal retryable failure, API and review agree PASS
+
+v2-real-isolation.log
+FINAL-V2-001 real distinct disposable owner denied all five paths including original reviewer retry; empty listing PASS
+
+v2-real-recovered.log
+FINAL-V2-001 same-session owner retry accepted: sess_a4f666882fba4f12
+Session sess_a4f666882fba4f12 run 1 : running
+Session sess_a4f666882fba4f12 run 1 : finished
+FINAL-V2-001 original accepted reviewer recovers natively on SAME session; one numbered run; current independent approve PASS
+
+v2-real-cleanup.log
+Disposable owner author/reviewer agents closed; only acceptance PR 18 and its exact branch cleaned PASS
+
+v2-real-final-reconstruction.log
+FINAL-V2-001 reconstructed worker retains original reviewer id, owned independent approval, one failure and one retry; cleanup/reconciliation retains closed PR and deleted branch PASS
+
+v2-real-safety.log
+active
+active
+active
+active
+MainPID=2224
+
+MainPID=515489
+*:443 users:(("sing-box",pid=2224,fd=8))
+*:443 users:(("sing-box",pid=2224,fd=10))
+Production credential leak scan PASS: log-check
+
+Fault procedure: zero queued/unbound intents before the gate; temporarily stop only sbx-hosted and run the same production factory/source/adapters/PostgreSQL on its existing loopback port. An external protected harness intercepts the implementation owner review/keyed executor submissions with unresolved Futures. Obtain public HTTP 201 for both. SIGKILL that process after ACK and before binding; restart the normal sbx-hosted unit. Its lifespan settles both durable claims. The harness is outside Git and the reviewed source archive; no provider is mocked. The normal service and all shared resources are restored. Initial transient unit lacked RuntimeDirectory=sbx-hosted, so adapter initialization failed; no review ACK occurred. Corrected transient unit matches this private directory provision.
+Only the disposable keyed startup is cancelled afterward. The temporary script/unit is removed/reset. No biz1 login/profile/account, implementation auth.json, old PR or unrelated branch was accessed or changed.

@@ -1,5 +1,6 @@
 """Explicit operator rollout to the prepared VPS; secrets travel only on SSH stdin."""
 
+import gzip
 import hashlib
 import io
 import json
@@ -29,6 +30,7 @@ def production_env():
         "SBX_HOSTED": "1",
         "SBX_STATE_BACKEND": "postgres",
         "SBX_BACKEND": "local",
+        "SBX_PROVIDERS": "codex",
         "DATABASE_URL": "postgresql:///sbx?host=/var/run/postgresql",
         "SBX_BROWSER_ORIGINS": "https://sbx-agent.com",
         "SBX_CONNECTIONS_MODE": "production",
@@ -57,32 +59,51 @@ def production_env():
     return values
 
 
-def source_archive():
-    files = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=ROOT, text=True
-    ).splitlines()
+def reviewed_commit():
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT):
+        raise ValueError("deployment_requires_clean_reviewed_commit")
+    return commit
+
+
+def source_archive(commit=None):
+    commit = commit or reviewed_commit()
+    entries = subprocess.check_output(
+        ["git", "ls-tree", "-rz", "--full-tree", commit], cwd=ROOT
+    ).split(b"\0")
     digest = hashlib.sha256()
     stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-        for name in sorted(files):
+    with (
+        gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as compressed,
+        tarfile.open(fileobj=compressed, mode="w") as archive,
+    ):
+        for entry in sorted(filter(None, entries)):
+            attributes, raw_name = entry.split(b"\t", 1)
+            mode, kind, blob = attributes.decode().split()
+            name = raw_name.decode()
             if name not in {"pyproject.toml", "uv.lock", "README.md"} and not name.startswith(
                 ("control/", "runtime/", "broker/", "src/", "deploy/hosted/", "docs/", "web/")
             ):
                 continue
-            path = ROOT / name
-            if not path.is_file() or path.is_symlink():
+            path = Path(name)
+            if kind != "blob" or mode not in {"100644", "100755"}:
                 continue
             if path.name in {"auth.json", ".env", ".modal.toml"} or "__pycache__" in path.parts:
                 raise ValueError("credential_file_in_source_archive")
             digest.update(name.encode())
-            digest.update(path.read_bytes())
-            archive.add(path, arcname=name, recursive=False)
+            content = subprocess.check_output(["git", "cat-file", "blob", blob], cwd=ROOT)
+            digest.update(content)
+            member = tarfile.TarInfo(name)
+            member.size, member.mode = len(content), int(mode[-3:], 8)
+            archive.addfile(member, io.BytesIO(content))
     return stream.getvalue(), digest.hexdigest()
 
 
 def main():
     from control.connections import SecretVault
 
+    commit = reviewed_commit()
+    archive, digest = source_archive(commit)
     assert SecretVault.from_env() is not None
     key = Path(os.environ["SBX_GITHUB_APP_PRIVATE_KEY_PATH"]).resolve()
     if key.is_relative_to(ROOT) or key.stat().st_mode & 0o077:
@@ -105,9 +126,24 @@ root=pathlib.Path('/etc/sbx'); root.mkdir(mode=0o750,exist_ok=True)
 os.chown(root,uid,pwd.getpwnam('sbx').pw_gid)
 write(root/'github-app.pem',v['app_key'])
 """
+    # Validate immediately before the first remote write. The archive was
+    # read from git objects, so a later local edit cannot change its bytes.
+    if reviewed_commit() != commit:
+        raise ValueError("deployment_head_changed")
+    release_path = "/opt/sbx-releases/" + commit
+    ssh("sudo install -d -o sbx -g sbx -m 755 " + release_path)
+    ssh("sudo -u sbx tar -xzf - -C " + release_path, payload=archive)
     ssh("sudo python3 -c " + shlex.quote(remote), payload=payload)
-    archive, digest = source_archive()
-    ssh("sudo -u sbx tar -xzf - -C /opt/sbx-browser", payload=archive)
+    activate = """import os,pathlib,sys,subprocess
+target=pathlib.Path(sys.argv[1]); current=pathlib.Path('/opt/sbx-browser')
+subprocess.run(['systemctl','stop','sbx-hosted.service'],check=True)
+if current.exists() and not current.is_symlink():
+ current.rename('/opt/sbx-browser-pre-remediation')
+temporary=pathlib.Path('/opt/sbx-browser-next')
+temporary.unlink(missing_ok=True); temporary.symlink_to(target)
+os.replace(temporary,current)
+"""
+    ssh("sudo python3 -c " + shlex.quote(activate) + " " + shlex.quote(release_path))
     print("Production source uploaded; artifact SHA256 " + digest, flush=True)
     ssh("sudo bash /opt/sbx-browser/deploy/hosted/install_vps.sh", timeout=1200)
     print("Production service and PostgreSQL health PASS", flush=True)
@@ -119,15 +155,13 @@ write(root/'github-app.pem',v['app_key'])
             for member in uploaded.getmembers()
         }
     release = {
-        "source_commit": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip(),
-        "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)),
+        "source_commit": commit,
+        "source_dirty": False,
         "artifact_sha256": digest,
         "files": files,
     }
     verify = """import hashlib,json,pathlib,sys,os
-v=json.load(sys.stdin); root=pathlib.Path('/opt/sbx-browser')
+v=json.load(sys.stdin); root=pathlib.Path('/opt/sbx-browser').resolve()
 for name,digest in v['files'].items():
  p=root/name
  assert p.resolve().is_relative_to(root) and not p.is_symlink()

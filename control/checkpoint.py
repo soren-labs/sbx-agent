@@ -856,6 +856,10 @@ class CheckpointService:
         local backends forward the scoped ambient vars via
         ``sandbox_env``.
         """
+        if handle.tags.get("hosted") == "1":
+            # Hosted auth is operation scoped and supplied by the broker at
+            # native init/turn only. An idle/restored sandbox keeps no cache.
+            return
         proc = self._backend.exec(
             handle, ["python3", "-c", _REATTACH_SCRIPT], env=sandbox_env(handle)
         )
