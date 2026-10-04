@@ -110,7 +110,7 @@ def review_status(request, owner, session_id):
     task = request.app.state.task_store.get(session_id)
     if task is None or task.owner != owner:
         raise HostedAuthError("not_found", 404)
-    if task.status in {"failed", "cancelled"}:
+    if task.status in {"error", "failed", "cancelled"}:
         detail = _dispatch_error(task) or {}
         code = detail.get("code")
         return {

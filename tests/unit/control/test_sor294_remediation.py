@@ -279,9 +279,10 @@ def test_rev005_rollout_refuses_dirty_source_before_remote_writes(tmp_path, monk
 @pytest.mark.parametrize(
     "code,status",
     [
+        ("provider_exhausted", "error"),
+        ("workspace_invalid", "error"),
+        ("modal_provider_unavailable", "error"),
         ("provider_exhausted", "failed"),
-        ("workspace_invalid", "failed"),
-        ("modal_provider_unavailable", "failed"),
         ("cancelled", "cancelled"),
     ],
 )
@@ -292,7 +293,7 @@ def test_rev009_unbound_review_terminal_state_beats_missing_agent(workflow_app, 
     task = TaskRecord(
         id="sess_failedreview",
         owner=owner.id,
-        status=status,
+        status="queued" if status == "error" else status,
         request={},
         resolved=None,
         agent_id=None,
@@ -302,6 +303,11 @@ def test_rev009_unbound_review_terminal_state_beats_missing_agent(workflow_app, 
         transitions=[{"reason": "dispatch_failed", "detail": {"code": code}}],
     )
     app.state.task_store.put(task)
+    if status == "error":
+        from control.api_v1.errors import V1ApiError
+        from control.api_v2.routes import _mark_dispatch_failed
+
+        _mark_dispatch_failed(app.state.task_store, task.id, V1ApiError(409, code, code))
     app.state.database_records.put_owned(
         "hosted_review_sessions", task.id, owner.id, {"reviewer_session_id": task.id}
     )
