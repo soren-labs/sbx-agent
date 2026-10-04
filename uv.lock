@@ -1271,7 +1271,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=25.1.0,<26" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "modal", specifier = ">=0.76.0" },
+    { name = "modal", specifier = ">=1.5.5,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0,<4" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10.0" },

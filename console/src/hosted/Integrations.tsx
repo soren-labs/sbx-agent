@@ -7,11 +7,13 @@ export function HostedIntegrations() {
   const [connection, setConnection] = useState<HostedConnection | null>(null);
   const [configured, setConfigured] = useState(false);
   const [mock, setMock] = useState(false);
+  const [oauthConfigured, setOauthConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const refresh = async () => {
     const data = await hostedRequest("/hosted/connections/modal");
     setConnection(data.connection); setConfigured(data.configured); setMock(data.mock);
+    setOauthConfigured(Boolean(data.oauth_configured ?? data.mock));
   };
   useEffect(() => { void refresh().catch((e) => setError(e.message)); }, []);
   useEffect(() => {
@@ -64,7 +66,7 @@ export function HostedIntegrations() {
         <label className="form-label">Modal Token Secret<input name="token_secret" type="password" autoComplete="off" required /></label>
         <button disabled={busy || !configured}>Connect Modal</button>
       </form>
-      <button disabled={busy || !configured} onClick={oauth}>Connect with Modal authorization</button>
+      {oauthConfigured && <button disabled={busy || !configured} onClick={oauth}>Connect with Modal authorization</button>}
       {connection && <button disabled={busy} onClick={() => void action(provision)}>Reconcile runtime</button>}
     </section>
     <GitHubConnection />

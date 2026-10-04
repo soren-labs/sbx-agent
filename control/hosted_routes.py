@@ -49,6 +49,7 @@ def modal_status(request: Request, owner: str = Depends(user_id)) -> dict[str, A
         "connection": record.public() if record else None,
         "configured": service.provider.configured,
         "mock": service.provider.mock,
+        "oauth_configured": service.provider.mock,
     }
 
 
