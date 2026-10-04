@@ -112,6 +112,9 @@ Git histories and tunnel. It never reads development-agent Codex auth, uploads a
 raw native cache, or exports ambient cloud/test-workspace credentials. The root
 installer uses Python 3.12/uv and installs the pinned official ARM64 Codex CLI
 0.159.2. Both initial deployment and redeployment restart the systemd service.
+Rollout requires a clean checkout, packages only committed Git blobs, and
+verifies the uploaded bytes against the pinned commit before writing the
+release manifest. Releases use separate directories with atomic activation.
 
 ```sh
 # Source the protected operator env quietly; never enable shell tracing.
@@ -120,14 +123,16 @@ source /home/zheng/.config/sbx/real-integration.env
 uv run python -m deploy.hosted.rollout
 bash deploy/hosted/build_frontend.sh
 # From a directory without a conflicting Worker config:
-npm exec --yes --package=wrangler -- wrangler pages deploy /absolute/path/to/console/dist --project-name sbx-agent --branch main --commit-dirty=true
+npm exec --yes --package=wrangler -- wrangler pages deploy /absolute/path/to/console/dist --project-name sbx-agent --branch main --commit-dirty=false
 ```
 
 The protected environment/private key live outside `/opt/sbx-browser`, with mode
 0600 and owner `sbx`. Native refresh caches exist only under the service's private
 `/run/sbx-hosted` tmpfs and are removed after each operation. Systemd restricts
 writes to that runtime directory and `/var/lib/sbx-hosted`. PostgreSQL migrations
-run at startup. One worker retains the current scheduler/watcher model.
+run at startup. One worker retains the current scheduler/watcher model and
+reconciles owner-scoped runtimes and idle checkpoints every 30 seconds. Idle
+compute releases account capacity; durable queued prompts survive reaping.
 
 Cloudflare Pages serves `sbx-agent.com`; its custom domain must be active and point
 to `sbx-agent.pages.dev`. The existing tunnel serves `api.sbx-agent.com`. Exact-origin

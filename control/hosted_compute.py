@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import socket
+import tempfile
 import threading
 import time
 from dataclasses import replace
@@ -49,6 +50,11 @@ class FakeComputeProvider:
         self._servers: dict[str, tuple[Any, Any, Any, str]] = {}
         self._lock = threading.Lock()
         self.calls: list[tuple[str, str]] = []
+        from control.environment import LocalSnapshotProvider
+
+        self._snapshots = LocalSnapshotProvider(
+            self.source, tempfile.mkdtemp(prefix="sbx-snapshot-")
+        )
 
     def _check(self, context, handle):
         if (
@@ -68,6 +74,13 @@ class FakeComputeProvider:
     def poll(self, context, handle):
         self._check(context, handle)
         return self.source.poll(handle)
+
+    def snapshot(self, context, handle):
+        self._check(context, handle)
+        return self._snapshots.snapshot(handle)
+
+    def restore(self, context, spec, runtime):
+        return self._snapshots.restore(runtime["image"], spec)
 
     def list(self, context, tags):
         return self.source.list(
@@ -156,7 +169,12 @@ class HostedModalBackend:
         return context, runtime, data
 
     def create(self, spec):
+        return self._create(spec)
+
+    def _create(self, spec, snapshot_ref=None):
         context, runtime = self._context(spec.tags.get("owner", ""))
+        if snapshot_ref is not None:
+            runtime = {**runtime, "image": snapshot_ref}
         if spec.tags.get("provider", "codex") != "codex":
             raise HostedAuthError("hosted_provider_not_supported", 400)
         key = secrets.token_urlsafe(32)
@@ -179,7 +197,8 @@ class HostedModalBackend:
                 "SBX_BROWSER_ORIGINS": os.environ.get("SBX_BROWSER_ORIGINS", ""),
             },
         )
-        handle = self.provider.create(context, spec, runtime)
+        operation = self.provider.restore if snapshot_ref is not None else self.provider.create
+        handle = operation(context, spec, runtime)
         cipher = self.connections.vault.seal({"key": key}, context=f"{context.user_id}:{handle.id}")
         try:
             self.records.put_owned(
@@ -200,6 +219,28 @@ class HostedModalBackend:
             self.provider.terminate(context, handle)
             raise
         return handle
+
+    def snapshot(self, handle):
+        context, _, _ = self._handle_context(handle)
+        ref = self.provider.snapshot(context, handle)
+        self.records.put_owned(
+            "hosted_snapshots",
+            ref,
+            context.user_id,
+            {"agent_id": handle.tags["session_id"], "connection_id": context.connection_id},
+        )
+        return ref
+
+    def restore(self, snapshot_ref, spec):
+        context, _ = self._context(spec.tags.get("owner", ""))
+        snapshot = self.records.get("hosted_snapshots", snapshot_ref, owner=context.user_id)
+        if (
+            snapshot is None
+            or snapshot["agent_id"] != spec.tags.get("session_id")
+            or snapshot["connection_id"] != context.connection_id
+        ):
+            raise HostedAuthError("snapshot_not_found", 404)
+        return self._create(spec, snapshot_ref)
 
     def exec(self, handle, argv, env=None):
         context, _, _ = self._handle_context(handle)

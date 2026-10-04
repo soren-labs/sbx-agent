@@ -1,7 +1,8 @@
 """Independent review Sessions over the existing V2 execution and revision gate."""
 
 from control.api_v1 import deps
-from control.api_v2.routes import create_session
+from control.api_v1.error_catalog import ERROR_CATALOG
+from control.api_v2.routes import _dispatch_error, create_session
 from control.api_v2.schemas import CreateSessionRequest
 from control.hosted_auth import HostedAuthError
 from control.revisions import RevisionError
@@ -109,6 +110,15 @@ def review_status(request, owner, session_id):
     task = request.app.state.task_store.get(session_id)
     if task is None or task.owner != owner:
         raise HostedAuthError("not_found", 404)
+    if task.status in {"failed", "cancelled"}:
+        detail = _dispatch_error(task) or {}
+        code = detail.get("code")
+        return {
+            **link,
+            "status": "failed",
+            "error": code if code in ERROR_CATALOG else "review_startup_failed",
+            "retryable": True,
+        }
     if not task.agent_id:
         return {**link, "status": "running"}
     deps.get_plane(request).get(task.agent_id)
@@ -120,7 +130,13 @@ def review_status(request, owner, session_id):
         or (run.contract_result or {}).get("status") != "valid"
         or not isinstance(run.structured_output, dict)
     ):
-        return {**link, "status": "failed", "error": "review_output_invalid"}
+        code = (run.error or {}).get("code")
+        return {
+            **link,
+            "status": "failed",
+            "error": code if code in ERROR_CATALOG else "review_output_invalid",
+            "retryable": True,
+        }
     revisions = deps.get_revisions(request)
     revision = revisions.get(link["revision_id"])
     with revisions._lock:

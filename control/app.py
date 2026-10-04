@@ -283,6 +283,8 @@ def _select_snapshot_provider(backend: SandboxBackend) -> Any:
     directions are driven control-plane-side. Shared by the environment
     cache (opt-in) and the per-agent checkpoint service (always on).
     """
+    if callable(getattr(backend, "snapshot", None)) and callable(getattr(backend, "restore", None)):
+        return backend
     if os.environ.get("SBX_BACKEND", "local") == "modal":
         from control.backends.modal import ModalSnapshotProvider
         from control.config import ENV_SNAPSHOT_TIMEOUT_S, ENV_SNAPSHOT_TTL_S
@@ -536,6 +538,10 @@ def create_app(
         app.state.auth_store.database.initialize()
         if hosted:
             app.state.codex_broker.start()
+            from control.hosted_lifecycle import HostedLifecycle
+
+            app.state.hosted_lifecycle = HostedLifecycle(app)
+            app.state.hosted_lifecycle.start()
         refresher = credential_refresher_factory() if credential_refresher_factory else None
         if refresher is not None:
             plane.credential_refresher = refresher
@@ -545,6 +551,7 @@ def create_app(
             yield
         finally:
             if hosted:
+                app.state.hosted_lifecycle.stop()
                 app.state.codex_broker.stop()
                 stop_compute = getattr(compute_provider, "stop", None)
                 if stop_compute:

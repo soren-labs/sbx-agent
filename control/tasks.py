@@ -1086,7 +1086,7 @@ def resolve_execution(
     """
     env = os.environ if env is None else env
     checks = checks if checks is not None else []
-    from control.config import selected_providers
+    from control.config import execution_providers
 
     execution = dict(execution or {})
     provider_req = execution.get("provider")
@@ -1099,11 +1099,7 @@ def resolve_execution(
     effort_req = effort_req if effort_req not in (None, "", "auto") else None
     account_req = account_req if account_req not in (None, "", "auto") else None
 
-    enabled = (
-        ("codex",)
-        if getattr(registry, "hosted", False)
-        else tuple(p for p in selected_providers(env) if p in CANONICAL_PROVIDERS)
-    )
+    enabled = tuple(p for p in execution_providers(registry, env) if p in CANONICAL_PROVIDERS)
 
     if provider_req is not None and provider_req not in CANONICAL_PROVIDERS:
         raise TaskRefusal(400, "invalid_provider", f"unknown provider {provider_req!r}")

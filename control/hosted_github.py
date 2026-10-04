@@ -303,6 +303,9 @@ class GitHubScopedBackend:
                 outgoing["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(lease.blob())
                 outgoing["SBX_ACCOUNT_ID"] = lease.connection_id
                 outgoing["SBX_HOSTED_CREDENTIAL_LEASE"] = "1"
+                import uuid
+
+                outgoing["SBX_NATIVE_OPERATION"] = uuid.uuid4().hex
         repo = outgoing.pop("SBX_GITHUB_REPO", None)
         workspace = self.workspace_store.get(handle.tags.get("session_id", ""))
         repo = repo or (workspace.repo if workspace else None)
@@ -320,7 +323,16 @@ class GitHubScopedBackend:
                 outgoing = rewrite_env(
                     service.mock_repo(repo), canonicalize_repo(repo).canonical, outgoing
                 )
-        process = self.source.exec(handle, argv, env=outgoing)
+
+        def start(operation_env):
+            command = argv
+            if "SBX_NATIVE_OPERATION" in operation_env:
+                from runtime.runner.access_scope import RUN_SCRIPT
+
+                command = ["python3", "-c", RUN_SCRIPT, *argv]
+            return self.source.exec(handle, command, env=operation_env)
+
+        process = start(outgoing)
         if broker is not None and ("turn" in argv or "resume" in argv):
             from control.codex_process import RetryCodexProcess
 
@@ -329,7 +341,7 @@ class GitHubScopedBackend:
             def refresh(version):
                 fresh = broker.lease(owner, rejected_version=version)
                 retry_env = {**outgoing, "SBX_ACCOUNT_CREDENTIAL": json.dumps(fresh.blob())}
-                return self.source.exec(handle, argv, env=retry_env), fresh.credential_version
+                return start(retry_env), fresh.credential_version
 
             process = RetryCodexProcess(
                 process,
@@ -342,12 +354,19 @@ class GitHubScopedBackend:
 
             def cleanup():
                 # Fixed runtime paths, no grant or ambient environment in this exec.
-                command = (
-                    f"import pathlib; root=pathlib.Path({str(handle.root)!r}); "
-                    "[(root/p).unlink(missing_ok=True) for p in "
-                    "('home/.codex/auth.json','.codex/auth.json','auth.json')]"
-                )
-                self.source.exec(handle, ["python", "-c", command], env={}).wait()
+                from runtime.runner.access_scope import CLEAN_SCRIPT
+
+                self.source.exec(
+                    handle,
+                    [
+                        "python3",
+                        "-c",
+                        CLEAN_SCRIPT,
+                        str(handle.root),
+                        outgoing["SBX_NATIVE_OPERATION"],
+                    ],
+                    env={"PYTHONPATH": outgoing.get("PYTHONPATH", "/opt/sbx")},
+                ).wait()
 
             process = AccessOnlyProcess(process, cleanup)
         return process

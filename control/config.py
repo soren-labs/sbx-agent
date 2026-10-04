@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_MODEL = "gpt-5.6-luna"
+
+
+def execution_providers(registry, env=None):
+    """Hosted compute supports Codex; self-hosted selection remains explicit."""
+    return ("codex",) if getattr(registry, "hosted", False) else selected_providers(env)
+
+
 MAX_CONCURRENT = 2
 # SOR-135: post-session idle retention — how long the control plane keeps
 # an ``idle`` session's dev-cloud sandbox warm for a follow-up before the

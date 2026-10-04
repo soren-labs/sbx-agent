@@ -41,6 +41,15 @@ function signedIn(payload) {
   for (const form of document.querySelectorAll("form")) form.reset();
   byId("identity").textContent = payload.user.email;
   show("signed-in");
+  const value = new URLSearchParams(location.search).get("returnTo") || "/";
+  let destination = "/";
+  if (value.startsWith("/") && !value.startsWith("//") && !/[\\\\\u0000-\u0020]/.test(value)) {
+    const url = new URL(value, location.origin);
+    if (url.origin === location.origin && /^\/(?:sessions\/[A-Za-z0-9_-]+|activity|review|settings|integrations(?:\/[a-z-]+)?)?\/?$/.test(url.pathname)) {
+      destination = url.pathname + url.search + url.hash;
+    }
+  }
+  location.replace(destination);
 }
 async function sendCode() {
   const result = await call("register", { email });

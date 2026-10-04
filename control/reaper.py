@@ -283,6 +283,21 @@ def reap(
             # a follow-up message restores it via the checkpoint service.
             skip("suspended")
             continue
+        if rec.status == "creating" and rec.sandbox_tags.get("lifecycle_claim"):
+            # A VPS restart can interrupt capture after the checkpoint landed
+            # but before the released state was persisted. No turn can dispatch
+            # under this claim, so the durable checkpoint safely wins.
+            ready = _bounded_call(lambda: checkpoints.has_checkpoint(rec.id), _SUSPEND_BOUND_S)
+            if ready:
+                handle = rec.handle()
+                if handle is not None:
+                    _bounded_call(lambda: backend.terminate(handle) or True, _TERMINATE_BOUND_S)
+                rec.status = "suspended"
+                rec.sandbox_tags.pop("lifecycle_claim", None)
+                rec.updated_at = now
+                if persist(rec):
+                    emit("suspended", rec.id, rec.sandbox_id)
+                continue
         if rec.status == "creating" and not rec.sandbox_id:
             # Record published before the sandbox bound (SOR-80 create order).
             basis = (

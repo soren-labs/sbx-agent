@@ -104,7 +104,6 @@ from control.config import (
     account_secret_prefix,
     env_int,
     env_str,
-    selected_providers,
 )
 from control.connect import (
     CONNECT_STATES,
@@ -2525,7 +2524,9 @@ def _capability_rows(registry: AccountRegistry, capabilities: Any) -> list[dict[
     availability, discovery provenance (``source``/``refreshed_at``/
     ``stale``) — plus ``accounts_available`` for compatibility.
     """
-    enabled = frozenset({"codex"} if getattr(registry, "hosted", False) else selected_providers())
+    from control.config import execution_providers
+
+    enabled = frozenset(execution_providers(registry))
     rows: list[dict[str, Any]] = []
     for account in registry.list():
         # Durable registries can retain accounts from an earlier deployment
@@ -2688,7 +2689,9 @@ def _provider_rows(registry: AccountRegistry, runtime: Any) -> list[dict[str, An
     """
     from runtime.provider_runtime import provider_runtime_specs
 
-    enabled = frozenset(selected_providers())
+    from control.config import execution_providers
+
+    enabled = frozenset(execution_providers(registry))
     accounts_by_provider: dict[str, list[Account]] = {}
     for account in registry.list():
         accounts_by_provider.setdefault(account.provider, []).append(account)

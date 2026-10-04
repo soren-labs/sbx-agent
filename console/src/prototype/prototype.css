@@ -2244,6 +2244,29 @@ kbd {
 }
 .settings-section form > label {
   flex: 1;
+  min-width: 0;
+}
+.api-key-form input,
+.api-key-form select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+@media (max-width: 600px) {
+  .settings-section .api-key-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .api-key-form > label,
+  .api-key-form > button {
+    width: 100%;
+    min-width: 0;
+  }
+  .api-key-form > button,
+  .api-key-form input,
+  .api-key-form select {
+    min-height: 44px;
+  }
 }
 .settings-section form > span {
   font-size: 10px;

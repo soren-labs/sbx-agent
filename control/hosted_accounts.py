@@ -126,6 +126,13 @@ class HostedScheduling:
         self.accounts, self.sessions = accounts, sessions
         self._items: dict[str, Any] = {}
         self._lock = threading.Lock()
+        accounts.bind_running(self.running_count)
+
+    def running_count(self, account_id):
+        record = self.accounts._record(account_id)
+        if record is None:
+            return 0
+        return self.for_user(record.user_id).running_count(account_id)
 
     def for_user(self, owner):
         with self._lock:

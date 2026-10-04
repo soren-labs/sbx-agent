@@ -62,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(argv: list[str] | None = None) -> int:
+    from runtime.runner.access_scope import access_scope
+
+    with access_scope():
+        return _run(argv)
+
+
+def _run(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "init":

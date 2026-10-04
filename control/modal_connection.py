@@ -6,6 +6,8 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from runtime.build_identity import runtime_build_identity
+
 from control.connections import ConnectionStore
 from control.hosted_auth import HostedAuthError, _write
 
@@ -116,46 +118,49 @@ class ModalConnectionService:
 
     def provision(self, user_id: str) -> dict[str, Any]:
         auth = self.store.auth
+        desired_build = runtime_build_identity(RUNTIME_VERSION)
         with _write(auth, f"connection:{user_id}:modal") as conn:
             record = self.store.get(user_id, "modal", conn=conn)
             if record is None or record.state == "disabled":
                 raise HostedAuthError("modal_connection_required", 409)
-            if (
-                record.state == "ready"
-                and record.metadata.get("runtime_version") == RUNTIME_VERSION
-            ):
+            if record.state == "ready" and record.metadata.get("build_id") == desired_build:
                 return record.public()
             if record.metadata.get("lease_until", 0) > auth.clock():
                 raise HostedAuthError("provisioning_in_progress", 409)
-            record.state = "provisioning"
+            upgrading = record.state == "ready"
+            if not upgrading:
+                record.state = "provisioning"
             record.metadata.update({"lease_until": auth.clock() + 300, "progress": []})
             self.store.save(record, conn=conn)
         try:
             context = ModalContext(user_id, record.id, self.store.credentials(record))
+            candidate = dict(record.metadata)
             for step in ("verify", "namespace", "image", "smoke"):
                 record.metadata["step"] = step
                 self.store.save(record)
                 if step == "verify":
-                    record.metadata["workspace"] = self.provider.verify_workspace(context)
+                    candidate["workspace"] = self.provider.verify_workspace(context)
                 elif step == "namespace":
-                    record.metadata["namespace"] = self.provider.ensure_namespace(
-                        context, record.metadata["workspace"]
+                    candidate["namespace"] = self.provider.ensure_namespace(
+                        context, candidate["workspace"]
                     )
                 elif step == "image":
-                    record.metadata["image"] = self.provider.publish_runtime(
-                        context, record.metadata["namespace"], RUNTIME_VERSION
+                    candidate["image"] = self.provider.publish_runtime(
+                        context, candidate["namespace"], desired_build
                     )
-                    record.metadata["runtime_version"] = RUNTIME_VERSION
+                    candidate["runtime_version"] = RUNTIME_VERSION
+                    candidate["build_id"] = desired_build
                 else:
-                    self.provider.smoke(context, record.metadata["image"])
+                    self.provider.smoke(context, candidate["image"])
                 record.metadata["progress"].append(step)
                 self.store.save(record)
         except Exception:
-            record.state = "failed"
+            record.state = "ready" if upgrading else "failed"
             record.metadata["error"] = "modal_provisioning_failed"
             record.metadata.pop("lease_until", None)
             self.store.save(record)
             raise HostedAuthError("modal_provisioning_failed", 503) from None
+        record.metadata.update(candidate)
         record.state = "ready"
         record.metadata.pop("lease_until", None)
         record.metadata.pop("error", None)

@@ -1,7 +1,19 @@
 import { useEffect, useState, type ReactNode, type FormEvent } from "react";
 import { hostedRequest } from "./api";
+import { Navigate, useLocation } from "react-router-dom";
+
+export function authReturnPath(search: string): string {
+  const value = new URLSearchParams(search).get("returnTo") || "/";
+  // Only existing product destinations. Reject schemes, protocol-relative
+  // paths and backslashes (including encoded forms) and auth redirect loops.
+  if (/[\\\\\u0000-\u0020]/.test(value) || !value.startsWith("/") || value.startsWith("//")) return "/";
+  const url = new URL(value, "https://sbx.invalid");
+  if (url.origin !== "https://sbx.invalid" || !/^\/(?:sessions\/[A-Za-z0-9_-]+|activity|review|settings|integrations(?:\/[a-z-]+)?)?\/?$/.test(url.pathname)) return "/";
+  return url.pathname + url.search + url.hash;
+}
 
 export function AuthGate({children}: {children: ReactNode}) {
+  const location = useLocation();
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<"login" | "email" | "code" | "password">("login");
@@ -37,6 +49,7 @@ export function AuthGate({children}: {children: ReactNode}) {
     } catch(e) {setError((e as Error).message);} finally {setBusy(false);}
   };
   if (loading) return <main className="settings-content" role="status">Connecting…</main>;
+  if (user && location.pathname === "/auth") return <Navigate to={authReturnPath(location.search)} replace />;
   if (user) return <div key={user.id}>{children}</div>;
   return <main className="settings-content" style={{maxWidth: 440, margin: "8vh auto"}}>
     <h1>{step === "login" ? "Sign in to SBX" : step === "email" ? "Create your account" : step === "code" ? "Verify your email" : "Set your password"}</h1>

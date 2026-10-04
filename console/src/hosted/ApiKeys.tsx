@@ -24,7 +24,7 @@ export function ApiKeys() {
   };
   return <section className="settings-section"><h2>API Keys</h2><p>Personal keys use your connected Modal, GitHub and Codex accounts.</p>
     {error && <p role="alert">{error}</p>}
-    <form onSubmit={event => void create(event)}>
+    <form className="api-key-form" onSubmit={event => void create(event)}>
       <label className="form-label">Key name<input aria-label="Key name" value={label} onChange={e => setLabel(e.target.value)} maxLength={80}/></label>
       <label className="form-label">Scope<select aria-label="Key scope" disabled><option>Sessions (agents)</option></select></label>
       <label className="form-label">Expiry<select aria-label="Key expiry" value={days} onChange={e => setDays(e.target.value)}><option value="30">30 days</option><option value="90">90 days</option><option value="365">365 days</option><option value="">No expiry</option></select></label>

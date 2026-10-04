@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import uuid
 from pathlib import Path
 
@@ -125,13 +124,9 @@ class RealModalProvider:
     def publish_runtime(self, context, namespace, version):
         client = self._client(context)
         app = self._app(client)
-        root = Path(__file__).resolve().parents[1] / "runtime"
-        digest = hashlib.sha256(version.encode())
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and path.suffix in {".py", ".sh", ".txt"}:
-                digest.update(str(path.relative_to(root)).encode())
-                digest.update(path.read_bytes())
-        name = f"sbx-runtime-{digest.hexdigest()[:20]}"
+        # version is the immutable desired build identity already persisted
+        # by ModalConnectionService. Publication and reconciliation share it.
+        name = f"sbx-runtime-{version[:40]}"
         try:
             image = self.sdk.Image.from_name(name, environment_name=ENVIRONMENT, client=client)
             image.build(app=app)
@@ -225,6 +220,19 @@ class RealModalProvider:
             encrypted_ports=[PORT],
         )
         return SandboxHandle(sandbox.object_id, Path("/work"), dict(spec.tags))
+
+    def restore(self, context, spec, runtime):
+        return self.create(context, spec, runtime)
+
+    @_safe
+    def snapshot(self, context, handle):
+        from control.config import ENV_SNAPSHOT_TIMEOUT_S, ENV_SNAPSHOT_TTL_S
+
+        image = self._sandbox(context, handle).snapshot_filesystem(
+            timeout=ENV_SNAPSHOT_TIMEOUT_S,
+            ttl=ENV_SNAPSHOT_TTL_S,
+        )
+        return image.object_id
 
     @_safe
     def exec(self, context, handle, argv, env):
