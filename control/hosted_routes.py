@@ -127,6 +127,8 @@ def github_mock_approve(body: StateBody, request: Request, owner: str = Depends(
 @router.get("/repositories")
 def github_repositories(request: Request, owner: str = Depends(user_id)):
     service = request.app.state.github_connections.for_user(owner)
+    if service.configured and not service.mock:
+        service.sync()
     return {
         "repositories": [
             {

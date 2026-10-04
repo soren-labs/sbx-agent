@@ -216,14 +216,17 @@ class HostedGitHubService(GitHubAppService):
 
         if ref != "HEAD" and not ref.startswith("refs/"):
             ref = f"refs/heads/{ref}"
-        return ls_remote(str(self.mock_repo(repo)), ref, env={})
+        remote = str(self.mock_repo(repo)) if self.mock else canonicalize_repo(repo).canonical
+        return ls_remote(remote, ref, env={} if self.mock else self.git_env(repo))
 
     def push_payload(self, repo, branch, **kwargs):
         from control.github_remote import push_payload
 
-        kwargs["env"] = {}
-        sha = push_payload(str(self.mock_repo(repo)), branch, **kwargs)
-        self.remote(repo).record_push(branch, sha)
+        kwargs["env"] = {} if self.mock else self.git_env(repo)
+        remote = str(self.mock_repo(repo)) if self.mock else canonicalize_repo(repo).canonical
+        sha = push_payload(remote, branch, **kwargs)
+        if self.mock:
+            self.remote(repo).record_push(branch, sha)
         return sha
 
 

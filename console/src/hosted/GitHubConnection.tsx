@@ -5,11 +5,13 @@ export function GitHubConnection() {
   const [installations, setInstallations] = useState<any[]>([]);
   const [configured, setConfigured] = useState(false);
   const [mock, setMock] = useState(false);
+  const [operatorBinding, setOperatorBinding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const refresh = async () => {
     const status = await hostedRequest("/hosted/connections/github");
     setInstallations(status.installations); setConfigured(status.configured); setMock(status.mock);
+    setOperatorBinding(status.binding_mode === "operator_approved");
   };
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -38,6 +40,7 @@ export function GitHubConnection() {
     <p>Authorize repositories for your Sessions. GitHub access is independent of your compute workspace.</p>
     {error && <p role="alert">{error}</p>}
     {mock && <p>Mock GitHub installations for Alpha development.</p>}
+    {operatorBinding && <p>Install SBX Agent on your repositories, then ask the deployment operator to approve the installation for your SBX account. Reload this page after approval.</p>}
     {!configured && <p>GitHub installation is not configured for this deployment.</p>}
     {installations.map(installation => <div key={installation.installation_id}>
       <p>Connected: {installation.account_login}</p>

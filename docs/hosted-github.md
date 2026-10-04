@@ -1,5 +1,35 @@
 # Hosted GitHub connection
 
+## Production App installation tokens (SOR-291)
+
+Use `control.real_github.GitHubFactory` as the hosted factory. The VPS keeps
+`SBX_GITHUB_APP_ID`, `SBX_GITHUB_APP_SLUG` and a mode-0600
+`SBX_GITHUB_APP_PRIVATE_KEY_PATH`. OAuth client secrets/device flow are optional
+and are not used by this installation-token path. Install SBX Agent through its
+GitHub installation page, selecting the intended repositories. A trusted
+operator then approves the association to an existing SBX user:
+
+```sh
+uv run python -m control.real_github --user-id USER_ID \
+  --installation-id INSTALLATION_ID --repo owner/repository
+```
+
+Run only on the control plane with its protected environment. There is no
+browser endpoint for this operation. The CLI verifies the App installation and
+explicit repository set using GitHub before persisting the owner binding.
+The UI explains operator approval and then lists only approved, currently
+granted repositories. Browser installation callbacks cannot assert ownership
+without that server-side binding. No private key or long-lived credential is
+sent to browsers or sandboxes; Git operations receive short-lived repo tokens.
+
+Disconnect is local to the SBX owner. Upstream uninstall/selection changes are
+observed on live synchronization; production repository listing and minting
+fail closed. A shared App installation is not deleted on one user's disconnect.
+The real gate `uv run python -m deploy.hosted.gates.github` runs on the dedicated
+`soren-labs/sbx-e2e-test` repository and merges only its disposable test PR.
+No implementation PR is merged. See `docs/reviews/SOR-291-real.md` for evidence
+and the deterministic-AI limitation of this GitHub stage.
+
 The hosted Integrations page connects GitHub independently of Modal and AI.
 `/hosted/connections/github/authorize` begins installation; the authenticated
 callback consumes an expiring state owned by the current user. Installation
