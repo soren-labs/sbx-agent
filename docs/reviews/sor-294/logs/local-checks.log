@@ -1,0 +1,28 @@
+Final implementation: 23715e69e0c5262bdd77a5d461c531e27cba03b7
+
+$ make lint
+All checks passed!
+544 files already formatted
+
+$ make test (isolated HOME/XDG; credential-free)
+=========== 3459 passed, 14 skipped, 2 warnings in 393.15s (0:06:33) ===========
+
+$ pytest targeted REV-001/002/003/004/005/008/009 backend regressions
+20 passed, 2 warnings in 13.35s
+
+$ console: npm test -- --run (regular test environment)
+ Test Files  16 passed (16)
+      Tests  133 passed (133)
+   Duration  8.12s (transform 2.64s, setup 3.62s, collect 8.20s, tests 15.96s, environment 13.28s, prepare 2.98s)
+
+$ console: npm run typecheck
+> tsc --noEmit
+exit 0
+
+$ Hosted production build
+> tsc --noEmit && vite build && node scripts/build-manifest.mjs
+✓ built in 1.16s
+console build-manifest: 10 files, primary assets/index-DtJ8PBuv.js e3931b0bb5c3… @ 23715e69e0c5262bdd77a5d461c531e27cba03b7
+
+$ Chromium auth/mobile regressions + full mock workflow
+3 passed, 2 warnings in 10.47s
