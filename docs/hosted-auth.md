@@ -1,5 +1,33 @@
 # Hosted Alpha authentication (SOR-281, Stage 1)
 
+## Production email (SOR-289)
+
+`SBX_AUTH_EMAIL_MODE=production` selects `control.resend_email.ResendEmailSender`.
+Supply `RESEND_API_KEY`, `SBX_AUTH_EMAIL_FROM` (a bare address or safe display name),
+and optionally `SBX_AUTH_EMAIL_REPLY_TO` from protected deployment secrets. Both
+addresses must belong to `SBX_AUTH_EMAIL_DOMAIN` (default `sbx-agent.com`). Missing
+configuration fails at startup. The sender uses Resend's HTTPS API, a 15-second
+timeout, no redirects and no ambient HTTP proxy. OTPs appear only in message text;
+provider errors, bodies and keys never appear in application diagnostics.
+
+Run `uv run python -m control.resend_email` with the protected deployment env
+loaded for a read-only key/domain preflight. It returns only provider, configured
+domain, readiness and a bounded error code. A verified domain is a prerequisite;
+it does not prove mailbox delivery. Existing auth failure cleanup, cooldown and
+durable limits apply to real delivery.
+
+The opt-in `uv run python -m deploy.hosted.gates.email` gate requires
+`SBX_REAL_INBOX_FILE` pointing to protected Resend inbox metadata outside the repo.
+It reads **inbound** received messages and completes real registration, cooldown,
+resend, OTP invalidation, password setup and later password login against an
+isolated local control plane. It also checks a real rejected provider request
+returns a safe 503. It never uses an in-process OTP outbox or prints credentials.
+The receiving inbox is acceptance tooling; production users use their own inboxes.
+
+Provider references: [Send Email](https://resend.com/docs/api-reference/emails/send-email),
+[List Domains](https://resend.com/docs/api-reference/domains/list-domains), and
+[List Thread Emails](https://resend.com/docs/api-reference/inboxes/list-thread-emails).
+
 Open `/auth` on the control-plane origin to register, verify a six-digit email
 code, set a password, sign in and sign out. The page keeps verification grants
 and entered credentials in memory. It does not store them in browser storage.

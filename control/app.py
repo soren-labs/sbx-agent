@@ -728,7 +728,12 @@ def create_app(
         )
         if email_mode not in {"mock", "disabled", "production"}:
             raise ValueError("SBX_AUTH_EMAIL_MODE must be mock, disabled or production")
-        email_sender = MockEmailSender() if email_mode == "mock" else UnconfiguredEmailSender()
+        if email_mode == "production":
+            from control.resend_email import ResendEmailSender
+
+            email_sender = ResendEmailSender.from_env()
+        else:
+            email_sender = MockEmailSender() if email_mode == "mock" else UnconfiguredEmailSender()
     app.state.hosted_auth = HostedAuthService(
         app.state.auth_store, email_sender, limiter=auth_rate_limiter
     )
