@@ -218,3 +218,80 @@ codec/duration/size validation is in the real log. The two `*-harness-incomplete
 files are retained locally but excluded from accepted recordings. Prior desktop
 redirect/picker, 390/320 mobile, failure/retry and lifecycle recordings remain
 indexed above. No secrets appear in committed screenshots or logs.
+
+
+## FINAL-V2-001 — accepted unbound reviewer startup across restart
+
+Independent v2 review at `753878d884e849921680d3e2e7e6fc85e2d91399` confirmed
+REV-001..009 and FINAL-001/002 fixed, but reproduced one new P2 blocker:
+an accepted review's queued executor job vanished on restart, leaving its durable
+unbound task running indefinitely and rejecting same-session retry.
+
+| Finding | Root fix and files/functions | Deterministic regression | Real deployed acceptance |
+| --- | --- | --- | --- |
+| FINAL-V2-001 | `control/startup_dispatch.py:StartupDispatch.prepare/reconcile/retry` durably stamps each accepted startup with a worker generation and attempt; the single-worker VPS lifespan in `control/app.py` settles superseded queued/unbound intents as canonical `internal`, terminal and retryable before readiness. `PostgresTaskStore.compare_put` / `DatabaseRecords.compare_put` use owner + durable version/payload CAS. V2 create/redrive use `StartupStore.require_current/put` to fence delayed failure/binding writes; a losing bind closes only its newly allocated owned agent and releases its lease. Prompt, original creation time, session ID, idempotency pin and failure/retry history remain durable. Bound, cancelled, terminal and current-worker claims are preserved. | Six cases in `tests/unit/test_startup_dispatch_recovery.py`: exact accepted-review ACK/reconstruction/owner retry + late executor fencing; keyed replay/conflict preserving prompt/pin/ID; current claim and cancellation; stale bind versus newer retry with cleanup; old unclaimed accepted records; stale startup scan versus a winning agent binding. The newer retry wins once through CAS; foreign owner retry is 404. | Real public HTTP 201 acknowledges reviewer `sess_a4f666882fba4f12` and a separate keyed intent before compute binds. Controlled process loss settles both as retryable failures. Create replay returns the same ID; changed body is 409. Five foreign-owner paths are 404 and listing empty. Agent Browser presses **Retry on the original reviewer Session**; duplicate concurrent retry is 409. Native Codex completes exactly one numbered run on the SAME ID and yields current independent approve. Reconstruction retains one failed startup and one retry, never indefinite running. |
+
+Product source tested and deployed:
+`38adb47d91647d3a961bc2f80c3ef01ffb11010a`.
+Backend verifies all **295 committed source hashes**; Console manifest and all
+**10 public asset hashes** verify that same SHA. The final evidence-only commit
+is also deployed and verified; its exact SHA and current CI links are recorded
+in the PR body/comment to avoid a self-referential hash in this file.
+This design uses the existing VPS service's **one API worker**. Each new
+process marks prior unbound accepted attempts retryable; it does not silently
+resubmit their prompts. Owner retry claims a new attempt atomically.
+
+Local gates: lint **550 files** PASS; targeted prior-remediation/final-blocker/
+lifecycle-race/retry/ACK/workflow selection **119 passed**; full credential-free
+backend **3,508 passed / 14 skipped**; Console **133 tests / 16 files**, typecheck
+and regular + hosted production builds PASS; Chromium auth/mobile/author-review
+loops **4 passed / 1 optional PostgreSQL skip**. Frozen contract and Protocol
+files remain unchanged. The one existing deliberately corrupted-record watcher
+warning is documented in the local log, along with corrected browser harness
+configuration; no test assertion was weakened or cloud credential supplied.
+
+The additional real author `sess_c0234c43c1b24ef6` uses `gpt-6.1-sol` with explicit
+**low** effort. Native Codex creates `v2_startup_math.py` and
+`test_v2_startup_math.py`, leaves both uncommitted, and passes three stdlib tests.
+Automatic owner-bound App delivery, without manual `/deliver` or ambient PAT,
+creates draft [sbx-e2e-test #18](https://github.com/soren-labs/sbx-e2e-test/pull/18)
+with exactly those two files and unchanged sandbox base HEAD. Real Modal has
+**8 identity tags**; execution metadata remains durable. Thus FINAL-001/002 are
+preserved in this new real gate, in addition to their full regression coverage.
+The original reviewer is recovered and approved before cleanup. Only this new
+PR and its exact `sbx/ae7a92be488b402784dd56f48174f30b` branch are closed/deleted; only these
+owned disposable agents and keyed startup are closed/cancelled. Automatic
+reconciliation after cleanup does not recreate that branch or reopen the PR.
+Sing-box remains **PID 2224** on TCP/UDP **443**, SBX tunnel **PID 515489**;
+all four services are active. No Cloudflare tunnel configuration, unrelated
+chat-on-steroids resource, biz1 reviewer login/profile/account or implementation
+auth cache was accessed or modified. Native journal credential scan passes.
+
+Detailed sanitized logs:
+[local gates](logs/v2-startup-local.log),
+[real fault, provider, isolation, replay and cleanup gates](logs/v2-startup-real.log),
+[deployed UI assertions and WebM metadata](logs/v2-startup-ui.log).
+
+Deployed screenshots:
+[explicit low effort](screenshots/v2-explicit-effort.png),
+[author startup](screenshots/v2-explicit-effort-live.png),
+[automatic owner-App PR and real native output](screenshots/v2-automatic-owner-app-delivery.png),
+[accepted unbound review](screenshots/v2-review-accepted.png),
+[terminal failure after restart](screenshots/v2-review-restart-failed.png),
+[original Session reason and Retry](screenshots/v2-review-session-retry.png),
+[same-session retry startup](screenshots/v2-review-retry-live.png),
+[recovered original independent approval](screenshots/v2-review-original-recovered.png).
+All eight new screenshots were visually inspected for secrets.
+
+Accepted new WebMs remain outside Git under
+`/home/zheng/.local/state/sbx-sor294-remediation/videos/`:
+`13-v2-explicit-effort-author.webm`, `14-v2-automatic-owner-app-delivery.webm`,
+`15-v2-accepted-review-restart.webm`, `16-v2-same-session-retry.webm`,
+`17-v2-original-review-recovered.webm`. The initial RuntimeDirectory and
+legacy-selector harness attempts are recorded as harness failures, not passing
+gates; the incomplete Retry recording is excluded. Credential/password input
+is excluded from recordings. Integrity is refreshed and private-value/pattern
+scans plus Gitleaks run before evidence commit.
+
+PR **#162 remains open and unmerged**. A **fresh independent review is required**
+on the final head; author verification does not supersede that gate.
