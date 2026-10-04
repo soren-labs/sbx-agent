@@ -163,3 +163,49 @@ MainPID=2224
   "scrollWidth": 320,
   "width": 320
 }
+
+[Final race-fixed product deployment and acceptance: 2adff83b63802edf16c36ebefe2522bd3ed771a4]
+
+[deploy-backend-ci-race.log]
+Production source uploaded; artifact SHA256 6de6cf548867c1e69c529c964a07c22d3fc621d6d660f88c0a5c321e8a8a0bc6
+Production service and PostgreSQL health PASS
+Production uploaded source manifest verified PASS
+
+[post-guard-real.log]
+Final lifecycle capacity and connected Codex readiness PASS
+Session sess_ba24dce5a049485c run 1 : queued
+Session sess_ba24dce5a049485c run 1 : running
+Session sess_ba24dce5a049485c run 1 : finished
+Final deployment real native startup/finish and retained direct connection PASS: sess_ba24dce5a049485c
+
+[post-guard-browser.log]
+Final product Agent Browser authenticated /auth return reaches Session workspace PASS
+Final product Agent Browser connected Codex and both models selectable PASS
+Final product Agent Browser real native Session output rendered PASS
+
+[ui-ci-race-product.log]
+Final PR HEAD Agent Browser: terminal review failure + successful retry visible PASS
+Final PR HEAD Agent Browser mobile 390 layout/touch targets PASS
+Final PR HEAD Agent Browser mobile 320 layout/touch targets PASS
+
+[services-ci-race-product.log]
+BASE REV-002 Codex readiness: ready
+BASE available Codex models: 2
+BASE retained Session status counts: {'queued': 0, 'running': 1, 'finished': 9, 'failed': 7}
+active
+active
+active
+active
+MainPID=2224
+*:443 users:(("sing-box",pid=2224,fd=8))
+
+
+[production-secret-ci-race.log]
+Production credential leak scan PASS: event-check
+Production credential leak scan PASS: event-check
+Production credential leak scan PASS: log-check
+
+[Production frontend publication]
+
+🌎 Deploying...
+✨ Deployment complete! Take a peek over at https://dec1d487.sbx-agent.pages.dev

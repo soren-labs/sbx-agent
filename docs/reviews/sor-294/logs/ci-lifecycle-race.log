@@ -1,0 +1,37 @@
+Initial PR CI: https://github.com/soren-labs/sbx-browser/actions/runs/37198186695
+Backend failure: test_user_modal_runtime_direct_grants_and_reconstruction
+Expected direct connection HTTP 200; observed HTTP 409 during runtime startup.
+
+Root cause 1: a session and sandbox published between the sweep's durable
+record listing and remote handle listing were classified as an orphan.
+The orphan pass could terminate compute before startup finished binding it.
+
+Before-fix deterministic reproduction:
+test_rev001_create_after_sweep_listing_is_not_orphan_killed
+creating/unbound: FAIL (compute terminated)
+creating/bound: FAIL (compute terminated)
+running/bound: FAIL (compute terminated)
+idle/bound: FAIL (compute terminated)
+
+Fix: read the durable owning record after handle enumeration. Preserve active
+bindings and in-flight creates. An unavailable durable read cannot authorize
+termination. True orphans and terminal cleanup remain covered by reaper tests.
+
+Root cause 2: an idle scan could fall back to terminating compute after a new
+turn superseded its checkpoint claim. Reject termination of current active
+compute without a lifecycle claim. Remote termination stays outside the plane
+lock; accepted prompts stay durable while a checkpoint claim is active.
+
+Regression: test_rev001_new_turn_supersedes_stale_idle_termination
+New running turn and live compute both survive the stale sweep: PASS.
+
+After-fix targeted command (isolated HOME; stripped credentials):
+pytest tests/unit/control/test_sor294_remediation.py
+       tests/unit/api_v2/test_sor294_durability.py
+       tests/unit/control/test_reaper.py
+       tests/unit/control/test_sor271_capacity_reaper.py
+       tests/unit/api_v2/test_hosted_ownership.py -q
+64 passed, 2 dependency deprecation warnings, 18.49 seconds.
+
+All remediation-specific backend cases: 25 passed, 12.00 seconds.
+No frozen contracts or Protocol files changed.

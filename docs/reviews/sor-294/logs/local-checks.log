@@ -1,28 +1,34 @@
-Final implementation: 23715e69e0c5262bdd77a5d461c531e27cba03b7
+Final tested product implementation: 2adff83b63802edf16c36ebefe2522bd3ed771a4
 
 $ make lint
 All checks passed!
-544 files already formatted
+545 files already formatted
 
-$ make test (isolated HOME/XDG; credential-free)
-=========== 3459 passed, 14 skipped, 2 warnings in 393.15s (0:06:33) ===========
+$ make test (stripped environment; isolated HOME/XDG)
+=========== 3464 passed, 14 skipped, 3 warnings in 403.98s (0:06:43) ===========
 
-$ pytest targeted REV-001/002/003/004/005/008/009 backend regressions
-20 passed, 2 warnings in 13.35s
+$ pytest REV-001..009 backend regressions
+25 passed, 2 warnings in 12.00s
 
-$ console: npm test -- --run (regular test environment)
+$ pytest lifecycle/reaper/durability/hosted ownership
+64 passed, 2 warnings in 18.49s
+
+$ npm test -- --run (regular test environment)
  Test Files  16 passed (16)
       Tests  133 passed (133)
-   Duration  8.12s (transform 2.64s, setup 3.62s, collect 8.20s, tests 15.96s, environment 13.28s, prepare 2.98s)
+   Duration  7.89s (transform 2.30s, setup 4.27s, collect 7.38s, tests 14.78s, environment 11.97s, prepare 2.29s)
 
-$ console: npm run typecheck
+$ npm run typecheck
 > tsc --noEmit
 exit 0
 
-$ Hosted production build
+$ hosted npm run build; explicit production API and source SHA
 > tsc --noEmit && vite build && node scripts/build-manifest.mjs
-✓ built in 1.16s
-console build-manifest: 10 files, primary assets/index-DtJ8PBuv.js e3931b0bb5c3… @ 23715e69e0c5262bdd77a5d461c531e27cba03b7
+✓ built in 1.25s
+console build-manifest: 10 files, primary assets/index-DtJ8PBuv.js e3931b0bb5c3… @ 2adff83b63802edf16c36ebefe2522bd3ed771a4
 
-$ Chromium auth/mobile regressions + full mock workflow
-3 passed, 2 warnings in 10.47s
+$ Chromium auth/mobile, complete mock workflow, hosted Alpha gate
+4 passed, 1 skipped, 2 warnings in 23.52s
+
+Browser rerun setup note: production-origin bundle was rebuilt for loopback before local browser gates.
+Full backend warning note: two dependency deprecations plus the existing intentionally corrupt-record fixture background warning; all tests passed.

@@ -5,10 +5,14 @@ Acceptance contract: independent review of SBX Hosted Alpha PRs #157–#161,
 review directory. Reviewed baseline: `443f8aa3c85bb2a27d5a96ece74993563075bff4`.
 All nine findings are confirmed and fixed; none is dismissed.
 
-Final tested implementation: `23715e69e0c5262bdd77a5d461c531e27cba03b7`.
+Final tested implementation: `2adff83b63802edf16c36ebefe2522bd3ed771a4`.
 The earlier implementation deployment was `d5017d7b41b2066b21a3cfca6d893b8eb5bf9b9f`.
 Real acceptance exposed the persisted startup state `error`; the final implementation
 adds that state to REV-009 and tests the actual dispatch-failure writer.
+Initial PR CI also exposed an actual lifecycle startup race. The final product
+adds fresh durable ownership reads after remote handle enumeration and rejects
+stale idle termination after a new turn; five deterministic cases cover both
+windows. See [CI race reproduction and fix](logs/ci-lifecycle-race.log).
 The evidence commit changes documentation/images only. The PR body records the
 exact final branch HEAD, its subsequent deployment, and CI results. Deployment
 packages Git blobs from a clean, pinned commit, verifies every uploaded byte,
@@ -17,7 +21,7 @@ records its source commit. Neither publication includes working-tree bytes.
 
 | Finding / original bug | Root-cause fix and files/functions | Regression | Real deployed acceptance |
 | --- | --- | --- | --- |
-| REV-001 P1: idle VPS agents permanently occupy Codex capacity; catalog disagrees | `control/hosted_lifecycle.py`: `HostedLifecycle`, `SweepStore`, `SweepCheckpoints`; lifespan wiring in `control/app.py`; owner-bound snapshots in `control/hosted_compute.py` and `control/real_modal.py`; `control/reaper.py` heals interrupted claims; `HostedScheduling.running_count` in `control/hosted_accounts.py` shares scheduler/record truth with catalog | `test_rev001_sweep_releases_capacity_preserves_history_and_recovers_owned_compute`; `test_rev001_sweep_claim_retains_concurrent_followup_and_restart` | Three real completed sessions make both Codex models busy. Two healthy sessions checkpoint/suspend, dead compute becomes terminal, and capacity becomes available. Fresh personal-key author, PR and independent native reviewer then succeed. Restored native follow-up preserves repository/history. |
+| REV-001 P1: idle VPS agents permanently occupy Codex capacity; catalog disagrees | `control/hosted_lifecycle.py`: `HostedLifecycle`, `SweepStore`, `SweepCheckpoints`, `SweepBackend`; lifespan wiring in `control/app.py`; owner-bound snapshots in `control/hosted_compute.py` and `control/real_modal.py`; `control/reaper.py` heals interrupted claims; `HostedScheduling.running_count` in `control/hosted_accounts.py` shares scheduler/record truth with catalog | `test_rev001_sweep_releases_capacity_preserves_history_and_recovers_owned_compute`; `test_rev001_sweep_claim_retains_concurrent_followup_and_restart`; `test_rev001_create_after_sweep_listing_is_not_orphan_killed` (four states); `test_rev001_new_turn_supersedes_stale_idle_termination` | Three real completed sessions make both Codex models busy. Two healthy sessions checkpoint/suspend, dead compute becomes terminal, and capacity becomes available. Fresh personal-key author, PR and independent native reviewer then succeed. Restored native follow-up preserves repository/history. Final race-fixed deployment also completes a fresh native session and returns 200 for its retained direct connection. |
 | REV-002 P2: connected Codex disabled in picker | `control/config.py:execution_providers` shared by provider/models routes in `control/api_v1/routes.py` and resolver in `control/tasks.py`; rollout explicitly enables Codex | `test_rev002_hosted_picker_and_execution_share_provider_truth` | Production baseline disabled despite two available models; deployed browser selects Codex ready and both models. Explicit Codex execution succeeds. |
 | REV-003 P1: transport/wait failures skip native cache cleanup; stale callback races new lease | `control/codex_process.py:AccessOnlyProcess`; `control/sandbox_io.py:drain`; `control/hosted_github.py:GitHubScopedBackend.exec`; sandbox-owned flock/generation/finally in `runtime/runner/access_scope.py`; runner entry wraps operation in `runtime/runner/main.py` | `test_rev003_operation_cleans_on_transport_wait_cancel_and_close`; `test_rev003_sandbox_finally_and_stale_cleanup_cannot_delete_new_lease` | Native caches absent after actual Codex. Real Modal guard checks pass for exit 0/7, stdout failure, wait failure, cancel and stale callback while newer operation holds cache. Official VPS native refresh and unauthorized-operation retry advance canonical credential version, without importing an old cache. |
 | REV-004 P2: existing Ready Modal image never upgrades | `runtime/build_identity.py:runtime_build_identity`; `control/modal_connection.py:ModalConnectionService.provision`; `control/real_modal.py:publish_runtime`; worker reconciliation persists immutable desired identity and switches only after smoke | `test_rev004_ready_upgrade_smokes_before_switch_and_keeps_existing_handle` (upgrade, identical reuse, smoke failure) | Previously Ready runtime automatically republishes/smokes reviewed build. Changed non-secret build input republishes/smokes while an existing sandbox remains alive. Canonical build restored, identical build reused without metadata writes. |
@@ -33,18 +37,20 @@ Development/test processes use isolated HOME/XDG and a stripped environment.
 No cloud credentials are required by the backend suite; 14 opt-in/environmental
 tests skip. Frozen contracts/Protocol files have no diff.
 
-- `make lint`: green, 544 Python files formatted.
-- `make test`: **3,459 passed, 14 skipped**; 393.15 seconds.
-- Targeted backend remediation cases: **20 passed**.
+- `make lint`: green, 545 Python files formatted.
+- `make test`: **3,464 passed, 14 skipped**; 403.98 seconds.
+- Targeted backend remediation cases: **25 passed**; broader lifecycle/durability/ownership checks **64 passed**.
 - Console tests in the regular test environment: **16 files, 133 passed**.
 - Console TypeScript check: green.
 - Hosted console production build with explicit API origin and source SHA: green.
-- Chromium mobile/auth regressions plus mock coding/fix/review workflow: **3 passed**.
+- Chromium mobile/auth regressions, mock coding/fix/review workflow and SQLite hosted Alpha gate: **4 passed, 1 skipped** (optional PostgreSQL browser gate).
 
 See [local-checks.log](logs/local-checks.log) for concise command/results and
 [real-gates.log](logs/real-gates.log) for sanitized provider/runtime/lifecycle gates.
-Two dependency deprecation warnings are retained in original local logs; neither
-is a test failure. Raw logs stay outside Git.
+The full run reports two dependency deprecation warnings and one background-thread
+warning from the existing deliberately corrupt-record fixture
+(`test_missing_evidence.py`, `garbage` field). All tests pass; this fixture warning
+is separate from the repaired lifecycle race. Raw logs stay outside Git.
 
 ## Production verification notes
 
@@ -66,6 +72,8 @@ session acknowledged run 3, then durably failed; run 2 in an earlier probe
 completed normally because that probe had not terminated compute. Only the
 confirmed terminated-compute probe is claimed as REV-008 evidence.
 The fresh author after cleanup is `sess_ed2a937a4efd45e4`.
+Final race-fixed deployment native startup/direct-connection acceptance is
+`sess_ba24dce5a049485c`, with finished run 1 and HTTP 200 direct connection.
 The initially failed unbound reviewer is `sess_5244741f6ff34bb6`;
 the successful browser retry is `sess_13cff0b224864107`.
 The fresh author's independent reviewer is `sess_9f89ac88c2c64ef3`, which approves
@@ -108,6 +116,8 @@ No video, browser storage, private state or auth cache is committed.
 Local WebMs under `/home/zheng/.local/state/sbx-sor294-remediation/videos/`:
 `01-auth-picker.webm`, `02-author-review.webm`, `03-mobile-390.webm`,
 `04-mobile-320.webm`, `05-review-recovery.webm`, `06-failure-review-retry.webm`,
-`07-fresh-author-review.webm`. The fifth is an intermediate capture before the
+`07-fresh-author-review.webm`, `08-lifecycle-startup-recovery.webm`.
+The eighth records the final product auth redirect, enabled Codex/model selection
+and real native Session output after the CI race repair. The fifth is an intermediate capture before the
 startup-state correction; sixth records the corrected terminal failure/retry.
 Screenshots plus sanitized logs provide the reviewable committed evidence.
