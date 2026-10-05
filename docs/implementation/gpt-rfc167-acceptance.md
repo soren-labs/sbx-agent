@@ -12,8 +12,9 @@ was merged. This is implementation evidence, not production rollout approval.
 3. [Phase 3 — Connections](https://github.com/soren-labs/sbx-browser/pull/171)
 4. [Phase 4 — Delivery/Delegation](https://github.com/soren-labs/sbx-browser/pull/174)
 5. [Phase 5 — Product](https://github.com/soren-labs/sbx-browser/pull/176)
-6. Phase 6 — `benchmark/gpt-rfc167-06-mvp`, based on Phase 5; its final PR comment
-   and local session artifact record the exact final HEAD and CI receipts.
+6. [Phase 6 — Cutover/MVP](https://github.com/soren-labs/sbx-browser/pull/179),
+   based on Phase 5; its final PR comment and local session artifact record the
+   exact final HEAD and CI receipts.
 
 The preserved complete live run used clean code commit
 `0d27052cec73e0f0a3ae43724f18c0e158e6c611`, protocol 1.0, official OpenCode
