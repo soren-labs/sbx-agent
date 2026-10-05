@@ -11,7 +11,9 @@ from protocol.runtime import OperationFrame, ProtocolError
 from runtime.daemon import files, snapshots
 from runtime.daemon.journal import Journal
 from runtime.daemon.supervisor import Supervisor
+from runtime.daemon.worktree import clone_auth
 from runtime.harnesses.registry import catalog
+from runtime.security.redaction import Redactor
 
 
 class Runtime:
@@ -114,6 +116,12 @@ class Runtime:
                         "LANG": "C.UTF-8",
                         "GIT_TERMINAL_PROMPT": "0",
                     }
+                    for name, value in payload.get("env", {}).items():
+                        if name in {"HOME", "PATH"} or name.startswith(
+                            ("XDG_", "SBX_", "OPENCODE_")
+                        ):
+                            raise ProtocolError("forbidden")
+                        env[name] = value
                     Path(env["HOME"]).mkdir(mode=0o700, exist_ok=True)
                     repo = payload.get("repository")
                     if repo:
@@ -124,13 +132,16 @@ class Runtime:
                         ):
                             raise ProtocolError("forbidden")
                         if not (self.worktree / ".git").exists():
-                            subprocess.run(
-                                ["git", "clone", "--quiet", repo, str(self.worktree)],
-                                env=env,
-                                check=True,
-                                capture_output=True,
-                                timeout=120,
-                            )
+                            clone_credential = payload.get("clone_credential", {})
+                            self.supervisor.known_secrets.update(clone_credential.values())
+                            with clone_auth(self.root, clone_credential, env) as clone_env:
+                                subprocess.run(
+                                    ["git", "clone", "--quiet", repo, str(self.worktree)],
+                                    env=clone_env,
+                                    check=True,
+                                    capture_output=True,
+                                    timeout=120,
+                                )
                         base = payload["base_sha"]
                         subprocess.run(
                             ["git", "checkout", "--detach", base],
@@ -224,6 +235,6 @@ def create_runtime_app(runtime):
 
     @app.get("/files/read")
     def file_read(path: str):
-        return files.read(runtime.worktree, path)
+        return Redactor(runtime.supervisor.known_secrets).clean(files.read(runtime.worktree, path))
 
     return app

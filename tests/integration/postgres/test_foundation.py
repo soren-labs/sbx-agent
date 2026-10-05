@@ -48,7 +48,12 @@ def test_concurrent_queue_and_claims(database, principal):
     claims = Claims(database)
     with ThreadPoolExecutor(max_workers=8) as pool:
         taken = list(pool.map(lambda i: claims.take(str(i)), range(16)))
-    assert len({c.job_id for c in taken}) == 16
+    # SKIP LOCKED may see all remaining rows locked at a particular instant.
+    # A worker retries its poll; this is not permission to claim an occupied row.
+    taken = [claim for claim in taken if claim is not None]
+    while remaining := claims.take("drain"):
+        taken.append(remaining)
+    assert len(taken) == len({c.job_id for c in taken}) == 16
 
 
 def test_stale_claim_retains_effect_identity(database, principal):

@@ -70,7 +70,16 @@ class LocalExecutor:
         raise DomainError("executor_unavailable")
 
     def describe(self, handle):
-        return json.loads(Path(handle).read_text())
+        data = json.loads(Path(handle).read_text())
+        proc = Path("/proc") / str(data["pid"])
+        try:
+            running = proc.exists() and proc.joinpath("stat").read_text().split()[2] != "Z"
+            if running:
+                inputs = proc.joinpath("environ").read_bytes().split(b"\x00")
+                running = ("SBX_LEASE_ID=" + data["lease_id"]).encode() in inputs
+        except OSError:
+            running = False
+        return {**data, "status": "ready" if running else "stopped"}
 
     def connect_runtime(self, handle, token=None):
         data = self.describe(handle)
@@ -85,8 +94,25 @@ class LocalExecutor:
     def terminate(self, handle, operation_id):
         import signal
 
-        pid = self.describe(handle)["pid"]
+        data = self.describe(handle)
+        if data["status"] == "stopped":
+            return
+        lease_root = (self.root / data["lease_id"]).resolve()
+        # Development teardown is scoped to this lease's unique filesystem.
+        # Provider processes have their own groups, so stopping daemon alone is insufficient.
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                if proc.joinpath("cwd").resolve().is_relative_to(lease_root):
+                    pid = int(proc.name)
+                    if os.getpgid(pid) == pid:
+                        os.killpg(pid, signal.SIGKILL)
+                    else:
+                        os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
         try:
-            os.killpg(pid, signal.SIGTERM)
+            os.killpg(data["pid"], signal.SIGTERM)
         except ProcessLookupError:
             pass

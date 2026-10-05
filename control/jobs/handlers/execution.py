@@ -13,6 +13,8 @@ class ExecutionHandler:
         self.uow, self.claims = uow, claims
         self.execution, self.ingest = Execution(uow, claims), Ingest(uow, claims)
         self.executor_factory, self.credentials, self.master = executor_factory, credentials, master
+        self.snapshot_reader = None
+        self.environment_resolver = None
 
     def __call__(self, claim):
         try:
@@ -51,15 +53,31 @@ class ExecutionHandler:
         if lease["state"] == "allocating":
             self.execution.bind(claim, session, lease, handle, client.hello)
         inputs = session["effective_inputs"]
+        clone_credential = {}
+        if self.environment_resolver:
+            inputs, clone_credential = self.environment_resolver(session, execution, lease)
+        with self.uow.transaction() as repo:
+            worktree = repo.one("SELECT * FROM worktrees WHERE session_id=%s", (session["id"],))
+        if worktree["last_snapshot_id"] and self.snapshot_reader:
+            manifest = self.snapshot_reader(session["workspace_id"], worktree["last_snapshot_id"])
+            restore_id = lease["allocation_operation_id"] + "-restore"
+            client.submit(restore_id, "worktree.restore", {"manifest": manifest})
+            restored = client.wait(restore_id)
+            if restored.get("error"):
+                raise DomainError(restored["error"])
         envop = lease["allocation_operation_id"] + "-environment"
         # Same deterministic prepare operation is always deduped at runtime.
         client.submit(
             envop,
             "environment.prepare",
             {
-                "repository": inputs.get("repository"),
+                "repository": None if worktree["last_snapshot_id"] else inputs.get("repository"),
                 "base_sha": inputs.get("base_sha"),
-                "setup": inputs.get("setup", []),
+                "setup": inputs.get("resume", [])
+                if worktree["last_snapshot_id"]
+                else inputs.get("setup", []),
+                "env": inputs.get("env", {}),
+                "clone_credential": clone_credential,
             },
         )
         prepared = client.wait(envop)
@@ -78,7 +96,12 @@ class ExecutionHandler:
                 "ORDER BY created_at DESC LIMIT 1",
                 (session["id"],),
             )
-        credential = self.credentials(session, execution, lease, "inference")
+        resolved = self.credentials(session, execution, lease, "inference")
+        if isinstance(resolved, tuple):
+            credential, credential_id = resolved
+            self.execution.bind_credential(claim, execution["id"], credential_id)
+        else:
+            credential = resolved
         payload = {
             "turn_id": turn["id"],
             "execution_id": execution["id"],
@@ -87,7 +110,7 @@ class ExecutionHandler:
             "prompt": message["content"],
             "native_id": native["native_id"] if native else None,
             "credential_bundle": credential,
-            "settings": turn["settings"],
+            "settings": {**turn["settings"], "env": inputs.get("env", {})},
             "timeout": 600,
         }
         # Replaced credential material cannot change an already accepted operation body.

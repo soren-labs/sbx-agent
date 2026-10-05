@@ -98,8 +98,11 @@ class ModalExecutor:
             raise DomainError("executor_unavailable") from None
 
     def describe(self, handle):
-        sandbox = self.sdk.Sandbox.from_id(handle, client=self.client)
-        return {"status": "ready" if sandbox.poll() is None else "stopped"}
+        try:
+            sandbox = self.sdk.Sandbox.from_id(handle, client=self.client)
+            return {"status": "ready" if sandbox.poll() is None else "stopped"}
+        except self.sdk.exception.NotFoundError:
+            return {"status": "stopped"}
 
     def connect_runtime(self, handle):
         sandbox = self.sdk.Sandbox.from_id(handle, client=self.client)

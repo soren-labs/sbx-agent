@@ -24,11 +24,26 @@ class Sessions:
 
     def create_in(self, repo, principal, workspace_id, body):
         sid, wid = new_id("sess"), new_id("wt")
-        provider = body.get("provider_id", "opencode")
-        require(provider in {"opencode", "codex"}, "unsupported_capability")
         pver = body.get("project_version_id")
         if pver:
-            owned(repo, "project_versions", pver, principal)
+            version = owned(repo, "project_versions", pver, principal)
+            body = {**version["spec"], **body}
+        provider = body.get("provider_id", "opencode")
+        require(provider in {"opencode", "codex"}, "unsupported_capability")
+        bindings = [
+            ("modal_connection_id", "modal"),
+            ("zen_connection_id", "opencode_zen"),
+            ("github_connection_id", "github"),
+        ]
+        for field, kind in bindings:
+            if body.get(field):
+                connection = owned(repo, "connections", body[field], principal)
+                require(
+                    connection["kind"] == kind
+                    and connection["state"] == "configured"
+                    and connection["creator_id"] == principal.user_id,
+                    "connection_revoked",
+                )
         repo.execute(
             "INSERT INTO sessions(id,workspace_id,creator_id,title,role,provider_id,"
             "project_version_id,effective_inputs) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -41,6 +56,17 @@ class Sessions:
                 provider,
                 pver,
                 body,
+            ),
+        )
+        repo.execute(
+            "UPDATE sessions SET modal_connection_id=%s,zen_connection_id=%s,github_co"
+            "nnection_id=%s "
+            "WHERE id=%s",
+            (
+                body.get("modal_connection_id"),
+                body.get("zen_connection_id"),
+                body.get("github_connection_id"),
+                sid,
             ),
         )
         repo.execute(

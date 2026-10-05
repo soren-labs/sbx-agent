@@ -11,6 +11,9 @@ class Execution:
     def admit(self, claim):
         with self.uow.transaction() as repo:
             turn = repo.one("SELECT * FROM turns WHERE id=%s", (claim.row["turn_id"],))
+            quota = repo.one(
+                "SELECT * FROM workspaces WHERE id=%s FOR UPDATE", (turn["workspace_id"],)
+            )
             session = repo.one(
                 "SELECT * FROM sessions WHERE id=%s FOR UPDATE", (turn["session_id"],)
             )
@@ -50,6 +53,12 @@ class Execution:
                 (session["id"],),
             )
             if not lease:
+                active = repo.one(
+                    "SELECT count(*) AS n FROM executor_leases WHERE workspace_id=%s "
+                    "AND cleanup_confirmed=false",
+                    (session["workspace_id"],),
+                )["n"]
+                require(active < quota["max_live_leases"], "waiting_capacity")
                 previous = repo.one(
                     "SELECT coalesce(max(generation),0)+1 AS gen FROM executor_leases "
                     "WHERE session_id=%s",
@@ -81,6 +90,37 @@ class Execution:
                 (eid, session["workspace_id"], turn["id"], lease["id"], new_id("op")),
             )
             repo.execute("UPDATE turns SET state='preparing' WHERE id=%s", (turn["id"],))
+            connection_id = session.get("zen_connection_id")
+            if connection_id:
+                connection = repo.one(
+                    "SELECT * FROM connections WHERE id=%s FOR UPDATE", (connection_id,)
+                )
+                require(connection["state"] == "configured", "connection_revoked")
+                occupied = {
+                    r["slot_ordinal"]
+                    for r in repo.all(
+                        "SELECT slot_ordinal FROM capacity_reservations WHERE connecti"
+                        "on_id=%s AND state='active'",
+                        (connection_id,),
+                    )
+                }
+                slot = next(
+                    (i for i in range(connection["concurrency_limit"]) if i not in occupied), None
+                )
+                require(slot is not None, "waiting_capacity")
+                repo.execute(
+                    "INSERT INTO capacity_reservations(id,workspace_id,connection_id,slot_ordinal,"
+                    "execution_id,lease_id,expires_at) VALUES(%s,%s,%s,%s,%s,%s,now()+"
+                    "interval '30 minutes')",
+                    (
+                        new_id("reservation"),
+                        session["workspace_id"],
+                        connection_id,
+                        slot,
+                        eid,
+                        lease["id"],
+                    ),
+                )
             repo.event(
                 session["workspace_id"],
                 session["id"],
@@ -168,4 +208,24 @@ class Execution:
                 "turn.interrupted",
                 {"turn_id": turn["id"], "reason": reason},
                 turn_id=turn["id"],
+            )
+
+    def bind_credential(self, claim, execution_id, credential_id):
+        with self.uow.transaction() as repo:
+            execution = repo.one("SELECT * FROM executions WHERE id=%s", (execution_id,))
+            turn = repo.one("SELECT * FROM turns WHERE id=%s", (execution["turn_id"],))
+            repo.one("SELECT id FROM sessions WHERE id=%s FOR UPDATE", (turn["session_id"],))
+            self.claims.assert_current(repo, claim)
+            native = repo.one(
+                "SELECT * FROM native_context_bindings WHERE session_id=%s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (turn["session_id"],),
+            )
+            require(
+                not native or native["account_credential_id"] == credential_id,
+                "context_unavailable",
+            )
+            require(execution["credential_id"] in {None, credential_id}, "context_unavailable")
+            repo.execute(
+                "UPDATE executions SET credential_id=%s WHERE id=%s", (credential_id, execution_id)
             )

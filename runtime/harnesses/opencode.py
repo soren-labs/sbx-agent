@@ -81,6 +81,10 @@ class OpenCodeHarness:
             "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
             "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
         }
+        for name, value in context.settings.get("env", {}).items():
+            if name in {"HOME", "PATH"} or name.startswith(("SBX_", "XDG_", "OPENCODE_")):
+                raise ProtocolError("forbidden")
+            env[name] = value
         if credential_bundle:
             key = credential_bundle.get("api_key")
             if not isinstance(key, str) or not key:

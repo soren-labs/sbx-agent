@@ -63,6 +63,31 @@ class Ingest:
                     local_seq=seq,
                     source={"kind": "runtime", "runtime_epoch": epoch, "local_seq": seq},
                 )
+                if event["type"] == "execution.native_bound":
+                    old = repo.one(
+                        "SELECT * FROM native_context_bindings WHERE session_id=%s "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (session["id"],),
+                    )
+                    require(not old or old["native_id"] == payload["native_id"], "context_mismatch")
+                    if not old:
+                        repo.execute(
+                            "INSERT INTO native_context_bindings(id,workspace_id,sessi"
+                            "on_id,provider_id,native_id,"
+                            "lineage_id,cli_version,adapter_version,account_connection"
+                            "_id,account_credential_id) "
+                            "VALUES(%s,%s,%s,%s,%s,%s,'1.18.29','1',%s,%s)",
+                            (
+                                new_id("native"),
+                                session["workspace_id"],
+                                session["id"],
+                                session["provider_id"],
+                                payload["native_id"],
+                                new_id("lineage"),
+                                session["zen_connection_id"],
+                                execution["credential_id"],
+                            ),
+                        )
                 if event["type"] == "message.part_updated":
                     repo.execute(
                         "INSERT INTO message_parts(id,workspace_id,session_id,execution_id,"
@@ -123,6 +148,14 @@ class Ingest:
                 "cancelled": "cancelled",
                 "interrupted": "unknown",
             }[verdict]
+            if result.get("stopped"):
+                repo.execute(
+                    "UPDATE capacity_reservations SET state='released' WHERE execution_id=%s",
+                    (execution_id,),
+                )
+                repo.execute(
+                    "UPDATE executions SET isolation_confirmed=true WHERE id=%s", (execution_id,)
+                )
             repo.execute(
                 "UPDATE executions SET state=%s,final_watermark=%s,outcome=%s,native_id=%s "
                 "WHERE id=%s",
@@ -152,6 +185,13 @@ class Ingest:
                             "1",
                         ),
                     )
+            if result.get("native_id") and verdict == "succeeded":
+                repo.execute(
+                    "UPDATE native_context_bindings SET account_connection_id=%s,accou"
+                    "nt_credential_id=%s "
+                    "WHERE session_id=%s AND account_credential_id IS NULL",
+                    (session["zen_connection_id"], execution["credential_id"], session["id"]),
+                )
             repo.event(
                 session["workspace_id"],
                 session["id"],
