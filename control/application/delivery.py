@@ -25,16 +25,19 @@ class Deliveries:
                 )
                 transport = body.get("transport", "pull_request")
                 validate_transport(transport)
-                cid = body.get("github_connection_id", session["github_connection_id"])
-                connection = owned(repo, "connections", cid, principal)
-                require(
-                    connection["kind"] == "github" and connection["state"] == "configured",
-                    "connection_revoked",
-                )
-                repository = repository_identity(
-                    body.get("repository", cs["manifest"]["subject"]["repository"])
-                )
-                require(repository == cs["manifest"]["subject"]["repository"], "stale_subject")
+                cid = None
+                repository = cs["manifest"]["subject"].get("repository")
+                if transport != "export":
+                    cid = body.get("github_connection_id") or session["github_connection_id"]
+                    connection = owned(repo, "connections", cid, principal)
+                    require(
+                        connection["kind"] == "github" and connection["state"] == "configured",
+                        "connection_revoked",
+                    )
+                    repository = repository_identity(body.get("repository") or repository)
+                    require(repository == cs["manifest"]["subject"]["repository"], "stale_subject")
+                else:
+                    repository = repository or "workspace:" + cs["workspace_id"]
                 policy = {**DEFAULT_POLICY, **session["effective_inputs"].get("ship_policy", {})}
                 if body.get("automatic"):
                     require(cs["automatic_eligible"] and policy["automatic"], "forbidden")

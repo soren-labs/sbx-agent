@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "enforcement": {
+      "const": "platform",
+      "title": "Enforcement",
+      "type": "string"
+    },
+    "head_sha": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Head Sha"
+    },
+    "kind": {
+      "title": "Kind",
+      "type": "string"
+    },
+    "required": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required",
+      "type": "array"
+    },
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "subject_digest": {
+      "title": "Subject Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "schema_version",
+    "enforcement",
+    "subject_digest",
+    "head_sha",
+    "required"
+  ],
+  "title": "ResultContract",
+  "type": "object"
+}

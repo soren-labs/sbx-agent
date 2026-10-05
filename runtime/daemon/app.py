@@ -10,6 +10,7 @@ from protocol.runtime import OperationFrame, ProtocolError
 
 from runtime.daemon import changes, files, snapshots
 from runtime.daemon.journal import Journal
+from runtime.daemon.processes import Processes
 from runtime.daemon.supervisor import Supervisor
 from runtime.daemon.worktree import clone_auth
 from runtime.harnesses.registry import catalog
@@ -38,6 +39,8 @@ class Runtime:
         self.supervisor = Supervisor(
             self.journal, self.worktree, self.root / "native-home", **kwargs
         )
+
+        self.processes = Processes(self)
 
     def hello(self):
         return {
@@ -75,6 +78,12 @@ class Runtime:
             previous = self.journal.get(frame.operation_id)
             if (
                 not previous
+                and self.processes.has_writer()
+                and frame.operation_kind not in {"terminal.close", "terminal.input", "turn.cancel"}
+            ):
+                raise ProtocolError("waiting_capacity")
+            if (
+                not previous
                 and self.hello()["recovered_operation_ids"]
                 and frame.operation_kind != "turn.cancel"
             ):
@@ -105,7 +114,20 @@ class Runtime:
                     raise ProtocolError("waiting_capacity")
                 self.journal.update(frame.operation_id, "starting")
                 payload = frame.payload
-                if frame.operation_kind == "changes.capture":
+                if frame.operation_kind in {"terminal.open", "service.start"}:
+                    result = self.processes.open(
+                        payload, service=frame.operation_kind == "service.start"
+                    )
+                elif frame.operation_kind in {"terminal.close", "service.stop"}:
+                    result = self.processes.close(
+                        payload.get("terminal_id", payload.get("service_id"))
+                    )
+                    generation = int(self.journal.metadata("generation")) + 1
+                    self.journal.metadata("generation", generation)
+                    result["generation"] = generation
+                elif frame.operation_kind == "terminal.input":
+                    result = self.processes.write(payload["terminal_id"], payload["content"])
+                elif frame.operation_kind == "changes.capture":
                     result = changes.capture(self, payload)
                 elif frame.operation_kind == "changes.apply":
                     result = changes.apply(self, payload)
@@ -166,12 +188,15 @@ class Runtime:
                         )
                     result = {"ready": True, "generation": int(self.journal.metadata("generation"))}
                 elif frame.operation_kind == "files.write":
+                    if any(v in payload["content"] for v in self.supervisor.known_secrets):
+                        raise ProtocolError("forbidden")
                     if payload["generation"] != int(self.journal.metadata("generation")):
                         raise ProtocolError("version_conflict")
                     result = files.write(
                         self.worktree, payload["path"], payload["content"], payload.get("digest")
                     )
                     self.journal.metadata("generation", payload["generation"] + 1)
+                    result["generation"] = payload["generation"] + 1
                 elif frame.operation_kind == "turn.cancel":
                     self.supervisor.stop(payload["operation_id"])
                     result = {"stop_requested": True}
@@ -232,6 +257,49 @@ def create_runtime_app(runtime):
         ):
             raise ProtocolError("forbidden")
         return runtime.accept(frame)
+
+    @app.api_route(
+        "/services/{service_id}/proxy/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
+    )
+    async def proxy(service_id: str, path: str, request: Request):
+        import httpx
+        from fastapi.responses import Response
+
+        item = runtime.processes.items.get(service_id)
+        if (
+            not item
+            or not item["service"]
+            or not item["port"]
+            or item["process"].poll() is not None
+        ):
+            raise ProtocolError("executor_unavailable")
+        if len(await request.body()) > 4_000_000:
+            raise ProtocolError("quota_exhausted")
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            upstream = await client.request(
+                request.method,
+                "http://127.0.0.1:" + str(item["port"]) + "/" + path,
+                params=request.query_params,
+                content=await request.body(),
+                headers={
+                    "Content-Type": request.headers.get("content-type", "application/octet-stream")
+                },
+            )
+        if len(upstream.content) > 4_000_000:
+            raise ProtocolError("quota_exhausted")
+        return Response(
+            upstream.content,
+            status_code=upstream.status_code,
+            headers={
+                "Content-Type": upstream.headers.get("content-type", "application/octet-stream"),
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.get("/processes/{process_id}")
+    def process_status(process_id: str, after: int = 0):
+        return runtime.processes.read(process_id, after)
 
     @app.get("/files")
     def file_list():

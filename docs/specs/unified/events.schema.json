@@ -1,17 +1,79 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "sbx:session-event:1",
-  "type": "object",
-  "required": ["id", "workspace_id", "session_id", "seq", "type", "schema_version", "recorded_at", "source", "payload"],
   "properties": {
-    "id": {"type": "string", "pattern": "^evt_"},
-    "workspace_id": {"type": "string", "pattern": "^wsp_"},
-    "session_id": {"type": "string", "pattern": "^sess_"},
-    "seq": {"type": "integer", "minimum": 1},
-    "type": {"type": "string"},
-    "schema_version": {"const": 1},
-    "recorded_at": {"type": "string", "format": "date-time"},
-    "source": {"type": "object"},
-    "payload": {"type": "object"}
-  }
+    "execution_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Id"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "recorded_at": {
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": true,
+      "title": "Source",
+      "type": "object"
+    },
+    "turn_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Id"
+    },
+    "type": {
+      "title": "Type",
+      "type": "string"
+    },
+    "workspace_id": {
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "workspace_id",
+    "session_id",
+    "seq",
+    "type",
+    "schema_version",
+    "recorded_at",
+    "source",
+    "payload"
+  ],
+  "title": "EventView",
+  "type": "object"
 }

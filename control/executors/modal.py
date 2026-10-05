@@ -21,9 +21,7 @@ class ModalExecutor:
             credentials["token_id"], credentials["token_secret"]
         )
         self.runtime_token = runtime_token
-        self.app = sdk.App.lookup(
-            "sbx-unified-benchmark", create_if_missing=True, client=self.client
-        )
+        self.app = None
 
     def capabilities(self):
         return {
@@ -35,6 +33,13 @@ class ModalExecutor:
         }
 
     def lookup(self, operation_id):
+        if self.app is None:
+            try:
+                self.app = self.sdk.App.lookup(
+                    "sbx-unified-benchmark", create_if_missing=False, client=self.client
+                )
+            except self.sdk.exception.NotFoundError:
+                return None
         for sandbox in self.sdk.Sandbox.list(
             app_id=self.app.app_id, tags={"sbx_effect": operation_id}, client=self.client
         ):
@@ -61,6 +66,10 @@ class ModalExecutor:
         if existing:
             return existing
         try:
+            if self.app is None:
+                self.app = self.sdk.App.lookup(
+                    "sbx-unified-benchmark", create_if_missing=True, client=self.client
+                )
             sandbox = self.sdk.Sandbox.create(
                 "python",
                 "-m",

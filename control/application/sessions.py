@@ -1,6 +1,7 @@
 from control.application.access import owned, workspace
 from control.application.deduplication import command
 from control.domain.errors import require
+from control.domain.events import digest
 from control.domain.identity import new_id
 from control.domain.sessions import TURN_TERMINAL
 
@@ -24,6 +25,8 @@ class Sessions:
 
     def create_in(self, repo, principal, workspace_id, body):
         sid, wid = new_id("sess"), new_id("wt")
+        body = dict(body)
+        initial_message = body.pop("message", None)
         pver = body.get("project_version_id")
         if pver:
             version = owned(repo, "project_versions", pver, principal)
@@ -73,10 +76,27 @@ class Sessions:
             "INSERT INTO worktrees(id,workspace_id,session_id) VALUES(%s,%s,%s)",
             (wid, workspace_id, sid),
         )
+        for declaration in body.get("services", []):
+            repo.execute(
+                "INSERT INTO service_desires(id,workspace_id,session_id,name,declaration,"
+                "declaration_digest) VALUES(%s,%s,%s,%s,%s,%s)",
+                (
+                    new_id("service"),
+                    workspace_id,
+                    sid,
+                    declaration["name"],
+                    declaration,
+                    digest(declaration),
+                ),
+            )
         seq = repo.event(
             workspace_id, sid, "session.created", {"role": body.get("role", "developer")}
         )
-        return {"session_id": sid, "worktree_id": wid, "event_watermark": seq}
+        response = {"session_id": sid, "worktree_id": wid, "event_watermark": seq}
+        if initial_message:
+            row = repo.one("SELECT * FROM sessions WHERE id=%s FOR UPDATE", (sid,))
+            response.update(self.send_in(repo, row, principal, initial_message))
+        return response
 
     def send(self, principal, sid, body, key):
         with self.uow.transaction() as repo:
@@ -173,5 +193,15 @@ class Sessions:
             )
             session["messages"] = repo.all(
                 "SELECT * FROM messages WHERE session_id=%s ORDER BY ordinal", (sid,)
+            )
+            session["worktree"] = repo.one(
+                "SELECT id,generation,availability,last_snapshot_id,base_sha "
+                "FROM worktrees WHERE session_id=%s",
+                (sid,),
+            )
+            session["parts"] = repo.all(
+                "SELECT id,kind,revision,content,execution_id FROM message_parts "
+                "WHERE session_id=%s ORDER BY id",
+                (sid,),
             )
             return session

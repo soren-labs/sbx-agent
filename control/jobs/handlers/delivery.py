@@ -1,5 +1,10 @@
+import hashlib
+import io
+import zipfile
+
 from control.domain.delivery import merge_reasons
 from control.domain.errors import DomainError, require
+from control.domain.events import canonical
 from control.domain.identity import Principal, new_id
 
 
@@ -107,7 +112,39 @@ class DeliveryHandler:
                 return
             if delivery["state"] == "succeeded":
                 return
-            require(delivery["transport"] != "export", "unsupported_capability")
+            if delivery["transport"] == "export":
+                output = io.BytesIO()
+                with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("subject.json", canonical(changeset["manifest"]["subject"]))
+                    for path, key in changeset["manifest"]["blobs"].items():
+                        archive.writestr(
+                            "files/" + path, self.github.objects.get(delivery["workspace_id"], key)
+                        )
+                content = output.getvalue()
+                key = self.github.objects.put(delivery["workspace_id"], content)
+                blob_id = new_id("blob")
+                with self.uow.transaction() as repo:
+                    self.verify_target(repo, claim, delivery, generation)
+                    repo.execute(
+                        "INSERT INTO blobs(id,workspace_id,storage_key,digest,size,class,state) "
+                        "VALUES(%s,%s,%s,%s,%s,'export','ready')",
+                        (
+                            blob_id,
+                            delivery["workspace_id"],
+                            key,
+                            hashlib.sha256(content).hexdigest(),
+                            len(content),
+                        ),
+                    )
+                self.step(
+                    claim,
+                    delivery,
+                    generation,
+                    "export",
+                    {"blob_id": blob_id},
+                    {"state": "succeeded"},
+                )
+                return
             head = delivery["mapped_head"]
             if not head:
                 head, evidence = self.github.materialize(

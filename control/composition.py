@@ -7,7 +7,11 @@ from control.application.connections import Connections
 from control.application.delegation import Delegations
 from control.application.delivery import Deliveries
 from control.application.identity import Identity
+from control.application.io import SessionIO
+from control.application.lifecycle import Lifecycle
 from control.application.projects import Projects
+from control.application.query import Queries
+from control.application.services import Services
 from control.application.sessions import Sessions
 from control.application.worktrees import Worktrees
 from control.domain.errors import require
@@ -21,6 +25,7 @@ from control.jobs.handlers.delegation import ResultHandler
 from control.jobs.handlers.delivery import DeliveryHandler
 from control.jobs.handlers.environment import EnvironmentResolver
 from control.jobs.handlers.execution import ExecutionHandler
+from control.jobs.handlers.io import IOHandler
 from control.jobs.handlers.snapshots import ReleaseHandler, SnapshotHandler
 from control.jobs.worker import Worker
 
@@ -52,7 +57,11 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
     delivery = DeliveryHandler(
         uow, claims, connections, GitHubEffects(connectors["github"], objects)
     )
+    io = SessionIO(uow, claims, executor_factory, master, objects)
+    iohandler = IOHandler(uow, claims, io, objects)
     handlers = {
+        "worktree.perform": iohandler,
+        "worktree.terminal_close": iohandler,
         "delivery.perform": delivery,
         "delivery.reconcile": delivery,
         "delivery.merge": delivery,
@@ -68,6 +77,10 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
         identity=Identity(uow),
         projects=Projects(uow),
         sessions=sessions,
+        queries=Queries(uow),
+        lifecycle=Lifecycle(uow, sessions),
+        io=io,
+        services=Services(uow, io),
         changes=Changes(uow, objects),
         deliveries=Deliveries(uow),
         delegations=Delegations(uow, sessions),

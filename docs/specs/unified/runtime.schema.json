@@ -1,0 +1,68 @@
+{
+  "properties": {
+    "grant_expires_at": {
+      "title": "Grant Expires At",
+      "type": "number"
+    },
+    "grant_id": {
+      "title": "Grant Id",
+      "type": "string"
+    },
+    "lease_generation": {
+      "title": "Lease Generation",
+      "type": "integer"
+    },
+    "lease_id": {
+      "title": "Lease Id",
+      "type": "string"
+    },
+    "operation_id": {
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "operation_kind": {
+      "title": "Operation Kind",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "protocol_major": {
+      "default": 1,
+      "title": "Protocol Major",
+      "type": "integer"
+    },
+    "request_digest": {
+      "title": "Request Digest",
+      "type": "string"
+    },
+    "resource_fence": {
+      "title": "Resource Fence",
+      "type": "integer"
+    },
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "operation_kind",
+    "session_id",
+    "lease_id",
+    "lease_generation",
+    "resource_fence",
+    "grant_id",
+    "grant_expires_at",
+    "request_digest"
+  ],
+  "title": "OperationFrame",
+  "type": "object"
+}

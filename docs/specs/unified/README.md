@@ -1,12 +1,9 @@
-# Executable unified replacement specifications
+# Unified SBX contract
 
-These specifications implement the frozen RFC in `docs/architecture/unified/`.
-They describe the new benchmark cohort; legacy contracts remain historical
-until phase 6's deliberate retirement. No production state is migrated.
+The architecture in ../../architecture/unified/ is normative. This index is the active product contract. `openapi.yaml` is generated from typed requests and safe projections in `control/api`; `events.schema.json`, `result.schema.json` and `runtime.schema.json` carry independently versioned envelopes. Run `uv run python scripts/unified_spec.py --check` to detect drift. TypeScript request definitions are generated into `console/src/api/generated.ts`.
 
-- `persistence.md`: PostgreSQL authority, transactions, claims and retention.
-- `events.schema.json`: committed Session journal envelope v1.
+Product mutations use `Idempotency-Key`; cookie mutations additionally require `X-CSRF-Token`. Provider credentials are write-only. OpenCode Zen, manual Modal and manual GitHub are the enabled credential methods. Model catalogs are selected-Connection observations with freshness; inference success is not assumed from discovery alone. Only OpenCode 1.18.29 is enabled experimentally; unsupported capabilities fail explicitly.
 
-Runtime, Harness, manifest, result and OpenAPI contracts are added by their
-implementing stacked phases. A contract is evidence of a tested implementation,
-not evidence that every RFC release gate is already passed.
+Start the disposable/development target with `uv run python -m control.serve --dsn postgresql://postgres@localhost/sbx --state-dir /path/to/private-state --allow-local --insecure-local-cookie`. The insecure cookie flag is local-only. Build the Console with `npm --prefix console ci && npm --prefix console run build`, then add `--console-dir console/dist`. Deployment must supply PostgreSQL and protect/back up the separate credential master plus private objects; no provider credential is read from the host environment.
+
+The minimum setup is verified email/password, user-stored Modal Token ID/Secret, GitHub manual token and Zen API key. A Message is committed before provisioning; queued input survives restart. Reads never wake compute. Release uses retained user compute authority; disconnect is rejected while dependent compute is unconfirmed. Preview must be served on a different hostname/origin from the Console and never receive its authentication cookies.

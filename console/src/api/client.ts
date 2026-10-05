@@ -1,120 +1,87 @@
 import type {
-  DeliverInput,
-  ErrorKind,
-  IntegrationStatus,
-  ModelInfo,
-  NewSessionInput,
-  ProviderInfo,
+  Connection,
+  Page,
   Session,
-  SessionChange,
-  SessionChangesDiff,
-  SessionDeliverResult,
-  SessionFileDiff,
-  SessionPhase,
-  ActivityItem,
-  Turn,
+  User,
+  Project,
+  Model,
+  Changeset,
+  Delivery,
+  Delegation,
+  Event,
 } from "./types";
 
-/** API error carrying a product-level kind for actionable UX. */
 export class ApiError extends Error {
-  readonly kind: ErrorKind;
-  readonly httpStatus: number;
-  readonly subcode: string;
-  readonly retryable: boolean;
-  readonly retryAfter?: number;
-
   constructor(
-    kind: ErrorKind,
-    message: string,
-    opts: {
-      httpStatus?: number;
-      subcode?: string;
-      retryable?: boolean;
-      retryAfter?: number;
-    } = {},
+    public code: string,
+    public status: number,
   ) {
-    super(message);
-    this.name = "ApiError";
-    this.kind = kind;
-    this.httpStatus = opts.httpStatus ?? 0;
-    this.subcode = opts.subcode ?? "internal";
-    this.retryable = opts.retryable ?? false;
-    this.retryAfter = opts.retryAfter;
+    super(code.replaceAll("_", " "));
   }
 }
 
-export function isApiError(e: unknown): e is ApiError {
-  return e instanceof ApiError;
+function csrf() {
+  const value = document.cookie
+    .split("; ")
+    .find((c) => c.startsWith("sbx_csrf="));
+  return value ? decodeURIComponent(value.split("=")[1]) : "";
 }
 
-/** Live event surface for one session (SSE or fixture emitter). */
-export interface SessionEventHandlers {
-  historyAfterTurn?: number;
-  onOpen?: () => void;
-  onPhase?: (phase: SessionPhase) => void;
-  onActivity?: (item: ActivityItem) => void;
-  onActivities?: (items: ActivityItem[]) => void;
-  onTurn?: (turn: Turn) => void;
-  onSession?: (session: Session) => void;
-  /** session.meta frame — effective provider/model once resolved. */
-  onMeta?: (meta: { provider?: string | null; model?: string | null }) => void;
-  onError?: (error: ApiError) => void;
-  /** Fired when a dropped stream is re-established. */
-  onReconnect?: () => void;
-  /** Fired when the stream is down and a retry is pending. */
-  onDisconnect?: (nextRetryMs: number) => void;
+export class Client {
+  async request<T>(
+    path: string,
+    method = "GET",
+    body?: unknown,
+    key: string = crypto.randomUUID(),
+  ): Promise<T> {
+    const options: RequestInit = {
+      method,
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        ...(method === "GET"
+          ? {}
+          : { "Idempotency-Key": key, "X-CSRF-Token": csrf() }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    };
+    let response: Response;
+    try {
+      response = await fetch(path, options);
+    } catch {
+      response = await fetch(path, options);
+    }
+    const result = await response.json();
+    if (!response.ok)
+      throw new ApiError(
+        result.error?.code ?? "request_failed",
+        response.status,
+      );
+    return result as T;
+  }
+  me = () => this.request<User>("/api/me");
+  login = (email: string, password: string) =>
+    this.request("/api/auth/login", "POST", { email, password });
+  logout = () => this.request("/api/auth/logout", "POST", {});
+  connections = (wid: string) =>
+    this.request<Page<Connection>>(`/api/workspaces/${wid}/connections`);
+  models = (cid: string) =>
+    this.request<{ models: Model[] }>(
+      `/api/models?connection_id=${encodeURIComponent(cid)}`,
+    );
+  projects = (wid: string) =>
+    this.request<Page<Project>>(`/api/workspaces/${wid}/projects`);
+  sessions = (wid: string) =>
+    this.request<Page<Session>>(`/api/workspaces/${wid}/sessions`);
+  session = (sid: string) => this.request<Session>(`/api/sessions/${sid}`);
+  events = (sid: string, after = 0) =>
+    this.request<{ events: Event[]; event_watermark: number }>(
+      `/api/sessions/${sid}/events?after=${after}`,
+    );
+  changesets = (sid: string) =>
+    this.request<Page<Changeset>>(`/api/sessions/${sid}/changesets`);
+  delivery = (id: string) => this.request<Delivery>(`/api/deliveries/${id}`);
+  delegation = (id: string) =>
+    this.request<Delegation>(`/api/delegations/${id}`);
 }
-
-export interface SessionApi {
-  listSessions(): Promise<Session[]>;
-  getSession(id: string): Promise<Session>;
-  getHistory?(id: string, before: number): Promise<{ turns: Turn[]; hasMore: boolean }>;
-  readSessionCache?(id: string): Promise<Session | null>;
-  writeSessionCache?(session: Session): Promise<void>;
-  /**
-   * Create a session. Resolves once the session shell exists (queued or
-   * starting) — the UI navigates to it optimistically and follows live
-   * events via subscribe().
-   */
-  createSession(input: NewSessionInput): Promise<Session>;
-  /**
-   * Submit a follow-up turn (POST /v2/sessions/{id}/messages). Returns the
-   * refreshed session plus the queued turn number ``n`` when the message
-   * was accepted (null when it was only queued on the session record).
-   */
-  sendFollowUp(
-    sessionId: string,
-    text: string,
-  ): Promise<{ session: Session; n: number | null }>;
-  /** Cancel outstanding work (queued turns drop, running turn stops). */
-  stopSession(sessionId: string): Promise<Session>;
-  /** Retry the failed step — a failed delivery re-publishes, a terminal
-   * run verdict re-runs the (optionally overridden) prompt. */
-  retrySession(sessionId: string, prompt?: string): Promise<Session>;
-  /**
-   * Deliver the session's materialized changes as a pull request
-   * (POST .../deliver). Synchronous — resolves with the refreshed session
-   * and the delivered revision (its delivery record carries the PR).
-   * Safe to repeat: delivering again updates the same work branch/PR,
-   * never reruns the provider task.
-   */
-  deliverSession(
-    sessionId: string,
-    input?: DeliverInput,
-  ): Promise<SessionDeliverResult>;
-  listProviders(): Promise<ProviderInfo[]>;
-  listModels(): Promise<ModelInfo[]>;
-  getIntegrations(): Promise<IntegrationStatus>;
-  /** Step 1 of Connect GitHub — returns the install URL to open. */
-  beginGithubAuthorize(): Promise<{ url: string }>;
-  listChanges(sessionId: string): Promise<SessionChange[]>;
-  /**
-   * File-level view of the latest ready revision (GET .../changes/diff):
-   * file list + per-file stats — compact, no diff bodies.
-   */
-  listChangesDiff(sessionId: string): Promise<SessionChangesDiff>;
-  /** Lazy per-file diff text (GET .../changes/diff?path=). */
-  getFileDiff(sessionId: string, path: string, n?: number): Promise<SessionFileDiff>;
-  /** Subscribe to the session-scoped event stream. Returns an unsubscribe. */
-  subscribe(sessionId: string, handlers: SessionEventHandlers): () => void;
-}
+export const api = new Client();

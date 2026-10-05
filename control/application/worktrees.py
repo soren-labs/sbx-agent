@@ -15,7 +15,28 @@ class Worktrees:
 
             def perform():
                 require(wt["generation"] == generation, "version_conflict")
+                require(
+                    not repo.one(
+                        "SELECT id FROM worktree_operations WHERE worktree_id=%s "
+                        "AND state IN ('pending','executing')",
+                        (wt["id"],),
+                    ),
+                    "waiting_capacity",
+                )
+                require(
+                    not repo.one(
+                        "SELECT id FROM turns WHERE session_id=%s AND state IN "
+                        "('preparing','running','cancelling')",
+                        (sid,),
+                    ),
+                    "waiting_capacity",
+                )
                 snap = new_id("snap")
+                repo.execute(
+                    "INSERT INTO worktree_operations(id,workspace_id,worktree_id,kind,"
+                    "expected_generation,fence) VALUES(%s,%s,%s,'snapshot',%s,%s)",
+                    (snap, session["workspace_id"], wt["id"], generation, generation),
+                )
                 repo.execute(
                     "INSERT INTO snapshots(id,workspace_id,kind,worktree_id,generation) "
                     "VALUES(%s,%s,'checkpoint',%s,%s)",

@@ -80,7 +80,8 @@ class Identity:
         with self.uow.transaction() as repo:
             if api_key:
                 row = repo.one(
-                    "SELECT u.* FROM api_keys k JOIN users u ON u.id=k.user_id "
+                    "SELECT u.*,k.scopes AS api_scopes,k.workspace_id AS key_workspace"
+                    " FROM api_keys k JOIN users u ON u.id=k.user_id "
                     "WHERE k.key_hash=%s AND k.revoked_at IS NULL",
                     (hashed(api_key),),
                 )
@@ -99,7 +100,12 @@ class Identity:
             )
             return Principal(
                 row["id"],
-                tuple(r["workspace_id"] for r in scopes),
+                tuple(
+                    r["workspace_id"]
+                    for r in scopes
+                    if not api_key or r["workspace_id"] == row["key_workspace"]
+                ),
+                scopes=tuple(row["api_scopes"]) if api_key else ("owner",),
                 auth_epoch=row["identity_version"],
             )
 
@@ -149,3 +155,79 @@ class Identity:
             repo.execute("UPDATE users SET verified_at=now() WHERE id=%s", (proof["user_id"],))
             repo.execute("UPDATE email_verifications SET used_at=now() WHERE id=%s", (proof["id"],))
             return {"verified": True}
+
+    def password_change(self, principal, current_password, password):
+        encoded = password_hash(password)
+        with self.uow.transaction() as repo:
+            row = repo.one(
+                "SELECT * FROM password_credentials WHERE user_id=%s FOR UPDATE",
+                (principal.user_id,),
+            )
+            require(password_matches(current_password, row["hash"]), "credential_invalid")
+            repo.execute(
+                "UPDATE password_credentials SET hash=%s,version=version+1 WHERE user_id=%s",
+                (encoded, principal.user_id),
+            )
+            repo.execute(
+                "UPDATE users SET identity_version=identity_version+1 WHERE id=%s",
+                (principal.user_id,),
+            )
+            repo.execute(
+                "UPDATE login_sessions SET revoked_at=now() WHERE user_id=%s", (principal.user_id,)
+            )
+            repo.execute(
+                "UPDATE api_keys SET revoked_at=now() WHERE user_id=%s", (principal.user_id,)
+            )
+        return {"changed": True, "sign_in_required": True}
+
+    def api_keys(self, principal):
+        with self.uow.transaction() as repo:
+            return {
+                "items": repo.all(
+                    "SELECT id,workspace_id,scopes,revoked_at,created_at FROM api_keys"
+                    " WHERE user_id=%s ORDER BY created_at,id",
+                    (principal.user_id,),
+                )
+            }
+
+    def issue_api_key(self, principal, wid, scopes, key):
+        from control.application.deduplication import command
+
+        require(
+            wid in principal.workspace_ids and set(scopes) <= {"owner", "read"} and bool(scopes),
+            "forbidden",
+        )
+        value = "sbx_" + token()
+        issued = False
+        with self.uow.transaction() as repo:
+
+            def perform():
+                nonlocal issued
+                kid = new_id("key")
+                repo.execute(
+                    "INSERT INTO api_keys(id,user_id,workspace_id,key_hash,scopes) VAL"
+                    "UES(%s,%s,%s,%s,%s)",
+                    (kid, principal.user_id, wid, hashed(value), scopes),
+                )
+                issued = True
+                return {"id": kid, "workspace_id": wid, "scopes": scopes}
+
+            response = command(
+                repo,
+                principal,
+                wid,
+                "identity.key",
+                key,
+                {"workspace_id": wid, "scopes": scopes},
+                perform,
+            )
+        return {**response, "key": value} if issued else response
+
+    def revoke_api_key(self, principal, kid):
+        with self.uow.transaction() as repo:
+            row = repo.one(
+                "SELECT id FROM api_keys WHERE id=%s AND user_id=%s", (kid, principal.user_id)
+            )
+            require(row is not None, "not_found")
+            repo.execute("UPDATE api_keys SET revoked_at=now() WHERE id=%s", (kid,))
+        return {"revoked": True}

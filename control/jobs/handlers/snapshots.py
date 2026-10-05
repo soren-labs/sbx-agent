@@ -64,6 +64,9 @@ class SnapshotHandler:
                 "UPDATE worktrees SET last_snapshot_id=%s,recovery_watermark=%s WHERE id=%s",
                 (snap["id"], session["next_event_seq"] - 1, wt["id"]),
             )
+            repo.execute(
+                "UPDATE worktree_operations SET state='succeeded' WHERE id=%s", (snap["id"],)
+            )
             repo.event(
                 session["workspace_id"],
                 session["id"],

@@ -235,3 +235,45 @@ class Connections:
                 {"connection_id": cid, "expected_version": version},
                 perform,
             )
+
+    def connection_catalog(self, principal, cid):
+        with self.uow.transaction() as repo:
+            row = owned(repo, "connections", cid, principal)
+            observation = (
+                repo.one(
+                    "SELECT capabilities,observed_at FROM connection_observations "
+                    "WHERE connection_id=%s AND credential_id=%s AND status='ready' "
+                    "AND observed_at>now()-interval '1 hour' ORDER BY observed_at DESC LIMIT 1",
+                    (cid, row["current_credential_id"]),
+                )
+                if row["state"] == "configured"
+                else None
+            )
+        return {
+            "connection_id": cid,
+            "observed_at": observation["observed_at"] if observation else None,
+            "models": [
+                {**m, "connection_id": cid} for m in observation["capabilities"].get("models", [])
+            ]
+            if observation
+            else [],
+            "stale": observation is None,
+        }
+
+    def read_material(self, principal, cid):
+        """Control-owned read transport only; never launch/probe or create a grant."""
+        with self.uow.transaction() as repo:
+            row = owned(repo, "connections", cid, principal)
+            require(
+                row["creator_id"] == principal.user_id and row["state"] == "configured",
+                "connection_revoked",
+            )
+            version = repo.one(
+                "SELECT * FROM credential_versions WHERE id=%s AND connection_id=%s "
+                "AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
+                (row["current_credential_id"], cid),
+            )
+            require(version is not None, "credential_invalid")
+        return self.vault.decrypt(
+            version["envelope"], self.context(row["workspace_id"], cid, version["id"], row["kind"])
+        )
