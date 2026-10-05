@@ -135,7 +135,7 @@ def build_world(dsn: str, workdir: Path, vault=None) -> dict:
     stack.register_backend("modal", ModalExecutorBackend())
 
     changes = ChangeSetService(db, blobs, runtime_stack=stack)
-    delegations = DelegationService(db, change_service=changes)
+    delegations = DelegationService(db, runtime_stack=stack, change_service=changes)
 
     handlers.set_runtime_stack(stack)
     handlers.set_connection_plane(connections, registry)
