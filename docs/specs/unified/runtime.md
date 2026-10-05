@@ -41,6 +41,28 @@ Kinds implemented: `worktree.restore`, `turn.start`, `turn.cancel`, `files.write
 (declared argv only), `snapshot.prepare`, `lease.renew`, `runtime.shutdown`. `changes.capture` and
 `changes.apply` are added in the ChangeSet phase. Generic exec does not exist.
 
+## Executor boot environment
+
+The Executor starts the daemon with `python -m runtime.daemon.main --state-dir … --work-dir …
+--port …`. It sets only the variables below, which operators do not configure:
+
+| Variable | Meaning |
+| --- | --- |
+| `SBX_RUNTIME_KEY` | hex per-lease key (required); removed from the daemon's environment at startup |
+| `SBX_LEASE_ID` / `SBX_LEASE_GENERATION` | the lease identity and generation the daemon accepts |
+| `SBX_IMAGE_DIGEST` | image identity reported in `hello` |
+| `SBX_LEASE_TTL` | optional lease-authority window in seconds (default 1800) |
+| `SBX_SPOOL_MAX_UNACKED` | optional spool bound (default 20000) |
+| `OPENCODE_BIN` / `CODEX_BIN` | optional CLI command overrides (tests point them at fakes) |
+
+**Modal resources.** The Modal Executor runs inside the **owner's** Modal workspace, using the
+selected Modal Connection's token. On first use it creates the app `sbx-executor`
+(`create_if_missing`). It builds one image per Connection and runtime-recipe digest: Debian slim
+with Python 3.12, Node 22, `opencode-ai@1.18.34` and the `runtime`/`protocol` sources. Sandboxes
+carry the tags `sbx_alloc`, `sbx_lease`, `sbx_session` and `sbx_workspace`, have a 6-hour hard
+timeout, and expose only the encrypted runtime port 8790. No Modal Secrets are attached. Image
+builds and sandbox time are billed to that workspace.
+
 ## Journal and spool
 
 SQLite WAL with `synchronous=FULL` in the protected state dir (outside the Worktree).
