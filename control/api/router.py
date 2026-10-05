@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from control.api import auth, errors, resources, work
+from control.api import auth, errors, live, resources, work
 
 
 def create_api(services: Any, *, extra_routers: list[Any] | None = None) -> FastAPI:
@@ -46,6 +46,7 @@ def create_api(services: Any, *, extra_routers: list[Any] | None = None) -> Fast
     app.include_router(auth.router)
     app.include_router(resources.router)
     app.include_router(work.router)
+    app.include_router(live.router)
     for router in extra_routers or []:
         app.include_router(router)
     return app

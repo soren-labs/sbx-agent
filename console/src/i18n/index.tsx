@@ -10,7 +10,7 @@ import { en, type I18nKey } from "./en";
 import { zhCN } from "./zh-CN";
 
 export type Locale = "en" | "zh-CN";
-const LOCALES: Record<Locale, Record<I18nKey, string>> = {
+const LOCALES: Record<Locale, Partial<Record<I18nKey, string>>> = {
   en,
   "zh-CN": zhCN,
 };
@@ -25,7 +25,7 @@ interface I18nCtx {
 const Ctx = createContext<I18nCtx>({
   locale: "en",
   setLocale: () => undefined,
-  t: (k) => en[k] ?? k,
+  t: (k) => en[k],
 });
 
 export function I18nProvider({ children }: { children: ReactNode }) {
@@ -43,7 +43,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const t = useCallback(
     (key: I18nKey, vars?: Record<string, string | number>) => {
-      let s = LOCALES[locale][key] ?? en[key] ?? key;
+      let s: string = LOCALES[locale][key] ?? en[key] ?? key;
       if (vars) {
         for (const [k, v] of Object.entries(vars)) {
           s = s.replaceAll(`{${k}}`, String(v));

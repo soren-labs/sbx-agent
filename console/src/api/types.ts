@@ -1,352 +1,394 @@
-/**
- * V2 Session Console — product-level contract types.
- *
- * Product vocabulary is Session / Turn / Activity / Change. The wire
- * contract is the merged V2 Session API (``/v2/sessions*`` — SessionView /
- * RunView / RevisionView projections, session-scoped SSE) plus the allowed
- * V1 surfaces for providers, models and GitHub App state. All mapping lives
- * in normalize.ts / http.ts so the UI never sees backend nouns. Nothing
- * here invents backend semantics.
- */
+/** Wire types for the unified `/api/...` business API (RFC 08). */
 
-export type ProviderId = "codex" | "antigravity" | "grok" | "opencode" | "devin";
+export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
-/** Canonical reasoning effort (SOR-179), shared by every provider surface. */
-export type EffortLevel =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+export interface ErrorBody {
+  error: {
+    code: string;
+    category?: string;
+    message?: string;
+    retryable?: boolean;
+    retry_after?: number;
+    details?: Record<string, unknown> | null;
+    request_id?: string;
+    action?: string | null;
+  };
+}
 
-/**
- * Product-level session lifecycle shown to users. Derived from the wire
- * ``phase`` (provisioning|queued|running|delivering|finished|failed|cancelled):
- * provisioning→starting, delivering→running, finished→idle, cancelled→ended.
- */
-export type SessionPhase =
-  | "queued"
-  | "starting"
-  | "running"
-  | "idle"
-  | "ended"
-  | "failed";
-
-/** The wire ``status`` — the only values a V2 client switches on. */
-export type SessionStatus =
-  | "queued"
-  | "running"
-  | "finished"
-  | "failed"
-  | "cancelled";
-
-export type SessionEndReason = "cancelled" | "failed" | null;
-
-/** Wire RunView.status / SessionStatus — turn-level lifecycle. */
-export type TurnStatus =
-  | "queued"
-  | "running"
-  | "finished"
-  | "failed"
-  | "cancelled";
-
-export interface RepoRef {
-  /** Display form, e.g. "owner/repo". Never a raw internal id. */
+// ---- identity -------------------------------------------------------------
+export interface WorkspaceRef {
+  id: string;
   name: string;
-  url?: string;
-  ref?: string;
-  baseSha?: string;
+  kind: string;
 }
-
-export interface Usage {
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  cacheWriteInputTokens?: number;
-  reasoningOutputTokens?: number;
-}
-
-export interface TurnError {
-  /** Canonical error code (error_catalog / run error codes). */
-  code: string;
-  source?: "provider" | "runtime" | "control" | "telemetry";
-  message: string;
-  retryable: boolean;
-  retryAfter?: number;
-}
-
-export type ActivityKind =
-  | "status" // phase transitions: queued/starting/running/finished
-  | "message" // user/assistant conversation text
-  | "reasoning"
-  | "command"
-  | "file_change"
-  | "error"
-  | "info"; // misc normalized notes (keepalives never reach here)
-
-export interface ActivityItem {
-  /** Stable id — item.* frames share the canonical item id so a
-   * completed row replaces its started placeholder (no duplicates). */
+export interface User {
   id: string;
-  /** Monotonic sequence for stable ordering (SSE line number). */
-  seq: number;
-  ts: string;
-  /** Turn the item belongs to — "turn-<n>" matching Turn.id, or null. */
-  turnId: string | null;
-  /** Session-relative turn number the frame was annotated with. */
-  n?: number;
-  kind: ActivityKind;
-  role?: "user" | "assistant" | "system";
-  text?: string;
-  status?: string;
-  command?: string;
-  exitCode?: number;
-  output?: string;
-  /** Single-path convenience (first of `changes`). */
-  path?: string;
-  changeType?: "added" | "modified" | "deleted";
-  /** Canonical file_change payload: every touched path + kind. */
-  changes?: { path: string; kind: string }[];
-  error?: TurnError;
+  email: string;
+  email_verified: boolean;
 }
-
-export interface Turn {
-  /** "turn-<n>" — the session-relative turn number as a stable key. */
+export interface Me {
+  user: User;
+  workspaces: WorkspaceRef[];
+  auth: { via: string; scopes?: string[] };
+}
+export interface LoginResult extends Me {
+  csrf_token: string;
+  expires_at: string;
+}
+export interface ApiKey {
   id: string;
-  /** 1-based conversation index (the wire ``n``). */
-  index: number;
-  prompt: string;
-  status: TurnStatus;
-  createdAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-  result: string | null;
-  error: TurnError | null;
-  usage?: Usage | null;
-  queuePosition?: number | null;
-  provider?: string | null;
-  model?: string | null;
-  effort?: string | null;
-  activity: ActivityItem[];
+  name: string;
+  prefix: string;
+  scopes: string[];
+  created_at: string;
+  revoked_at: string | null;
+}
+export interface CreatedApiKey extends ApiKey {
+  /** Plaintext, returned exactly once. */
+  key: string;
 }
 
-export interface ComputeSpec {
-  cpu: [number, number];
-  memoryMib: [number, number];
+// ---- connections ----------------------------------------------------------
+export type ConnectionKind = "modal" | "github" | "opencode_zen" | "codex";
+export type ConnectionHealth =
+  | "unverified"
+  | "verifying"
+  | "ready"
+  | "degraded"
+  | "reauth_required";
+export type ConnectionState = "configured" | "disabled" | "revoked";
+
+export type ConnectionCredential =
+  | { token_id: string; token_secret: string }
+  | { token: string }
+  | { api_key: string }
+  | { auth_json: string };
+
+export interface CatalogModel {
+  id: string;
+  free?: boolean;
+  usable_via?: string | string[];
+}
+export interface Connection {
+  id: string;
+  workspace_id?: string;
+  kind: ConnectionKind;
+  label: string;
+  state: ConnectionState;
+  health: ConnectionHealth;
+  health_reason: string | null;
+  external_identity: string | null;
+  version: number;
+  credential: { id: string; ordinal: number; format: string; created_at: string } | null;
+  validation: {
+    status: string;
+    observed_at: string;
+    details?: Record<string, unknown> | null;
+    quota_consuming?: boolean;
+  } | null;
+  catalog: {
+    observed_at?: string;
+    preferred_model?: string | null;
+    models?: CatalogModel[];
+  } | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
-export type DeliveryMode = "none" | "branch" | "pr" | "draft_pr";
-
-export interface SessionDelivery {
-  mode: DeliveryMode;
-  /** pending | delivered | failed — wire DeliveryView.status. */
-  status?: string;
-  branch?: string;
-  /** Head sha the delivery last pushed — stale-PR detection. */
-  pushedHeadSha?: string;
-  prUrl?: string;
-  prNumber?: number;
-  prState?: string;
-  prHeadSha?: string;
-  prBase?: string;
-  merged?: boolean;
-  /** Wire DeliveryView.error — {code,message} or a plain message. */
-  error?: { code?: string; message?: string } | string;
+// ---- catalog --------------------------------------------------------------
+export interface Harness {
+  provider_id: string;
+  support_tier: string;
+  capabilities: Record<string, { status: string }>;
+}
+export interface ModelsView {
+  provider_id: string;
+  preferred_model: string | null;
+  connections: {
+    connection_id: string;
+    label: string;
+    health: ConnectionHealth;
+    preferred_model?: string | null;
+    observed_at?: string | null;
+    models: { id: string; free?: boolean }[];
+  }[];
+}
+export interface ExecutorBackend {
+  kind: string;
+  [k: string]: unknown;
 }
 
-/** The wire ``changes`` view (ChangesView) — where the produced work lives. */
-export interface SessionChangeInfo {
-  status: string;
-  baseSha?: string;
-  headSha?: string;
-  branch?: string;
+// ---- projects -------------------------------------------------------------
+export interface ProjectSpec {
+  repository: { full_name: string; base_ref: string };
+  checks?: { name: string; argv: string[] }[];
+  defaults?: {
+    harness?: { provider_id: string; model?: string };
+    executor?: { backend: string };
+  };
+}
+export interface ProjectVersion {
+  id: string;
+  project_id: string;
+  ordinal: number;
+  spec: ProjectSpec;
+  spec_digest: string;
+  created_at: string;
+}
+export interface Project {
+  id: string;
+  workspace_id: string;
+  slug: string;
+  name: string;
+  version: number;
+  current_version: ProjectVersion | null;
+  created_at: string;
+  updated_at: string;
 }
 
+// ---- sessions -------------------------------------------------------------
+export type Lifecycle = "open" | "archived" | "closed";
 export interface Session {
   id: string;
+  workspace_id?: string;
+  lifecycle: Lifecycle;
+  activity: string;
+  role: string;
   title: string;
-  status: SessionStatus;
-  phase: SessionPhase;
-  endReason: SessionEndReason;
-  prompt: string;
-  provider: ProviderId | string | null;
-  model: string | null;
-  /** Human label only — raw account ids never reach the UI. */
-  accountLabel: string | null;
-  repo: RepoRef | null;
-  effort: string | null;
-  compute: ComputeSpec | null;
-  idleTimeoutS: number | null;
-  delivery: SessionDelivery | null;
-  /** Workspace change state (base/head shas live here for Details). */
-  changes?: SessionChangeInfo | null;
-  createdAt: string;
-  updatedAt: string;
-  usage: Usage | null;
-  costUsd: number | null;
-  /** Number of turns the session has run (the wire ``turns`` count). */
-  turnCount: number;
-  turns: Turn[];
-  /** Last activity across all turns, for list previews. */
-  lastActivityPreview: string | null;
-  hasChanges: boolean;
-  error: TurnError | null;
-}
-
-/** Wire readiness vocabulary (SOR-258) folded from runtime + connection. */
-export type ProviderReadiness =
-  | "ready"
-  | "needs_login"
-  | "busy"
-  | "disabled"
-  | "unhealthy";
-
-export interface ProviderInfo {
-  id: ProviderId | string;
-  label: string;
-  support?: string;
-  readiness: ProviderReadiness | string;
-  /** Catalog ``default_models`` — what Auto may pick from. */
-  models: string[];
-  runtimeStatus: "ready" | "degraded" | "unknown" | "disabled" | string;
-  runtimeEnabled: boolean;
-  connectionStatus: "not_connected" | "connected" | "degraded" | string;
-  connectionDetail?: string;
-  accountsTotal: number;
-  accountsAvailable: number;
-  needsLogin: boolean;
-}
-
-/** One /v1/models row — the only agents-scope surface listing account ids. */
-export interface ModelInfo {
-  provider: string;
-  model: string;
-  displayName?: string;
-  /** Real account id the model was discovered on (safe to submit). */
-  account?: string;
-  accountsAvailable: number;
-  availability?: "available" | "busy" | "unavailable" | string;
-  reasoningEfforts: EffortLevel[];
-  defaultEffort?: EffortLevel;
-}
-
-export interface SessionChange {
-  merged?: boolean;
-  id: string;
-  kind: "workspace" | "revision" | "delivery" | "file";
-  /** Revision sequence number when the row is a revision. */
-  n?: number;
-  status?: string;
-  /** The revision's delivery lifecycle (pending|delivered|failed). */
-  deliveryStatus?: string;
-  summary: string;
-  ts: string;
-  branch?: string;
-  headSha?: string;
-  url?: string;
-  /** PR number when the row's delivery produced one. */
-  prNumber?: number;
-  ref?: string;
-  path?: string;
-  changeType?: "added" | "modified" | "deleted";
-  error?: string;
-}
-
-export type ChangeFileStatus = "added" | "modified" | "deleted" | "renamed";
-
-/** One file row of a revision's parsed patch (GET .../changes/diff). */
-export interface SessionDiffFile {
-  path: string;
-  status: ChangeFileStatus;
-  additions: number;
-  deletions: number;
-  /** Present on a rename — the previous path. */
-  oldPath?: string;
-  /** Unified diff body — only populated by the per-file lazy fetch. */
-  diff?: string | null;
-}
-
-/** Parsed patch summary — file list + totals, no diff bodies. */
-export interface SessionChangesDiff {
-  n: number;
-  baseSha?: string;
-  headSha?: string;
-  filesChanged: number;
-  additions: number;
-  deletions: number;
-  files: SessionDiffFile[];
-}
-
-/** A single file's diff section, fetched lazily (?path=). */
-export interface SessionFileDiff extends SessionDiffFile {
-  diff: string;
-}
-
-/** Explicit POST .../deliver input — the console's "Create pull request". */
-export interface DeliverInput {
-  n?: number;
-  branch?: string;
-  /** PR title — defaults to the session title server-side. */
-  title?: string;
-  /** Open as a draft pull request. */
-  draft?: boolean;
-  /** PR base branch — defaults to the session's repo ref. */
-  target?: string;
-}
-
-/** POST .../deliver result — refreshed session + the delivered revision. */
-export interface SessionDeliverResult {
-  session: Session;
-  revision: SessionChange;
-}
-
-export interface IntegrationStatus {
-  providers: ProviderInfo[];
-  github: {
-    configured: boolean;
-    installable: boolean;
-    connected: boolean;
-    /** account_login of each installation (metadata only). */
-    accounts: string[];
-    bridgeToken?: boolean;
-    brokerBound?: boolean;
-    brokerHealthy?: boolean;
-    appSlug?: string;
-    source?: string;
+  labels?: string[];
+  project_id?: string | null;
+  harness: { provider_id: string; model: string | null };
+  executor: {
+    backend: string;
+    resource_class?: string;
+    lease_id: string | null;
+    lease_state: string | null;
   };
-  runtime: { enabled: boolean; backend?: string };
+  worktree: {
+    id?: string;
+    availability: string;
+    generation: number;
+    repository?: string | null;
+    base_sha: string | null;
+    recovery_point?: unknown;
+  } | null;
+  parent_session_id: string | null;
+  active_turn_id?: string | null;
+  actions: string[];
+  version: number;
+  created_at?: string;
+  updated_at?: string;
 }
-
-/** Composer payload — what the user can set. Never internal ids. */
-export interface NewSessionInput {
-  prompt: string;
-  repo?: string;
-  repoRef?: string;
-  provider?: ProviderId | "auto" | string;
-  model?: string;
+export interface SessionList {
+  items: Session[];
+  next_cursor: string | null;
+}
+export interface SessionSnapshot {
+  session: Session;
+  event_watermark: number;
+}
+export interface CreateSessionBody {
+  project_id?: string;
+  harness: { provider_id: string; model?: string };
+  executor: { backend: string };
+  repository?: { full_name: string; base_ref: string };
   title?: string;
-  effort?: EffortLevel | string;
-  /** A real account id (from /v1/models) or "auto". */
-  account?: string;
-  delivery?: DeliveryMode;
-  /** PR base ref when delivery is pr/draft_pr. */
-  deliveryTarget?: string;
-  compute?: { cpu?: number; memoryMib?: number };
-  secrets?: string[];
-  mcpServers?: string[];
-  idleTimeoutS?: number;
+  message?: { content: string };
+}
+export interface CreateSessionResult {
+  session_id: string;
+  turn_id?: string;
+  session: Session;
+  event_watermark: number;
 }
 
-export type ErrorKind =
-  | "provider_login"
-  | "provider_busy"
-  | "runtime_disabled"
-  | "github_required"
-  | "session_failed"
-  | "unauthorized"
-  | "not_found"
-  | "conflict"
-  | "network"
-  | "unknown";
+export interface MessagePart {
+  id?: string;
+  key: string;
+  kind: "text" | "reasoning" | "tool" | string;
+  ordinal?: number;
+  revision: number;
+  content: string;
+  data?: Record<string, unknown> | null;
+  sealed?: boolean;
+}
+export interface Message {
+  id: string;
+  ordinal: number;
+  role: "user" | "assistant" | "system";
+  author_kind?: string;
+  routing?: string;
+  content: { kind: string; text?: string }[];
+  turn_id: string | null;
+  state: string;
+  parts: MessagePart[];
+  created_at?: string;
+}
+export interface MessageList {
+  items: Message[];
+  event_watermark: number;
+}
+export interface Turn {
+  id: string;
+  ordinal: number;
+  state: string;
+  reason: string | null;
+  retry_of_turn_id: string | null;
+  error: { code: string; message: string } | null;
+  outcome: unknown;
+  evidence_complete?: boolean;
+  actions: string[];
+  version: number;
+  created_at?: string;
+  finished_at?: string | null;
+}
+export interface Accepted {
+  message_id?: string;
+  turn_id?: string;
+  operation_id?: string;
+  job_id?: string;
+  event_watermark?: number;
+  [k: string]: unknown;
+}
+
+// ---- events ---------------------------------------------------------------
+export interface EventEnvelope {
+  id: string;
+  seq: number;
+  type: string;
+  session_id?: string;
+  turn_id?: string | null;
+  execution_id?: string | null;
+  recorded_at?: string | null;
+  payload: Record<string, unknown>;
+  [k: string]: unknown;
+}
+export interface EventPage {
+  items: EventEnvelope[];
+  next_after: number;
+  event_watermark: number;
+}
+
+// ---- executor -------------------------------------------------------------
+export interface ExecutorView {
+  backend: string;
+  leases: { id: string; generation: number; state: string; reason: string | null; quarantined?: boolean }[];
+  worktree: { id?: string; availability: string; generation: number; base_sha: string | null };
+  recovery_point: { snapshot_id: string; generation: number; created_at: string } | null;
+  event_watermark?: number;
+}
+
+// ---- changes --------------------------------------------------------------
+export interface LiveChanges {
+  live: boolean;
+  observation: {
+    generation?: number;
+    head?: string;
+    files: { path: string; status: string }[];
+  };
+}
+export interface ChangeSetFile {
+  path: string;
+  type: string;
+  mode?: string;
+  digest?: string | null;
+}
+export interface ChangeSet {
+  id: string;
+  session_id: string;
+  source_turn_id: string | null;
+  state: string;
+  origin: string;
+  subject_digest: string | null;
+  repository: string | null;
+  base_sha: string | null;
+  head_sha: string | null;
+  worktree_generation: number | null;
+  file_count: number | null;
+  error: unknown;
+  created_at: string;
+  sealed_at: string | null;
+  files?: ChangeSetFile[];
+}
+export interface Delivery {
+  id: string;
+  session_id: string;
+  changeset_id: string;
+  subject_digest: string | null;
+  transport: string;
+  repository: string | null;
+  target_ref: string | null;
+  base_branch: string | null;
+  draft: boolean;
+  state: string;
+  state_reason: string | null;
+  commit_sha: string | null;
+  pull_request: { number: number; url: string; draft: boolean; state: string } | null;
+  remote?: { head_sha: string | null; checks_state: string | null; observed_at: string | null };
+  steps: { kind: string; outcome: string; evidence?: unknown; created_at?: string }[];
+  merge_requests: { id: string; state: string; gate?: unknown; merge_sha: string | null; error?: unknown }[];
+  merge_eligibility: {
+    eligible: boolean;
+    reasons: string[];
+    subject_digest: string | null;
+    head_sha: string | null;
+    observed_at: string | null;
+  };
+  version: number;
+}
+export interface MergeRequestBody {
+  expected_head_sha: string;
+  subject_digest: string;
+  expected_version: number;
+  method: "squash";
+  mark_ready?: boolean;
+}
+
+// ---- delegations ----------------------------------------------------------
+export type DelegationRole = "review" | "test" | "research" | "security" | "integration";
+export interface Delegation {
+  id: string;
+  parent_session_id: string;
+  child_session_id: string;
+  child?: { lifecycle: string; harness: { provider_id: string; model: string | null } };
+  role: string;
+  state: string;
+  state_reason?: string | null;
+  subject: { changeset_id: string | null; subject_digest: string | null };
+  result: {
+    id?: string;
+    kind: string;
+    verdict: string | null;
+    independent: boolean;
+    subject_digest: string | null;
+    validation_status?: string;
+    value: unknown;
+  } | null;
+  created_at?: string;
+}
+
+// ---- files / terminal / services -----------------------------------------
+export interface FileEntry {
+  path: string;
+  type: string;
+  size?: number;
+}
+export interface FileContent {
+  path: string;
+  encoding: string;
+  content: string;
+  digest: string;
+}
+export interface TerminalOutput {
+  data: string;
+  offset: number;
+  closed: boolean;
+}
+export interface ServiceItem {
+  name: string;
+  desired: string;
+  state: string;
+  port: number | null;
+  preview: boolean | string | null;
+  lease_live?: boolean;
+}

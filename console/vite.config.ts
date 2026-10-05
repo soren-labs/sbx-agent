@@ -19,11 +19,11 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5174,
     proxy: {
-      // SOR-262 integration hook: point the dev server at a real control
-      // plane with VITE_API_BASE / a proxy target.
-      "/v2": { target: loadEnv(mode, ".", "").SBX_API_PROXY_TARGET ?? "http://127.0.0.1:8787", changeOrigin: true },
-      "/v1": { target: loadEnv(mode, ".", "").SBX_API_PROXY_TARGET ?? "http://127.0.0.1:8787", changeOrigin: true },
-      "/api": { target: loadEnv(mode, ".", "").SBX_API_PROXY_TARGET ?? "http://127.0.0.1:8787", changeOrigin: true },
+      // Single unified business API; no /v1, /v2 or /hosted routes.
+      "/api": {
+        target: loadEnv(mode, ".", "").SBX_API_PROXY_TARGET ?? "http://127.0.0.1:8800",
+        changeOrigin: true,
+      },
     },
   },
   test: {

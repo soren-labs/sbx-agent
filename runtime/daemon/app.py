@@ -21,7 +21,9 @@ from protocol.runtime import (
 )
 
 from runtime.daemon.journal import Journal, SpoolPressure
+from runtime.daemon.services import Service
 from runtime.daemon.supervisor import TurnRun, _alive, kill_group
+from runtime.daemon.terminal import Terminal
 from runtime.daemon.worktree import Worktree, WorktreeError, git
 from runtime.harnesses.protocol import Harness, HarnessError, TurnContext
 from runtime.security.paths import PathEscape
@@ -60,6 +62,8 @@ class RuntimeDaemon:
         self.journal = Journal(state_dir / "journal.sqlite", max_unacked=max_unacked)
         self.worktree = Worktree(work_dir, state_dir)
         self.runs: dict[str, TurnRun] = {}
+        self.terminals: dict[str, Terminal] = {}
+        self.services: dict[str, Service] = {}
         self.lock = threading.RLock()
         self.barrier: str | None = None
         self.recovered_operations = self._recover()
@@ -337,6 +341,7 @@ class RuntimeDaemon:
             return self._run_check(payload)
         if kind == "snapshot.prepare":
             self._require_quiet()
+            self._quiesce_services()
             self.barrier = op_id
             try:
                 if self.journal.unacked() > 0 and payload.get("require_acked", True):
@@ -357,6 +362,7 @@ class RuntimeDaemon:
                 self.barrier = None
         if kind == "changes.capture":
             self._require_quiet()
+            self._quiesce_services()
             from runtime.daemon.changes import capture
 
             self.barrier = op_id
@@ -369,6 +375,52 @@ class RuntimeDaemon:
             from runtime.daemon.changes import apply
 
             return apply(self.worktree, payload)
+        if kind == "terminal.create":
+            if not self.worktree.path.exists():
+                raise Refused("executor_unavailable", "worktree not realized")
+            term = Terminal(self.worktree.path, self.state_dir / "terminal-home")
+            self.terminals[term.id] = term
+            return {"terminal_id": term.id}
+        if kind == "terminal.input":
+            if self._active_run() is not None or self.barrier:
+                raise Refused(
+                    "busy", "terminal writer is revoked while a CLI Turn or barrier is active"
+                )
+            term = self.terminals.get(payload.get("terminal_id") or "")
+            if term is None:
+                raise Refused("not_found", "terminal not found", 404)
+            term.write(str(payload.get("data") or ""))
+            self.worktree.bump()
+            return {"accepted": True}
+        if kind == "terminal.close":
+            term = self.terminals.pop(payload.get("terminal_id") or "", None)
+            if term is not None:
+                term.close()
+            return {"closed": True}
+        if kind == "service.ensure":
+            decl = payload.get("declaration") or {}
+            if not decl.get("name") or not isinstance(decl.get("argv"), list):
+                raise Refused(
+                    "validation_failed", "service declaration with name and argv required", 422
+                )
+            if self._active_run() is not None and decl.get("exclusive"):
+                raise Refused("busy", "exclusive service start refused during a Turn")
+            svc = self.services.get(decl["name"])
+            if svc is None or svc.decl != decl:
+                if svc is not None:
+                    svc.stop()
+                svc = Service(
+                    decl, self.worktree.path, self.state_dir / "service-home" / decl["name"]
+                )
+                self.services[decl["name"]] = svc
+            svc.start()
+            time.sleep(0.2)
+            return svc.status()
+        if kind == "service.stop":
+            svc = self.services.get(payload.get("name") or "")
+            if svc is not None:
+                svc.stop()
+            return {"name": payload.get("name"), "state": "stopped"}
         if kind == "lease.renew":
             self.authority_until = time.time() + float(payload.get("ttl_seconds") or self.lease_ttl)
             return {"authority_until": self.authority_until}
@@ -377,6 +429,11 @@ class RuntimeDaemon:
                 run.stop()
             return {"stopping": True}
         raise Refused("unsupported_capability", f"{kind} is not implemented by this runtime", 422)
+
+    def _quiesce_services(self) -> None:
+        """Services that may write captured roots are stopped; desired state lives in control."""
+        for svc in self.services.values():
+            svc.stop()
 
     def _require_quiet(self) -> None:
         if self._active_run() is not None:
@@ -429,6 +486,21 @@ class RuntimeDaemon:
             return self.health()
         if kind == "changes.observe":
             return self.worktree.observe()
+        if kind == "service.status":
+            return {"items": [svc.status() for svc in self.services.values()]}
+        if kind == "service.logs":
+            svc = self.services.get(body.get("name") or "")
+            if svc is None:
+                raise Refused("not_found", "service not found", 404)
+            return {
+                "name": svc.decl["name"],
+                "lines": list(svc.logs)[-int(body.get("limit") or 200) :],
+            }
+        if kind == "terminal.read":
+            term = self.terminals.get(body.get("terminal_id") or "")
+            if term is None:
+                raise Refused("not_found", "terminal not found", 404)
+            return term.read(int(body.get("after") or 0))
         if kind == "files.list":
             return {"items": self.worktree.list(body.get("path") or "")}
         if kind == "files.read":

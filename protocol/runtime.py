@@ -35,6 +35,9 @@ OPERATION_KINDS = frozenset(
         "snapshot.prepare",
         "service.ensure",
         "service.stop",
+        "terminal.create",
+        "terminal.input",
+        "terminal.close",
         "lease.renew",
         "runtime.shutdown",
     }
@@ -46,6 +49,8 @@ QUERY_KINDS = frozenset(
         "files.read",
         "changes.observe",
         "service.status",
+        "service.logs",
+        "terminal.read",
         "health.report",
     }
 )

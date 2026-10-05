@@ -243,27 +243,12 @@ def test_generated_machine_references_are_public_and_clean() -> None:
         assert path.exists(), f"public/{rel} missing"
         assert "SOR-" not in path.read_text(encoding="utf-8"), f"tracker tag leaked into {rel}"
     config = json.loads((PUBLIC / "config-reference.json").read_text(encoding="utf-8"))
-    assert any(row["field"] == "providers" and row["default"] == [] for row in config)
+    assert {row["field"] for row in config} == {"base_url", "api_key", "workspace_id"}
     providers = json.loads((PUBLIC / "provider-reference.json").read_text(encoding="utf-8"))
-    assert {row["provider"] for row in providers} == {
-        "codex",
-        "devin",
-        "antigravity",
-        "grok",
-        "opencode",
-    }
+    tiers = {row["provider"]: row["support"] for row in providers}
+    assert tiers["opencode"] == "supported" and tiers["codex"] == "experimental"
+    assert {tiers[p] for p in ("claude", "devin", "grok", "antigravity")} == {"disabled"}
 
 
 def test_canonical_docs_examples_exist() -> None:
-    root = ROOT / "examples" / "docs"
-    for name in (
-        "verify.py",
-        "create_task.py",
-        "watch_task.py",
-        "follow_up.py",
-        "deliver.py",
-        "review.py",
-        "merge.py",
-        "full_workflow.py",
-    ):
-        assert (root / name).exists(), f"missing canonical docs example {name}"
+    assert (ROOT / "examples" / "unified_mvp.py").exists()

@@ -21,9 +21,11 @@ from control.application.delegation import Delegations
 from control.application.delivery import Deliveries
 from control.application.execution import ExecutionService, ExecutionSettings
 from control.application.identity import Identity
+from control.application.live import LiveWorkspace
 from control.application.project_resolution import ProjectResolver
 from control.application.projections import Queries
 from control.application.projects import Projects
+from control.application.services import Services as ServiceDesires
 from control.application.sessions import Sessions
 from control.application.tools import ToolGateway
 from control.catalog import load_catalog
@@ -102,6 +104,8 @@ class Services:
     deliveries: Deliveries
     delegations: Delegations
     tools: ToolGateway
+    live: LiveWorkspace
+    services: ServiceDesires
     handlers: dict[str, Any] = field(default_factory=dict)
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -156,6 +160,9 @@ def build_services(
     )
     execution.hooks.turn_terminal += [changes.on_turn_terminal, delegations.on_turn_terminal]
     execution.post_restore_hooks.append(delegations.apply_inputs)
+    live = LiveWorkspace(db, connector)
+    service_desires = ServiceDesires(db, connector)
+    execution.post_restore_hooks.append(service_desires.ensure_on_activation)
     changes.ready_hooks.append(deliveries.on_changeset_ready)
     sessions.close_hooks.append(delegations.on_parent_close)
     connections.dependency_hooks.append(deliveries.dependents)
@@ -175,6 +182,8 @@ def build_services(
         deliveries=deliveries,
         delegations=delegations,
         tools=tools,
+        live=live,
+        services=service_desires,
     )
     services.handlers = {
         **execution_handlers(execution),
@@ -185,6 +194,8 @@ def build_services(
         "delivery.reconcile": deliveries.handle_reconcile,
         "delivery.merge": deliveries.handle_merge,
         "delegation.publish_result": delegations.handle_publish,
+        "service.ensure": service_desires.handle,
+        "service.stop": service_desires.handle,
     }
     return services
 

@@ -47,7 +47,12 @@ class ExplicitResolver:
         defaults: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         defaults = defaults or {}
-        harness = {**(defaults.get("harness") or {}), **(body.get("harness") or {})}
+        # New Sessions default to the supported official lane; the choice is pinned explicitly.
+        harness = {
+            "provider_id": "opencode",
+            **(defaults.get("harness") or {}),
+            **(body.get("harness") or {}),
+        }
         provider_id = harness.get("provider_id")
         if not provider_id:
             raise DomainError(

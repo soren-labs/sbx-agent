@@ -1,0 +1,53 @@
+/* Feature-level styles layered on the design tokens in styles.css. */
+.auth-page { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.auth-card { width: 100%; max-width: 400px; }
+.auth-card .brand { font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+
+.pill.tone-ok { background: var(--ok-soft); color: var(--ok); }
+.pill.tone-warn { background: var(--warn-soft); color: var(--warn); }
+.pill.tone-err { background: var(--err-soft); color: var(--err); }
+.pill.tone-run { background: var(--run-soft); color: var(--run); }
+.pill.tone-dim { background: var(--bg-sunk); color: var(--fg-dim); }
+
+.card + .card, .card + section, section + .card { margin-top: 12px; }
+.auth-page, .narrow { padding-bottom: 24px; }
+.account { padding: 0 12px; overflow: hidden; text-overflow: ellipsis; }
+
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 8px 0; }
+dl.kv dt { color: var(--fg-dim); }
+dl.kv dd { margin: 0; min-width: 0; word-break: break-word; }
+
+.setup-list, .plain-list, .file-list, .file-tree, .cs-list, .steps, .reasons, .event-feed { list-style: none; padding: 0; margin: 8px 0; }
+.setup-list li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.setup-list li:last-child { border-bottom: 0; }
+.plain-list > li { margin-top: 10px; }
+.steps { list-style: decimal inside; }
+.reasons { list-style: disc inside; }
+.event-feed { list-style: none; max-height: 420px; overflow: auto; }
+.event-feed li { padding: 3px 0; border-bottom: 1px dashed var(--border); }
+
+.controls { display: flex; gap: 12px; flex-wrap: wrap; }
+.controls .field { flex: 1; min-width: 150px; }
+.conn-card { margin-top: 10px; background: var(--bg); }
+.secret-mask { -webkit-text-security: disc; font-family: var(--mono); }
+.key-once { display: block; padding: 8px; background: var(--bg-sunk); border-radius: var(--radius-sm); word-break: break-all; margin: 6px 0; }
+
+.tabs a, .tabs button { white-space: nowrap; }
+.tab-body { padding-top: 12px; }
+.turn-banner { padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 8px 0; background: var(--bg-elev); }
+.tool-part, .reasoning { margin: 6px 0; font-size: 0.88rem; }
+.tool-part summary, .reasoning summary { cursor: pointer; }
+.followup { margin-top: 12px; }
+.followup textarea, .composer textarea, .editor textarea { width: 100%; resize: vertical; }
+
+.delivery .merge-gate { margin: 8px 0; padding: 8px 10px; background: var(--bg-sunk); border-radius: var(--radius-sm); }
+pre.diff { max-height: 520px; overflow: auto; white-space: pre; word-break: normal; }
+pre.diff .add { color: var(--ok); }
+pre.diff .del { color: var(--err); }
+pre.diff .hunk { color: var(--accent); }
+pre.terminal { min-height: 220px; max-height: 420px; overflow: auto; background: #0b0e12; color: #d7dde6; }
+.file-tree { display: flex; flex-wrap: wrap; gap: 4px; }
+.service { list-style: none; }
+.cs-list li { margin: 4px 0; }
+.executor-panel h2 { font-size: 0.95rem; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
