@@ -41,6 +41,9 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests/unit", "tests/integration"]
 pythonpath = [".", "src"]
+markers = [
+    "integration: tests that run against a disposable external service",
+]
 
 [tool.ruff]
 line-length = 100
