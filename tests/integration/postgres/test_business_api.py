@@ -65,6 +65,10 @@ def test_unified_api_atomic_composer_csrf_pure_reads_restart_and_isolation(datab
     for _ in range(3):
         assert client.get("/api/sessions/" + sid).json() == before
         assert client.get("/api/sessions/" + sid + "/executor").json() == {"lease": None}
+        diagnostics = client.get("/api/workspaces/" + wid + "/diagnostics").json()
+        assert diagnostics["jobs"][0]["id"] == accepted["job_id"]
+        assert diagnostics["jobs"][0]["state"] == "queued"
+        assert diagnostics["leases"] == []
     csrf = client.post(
         "/api/sessions/" + sid + "/messages",
         json={"content": "forbidden"},
@@ -81,6 +85,7 @@ def test_unified_api_atomic_composer_csrf_pure_reads_restart_and_isolation(datab
         "/api/sessions/" + sid,
         "/api/jobs/" + accepted["job_id"],
         "/api/workspaces/" + wid + "/sessions",
+        "/api/workspaces/" + wid + "/diagnostics",
     ]:
         assert outsider.get(path).status_code in {403, 404}
     assert (

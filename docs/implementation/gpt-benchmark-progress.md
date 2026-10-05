@@ -132,3 +132,12 @@ sandbox tests, immutable capture and draft PR delivery. Strict child results rej
 an invented head and an invalid `approved` verdict. The contract now includes literal
 verdict enums and patch-only head instructions; corrections use ordinary child Turns.
 All earlier disposable sandboxes/PRs/branches were cleaned up. No benchmark PR is merged.
+
+Final Phase 6 evidence is in [the acceptance matrix](gpt-rfc167-acceptance.md).
+The complete four-credential live run is preserved at clean `0d27052`; a later
+incomplete repeat identified the public Modal SDK's omission of finished sandboxes.
+Exact-effect historical lookup now recovers and confirms its teardown through the
+existing shared Job. The SDK is pinned to 1.5.5 for that narrow RPC schema. Final
+local backend/runtime tests pass **54 tests**, Console passes **4 tests**, and
+lint/spec/typecheck/build/packaging/secret checks pass. Partial normative release
+gates are listed explicitly; production migration is not claimed.

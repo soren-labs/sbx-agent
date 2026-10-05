@@ -44,7 +44,36 @@ class ModalExecutor:
             app_id=self.app.app_id, tags={"sbx_effect": operation_id}, client=self.client
         ):
             return sandbox.object_id
-        return None
+        # The SDK's public list excludes finished sandboxes. A daemon can die
+        # before /hello binds its handle, so absence there is not absence of the
+        # allocation effect. Query the exact tagged history before reallocating.
+        return self.finished_effect(operation_id)
+
+    def finished_effect(self, operation_id):
+        # This narrow read uses the installed Modal 1.5.5 RPC schema because the
+        # public SDK has no include_finished option. Keep the SDK pinned until
+        # that query has a public equivalent; never infer isolation from absence.
+        from modal._utils.async_utils import synchronizer
+        from modal_proto import api_pb2
+
+        client = synchronizer._translate_in(self.client)
+
+        async def query():
+            return await client.stub.SandboxList(
+                api_pb2.SandboxListRequest(
+                    app_id=self.app.app_id,
+                    include_finished=True,
+                    tags=[api_pb2.SandboxTag(tag_name="sbx_effect", tag_value=operation_id)],
+                )
+            )
+
+        try:
+            response = synchronizer.create_blocking(query)()
+        except Exception:
+            raise DomainError("executor_unavailable") from None
+        if len(response.sandboxes) > 1:
+            raise DomainError("outcome_unknown")
+        return response.sandboxes[0].id if response.sandboxes else None
 
     def image(self):
         root = Path(__file__).resolve().parents[2]

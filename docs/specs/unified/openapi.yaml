@@ -2708,6 +2708,29 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Connect
+  /api/workspaces/{wid}/diagnostics:
+    get:
+      operationId: diagnostics_api_workspaces__wid__diagnostics_get
+      parameters:
+      - in: path
+        name: wid
+        required: true
+        schema:
+          title: Wid
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Diagnostics
   /api/workspaces/{wid}/projects:
     get:
       operationId: projects_api_workspaces__wid__projects_get

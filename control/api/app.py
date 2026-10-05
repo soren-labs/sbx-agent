@@ -254,6 +254,10 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
     def projects(wid: str, limit: int = 50, cursor: str | None = None, p=Depends(principal)):
         return r.queries.list(p, wid, "projects", limit=limit, cursor=cursor)
 
+    @app.get("/api/workspaces/{wid}/diagnostics")
+    def diagnostics(wid: str, p=Depends(principal)):
+        return r.queries.diagnostics(p, wid)
+
     @app.post("/api/workspaces/{wid}/projects", status_code=201)
     def create_project(wid: str, value: ProjectCreate, p=Depends(principal), k=Depends(key)):
         return r.projects.create(p, wid, body(value), k)

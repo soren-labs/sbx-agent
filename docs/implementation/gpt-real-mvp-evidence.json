@@ -1,0 +1,712 @@
+{
+  "baseline": "bf8cbe065da2f4c6bbca3781b4dce90cc31d39d3",
+  "cleanup": {
+    "branch_deleted": true,
+    "pr_closed": true,
+    "sess_3060e4ca80c34371b587b6a7bf4d94a3": "released",
+    "sess_695b3244d81047d0a8147bf3f598d431": "released"
+  },
+  "code_head": "0d27052cec73e0f0a3ae43724f18c0e158e6c611",
+  "delivery": {
+    "author_id": "usr_cdb1d56c00994b159eea8cf977916d01",
+    "base_ref": "main",
+    "changeset_id": "cs_bdc4c9b11a364349b090a13c547f885c",
+    "connection_id": "con_a5224bc9d10043ebbde37470fbcc5fe5",
+    "created_at": "2026-10-05T13:52:22.360091+00:00",
+    "expected_base": null,
+    "expected_head": null,
+    "id": "dlv_8c20b096c6f4480fbf5d62b77704e8ff",
+    "mapped_head": "a0955926cd05228844c610d734392e5d8439cb88",
+    "merge_eligibility": {
+      "authority": "advisory",
+      "eligible": false,
+      "observed_at": null,
+      "reasons": [
+        "remote_observation_required"
+      ]
+    },
+    "merge_requests": [],
+    "policy": {
+      "automatic": false,
+      "draft": true,
+      "merge_methods": [
+        "squash"
+      ],
+      "require_base_unchanged": false,
+      "required_checks": [],
+      "required_roles": {
+        "review": 1
+      }
+    },
+    "pr_number": 27,
+    "pr_url": "https://github.com/soren-labs/sbx-e2e-test/pull/27",
+    "reason": null,
+    "remote_head": "a0955926cd05228844c610d734392e5d8439cb88",
+    "repository": "https://github.com/soren-labs/sbx-e2e-test",
+    "session_id": "sess_3060e4ca80c34371b587b6a7bf4d94a3",
+    "state": "succeeded",
+    "steps": [
+      {
+        "created_at": "2026-10-05T13:52:29.491395+00:00",
+        "evidence": {
+          "base": "3119e81800a5941558ce404f563b1e1c784c5489",
+          "head": "a0955926cd05228844c610d734392e5d8439cb88",
+          "mapping": "deterministic-tree-commit",
+          "subject_digest": "2fc76747bd1dc3c4ada04a86cff1f969ea586a86f2ea2623c989c4c69d8edb41",
+          "tree": "1e72c6eaa7c7ea38a47a83fb8c5e80ab78161413"
+        },
+        "kind": "materialize"
+      },
+      {
+        "created_at": "2026-10-05T13:52:31.578788+00:00",
+        "evidence": {
+          "adopted": false,
+          "head": "a0955926cd05228844c610d734392e5d8439cb88",
+          "ref": "sbx/sess_3060e4ca80c34371b587b6a7bf4d94a3/cs_bdc4c9b11a364349b090a13c547f885c"
+        },
+        "kind": "push"
+      },
+      {
+        "created_at": "2026-10-05T13:52:34.218557+00:00",
+        "evidence": {
+          "head": "a0955926cd05228844c610d734392e5d8439cb88",
+          "pr_number": 27,
+          "pr_url": "https://github.com/soren-labs/sbx-e2e-test/pull/27"
+        },
+        "kind": "pull_request"
+      },
+      {
+        "created_at": "2026-10-05T13:52:34.246176+00:00",
+        "evidence": {
+          "head": "a0955926cd05228844c610d734392e5d8439cb88",
+          "subject_digest": "2fc76747bd1dc3c4ada04a86cff1f969ea586a86f2ea2623c989c4c69d8edb41"
+        },
+        "kind": "verified"
+      }
+    ],
+    "subject_digest": "2fc76747bd1dc3c4ada04a86cff1f969ea586a86f2ea2623c989c4c69d8edb41",
+    "target_ref": "sbx/sess_3060e4ca80c34371b587b6a7bf4d94a3/cs_bdc4c9b11a364349b090a13c547f885c",
+    "transport": "pull_request",
+    "version": 5,
+    "workspace_id": "wsp_15e3c55602a646bbb11d647a3df09603"
+  },
+  "marker": "SBX_GPT_CONTINUITY_4e9ea971b61d4b9ea5e547c241d2243c",
+  "model": "opencode/big-pickle",
+  "native_id": "ses_ef3aa70b6ffeCOQMPPk4kxJhCR",
+  "passed": true,
+  "repository": "soren-labs/sbx-e2e-test",
+  "runtime_fingerprint": {
+    "harnesses": [
+      {
+        "adapter_version": "1",
+        "capabilities": {
+          "account_portable_resume": {
+            "evidence": "noninteractive-run-static-key",
+            "limitation": null,
+            "status": "unsupported"
+          },
+          "attachments": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "credential_writeback": {
+            "evidence": "noninteractive-run-static-key",
+            "limitation": null,
+            "status": "unsupported"
+          },
+          "effort_settings": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "event_stream": {
+            "evidence": "opencode-v1.18.29-run.ts",
+            "limitation": null,
+            "status": "supported"
+          },
+          "interactive_approval": {
+            "evidence": "noninteractive-run-static-key",
+            "limitation": null,
+            "status": "unsupported"
+          },
+          "interrupt": {
+            "evidence": "supervisor-process-group",
+            "limitation": "process-stop only",
+            "status": "supported"
+          },
+          "mcp": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "model_discovery": {
+            "evidence": "opencode-v1.18.29-run.ts",
+            "limitation": null,
+            "status": "supported"
+          },
+          "native_resume": {
+            "evidence": "opencode-v1.18.29-run.ts",
+            "limitation": null,
+            "status": "supported"
+          },
+          "native_state_export": {
+            "evidence": "sqlite-after-process-stop",
+            "limitation": null,
+            "status": "supported"
+          },
+          "skills": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "steer": {
+            "evidence": "noninteractive-run-static-key",
+            "limitation": null,
+            "status": "unsupported"
+          },
+          "structured_output": {
+            "evidence": "platform-validation",
+            "limitation": "prompt-only",
+            "status": "unsupported"
+          },
+          "usage": {
+            "evidence": "opencode-v1.18.29-run.ts",
+            "limitation": null,
+            "status": "supported"
+          }
+        },
+        "cli_version": "1.18.29",
+        "distribution_digest": "sha512-syIDVwlrYTgTOXzZe9SkInJWethbq6l3SNC762UeXyO0a9V0wGfd+U4yACvppwNBnhIsl0j2QPYYCyLpNaSomg==",
+        "provider_id": "opencode",
+        "support_tier": "experimental",
+        "transport": "jsonl"
+      },
+      {
+        "adapter_version": "1",
+        "capabilities": {
+          "account_portable_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "attachments": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "credential_writeback": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "effort_settings": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "event_stream": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interactive_approval": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interrupt": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "mcp": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "model_discovery": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_state_export": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "skills": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "steer": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "structured_output": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          }
+        },
+        "cli_version": "unverified",
+        "distribution_digest": "unverified",
+        "provider_id": "codex",
+        "support_tier": "disabled",
+        "transport": "jsonl"
+      },
+      {
+        "adapter_version": "1",
+        "capabilities": {
+          "account_portable_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "attachments": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "credential_writeback": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "effort_settings": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "event_stream": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interactive_approval": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interrupt": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "mcp": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "model_discovery": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_state_export": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "skills": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "steer": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "structured_output": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          }
+        },
+        "cli_version": "unverified",
+        "distribution_digest": "unverified",
+        "provider_id": "claude",
+        "support_tier": "disabled",
+        "transport": "jsonl"
+      },
+      {
+        "adapter_version": "1",
+        "capabilities": {
+          "account_portable_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "attachments": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "credential_writeback": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "effort_settings": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "event_stream": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interactive_approval": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interrupt": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "mcp": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "model_discovery": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_state_export": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "skills": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "steer": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "structured_output": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          }
+        },
+        "cli_version": "unverified",
+        "distribution_digest": "unverified",
+        "provider_id": "devin",
+        "support_tier": "disabled",
+        "transport": "acp"
+      },
+      {
+        "adapter_version": "1",
+        "capabilities": {
+          "account_portable_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "attachments": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "credential_writeback": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "effort_settings": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "event_stream": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interactive_approval": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interrupt": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "mcp": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "model_discovery": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_state_export": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "skills": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "steer": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "structured_output": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          }
+        },
+        "cli_version": "unverified",
+        "distribution_digest": "unverified",
+        "provider_id": "grok",
+        "support_tier": "disabled",
+        "transport": "jsonl"
+      },
+      {
+        "adapter_version": "1",
+        "capabilities": {
+          "account_portable_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "attachments": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "credential_writeback": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "effort_settings": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "event_stream": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interactive_approval": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "interrupt": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "mcp": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "model_discovery": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_resume": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "native_state_export": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "skills": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "steer": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "structured_output": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          },
+          "usage": {
+            "evidence": "not_verified",
+            "limitation": null,
+            "status": "unknown"
+          }
+        },
+        "cli_version": "unverified",
+        "distribution_digest": "unverified",
+        "provider_id": "antigravity",
+        "support_tier": "disabled",
+        "transport": "jsonl"
+      }
+    ],
+    "image_digest": "sha256:2180f17a13c981fd59b4eae8a5984b00c690017fe031ea15db7e5709c62c4c17",
+    "protocol_major": 1,
+    "protocol_minor": 0,
+    "runtime_build_digest": "sha256:2180f17a13c981fd59b4eae8a5984b00c690017fe031ea15db7e5709c62c4c17"
+  },
+  "sessions": [
+    "sess_3060e4ca80c34371b587b6a7bf4d94a3",
+    "sess_695b3244d81047d0a8147bf3f598d431"
+  ],
+  "steps": {
+    "checkpoint_destroy_restore": {
+      "passed": true,
+      "snapshot_id": "snap_eaa16d49b0524b0bbeb343652e6677f9",
+      "turn_id": "turn_9953db8e0b30431da91ad66199a4dc8f"
+    },
+    "connection_github": {
+      "connection_id": "con_a5224bc9d10043ebbde37470fbcc5fe5",
+      "passed": true
+    },
+    "connection_modal": {
+      "connection_id": "con_3365feff4011495b8892a6294c7b1059",
+      "passed": true
+    },
+    "connection_opencode_zen": {
+      "connection_id": "con_96089ccff77d4f848367442d8a9ccb93",
+      "passed": true
+    },
+    "control_restart_connections_and_session": {
+      "passed": true
+    },
+    "disconnect_retains_teardown_authority": {
+      "passed": true
+    },
+    "draft_delivery": {
+      "delivery_id": "dlv_8c20b096c6f4480fbf5d62b77704e8ff",
+      "head": "a0955926cd05228844c610d734392e5d8439cb88",
+      "passed": true,
+      "pr_url": "https://github.com/soren-labs/sbx-e2e-test/pull/27"
+    },
+    "exact_subject_and_merge_reconcile": {
+      "draft_merge_blocked": true,
+      "passed": true,
+      "stale_denied": true
+    },
+    "immutable_changeset": {
+      "changeset_id": "cs_bdc4c9b11a364349b090a13c547f885c",
+      "passed": true,
+      "subject_digest": "2fc76747bd1dc3c4ada04a86cff1f969ea586a86f2ea2623c989c4c69d8edb41"
+    },
+    "independent_child_result": {
+      "child_session_id": "sess_695b3244d81047d0a8147bf3f598d431",
+      "delegation_id": "del_c515bd011f73481f9910dc69d8ee9260",
+      "passed": true,
+      "result_id": "res_125b59014d0a423d9c8be6113cc8c938",
+      "verdict": "approve"
+    },
+    "login": {
+      "passed": true,
+      "user_id": "usr_cdb1d56c00994b159eea8cf977916d01",
+      "workspace_id": "wsp_15e3c55602a646bbb11d647a3df09603"
+    },
+    "model_discovery": {
+      "free": true,
+      "model": "opencode/big-pickle",
+      "passed": true
+    },
+    "native_followup": {
+      "native_id": "ses_ef3aa70b6ffeCOQMPPk4kxJhCR",
+      "passed": true,
+      "turn_id": "turn_90114683d0894a16af2e49ef83be1216"
+    },
+    "no_codex_connection": {
+      "passed": true
+    },
+    "no_secret_http_logs_events_evidence": {
+      "passed": true
+    },
+    "official_opencode_first_turn": {
+      "passed": true,
+      "session_id": "sess_3060e4ca80c34371b587b6a7bf4d94a3",
+      "turn_id": "turn_9093a57500754aaf84cc1218ba2c6d04"
+    },
+    "real_browser_login_composer_secret_scan": {
+      "composer": true,
+      "login": true,
+      "logout": true,
+      "passed": true,
+      "responsive": true,
+      "secrets_absent": true
+    },
+    "sandbox_tests": {
+      "command": "python -m unittest -v test_benchmark_gpt_22cfe49d",
+      "passed": true
+    },
+    "second_owner_isolation": {
+      "denied_resources": 9,
+      "passed": true
+    }
+  },
+  "test_module": "test_benchmark_gpt_22cfe49d",
+  "worktree_dirty": false
+}

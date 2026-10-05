@@ -24,6 +24,43 @@ class Queries:
     def __init__(self, uow):
         self.uow = uow
 
+    def diagnostics(self, principal, wid):
+        """A bounded coherent operational snapshot, without handles or secrets."""
+        workspace(principal, wid)
+        with self.uow.transaction() as repo:
+            repo.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            return {
+                "observed_at": repo.one("SELECT now() AS observed_at")["observed_at"],
+                "jobs": repo.all(
+                    "SELECT id,kind,state,effect_id,claim_generation,holder,claim_expires_at,"
+                    "attempts,last_error,due_at,deadline FROM jobs WHERE workspace_id=%s "
+                    "ORDER BY created_at DESC,id LIMIT 100",
+                    (wid,),
+                ),
+                "fences": repo.all(
+                    "SELECT resource,generation,holder,expires_at FROM resource_fences "
+                    "WHERE workspace_id=%s ORDER BY resource LIMIT 100",
+                    (wid,),
+                ),
+                "leases": repo.all(
+                    "SELECT id,session_id,backend,generation,state,cleanup_confirmed,expires_at "
+                    "FROM executor_leases WHERE workspace_id=%s "
+                    "ORDER BY created_at DESC,id LIMIT 100",
+                    (wid,),
+                ),
+                "outbox": repo.all(
+                    "SELECT id,session_id,event_id,state,claim_generation,holder,claim_expires_at,"
+                    "attempts,last_error FROM outbox_messages WHERE workspace_id=%s "
+                    "ORDER BY created_at DESC,id LIMIT 100",
+                    (wid,),
+                ),
+                "capacity": repo.all(
+                    "SELECT id,connection_id,slot_ordinal,execution_id,lease_id,state,expires_at "
+                    "FROM capacity_reservations WHERE workspace_id=%s ORDER BY id LIMIT 100",
+                    (wid,),
+                ),
+            }
+
     def list(self, principal, wid, table, *, limit=50, cursor=None, filters=None):
         workspace(principal, wid)
         require(table in TABLES and 1 <= limit <= 100, "invalid_cursor")

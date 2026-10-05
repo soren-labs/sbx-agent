@@ -1,0 +1,28 @@
+{
+  "cleanup": {
+    "branch_deleted": true,
+    "finished_effect_inventory": [
+      {
+        "exit_code": 0,
+        "id": "sb-WjMMYVw43KeLN5TAhLSux2",
+        "status": 3
+      }
+    ],
+    "finished_effect_reconciled_by_shared_job": true,
+    "modal_active_count": 0,
+    "modal_inventory_scope": "selected-owner sbx-unified-benchmark app",
+    "pr_closed": true,
+    "sess_6dda18bd7d05444fb8f4cd5dfdf10bbc": "released",
+    "sess_73260b58ae864fa19020b3c2b1ffed46": "released",
+    "unconfirmed_lease_retained": false
+  },
+  "code_head": "12debb3538547204400877994c6dbe7b7a0bb539",
+  "failure": "child_runtime_unavailable; result wait timed out; interrupted acceptance driver",
+  "passed": false,
+  "runtime_fingerprint": {
+    "image_digest": "im-HfwYn2xU9PFuuFq2TUQKQt",
+    "protocol_major": 1,
+    "protocol_minor": 0,
+    "runtime_build_digest": "sha256:2ec422d353e68deab4de4490e5362dd90591b089b755f0e7d4209511b879cfb1"
+  }
+}
