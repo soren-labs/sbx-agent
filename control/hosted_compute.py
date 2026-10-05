@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import socket
@@ -17,7 +18,7 @@ from runtime.http_service import create_runtime_app
 
 from control.backend import LocalProcessBackend, SandboxHandle, SandboxSpec
 from control.connections import ConnectionStore
-from control.hosted_auth import HostedAuthError
+from control.hosted_auth import HostedAuthError, _write
 from control.modal_connection import ModalContext
 from control.postgres_state import DatabaseRecords
 
@@ -150,8 +151,8 @@ class HostedModalBackend:
         self.connections, self.provider = connections, provider
         self.records = DatabaseRecords(connections.auth.database)
 
-    def _context(self, owner):
-        record = self.connections.get(owner, "modal")
+    def _context(self, owner, *, conn=None):
+        record = self.connections.get(owner, "modal", conn=conn)
         if record is None or record.state != "ready":
             raise HostedAuthError("modal_runtime_required", 409)
         return ModalContext(owner, record.id, self.connections.credentials(record)), record.metadata
@@ -174,11 +175,33 @@ class HostedModalBackend:
     def _create(self, spec, snapshot_ref=None):
         from control.modal_tags import modal_tags
 
-        context, runtime = self._context(spec.tags.get("owner", ""))
-        if snapshot_ref is not None:
-            runtime = {**runtime, "image": snapshot_ref}
         if spec.tags.get("provider", "codex") not in {"codex", "opencode"}:
             raise HostedAuthError("hosted_provider_not_supported", 400)
+        owner = spec.tags.get("owner", "")
+        operation = self.provider.restore if snapshot_ref is not None else self.provider.create
+        claim = secrets.token_hex(16)
+        # Commit before the remote call. Disconnect takes the same owner lock,
+        # so either it disables first (and create fails) or sees this durable
+        # claim. A timeout/crash must not erase possible remote compute.
+        with _write(self.connections.auth, f"connection:{owner}:modal") as conn:
+            context, runtime = self._context(owner, conn=conn)
+            self.connections.auth.database.execute(
+                conn,
+                "INSERT INTO control_records (namespace, id, owner, payload) VALUES (?, ?, ?, ?)",
+                (
+                    "hosted_sandbox_creates",
+                    claim,
+                    owner,
+                    json.dumps(
+                        {
+                            "agent_id": spec.tags["session_id"],
+                            "connection_id": context.connection_id,
+                        }
+                    ),
+                ),
+            )
+        if snapshot_ref is not None:
+            runtime = {**runtime, "image": snapshot_ref}
         key = secrets.token_urlsafe(32)
         durable_tags = {
             **spec.tags,
@@ -200,7 +223,8 @@ class HostedModalBackend:
                 "SBX_BROWSER_ORIGINS": os.environ.get("SBX_BROWSER_ORIGINS", ""),
             },
         )
-        operation = self.provider.restore if snapshot_ref is not None else self.provider.create
+        # If the provider raises here, its result is ambiguous. Retain the
+        # claim and teardown credentials until an operator reconciles it.
         handle = operation(context, spec, runtime)
         handle = replace(handle, tags={**handle.tags, **durable_tags})
         cipher = self.connections.vault.seal({"key": key}, context=f"{context.user_id}:{handle.id}")
@@ -222,7 +246,9 @@ class HostedModalBackend:
             )
         except Exception:
             self.provider.terminate(context, handle)
+            self.records.delete("hosted_sandbox_creates", claim, owner=owner)
             raise
+        self.records.delete("hosted_sandbox_creates", claim, owner=owner)
         return handle
 
     def snapshot(self, handle):

@@ -9,7 +9,7 @@ import httpx
 
 from control.connections import ConnectionStore
 from control.github_remote import RemoteGitHub, RemoteGitHubError
-from control.hosted_auth import HostedAuthError
+from control.hosted_auth import HostedAuthError, _write
 
 
 class ManualConnections:
@@ -66,11 +66,29 @@ class ManualConnections:
         return self.store.credentials(record)["secret"]
 
     def disable(self, owner: str, provider: str):
-        record = self.store.get(owner, provider)
-        if record is None:
-            return None
-        record.state, record.credential_cipher, record.metadata = "disabled", None, {}
-        return self.store.save(record)
+        with _write(self.store.auth, f"connection:{owner}:{provider}") as conn:
+            record = self.store.get(owner, provider, conn=conn)
+            if record is None:
+                return None
+            if provider == "modal":
+                # Do not expire provisioning authority on a timer: a crashed
+                # worker may still have created remote resources to reconcile.
+                if record.state == "provisioning" or "lease_until" in record.metadata:
+                    raise HostedAuthError("modal_provisioning_in_progress_retry_disconnect", 409)
+                rows = self.store.auth.database.execute(
+                    conn,
+                    "SELECT namespace, payload FROM control_records WHERE owner = ? "
+                    "AND namespace IN ('hosted_sandboxes', 'hosted_sandbox_creates')",
+                    (owner,),
+                ).fetchall()
+                if any(
+                    row["namespace"] == "hosted_sandbox_creates"
+                    or json.loads(row["payload"]).get("state") != "released"
+                    for row in rows
+                ):
+                    raise HostedAuthError("modal_resources_require_cleanup_before_disconnect", 409)
+            record.state, record.credential_cipher, record.metadata = "disabled", None, {}
+            return self.store.save(record, conn=conn)
 
     def blob(self, owner: str):
         key = self.secret(owner, "opencode")

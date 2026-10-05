@@ -22,6 +22,24 @@ the encrypted secret and exposes Disabled. This removes SBX's copy; revoke the
 credential at its issuer to invalidate it outside SBX. Secrets are never returned
 by connection APIs and the Console never writes them to browser storage.
 
+Modal disconnect refuses with HTTP 409
+`modal_resources_require_cleanup_before_disconnect` while the owner's compute
+records are not released or a sandbox create/restore is unresolved. Close the
+owner's Sessions and retry after successful teardown. Runtime provisioning also
+blocks disconnect with `modal_provisioning_in_progress_retry_disconnect`; finish
+or reconcile provisioning before retrying. Refusal preserves the encrypted
+credential, runtime metadata and connection state, including across restarts;
+another owner's resources cannot be used or deleted to unblock disconnect.
+
+Create/restore commits an owner-scoped `hosted_sandbox_creates` claim before
+calling Modal, serialized with disconnect using the connection's database lock.
+A crash or ambiguous provider failure retains that claim and teardown authority.
+An operator must reconcile the owner's Modal resources using the retained
+credential and confirm cleanup before removing an unresolved claim; elapsed time
+alone never releases it. Successfully terminated sandbox records (`released`)
+do not block disconnect. Filesystem snapshots alone are not live compute; future
+restore still requires a ready Modal connection.
+
 Repository enumeration, repository probes, runner exec, server-side push/PR and
 merge select the authenticated owner's token. A manual GitHub record takes
 precedence over existing App installations, including after disconnect: SBX
