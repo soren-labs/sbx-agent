@@ -36,6 +36,19 @@ Implements RFC 05 and the related RFC 04 tables (migration `0002_changes_deliver
 Steps are append-only evidence with the credential version used. `delivery_target_claims` serialize
 platform writes per repository/ref.
 
+**GitHub token permissions.** Delivery and merge run with the user's `github` Connection token. The
+connector's validation only probes `GET /user`, so it does not prove that these permissions are
+granted. A fine-grained token scoped to the Project repositories needs:
+
+| Permission | Used for |
+| --- | --- |
+| Contents: read & write | fetching the base, pushing `sbx/<session>/<changeset>`, merging the PR |
+| Pull requests: read & write | discovering/creating draft PRs and marking them ready (GraphQL `markPullRequestReadyForReview`) |
+| Checks: read, Commit statuses: read | the merge-gate remote observation |
+
+A classic token needs the `repo` scope. If a permission is missing, the affected step fails with
+GitHub's error; nothing falls back to another credential.
+
 Merge is a separate `merge_requests` operation. The gate (`control/domain/delivery.py`) is evaluated
 from typed rows plus a fresh remote observation, using the pinned policy combined with the current
 Project policy, and requires all of:
