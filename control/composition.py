@@ -71,6 +71,11 @@ class UnifiedConfig:
             )
         public = env.get("SBX_PUBLIC_URL", "http://localhost:8800")
         origins = tuple(o for o in env.get("SBX_ALLOWED_ORIGINS", public).split(",") if o)
+        resend_api_key = env.get("SBX_RESEND_API_KEY")
+        mail_from = env.get("SBX_MAIL_FROM")
+        if resend_api_key and not mail_from:
+            # Resend rejects senders outside a verified domain; fail at startup, not per email.
+            raise SystemExit("SBX_MAIL_FROM is required when SBX_RESEND_API_KEY is set")
         return cls(
             database_url=env["SBX_DATABASE_URL"],
             vault_keys=env["SBX_VAULT_KEYS"],
@@ -80,7 +85,8 @@ class UnifiedConfig:
             allowed_origins=origins,
             cookie_secure=env.get("SBX_COOKIE_SECURE", "0") == "1",
             executors=tuple(env.get("SBX_EXECUTORS", "local,modal").split(",")),
-            resend_api_key=env.get("SBX_RESEND_API_KEY"),
+            resend_api_key=resend_api_key,
+            mail_from=mail_from or cls.mail_from,
             worker_threads=int(env.get("SBX_WORKER_THREADS", "4")),
         )
 
