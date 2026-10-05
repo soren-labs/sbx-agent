@@ -138,9 +138,9 @@ def main() -> int:
                 # criterion is the final validated state: wait for "ready".
                 try:
                     detail = wait_for(
-                        lambda cid=cid: (
-                            lambda r: r if r.get("health") == "ready" else None
-                        )(c.connections.get(cid)),
+                        lambda cid=cid: (lambda r: r if r.get("health") == "ready" else None)(
+                            c.connections.get(cid)
+                        ),
                         timeout=120,
                         desc=f"{kind} validation",
                     )
@@ -311,9 +311,11 @@ def main() -> int:
             try:
                 delivery_done = wait_for(
                     lambda: (
-                        lambda d: d
-                        if d.get("state") in ("succeeded", "failed", "blocked", "rejected")
-                        else None
+                        lambda d: (
+                            d
+                            if d.get("state") in ("succeeded", "failed", "blocked", "rejected")
+                            else None
+                        )
                     )(c.deliveries.get(did)),
                     timeout=420,
                     poll=4,
