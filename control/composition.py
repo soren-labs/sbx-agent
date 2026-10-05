@@ -15,18 +15,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from control.application.changes import Changes
 from control.application.connections import Connections
+from control.application.delegation import Delegations
+from control.application.delivery import Deliveries
 from control.application.execution import ExecutionService, ExecutionSettings
 from control.application.identity import Identity
 from control.application.project_resolution import ProjectResolver
 from control.application.projections import Queries
 from control.application.projects import Projects
 from control.application.sessions import Sessions
+from control.application.tools import ToolGateway
 from control.catalog import load_catalog
 from control.executors.local import LocalExecutor
 from control.executors.modal import ModalExecutor
 from control.integrations.connectors.registry import CONNECTORS
 from control.integrations.email import FileMailSink, ResendMailer
+from control.integrations.git import GitTransport
+from control.integrations.github import GitHubHost
 from control.jobs.handlers.execution import handlers as execution_handlers
 from control.jobs.worker import Worker
 from control.persistence.database import Database
@@ -92,6 +98,10 @@ class Services:
     execution: ExecutionService
     broker: VaultCredentialBroker
     mailer: Any
+    changes: Changes
+    deliveries: Deliveries
+    delegations: Delegations
+    tools: ToolGateway
     handlers: dict[str, Any] = field(default_factory=dict)
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -102,6 +112,8 @@ def build_services(
     validators: dict[str, Any] | None = None,
     executors: dict[str, Any] | None = None,
     db: Database | None = None,
+    git: Any = None,
+    host: Any = None,
 ) -> Services:
     db = db or Database(config.database_url)
     vault = Vault.from_spec(config.vault_keys)
@@ -120,17 +132,33 @@ def build_services(
             )
         if "modal" in config.executors:
             executors["modal"] = ModalExecutor()
+    connector = HttpRuntimeConnector(config.runtime_master_key)
+    blobs = LocalBlobStore(config.data_dir / "blobs")
     execution = ExecutionService(
         db,
         executors=executors,
-        connector=HttpRuntimeConnector(config.runtime_master_key),
+        connector=connector,
         credentials=broker,
-        blobs=LocalBlobStore(config.data_dir / "blobs"),
+        blobs=blobs,
         catalog=catalog,
         settings=config.execution,
     )
     connections = Connections(db, vault, CONNECTORS, validators=validators)
     sessions = Sessions(db, ProjectResolver(catalog), catalog)
+    queries = Queries(db)
+    changes = Changes(db, connector, blobs)
+    deliveries = Deliveries(
+        db, broker, git or GitTransport(config.data_dir / "git"), host or GitHubHost(), blobs
+    )
+    delegations = Delegations(db, sessions, connector, blobs)
+    tools = ToolGateway(
+        db, delegations=delegations, queries=queries, changes=changes, deliveries=deliveries
+    )
+    execution.hooks.turn_terminal += [changes.on_turn_terminal, delegations.on_turn_terminal]
+    execution.post_restore_hooks.append(delegations.apply_inputs)
+    changes.ready_hooks.append(deliveries.on_changeset_ready)
+    sessions.close_hooks.append(delegations.on_parent_close)
+    connections.dependency_hooks.append(deliveries.dependents)
     services = Services(
         config=config,
         tx=db,
@@ -139,14 +167,24 @@ def build_services(
         projects=Projects(db),
         connections=connections,
         sessions=sessions,
-        queries=Queries(db),
+        queries=queries,
         execution=execution,
         broker=broker,
         mailer=mailer,
+        changes=changes,
+        deliveries=deliveries,
+        delegations=delegations,
+        tools=tools,
     )
     services.handlers = {
         **execution_handlers(execution),
         "connection.validate": connections.handle_validate,
+        "changeset.capture": changes.handle_capture,
+        "changeset.apply": changes.handle_apply,
+        "delivery.perform": deliveries.handle_perform,
+        "delivery.reconcile": deliveries.handle_reconcile,
+        "delivery.merge": deliveries.handle_merge,
+        "delegation.publish_result": delegations.handle_publish,
     }
     return services
 

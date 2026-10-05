@@ -88,18 +88,22 @@ class ApiStack:
         *,
         config: UnifiedConfig | None = None,
         executors: dict[str, Any] | None = None,
+        git: Any = None,
+        host: Any = None,
     ) -> None:
         self.db = db
         self.config = config or make_config(db, tmp)
-        executors = (
-            executors
-            if executors is not None
-            else {
+        if executors is None:
+            executors = {
                 "local": LocalExecutor(tmp / "executor", extra_env={"OPENCODE_BIN": FAKE_OPENCODE})
             }
-        )
         self.services: Services = build_services(
-            self.config, validators=fake_validators(), executors=executors, db=db
+            self.config,
+            validators=fake_validators(),
+            executors=executors,
+            db=db,
+            git=git,
+            host=host,
         )
         self.app = create_app(self.services)
         self.worker = build_worker(self.services)
@@ -121,7 +125,14 @@ class ApiStack:
                 return
             if not self.worker.run_once():
                 time.sleep(0.03)
-        raise AssertionError("condition not reached")
+        jobs = self.db.read(
+            lambda u: [
+                (j["kind"], j["state"], j["last_error_code"], j["last_error"])
+                for j in u.find("jobs", {}, order="created_at")
+                if j["state"] != "succeeded"
+            ]
+        )
+        raise AssertionError(f"condition not reached; open jobs={jobs}")
 
     def shutdown(self) -> None:
         local = self.services.execution.executors.get("local")

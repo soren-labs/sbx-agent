@@ -87,6 +87,8 @@ class ExecutionService:
         self.catalog = catalog
         self.settings = settings or ExecutionSettings()
         self.hooks = IngestHooks(credential_health=self._credential_health)
+        # Called after a Worktree is realized on a lease (e.g. Delegation input ChangeSets).
+        self.post_restore_hooks: list[Any] = []
 
     # ======================================================================== commands
     def activate(self, principal: Principal, session_id: str) -> dict[str, Any]:
@@ -588,6 +590,8 @@ class ExecutionService:
             )
 
         ctx.commit(commit)
+        for hook in self.post_restore_hooks:
+            hook(ctx, lease, session)
 
     # -------------------------------------------------------------------- execution
     def _create_execution(self, uow: Any, turn_id: str, lease_id: str) -> str | None:
@@ -961,7 +965,12 @@ class ExecutionService:
                     {"executor_lease_id": lease_id, "state": list(LIVE_EXECUTION_STATES)},
                 )
             )
-            if busy:
+            capturing = ctx.db.read(
+                lambda uow: uow.count(
+                    "changesets", {"session_id": lease["session_id"], "state": "capturing"}
+                )
+            )
+            if busy or capturing:
                 return Continue(delay=2.0)
             ctx.commit(lambda uow: self._quiesce(uow, lease_id))
             snapshot_ok = self._checkpoint(ctx, lease)
