@@ -14,7 +14,9 @@ logged, or placed on a remote URL.
 
 from __future__ import annotations
 
+import base64
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 # Non-secret git env the helper may export; the token lives in
@@ -22,13 +24,34 @@ from pathlib import Path
 _TIMEOUT_S = 120
 
 
-def _git(root: Path, *argv: str, env: dict | None = None, header_token: str | None = None) -> str:
+def _auth_header(token: str, remote: str) -> list[str]:
+    """HTTP auth via -c extraheader scoped to the remote's host.
+
+    GitHub tokens (PAT, fine-grained, OAuth, App installation) all accept
+    Basic ``x-access-token:<token>`` over git smart-HTTP; Bearer is
+    rejected by ghs_ installation tokens. The header is base64'd so the
+    token's charset can't corrupt the -c syntax, and it is scoped to the
+    remote host so it can never leak to a different origin.
+    """
+    host = urllib.parse.urlparse(remote).netloc or "github.com"
+    scheme = urllib.parse.urlparse(remote).scheme or "https"
+    auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return [
+        "-c",
+        f"http.{scheme}://{host}/.extraheader=AUTHORIZATION: basic {auth}",
+    ]
+
+
+def _git(
+    root: Path,
+    *argv: str,
+    env: dict | None = None,
+    header_token: str | None = None,
+    remote: str = "",
+) -> str:
     cmd = ["git"]
     if header_token:
-        cmd += [
-            "-c",
-            f"http.https://github.com/.extraheader=AUTHORIZATION: bearer {header_token}",
-        ]
+        cmd += _auth_header(header_token, remote)
     cmd += list(argv)
     proc = subprocess.run(
         cmd,
@@ -83,6 +106,7 @@ def ensure_worktree(
             base_ref,
             env=None,
             header_token=token,
+            remote=remote,
         )
 
     fetch()

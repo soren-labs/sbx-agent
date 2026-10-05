@@ -102,7 +102,6 @@ def build_world(dsn: str, workdir: Path) -> dict:
     connections = ConnectionService(db, vault)
     sessions = SessionService(db)
     blobs = BlobStore(str(workdir / "blobs"))
-    changes = ChangeSetService(db, blobs)
     delivery = DeliveryService(
         db,
         remote_factory=make_remote_factory(connections, db),
@@ -132,6 +131,8 @@ def build_world(dsn: str, workdir: Path) -> dict:
         ),
     )
     stack.register_backend("modal", ModalExecutorBackend())
+
+    changes = ChangeSetService(db, blobs, runtime_stack=stack)
 
     handlers.set_runtime_stack(stack)
     handlers.set_connection_plane(connections, registry)
