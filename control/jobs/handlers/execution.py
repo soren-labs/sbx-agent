@@ -15,6 +15,7 @@ class ExecutionHandler:
         self.executor_factory, self.credentials, self.master = executor_factory, credentials, master
         self.snapshot_reader = None
         self.environment_resolver = None
+        self.child_inputs = None
 
     def __call__(self, claim):
         try:
@@ -83,6 +84,8 @@ class ExecutionHandler:
         prepared = client.wait(envop)
         if prepared.get("error"):
             raise DomainError(prepared["error"])
+        if self.child_inputs:
+            self.child_inputs(session, execution, lease, client, claim)
         with self.uow.transaction() as repo:
             self.claims.assert_current(repo, claim)
             repo.execute(

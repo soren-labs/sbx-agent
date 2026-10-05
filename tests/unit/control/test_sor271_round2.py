@@ -525,7 +525,7 @@ class TestListAllIndexSelfHeal:
         idx.data["agents"] = ["s1"]
         store._list_cache = None
         assert [r.id for r in store.list_all()] == ["s1"]
-        store._last_rebuild_at = 0.0  # past the interval
+        store._last_rebuild_at = -store_mod._REBUILD_INTERVAL_S  # includes freshly booted CI
         keys_before = d.keys_calls
         # ``_refresh_listing`` releases ``_refresh_lock`` itself — the
         # production caller is ``_kick_refresh`` (nonblocking acquire).

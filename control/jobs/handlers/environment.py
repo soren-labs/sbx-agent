@@ -39,8 +39,10 @@ class EnvironmentResolver:
                 operation_id=execution["operation_id"] + "-clone",
             )
             # Pin once before first CLI launch, never reset a later Turn to new main.
-            inputs["base_sha"] = wt["base_sha"] or self.github.resolve_base(
-                credential, repository, inputs.get("base_ref", "main")
+            inputs["base_sha"] = (
+                wt["base_sha"]
+                or inputs.get("base_sha")
+                or self.github.resolve_base(credential, repository, inputs.get("base_ref", "main"))
             )
         require(not repository or inputs.get("base_sha"), "repository_unavailable")
         return inputs, credential

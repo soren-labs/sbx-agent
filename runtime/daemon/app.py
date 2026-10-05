@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from protocol.runtime import OperationFrame, ProtocolError
 
-from runtime.daemon import files, snapshots
+from runtime.daemon import changes, files, snapshots
 from runtime.daemon.journal import Journal
 from runtime.daemon.supervisor import Supervisor
 from runtime.daemon.worktree import clone_auth
@@ -105,7 +105,11 @@ class Runtime:
                     raise ProtocolError("waiting_capacity")
                 self.journal.update(frame.operation_id, "starting")
                 payload = frame.payload
-                if frame.operation_kind == "snapshot.capture":
+                if frame.operation_kind == "changes.capture":
+                    result = changes.capture(self, payload)
+                elif frame.operation_kind == "changes.apply":
+                    result = changes.apply(self, payload)
+                elif frame.operation_kind == "snapshot.capture":
                     result = snapshots.capture(self)
                 elif frame.operation_kind == "worktree.restore":
                     result = snapshots.restore(self, payload["manifest"])

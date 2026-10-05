@@ -1,4 +1,5 @@
-from control.domain.errors import require
+from control.domain.delegation import validate_result
+from control.domain.errors import DomainError, require
 from control.domain.events import digest
 from control.domain.identity import new_id
 from control.domain.sessions import TURN_TERMINAL, terminal_verdict
@@ -137,6 +138,14 @@ class Ingest:
                 success=result.get("outcome") == "success",
                 complete=bool(complete),
             )
+            if verdict == "succeeded" and turn["result_contract"]:
+                try:
+                    validate_result(
+                        result.get("result_text", result.get("text", "")), turn["result_contract"]
+                    )
+                except DomainError:
+                    verdict = "failed"
+                    result = {**result, "error": "output_contract_invalid"}
             # Stop and complete evidence precede terminalization; cancellation wins.
             repo.execute(
                 "UPDATE turns SET state=%s,evidence_complete=%s,outcome=%s,reason=%s WHERE id=%s",
@@ -202,4 +211,14 @@ class Ingest:
             repo.execute(
                 "UPDATE worktrees SET generation=generation+1 WHERE session_id=%s", (session["id"],)
             )
+            delegation = repo.one(
+                "SELECT id FROM delegations WHERE child_session_id=%s", (session["id"],)
+            )
+            if delegation:
+                repo.enqueue(
+                    session["workspace_id"],
+                    "delegation.publish_result",
+                    delegation["id"],
+                    delegation["id"] + "-result",
+                )
             return verdict

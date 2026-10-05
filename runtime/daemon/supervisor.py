@@ -145,6 +145,7 @@ class Supervisor:
                 "harness": asdict(outcome),
                 "native_id": outcome.native_id,
                 "text": "\n".join(state.get("parts", {}).values()),
+                "result_text": next(reversed(state.get("parts", {}).values()), ""),
             }
         except BaseException as error:
             if process:

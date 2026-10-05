@@ -65,3 +65,17 @@ Email transport is an injected private operator concern, not a fifth user
 credential. Benchmark verified-user provisioning is not public registration
 verification evidence. Environment cache reuse is deliberately disabled until
 secret-safe cache evidence exists; private Session checkpoints take precedence.
+
+## Phase 4 — ChangeSet, Delivery, Delegation
+
+Immutable manifest v1 records sorted path/type/mode/content digest, repository/base/head/tree and canonical SHA256 subject identity. Runtime captures binary/untracked/deleted/executable/symlink files, rejects excluded changed files and known credential material, and validates the entire staged application before swapping Worktrees. Durable capture barriers prevent a new Turn racing a capture. Ready ChangeSets cannot be mutated in PostgreSQL.
+
+Delivery uses the user's explicit GitHub credential, deterministic Git database materialization, a new deterministic branch and a marked draft PR. Remote evidence is committed as append-only steps behind both Job and global repository/ref target claims. Lost responses adopt the same exact head/PR; a conflicting existing branch is rejected because REST ref PATCH lacks expected-old atomicity. Merge has a separate typed intent, freshly checks exact head/subject, independent validated results, required checks, draft/mergeability and provider head-CAS. Strict atomic base stability is explicitly unsupported and fails closed. Child Sessions cannot ship by default.
+
+Delegation atomically creates a distinct child Session/Worktree and Turn, pins an immutable ChangeSet and typed platform-enforced ResultContract, and provides spawn/message/wait/result/cancel commands through the same application services. Successful results need real execution/native evidence; test passing results need observed successful tool commands. Wait registration and result publication serialize on the delegation; notification is an ordinary queued parent Message. No Review engine or workflow DAG exists.
+
+Validation: canonical digest vector, binary/deleted/mode/symlink capture/apply, atomic application failure, exact-subject contract, stale remote head, independent review gate, immutable database seal, lost PR response reclaim, durable wait/child isolation and denied child shipping. Full lint/backend results recorded below after completion.
+
+Limitations at this boundary: application tool gateway transport is wired in the product phase; export transport, generic file transfer and supervised product I/O are completed with that surface. Review is advisory evidence; native CLI structured output remains prompt-only plus strict platform validation. Git delivery materializes/pushes via GitHub Git Database API rather than invoking a git push process. This preserves pinned object/ref/PR semantics without exposing GitHub credentials to the coding process.
+
+Phase 4 results: `make lint` passed; full isolated PostgreSQL/backend suite **3541 passed, 11 skipped** (163.86s); focused unified suite **30 passed**. Fixed a legacy CI-only test assumption that monotonic uptime already exceeds the listing rebuild interval (the new machine was younger than that interval); its focused suite **21 passed**. This legacy test is retired at final cutover.

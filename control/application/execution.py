@@ -38,6 +38,15 @@ class Execution:
                 ),
                 "waiting_capacity",
             )
+            require(
+                not repo.one(
+                    "SELECT o.id FROM worktree_operations o JOIN worktrees w "
+                    "ON w.id=o.worktree_id WHERE w.session_id=%s "
+                    "AND o.state IN ('pending','executing')",
+                    (session["id"],),
+                ),
+                "waiting_capacity",
+            )
             # Unknown outcomes and unverified lost compute prohibit new writers.
             require(
                 not repo.one(

@@ -2,15 +2,23 @@
 
 from types import SimpleNamespace
 
+from control.application.changes import Changes
 from control.application.connections import Connections
+from control.application.delegation import Delegations
+from control.application.delivery import Deliveries
 from control.application.identity import Identity
 from control.application.projects import Projects
 from control.application.sessions import Sessions
 from control.application.worktrees import Worktrees
 from control.domain.errors import require
 from control.domain.identity import Principal
+from control.integrations.github import GitHubEffects
 from control.jobs.claims import Claims
+from control.jobs.handlers.changes import CaptureHandler
+from control.jobs.handlers.child_inputs import ChildInputs
 from control.jobs.handlers.connections import ValidationHandler
+from control.jobs.handlers.delegation import ResultHandler
+from control.jobs.handlers.delivery import DeliveryHandler
 from control.jobs.handlers.environment import EnvironmentResolver
 from control.jobs.handlers.execution import ExecutionHandler
 from control.jobs.handlers.snapshots import ReleaseHandler, SnapshotHandler
@@ -39,8 +47,18 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
     snapshots = SnapshotHandler(uow, claims, executor_factory, objects, master)
     execution.snapshot_reader = snapshots.read
     execution.environment_resolver = EnvironmentResolver(uow, connections, connectors["github"])
+    sessions = Sessions(uow)
+    execution.child_inputs = ChildInputs(uow, objects, claims)
+    delivery = DeliveryHandler(
+        uow, claims, connections, GitHubEffects(connectors["github"], objects)
+    )
     handlers = {
+        "delivery.perform": delivery,
+        "delivery.reconcile": delivery,
+        "delivery.merge": delivery,
         "turn.dispatch": execution,
+        "changeset.capture": CaptureHandler(uow, claims, executor_factory, objects, master),
+        "delegation.publish_result": ResultHandler(uow, claims, sessions),
         "connection.validate": ValidationHandler(uow, claims, connections, connectors),
         "snapshot.capture": snapshots,
         "executor.release": ReleaseHandler(uow, claims, executor_factory, master),
@@ -49,7 +67,10 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
         uow=uow,
         identity=Identity(uow),
         projects=Projects(uow),
-        sessions=Sessions(uow),
+        sessions=sessions,
+        changes=Changes(uow, objects),
+        deliveries=Deliveries(uow),
+        delegations=Delegations(uow, sessions),
         connections=connections,
         worktrees=Worktrees(uow),
         objects=objects,
