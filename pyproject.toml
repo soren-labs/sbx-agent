@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "argon2-cffi>=25.1.0,<26",
+    # Unified vault: AES-256-GCM envelope encryption for CredentialVersions.
+    "cryptography>=43",
     "fastapi>=0.115.0",
     "httpx>=0.27.0",
     # SOR-290: validated user-bound clients, published images and TLS sandboxes.

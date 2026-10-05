@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
 T = TypeVar("T")
@@ -130,3 +131,12 @@ class BlobStore(Protocol):
     def get(self, key: str) -> bytes: ...
 
     def delete(self, key: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class SealedRef:
+    """Ciphertext reference handed to the vault port (key id, nonce, ciphertext)."""
+
+    key_id: str
+    nonce: bytes
+    ciphertext: bytes
