@@ -43,6 +43,7 @@ testpaths = ["tests/unit", "tests/integration"]
 pythonpath = [".", "src"]
 markers = [
     "integration: tests that run against a disposable external service",
+    "unit: hermetic unit tests",
 ]
 
 [tool.ruff]
