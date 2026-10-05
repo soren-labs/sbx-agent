@@ -12,6 +12,7 @@ import type {
   ModelInfo,
 } from "../api/types";
 import { PROVIDERS } from "../api/fixtures";
+import { hostedDemo, hostedRequest } from "../hosted/api";
 
 const start = Date.now() - 8 * 60_000;
 const ts = (seconds: number) => new Date(start + seconds * 1000).toISOString();
@@ -429,6 +430,15 @@ export class PrototypeSessionApi extends FixtureSessionApi {
     };
   }
   override async listProviders(): Promise<ProviderInfo[]> {
+    if (hostedDemo) {
+      const { connection } = await hostedRequest("/hosted/connections/opencode");
+      const connected = connection?.state === "connected";
+      return PROVIDERS.filter(p => p.id === "opencode").map(p => ({
+        ...p, models: connected ? connection.metadata.models : [],
+        accountsTotal: connected ? 1 : 0, accountsAvailable: connected ? 1 : 0,
+        readiness: connected ? "ready" : "needs_login",
+      }));
+    }
     return PROVIDERS.map((p) => ({
       ...p,
       models: demoModels[p.id],
@@ -438,6 +448,12 @@ export class PrototypeSessionApi extends FixtureSessionApi {
     }));
   }
   override async listModels(): Promise<ModelInfo[]> {
+    if (hostedDemo) {
+      const { connection } = await hostedRequest("/hosted/connections/opencode");
+      return connection?.state === "connected" ? connection.metadata.models.map((model: string) => ({
+        provider: "opencode", model, accountsAvailable: 1, reasoningEfforts: [], defaultEffort: "auto",
+      })) : [];
+    }
     return Object.entries(demoModels).flatMap(([provider, models]) =>
       models.map((model) => ({
         provider,

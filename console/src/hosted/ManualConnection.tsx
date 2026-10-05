@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { hostedRequest, type HostedConnection } from "./api";
+import { Icon } from "../prototype/Icon";
+import { Badge, ConnectionCard, notifyConnectionChange } from "./ui";
 
 type Props = { provider: "github" | "opencode"; title: string; field: "token" | "api_key"; label: string; help: string };
 
@@ -12,7 +14,7 @@ export function ManualConnection({ provider, title, field, label, help }: Props)
   useEffect(() => { void refresh().catch(e => setError(e.message)); }, [path]);
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true); setError("");
-    try { await action(); window.dispatchEvent(new Event("sbx-connection-change")); }
+    try { await action(); notifyConnectionChange(); }
     catch (e) { setError((e as Error).message); }
     finally { await refresh().catch(() => {}); setBusy(false); }
   };
@@ -26,21 +28,22 @@ export function ManualConnection({ provider, title, field, label, help }: Props)
   };
   const enabled = connection && connection.state !== "disabled";
   const state = connection?.state === "connected" ? "Connected" : connection?.state === "invalid" ? "Invalid" : "Disabled";
-  return <section className="settings-section" aria-label={`${title} connection`}>
-    <h2>{title}</h2>
-    <p>{help}</p>
-    <p role="status">{state}</p>
-    {error && <p role="alert">{error}</p>}
-    {connection?.metadata.error && <p>{String(connection.metadata.error).replaceAll("_", " ")}</p>}
-    <form onSubmit={connect}>
-      <label className="form-label">{label}<input name={field} type="password" autoComplete="off" required disabled={busy} /></label>
-      <button disabled={busy}>{enabled ? `Replace ${title}` : `Connect ${title}`}</button>
-    </form>
-    {enabled && <>
-      <button disabled={busy} onClick={() => void act(() => hostedRequest(`${path}/validate`, {}))}>Validate {title}</button>
-      <button disabled={busy} onClick={() => void act(() => hostedRequest(path, {}, "DELETE"))}>Disconnect {title}</button>
-    </>}
-    {connection?.metadata.models && <p>Available models: {connection.metadata.models.join(" · ")}</p>}
-    {connection?.metadata.repositories && <p>Repositories: {connection.metadata.repositories.map((r: { name: string }) => r.name).join(" · ")}</p>}
+  return <section className={`settings-section hs-card ${state === "Connected" ? "is-ready" : state === "Invalid" ? "is-failed" : ""}`} aria-label={`${title} connection`}>
+    <ConnectionCard icon={provider === "github" ? "github" : "sparkle"} step={provider === "github" ? 3 : 2} title={title} description={help}
+      badge={<Badge tone={state === "Connected" ? "ok" : state === "Invalid" ? "error" : "idle"} role="status">{state}</Badge>}>
+      {error && <p className="hs-alert" role="alert">{error}</p>}
+      {connection?.metadata.error && <p className="hs-note warn">{String(connection.metadata.error).replaceAll("_", " ")}</p>}
+      <form className="hs-token-form" onSubmit={connect}>
+        <label className="form-label">{label}<input name={field} type="password" autoComplete="off" required disabled={busy} /></label>
+        <button className="button primary" disabled={busy}>{enabled ? `Replace ${title}` : `Connect ${title}`}</button>
+      </form>
+      {enabled && <div className="hs-actions">
+        <button className="button" disabled={busy} onClick={() => void act(() => hostedRequest(`${path}/validate`, {}))}><Icon name="refresh" size={13} />Validate {title}</button>
+        <button className="button ghost danger" disabled={busy} onClick={() => void act(() => hostedRequest(path, {}, "DELETE"))}>Disconnect {title}</button>
+      </div>}
+      {connection?.metadata.models && <p className="hs-meta">Available models: {connection.metadata.models.join(" · ")}</p>}
+      {connection?.metadata.repositories && <ul className="hs-repo-list">{connection.metadata.repositories.map((r: { name: string }) =>
+        <li key={r.name}><Icon name="branch" size={12} />{r.name}</li>)}</ul>}
+    </ConnectionCard>
   </section>;
 }
