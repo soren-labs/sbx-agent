@@ -209,6 +209,36 @@ class Operations:
             lease_ref=cred.get("lease_ref"),
         )
 
+    def _ensure_worktree(self, env: OperationEnvelope) -> dict:
+        """Materialize the declared repository into the worktree boundary
+        before the first turn (idempotent; skipped once .git exists)."""
+        spec = env.payload.get("worktree") or {}
+        if not spec:
+            return {}
+        git_cred = env.payload.get("git_credentials") or {}
+        git_env = {str(k): str(v) for k, v in (git_cred.get("env") or {}).items()}
+
+        def _event(kind: str, payload: dict) -> None:
+            self.journal.spool_append(
+                "observation",
+                {
+                    "kind": "diagnostic",
+                    "type": kind,
+                    "operation_id": env.operation_id,
+                    "session_id": env.session_id,
+                    "payload": payload,
+                },
+            )
+
+        from . import worktree as _worktree
+
+        try:
+            return _worktree.ensure_worktree(self.worktree_root, spec, git_env, event=_event)
+        except Exception as exc:
+            raise OperationError(
+                "worktree_bootstrap_failed", f"worktree materialization: {exc}"
+            ) from exc
+
     def _op_turn_start(self, env: OperationEnvelope) -> dict:
         return self._start_or_resume(env, resume=False)
 
@@ -220,6 +250,7 @@ class Operations:
         if not provider:
             raise OperationError(WIRE_PAYLOAD_INVALID, "missing provider_id")
         context = self._turn_context(env)
+        self._ensure_worktree(env)
         harness = get_harness(provider, self.state_root)
         prepared = self._prepared.get(env.session_id)
         if prepared is None:

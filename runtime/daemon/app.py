@@ -24,7 +24,7 @@ from protocol.runtime import (
 from .journal import Journal
 from .operations import OperationError, Operations
 from .supervisor import Supervisor
-from .transport import Transport, TransportClosed, connect
+from .transport import Transport, TransportClosed, accept, connect, listen
 
 EVENT_BATCH_LIMIT = 128
 SPOOL_FLUSH_INTERVAL_S = 0.05
@@ -108,13 +108,26 @@ class DaemonApp:
         """Connect → hello → frame loop until shutdown/revoked."""
         from runtime.harnesses.registry import manifests
 
-        while not self._stopping.is_set():
+        listener = None
+        if self.endpoint.startswith("serve://"):
             try:
-                self._transport = connect(self.endpoint, timeout=15.0)
+                listener = listen(int(self.endpoint.removeprefix("serve://")))
             except OSError:
-                if self._stopping.wait(0.5):
-                    break
-                continue
+                # Without the port we cannot serve — nothing to retry for.
+                return 2
+        while not self._stopping.is_set():
+            if listener is not None:
+                try:
+                    self._transport = accept(listener, timeout=15.0)
+                except (OSError, TimeoutError):
+                    continue
+            else:
+                try:
+                    self._transport = connect(self.endpoint, timeout=15.0)
+                except OSError:
+                    if self._stopping.wait(0.5):
+                        break
+                    continue
             hello = hello_frame(
                 lease_id=self.lease_id,
                 lease_generation=self.lease_generation,

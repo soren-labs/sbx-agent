@@ -295,6 +295,18 @@ class ConnectionService:
             " LIMIT 1",
             (connection_id,),
         )
+        if live is None:
+            # Compute grants bind to the lease (the execution row does not
+            # exist yet at allocate time) — a non-terminal lease with an
+            # outstanding grant on this connection is live compute too.
+            live = uow.rows.one(
+                "SELECT g.id FROM credential_grants g"
+                " JOIN executor_leases el ON el.id = g.lease_id"
+                " WHERE g.connection_id=%s AND g.revoked_at IS NULL"
+                " AND el.state IN ('allocating','ready','quiescing')"
+                " LIMIT 1",
+                (connection_id,),
+            )
         if live is not None:
             raise DomainError(
                 "invalid_state",

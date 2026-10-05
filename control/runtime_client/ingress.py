@@ -132,6 +132,50 @@ class IngressServer:
             self._thread.join(timeout=5)
         self._thread = None
 
+    # -- outbound dial (serve-mode runtimes) -------------------------------
+
+    def dial(self, url: str, *, retry_for_s: float = 120.0) -> bool:
+        """Dial out to a serve-mode runtime (executor-tunnel topology —
+        e.g. a Modal sandbox exposing its daemon port). The daemon still
+        sends hello first, so the session path is identical to inbound.
+
+        Blocks until the transport connects (cold executor boots can take
+        a while) or the retry window expires; returns whether a channel
+        was opened — the caller still waits on ``attach`` for hello."""
+        if self._loop is None:
+            raise RuntimeError("ingress not started")
+        coro = asyncio.run_coroutine_threadsafe(self._dial(url, retry_for_s), self._loop)
+        try:
+            return bool(coro.result(timeout=retry_for_s + 15))
+        except Exception:
+            return False
+
+    async def _dial(self, url: str, retry_for_s: float) -> bool:
+        import ssl
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        use_tls = parsed.scheme == "tls"
+        if parsed.scheme not in ("tcp", "tls"):
+            return False
+        host = parsed.hostname
+        port = parsed.port or (443 if use_tls else None)
+        if not host or not port:
+            return False
+        ctx = ssl.create_default_context() if use_tls else None
+        deadline = time.time() + retry_for_s
+        while time.time() < deadline:
+            try:
+                reader, writer = await asyncio.open_connection(
+                    host, port, ssl=ctx, server_hostname=host if use_tls else None
+                )
+            except OSError:
+                await asyncio.sleep(2.0)
+                continue
+            asyncio.ensure_future(self._session(reader, writer))
+            return True
+        return False
+
     # -- connection handling ---------------------------------------------
 
     def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

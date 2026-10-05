@@ -26,6 +26,11 @@ class RuntimePool:
     def attach(self, lease_id: str, timeout: float = 30.0) -> bool:
         return self.ingress.attach(lease_id, timeout) is not None
 
+    def dial(self, url: str, *, retry_for_s: float = 120.0) -> bool:
+        """Dial out to a serve-mode runtime via its executor tunnel.
+        Returns True once the transport connected (hello still pending)."""
+        return self.ingress.dial(url, retry_for_s=retry_for_s)
+
     def submit(self, lease_id: str, envelope: dict, timeout: float = 30.0) -> dict:
         """operation.submit → accepted/rejected frame."""
         return self.ingress.submit_operation(lease_id, envelope, timeout)

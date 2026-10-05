@@ -1,44 +1,22 @@
 # Source of truth for the sbx-runtime image.
-# runtime/image.py (Modal) and Dockerfile.local (local docker) both read this file.
+# runtime/image.py (Modal) and Dockerfile.local both read this file.
 # Format: key=value at the top; [apt] is one Debian package name per line.
 # Do not list Chrome / Chromium (P2 browser variant). Do not put secrets here.
 #
-# SOR-175: any *_version key (or its SBX_*_VERSION env override) may be the
-# literal `latest`. It is resolved ONCE on the build host at image build /
-# deploy time (runtime/versions.py), frozen into that deployment's
-# cli-versions.json lock, and replayable via `sbx deploy --versions-lock` /
-# SBX_VERSIONS_LOCK. Resolution sources: npm `{registry}/<pkg>/latest`
-# dist-tag (codex, opencode), `{devin_base_url}/current/manifest.json` +
-# its per-platform sha256 (devin), or the host binary's own `--version`
-# (agy, grok). A rendered Dockerfile / built image NEVER carries a floating
-# @latest — sandbox starts only ever see the frozen version.
+# Any *_version key (or its SBX_*_VERSION env override) may be the literal
+# `latest`. It is resolved ONCE on the build host at image build time
+# (runtime/versions.py), frozen into the versions lock, and replayable via
+# SBX_VERSIONS_LOCK. A rendered Dockerfile / built image NEVER carries a
+# floating @latest — sandbox starts only ever see the frozen version.
 
 python_version=3.12
 node_major=22
-codex_npm=@openai/codex
-codex_version=0.159.2
 
-# Devin-only fast path (SOR-74): standalone CLI bundle from static.devin.ai.
-# devin-<ver>-<target>.tar.gz sha256 pins come from cli/<ver>/manifest.json.
-devin_version=3000.10.21
-devin_base_url=https://static.devin.ai/cli
-devin_sha256_x86_64=7cac6f5739ba3a3e5542f3b7fa07ed902d6dfb96ca22e4c63ae84c03bb7db47c
-devin_sha256_aarch64=a63124ed2f8406a5d44a162fa2eb05b9c0f218a6b131e2ca1335d4a335c70a6c
-
-# OpenCode seam (Release 0.1 / SOR-96): pinned npm package opencode-ai
-# (bun-compiled binary), installed onto sbx-runtime like the codex CLI pin.
-# Reproducible like codex; pinned to a release at least 7 days old — bump
-# only after a real gate re-verify.
+# OpenCode (the unified architecture's harness): pinned npm package
+# opencode-ai (bun-compiled binary), installed onto sbx-runtime. Resolution
+# source for `latest`: npm registry dist-tag.
 opencode_npm=opencode-ai
 opencode_version=1.18.29
-
-# Expected `--version` pins for the host-binary providers (SOR-60
-# spike-validated: agy 1.2.2, grok 1.0.24; agy re-validated against the
-# real 1.2.3 binary under SOR-106 — headless contract unchanged). These
-# CLIs are build-host artifacts (never committed); the image build
-# rejects a binary whose `--version` output does not contain the pin.
-agy_version=1.2.3
-grok_version=1.0.24
 
 
 [apt]

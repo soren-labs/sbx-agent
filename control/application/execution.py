@@ -24,7 +24,10 @@ from control.persistence.unit_of_work import SqlUnitOfWork
 from .events import append_event, ingest_runtime_events
 from .ingest import observations_to_records, project_observation
 
-ATTACH_TIMEOUT_S = 20.0
+ATTACH_TIMEOUT_S = 30.0
+# Serve-mode runtimes need a longer window: executor image pull + daemon
+# boot + tunnel accept routinely exceed the post-connect hello delay.
+DIAL_TIMEOUT_S = 180.0
 SUBMIT_TIMEOUT_S = 30.0
 
 
@@ -42,11 +45,19 @@ class ExecutionService:
         backends: dict[str, Any],
         pool: Any,
         credential_resolver=None,
+        git_resolver=None,
+        compute_resolver=None,
     ) -> None:
         self.db = db
         self.backends = backends
         self.pool = pool
         self.credential_resolver = credential_resolver or (lambda session, turn: {})
+        # git_resolver: workspace's git Connection → clone/fetch creds for
+        # worktree materialization inside the executor.
+        self.git_resolver = git_resolver or (lambda session, **kw: {"env": {}})
+        # compute_resolver: workspace's modal Connection → executor backend
+        # creds bound to this call (never ambient fallback).
+        self.compute_resolver = compute_resolver or (lambda session, **kw: {})
         self._pending_results: dict[str, dict] = {}
         self._pending_lock = threading.Lock()
 
@@ -209,6 +220,29 @@ class ExecutionService:
                 error={"code": exc.code, "message": str(exc)},
             )
             return {"turn_id": turn_id, "error": exc.code}
+        worktree_spec = self._worktree_spec(uow, session)
+        git_credentials = {}
+        if worktree_spec:
+            try:
+                git_credentials = (
+                    self.git_resolver(
+                        session,
+                        workspace_id=workspace_id,
+                        lease_id=lease["id"],
+                    )
+                    or {}
+                )
+            except DomainError as exc:
+                self._fail_execution(
+                    uow,
+                    workspace_id=workspace_id,
+                    session_id=session["id"],
+                    turn_id=turn_id,
+                    execution_id=execution_id,
+                    reason=exc.code,
+                    error={"code": exc.code, "message": str(exc)},
+                )
+                return {"turn_id": turn_id, "error": exc.code}
         envelope = self._turn_envelope(
             lease=lease,
             session=session,
@@ -223,6 +257,8 @@ class ExecutionService:
             prompt=prompt,
             credentials=credentials,
             binding=binding,
+            worktree=worktree_spec,
+            git_credentials=git_credentials,
         )
         reply = self.pool.submit(lease["id"], envelope.to_dict(), timeout=SUBMIT_TIMEOUT_S)
         if reply.get("frame") == "operation.rejected":
@@ -283,6 +319,8 @@ class ExecutionService:
         prompt: str,
         credentials: dict,
         binding: dict | None,
+        worktree: dict | None = None,
+        git_credentials: dict | None = None,
     ) -> OperationEnvelope:
         from control.runtime_client import grants
 
@@ -297,6 +335,9 @@ class ExecutionService:
             "worktree_generation": 0,
             "credentials": credentials,
         }
+        if worktree:
+            payload["worktree"] = worktree
+            payload["git_credentials"] = git_credentials or {}
         if binding is not None:
             payload["native_binding"] = {
                 "provider_id": binding["provider_id"],
@@ -318,6 +359,26 @@ class ExecutionService:
             grant_expires_at=grant_expires,
             payload=payload,
         )
+
+    def _worktree_spec(self, uow: SqlUnitOfWork, session: dict) -> dict | None:
+        """The worktree's declared repository identity: projectless spec or
+        the bound ProjectVersion's declaration. ``branch`` is derived from
+        the session so a re-spawn resumes the same work branch."""
+        spec = session.get("projectless_spec") or {}
+        repo = spec.get("repository")
+        base_ref = spec.get("base_ref")
+        if not repo and session.get("project_version_id"):
+            pv = uow.project_versions.get(session["workspace_id"], session["project_version_id"])
+            decl = pv or {}
+            repo = repo or decl.get("repository")
+            base_ref = base_ref or decl.get("base_ref")
+        if not repo:
+            return None
+        return {
+            "repository": repo,
+            "base_ref": base_ref or "main",
+            "branch": f"sbx/{session['id']}",
+        }
 
     def _latest_binding(
         self, uow: SqlUnitOfWork, workspace_id: str, session_id: str, provider_id: str
@@ -341,22 +402,7 @@ class ExecutionService:
             # Unverified old compute MUST be quarantined: mark lost and
             # terminate the backend handle before replacing it.
             self._mark_lease_lost(uow, lease)
-            backend = self.backends.get(lease["backend"])
-            if backend is not None:
-                try:
-                    from control.executors.port import ExecutorHandle
-
-                    meta = lease.get("handle") or {}
-                    backend.terminate(
-                        ExecutorHandle(
-                            backend=lease["backend"],
-                            handle_id=str(meta.get("handle_id") or lease["id"]),
-                            metadata=meta,
-                        ),
-                        lease["allocation_operation_id"] or lease["id"],
-                    )
-                except Exception:
-                    pass
+            self._terminate_with_owner(uow, lease)
         generation = 1
         prev = uow.rows.one(
             "SELECT MAX(generation) AS g FROM executor_leases"
@@ -370,7 +416,8 @@ class ExecutionService:
         lease_id = ids.new_id("executor_lease")
         grant = grants.mint_grant(lease_id)
         allocation_op = ids.new_id("effect")
-        backend_kind = (session.get("projectless_spec") or {}).get("backend") or "local"
+        pspec = session.get("projectless_spec") or {}
+        backend_kind = pspec.get("executor_backend") or pspec.get("backend") or "local"
         if backend_kind not in self.backends:
             raise DomainError("validation_failed", f"unknown backend {backend_kind!r}")
         handle_meta = {"enrollment": grant.to_handle_record(), "backend": backend_kind}
@@ -407,6 +454,15 @@ class ExecutionService:
 
         backend = self.backends[lease["backend"]]
         token = lease.pop("_grant_token", None) or self._rotate_grant(uow, lease)
+        connection = {}
+        if lease["backend"] == "modal":
+            # The USER's stored Modal credential bounds this call — never an
+            # ambient profile (RFC 167 §06 credential authority).
+            connection = self.compute_resolver(
+                session,
+                workspace_id=lease["workspace_id"],
+                lease_id=lease["id"],
+            )
         spec = AllocationSpec(
             workspace_id=lease["workspace_id"],
             session_id=session["id"],
@@ -414,6 +470,7 @@ class ExecutionService:
             allocation_effect_id=lease["allocation_operation_id"],
             lease_generation=lease["generation"],
             enrollment_ref=self.pool.endpoint(),
+            connection=connection,
             env={"SBX_ENROLLMENT_TOKEN": token or ""},
         )
         from control.jobs.worker import JobRetry
@@ -421,14 +478,26 @@ class ExecutionService:
         try:
             handle = backend.allocate(spec, lease["allocation_operation_id"])
         except Exception as exc:
-            self._mark_lease_lost(uow, lease)
+            self._mark_lease_lost(uow, lease, spawn_failed=True)
             uow.commit()
             raise JobRetry(f"allocate failed: {type(exc).__name__}: {exc}") from exc
-        if not self.pool.attach(lease["id"], ATTACH_TIMEOUT_S):
-            self._mark_lease_lost(uow, lease)
+        dial_url = (handle.metadata or {}).get("dial_url")
+        attached = True
+        if dial_url:
+            # Serve-mode runtime (Modal): the control plane dials in over
+            # the sandbox's encrypted tunnel; hello arrives on that channel.
+            attached = self.pool.dial(dial_url, retry_for_s=DIAL_TIMEOUT_S)
+        if attached:
+            attached = self.pool.attach(lease["id"], ATTACH_TIMEOUT_S)
+        if not attached:
+            self._mark_lease_lost(uow, lease, spawn_failed=True)
             uow.commit()
             try:
-                backend.terminate(handle, lease["allocation_operation_id"])
+                backend.terminate(
+                    handle,
+                    lease["allocation_operation_id"],
+                    connection=connection,
+                )
             except Exception:
                 pass
             raise JobRetry("daemon did not enroll within attach window")
@@ -768,7 +837,15 @@ class ExecutionService:
             self._mark_lease_lost(uow, lease)
             uow.commit()
 
-    def _mark_lease_lost(self, uow: SqlUnitOfWork, lease: dict) -> None:
+    def _mark_lease_lost(
+        self, uow: SqlUnitOfWork, lease: dict, *, spawn_failed: bool = False
+    ) -> None:
+        """Lease declared LOST.
+
+        ``spawn_failed``: the daemon never enrolled — no operation was ever
+        submitted to this compute, so bound executions *failed* (known) and
+        their turns requeue; a mid-flight loss instead marks executions
+        ``unknown`` and interrupts turns (outcome unknowable)."""
         workspace_id = lease["workspace_id"]
         session_id = lease["session_id"]
         uow.leases.update(
@@ -783,15 +860,46 @@ class ExecutionService:
             event_type="executor.unavailable",
             executor_lease_id=lease["id"],
             lease_generation=lease["generation"],
-            payload={"lease_id": lease["id"], "state": "lost"},
+            payload={
+                "lease_id": lease["id"],
+                "state": "lost",
+                "spawn_failed": spawn_failed,
+            },
         )
-        # Nonterminal executions on this lease are unknown. Conditional
+        # Nonterminal executions on this lease. Conditional
         # update — a just-settled verdict must not be overwritten.
         rows = uow.rows.all(
             "SELECT id, turn_id FROM executions WHERE executor_lease_id=%s"
             " AND state IN ('preparing','started','stop_requested')",
             (lease["id"],),
         )
+        if spawn_failed:
+            for row in rows:
+                uow.conn.execute(
+                    "UPDATE executions SET state=%s, reason=%s, updated_at=now()"
+                    " WHERE id=%s AND state IN ('preparing','started','stop_requested')",
+                    (ExecutionState.FAILED.value, "lease_spawn_failed", row["id"]),
+                )
+                # The turn never ran: send it back to QUEUED so the retried
+                # dispatch allocates a fresh lease. Conditional — an already
+                # settled turn is never reopened.
+                uow.conn.execute(
+                    "UPDATE turns SET state=%s, version=version+1, updated_at=now()"
+                    " WHERE id=%s AND workspace_id=%s AND state='preparing'",
+                    (TurnState.QUEUED.value, row["turn_id"], workspace_id),
+                )
+                append_event(
+                    uow,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    event_type="turn.requeued",
+                    turn_id=row["turn_id"],
+                    execution_id=row["id"],
+                    executor_lease_id=lease["id"],
+                    payload={"reason": "lease_spawn_failed"},
+                )
+            uow.sessions.update(workspace_id, session_id, {"active_lease_id": None})
+            return
         for row in rows:
             uow.conn.execute(
                 "UPDATE executions SET state=%s, reason=%s, updated_at=now()"
@@ -834,25 +942,45 @@ class ExecutionService:
         n = 0
         for lease in rows:
             self._mark_lease_lost(uow, lease)
-            backend = self.backends.get(lease["backend"])
-            if backend is not None:
-                try:
-                    from control.executors.port import ExecutorHandle
-
-                    meta = lease.get("handle") or {}
-                    backend.terminate(
-                        ExecutorHandle(
-                            backend=lease["backend"],
-                            handle_id=str(meta.get("handle_id") or lease["id"]),
-                            metadata=meta,
-                        ),
-                        lease["id"],
-                    )
-                except Exception:
-                    pass
+            self._terminate_with_owner(uow, lease)
             self.pool.revoke(lease["id"])
             n += 1
         return n
+
+    def _terminate_with_owner(self, uow: SqlUnitOfWork, lease: dict) -> None:
+        """Best-effort teardown under the OWNER's compute credential — never
+        the ambient profile (teardown authority must live with the user who
+        provisioned the sandbox)."""
+        backend = self.backends.get(lease["backend"])
+        if backend is None:
+            return
+        from control.executors.port import ExecutorHandle
+
+        meta = lease.get("handle") or {}
+        connection = {}
+        if lease["backend"] == "modal":
+            session = uow.sessions.get(lease["workspace_id"], lease["session_id"])
+            if session is not None:
+                try:
+                    connection = self.compute_resolver(
+                        session,
+                        workspace_id=lease["workspace_id"],
+                        lease_id=lease["id"],
+                    )
+                except Exception:
+                    connection = {}
+        try:
+            backend.terminate(
+                ExecutorHandle(
+                    backend=lease["backend"],
+                    handle_id=str(meta.get("handle_id") or lease["id"]),
+                    metadata=meta,
+                ),
+                lease["allocation_operation_id"] or lease["id"],
+                connection=connection,
+            )
+        except Exception:
+            pass
 
     def cancel_turn(self, uow: SqlUnitOfWork, *, workspace_id: str, turn_id: str) -> dict:
         """Cancel-intent: persist cancel + send turn.cancel to runtime."""

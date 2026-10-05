@@ -1,7 +1,0 @@
-package.json
-package-lock.json
-README.md
-playwright.config.ts
-node_modules
-vercel.json
-.assetsignore

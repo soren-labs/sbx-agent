@@ -31,10 +31,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-sbx = "sbx.cli:main"
+sbx = "sbx.unified_cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["broker", "control", "runtime", "src/sbx"]
+packages = ["control", "runtime", "src/sbx"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

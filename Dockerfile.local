@@ -14,16 +14,15 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl git ca-certificates ripgrep jq procps build-essential python3-pip \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
- && npm i -g @openai/codex@0.159.2 \
- && codex --version 2>&1 | grep -E '(^|[^0-9.])codex\-cli\ 0\.159\.2([^0-9.]|$)' \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 COPY runtime /opt/sbx/runtime
 COPY runtime/entrypoint.sh /opt/sbx/entrypoint.sh
+COPY protocol /opt/sbx/protocol
 
 RUN chmod +x /opt/sbx/entrypoint.sh \
- && mkdir -p /work/inbox /work/turns /work/.codex /work/home
+ && mkdir -p /work/inbox /work/turns /work/home
 
 WORKDIR /work
 ENTRYPOINT ["/opt/sbx/entrypoint.sh"]

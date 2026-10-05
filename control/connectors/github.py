@@ -37,7 +37,13 @@ class GithubConnector:
                 reason="probe_failed",
                 message=f"GitHub unreachable ({type(exc).__name__})",
             )
-        if resp.status_code in (401, 403):
+        if resp.status_code == 403:
+            # Server/app-style manual tokens (GitHub App installation tokens)
+            # cannot call /user but are still valid delivery credentials:
+            # fall back to /rate_limit (valid for every credential class) and
+            # derive identity from /app when possible.
+            return self._validate_server_token(payload)
+        if resp.status_code == 401:
             return ConnectorResult(
                 ok=False, reason="auth_failed", message="GitHub rejected the token"
             )
@@ -62,6 +68,47 @@ class GithubConnector:
                     or not scopes,  # fine-grained tokens list no scopes
                 }
             },
+        )
+
+    def _validate_server_token(self, payload: dict) -> ConnectorResult:
+        """Second-stage probe for non-PAT manual tokens (e.g. GitHub App
+        installation tokens): /rate_limit accepts every valid credential;
+        /app names the app for identity when the token is app-scoped."""
+        token = payload.get("token") or ""
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        try:
+            resp = httpx.get(f"{_API}/rate_limit", headers=headers, timeout=15)
+        except httpx.HTTPError as exc:
+            return ConnectorResult(
+                ok=False,
+                reason="probe_failed",
+                message=f"GitHub unreachable ({type(exc).__name__})",
+            )
+        if resp.status_code in (401, 403):
+            return ConnectorResult(
+                ok=False, reason="auth_failed", message="GitHub rejected the token"
+            )
+        if resp.status_code != 200:
+            return ConnectorResult(
+                ok=False,
+                reason="probe_failed",
+                message=f"GitHub probe status {resp.status_code}",
+            )
+        identity: dict = {"token_class": "server"}
+        try:
+            app = httpx.get(f"{_API}/app", headers=headers, timeout=15)
+            if app.status_code == 200:
+                identity["app_slug"] = (app.json() or {}).get("slug")
+        except httpx.HTTPError:
+            pass
+        return ConnectorResult(
+            ok=True,
+            external_identity=identity,
+            capabilities={"delivery_worker": {"scopes": [], "can_push": True}},
         )
 
     def check_repo_access(self, token: str, repo: str) -> ConnectorResult:

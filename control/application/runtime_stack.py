@@ -26,10 +26,17 @@ class RuntimeStack:
         db,
         backends: dict[str, Any],
         credential_resolver=None,
+        git_resolver=None,
+        compute_resolver=None,
     ) -> None:
         self.db = db
         self.service = ExecutionService(
-            db, backends=backends, pool=None, credential_resolver=credential_resolver
+            db,
+            backends=backends,
+            pool=None,
+            credential_resolver=credential_resolver,
+            git_resolver=git_resolver,
+            compute_resolver=compute_resolver,
         )
 
         def verify_hello(hello: dict) -> dict | None:
@@ -56,6 +63,18 @@ class RuntimeStack:
         )
         self.pool = RuntimePool(self.ingress)
         self.service.pool = self.pool
+
+    # -- service wiring --------------------------------------------------
+
+    def set_resolvers(
+        self, *, credential_resolver=None, git_resolver=None, compute_resolver=None
+    ) -> None:
+        if credential_resolver is not None:
+            self.service.credential_resolver = credential_resolver
+        if git_resolver is not None:
+            self.service.git_resolver = git_resolver
+        if compute_resolver is not None:
+            self.service.compute_resolver = compute_resolver
 
     def register_backend(self, kind: str, backend) -> None:
         self.service.backends[kind] = backend
@@ -131,3 +150,106 @@ def make_connection_resolver(connection_service, db) -> object:
             del material, payload
 
     return resolve
+
+
+def make_git_resolver(connection_service, db) -> object:
+    """Vault-backed resolver for worktree materialization: the workspace's
+    git Connection becomes a short-lived env bundle (``GIT_AUTH_TOKEN``)
+    bound to this dispatch's lease — used only for fetch inside the
+    executor, never stored or logged."""
+
+    def resolve(session, *, workspace_id=None, lease_id=None, **_kw):
+        from control.application.connections import PURPOSE_GIT_CLONE
+        from control.persistence.unit_of_work import SqlUnitOfWork
+
+        ws = workspace_id or session["workspace_id"]
+        with SqlUnitOfWork(db, actor={"kind": "runtime", "id": "git-resolver"}) as uow:
+            conn = connection_service.select_connection(
+                uow, workspace_id=ws, kind="github", purpose=PURPOSE_GIT_CLONE
+            )
+            material = connection_service.materialize(
+                uow,
+                workspace_id=ws,
+                connection_id=conn["id"],
+                purpose=PURPOSE_GIT_CLONE,
+                session_id=session["id"],
+                lease_id=lease_id,
+            )
+            uow.commit()
+
+        payload = material.payload
+        try:
+            return {"env": {"GIT_AUTH_TOKEN": payload["token"]}}
+        finally:
+            del material, payload
+
+    return resolve
+
+
+def make_compute_resolver(connection_service, db) -> object:
+    """Vault-backed resolver for the executor backend: the workspace's
+    Modal Connection becomes ``spec.connection.env`` for exactly this
+    allocate/terminate call (PURPOSE_EXECUTOR_WORKER)."""
+
+    def resolve(session, *, workspace_id=None, lease_id=None, **_kw):
+        from control.application.connections import PURPOSE_EXECUTOR_WORKER
+        from control.persistence.unit_of_work import SqlUnitOfWork
+
+        ws = workspace_id or session["workspace_id"]
+        with SqlUnitOfWork(db, actor={"kind": "runtime", "id": "compute-resolver"}) as uow:
+            conn = connection_service.select_connection(
+                uow, workspace_id=ws, kind="modal", purpose=PURPOSE_EXECUTOR_WORKER
+            )
+            material = connection_service.materialize(
+                uow,
+                workspace_id=ws,
+                connection_id=conn["id"],
+                purpose=PURPOSE_EXECUTOR_WORKER,
+                session_id=session["id"],
+                lease_id=lease_id,
+            )
+            uow.commit()
+
+        payload = material.payload
+        try:
+            return {
+                "env": {
+                    "MODAL_TOKEN_ID": payload["token_id"],
+                    "MODAL_TOKEN_SECRET": payload["token_secret"],
+                }
+            }
+        finally:
+            del material, payload
+
+    return resolve
+
+
+def make_remote_factory(connection_service, db):
+    """Delivery-plane remote factory: materializes the bound (or selected)
+    github Connection's credential for exactly this delivery's use and
+    returns a real GithubRemote — token lives only inside the remote."""
+    from control.application.connections import PURPOSE_DELIVERY_WORKER
+    from control.persistence.unit_of_work import SqlUnitOfWork
+    from control.vcs.remote import GithubRemote
+
+    def factory(delivery, connections=None):
+        ws = delivery["workspace_id"]
+        conn_id = delivery.get("connection_id")
+        with SqlUnitOfWork(db, actor={"kind": "delivery", "id": "remote"}) as uow:
+            if conn_id:
+                conn = uow.connections.get(ws, conn_id)
+            else:
+                conn = connection_service.select_connection(
+                    uow, workspace_id=ws, kind="github", purpose=PURPOSE_DELIVERY_WORKER
+                )
+            material = connection_service.materialize(
+                uow,
+                workspace_id=ws,
+                connection_id=conn["id"],
+                purpose=PURPOSE_DELIVERY_WORKER,
+                session_id=delivery.get("session_id"),
+            )
+            uow.commit()
+        return GithubRemote(material.payload["token"])
+
+    return factory

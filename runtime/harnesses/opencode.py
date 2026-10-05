@@ -2,7 +2,8 @@
 
 Drives the official ``opencode`` CLI: ``opencode run <prompt> --format json
 [-m provider/model] [--session <native_id>] --dir <worktree> --auto``.
-Normalization ports the proven mapping from ``runtime.runner.adapters`` —
+Normalization maps the official CLI's event stream to the unified Turn
+observation shape —
 sessionID → native context, cumulative ``text``/``reasoning`` parts flushed
 at tool/step boundaries, ``tool_use`` keyed by ``callID``, ``step_finish``
 usage accumulation, ``error`` terminal frames, stale ``--session`` →

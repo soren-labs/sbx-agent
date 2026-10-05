@@ -25,7 +25,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sbx-runtime")
     parser.add_argument("--lease-id", required=True)
     parser.add_argument("--lease-generation", type=int, required=True)
-    parser.add_argument("--connect", required=True, help="ingress endpoint tcp://|wss://")
+    parser.add_argument("--connect", default=None, help="ingress endpoint tcp://|wss://")
+    parser.add_argument(
+        "--serve",
+        type=int,
+        default=None,
+        help="inbound serve port (control plane dials in via executor tunnel)",
+    )
     parser.add_argument("--worktree", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--image-digest", default=None)
@@ -33,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     token = enrollment_token_from_env()
+    endpoint = f"serve://{args.serve}" if args.serve is not None else args.connect
+    if endpoint is None:
+        parser.error("one of --connect or --serve is required")
     app = DaemonApp(
         state_dir=args.state,
         worktree_root=args.worktree,
@@ -40,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         lease_generation=args.lease_generation,
         enrollment_token=token,
         grant_expires_at=args.grant_expires_at,
-        endpoint=args.connect,
+        endpoint=endpoint,
         image_digest=args.image_digest,
     )
     return app.run()

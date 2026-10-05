@@ -201,6 +201,26 @@ class _WebSocketTransport:
             pass
 
 
+def listen(port: int, host: str = "0.0.0.0") -> socket.socket:
+    """Serve mode: the runtime binds inside the executor and the control
+    plane dials in (Modal sandbox topology — the sandbox cannot reach a
+    control-plane loopback, so the channel direction inverts while the
+    frame protocol stays identical)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(4)
+    return sock
+
+
+def accept(listener: socket.socket, timeout: float = 30.0) -> _SocketTransport:
+    """Accept one inbound control-plane connection."""
+    listener.settimeout(timeout)
+    conn, _peer = listener.accept()
+    conn.settimeout(None)
+    return _SocketTransport(conn)
+
+
 def connect(endpoint: str, timeout: float = 30.0):
     """Dial the ingress. ``tcp://host:port`` → JSONL; ``ws(s)://`` → RFC6455."""
     if endpoint.startswith(("ws://", "wss://")):

@@ -9,18 +9,13 @@
 set -euo pipefail
 
 export SBX_WORK="${SBX_WORK:-/work}"
-# filesystem.md: sandbox HOME is fixed at $SBX_WORK/home (credential-blob
-# restore root). Image env already pins the same value; export here too so
-# every entrypoint child sees the contract layout regardless of image env.
+# Sandbox HOME is fixed at $SBX_WORK/home (credential-restore root). Image
+# env already pins the same value; export here too so every entrypoint child
+# sees the contract layout regardless of image env.
 export HOME="${SBX_WORK}/home"
-export CODEX_HOME="${CODEX_HOME:-${SBX_WORK}/.codex}"
 export PYTHONPATH="${PYTHONPATH:-/opt/sbx}"
 
-# SOR-74: agent CLIs must never see Desktop/ACP auth bridges or Devin API-key
-# env — auth comes only from the restored credential blob ($HOME/credentials).
-unset ACP_BACKEND DEVIN_API_KEY DEVIN_V3_API_KEY DEVIN_LEGACY_API_KEY DEVIN_ORG_ID WINDSURF_API_KEY DEVIN_OUTPOSTS_TOKEN
-
-mkdir -p "${SBX_WORK}/inbox" "${SBX_WORK}/turns" "${SBX_WORK}/home" "${CODEX_HOME}"
+mkdir -p "${SBX_WORK}/inbox" "${SBX_WORK}/turns" "${SBX_WORK}/home"
 
 child=""
 shutdown() {

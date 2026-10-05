@@ -162,6 +162,7 @@ class UnifiedClient:
         project_version_id: str | None = None,
         repository: str | None = None,
         base_ref: str = "main",
+        executor_backend: str | None = None,
         model: str | None = None,
         timeout_s: float = 600.0,
         poll_s: float = 2.0,
@@ -182,7 +183,13 @@ class UnifiedClient:
                 harness={"provider_id": "opencode", "model": model},
                 project_version_id=project_version_id,
                 projectless_spec=(
-                    {"repository": repository, "base_ref": base_ref} if repository else None
+                    {
+                        "repository": repository,
+                        "base_ref": base_ref,
+                        **({"executor_backend": executor_backend} if executor_backend else {}),
+                    }
+                    if repository or executor_backend
+                    else None
                 ),
             )
             session_id = created["session"]["id"]
