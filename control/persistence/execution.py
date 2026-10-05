@@ -34,6 +34,16 @@ class LeaseRepo(Rows):
             (workspace_id, session_id),
         )
 
+    def latest_by_session(self, workspace_id: str, session_id: str) -> dict | None:
+        """Most recent lease for the session in ANY state — evidence paths
+        (e.g. delegation result reads) must reach a 'lost' lease's recorded
+        handle so they can re-dial its runtime endpoint."""
+        return self.one(
+            "SELECT * FROM executor_leases WHERE workspace_id=%s AND session_id=%s"
+            " ORDER BY generation DESC LIMIT 1",
+            (workspace_id, session_id),
+        )
+
     def update(self, workspace_id: str, lease_id: str, changes: dict) -> dict | None:
         changes = dict(changes)
         changes["updated_at"] = _now()

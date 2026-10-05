@@ -57,6 +57,8 @@ def observations_to_records(
         except ValueError:
             obs_kind = ObservationKind.NOOP
         event_type = _KIND_TO_EVENT.get(obs_kind)
+        if obs_kind == ObservationKind.DIAGNOSTIC and payload.get("type") == "worktree.ready":
+            event_type = "worktree.ready"
         item_type = str((payload.get("item") or {}).get("type") or "")
         if obs_kind == ObservationKind.ITEM_STARTED:
             event_type = (
@@ -140,6 +142,27 @@ def project_observation(
                 execution_id=execution_id,
                 native_id=str(native_id),
             )
+    elif kind == ObservationKind.DIAGNOSTIC.value:
+        # The daemon's worktree.ready diagnostic carries the materialized
+        # repository identity — record it once so captures/deliveries pin
+        # the real base instead of producing orphan commits. Fields are
+        # filled independently: session create may already have set
+        # repository while base_sha is still unknown.
+        if observation.get("type") == "worktree.ready":
+            info = observation.get("payload") or {}
+            workspace_id = uow_workspace(uow, session_id)
+            wt = uow.worktrees.get_by_session(workspace_id, session_id)
+            if wt is not None:
+                patch = {}
+                if not wt.get("repository") and info.get("repository"):
+                    patch["repository"] = info["repository"]
+                # worktree HEAD is always the materialized base commit
+                # (checkout -B <branch> FETCH_HEAD of base_ref).
+                if not wt.get("base_sha") and info.get("head_sha"):
+                    patch["base_sha"] = info["head_sha"]
+                if patch:
+                    patch["availability"] = "live"
+                    uow.worktrees.update(workspace_id, wt["id"], patch)
     elif kind == ObservationKind.TURN_STARTED.value and turn_id:
         workspace_id = uow_workspace(uow, session_id)
         turn = uow.turns.get(workspace_id, turn_id)

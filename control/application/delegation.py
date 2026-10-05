@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 
 from protocol.runtime import OperationEnvelope, OperationKind
 
@@ -565,10 +566,26 @@ class DelegationService:
             return None, [], ["runtime plane not wired"]
         with SqlUnitOfWork(self.db, actor={"kind": "finalize"}) as uow:
             session = uow.sessions.get(workspace_id, delegation["child_session_id"])
-            lease = uow.leases.active_by_session(workspace_id, session["id"])
+            lease = uow.leases.active_by_session(
+                workspace_id, session["id"]
+            ) or uow.leases.latest_by_session(workspace_id, session["id"])
             uow.commit()
-        if lease is None or not self.stack.pool.alive(lease["id"]):
-            return None, [], ["child worktree unreadable — no live lease"]
+        if lease is None:
+            return None, [], ["child worktree unreadable — no lease"]
+        if not self.stack.pool.alive(lease["id"]):
+            # Transport flaps (e.g. the Modal tunnel TLS socket) mark the
+            # lease 'lost' while the daemon stays alive — it re-accepts on
+            # its serve port, so re-dial the recorded endpoint; connect-mode
+            # daemons re-dial us on their own. Verified re-enrollment on the
+            # same generation restores the lease.
+            dial_url = (lease.get("handle") or {}).get("dial_url")
+            if dial_url and not self.stack.pool.dial(dial_url, retry_for_s=20.0):
+                return None, [], ["child worktree unreadable — no live lease"]
+            deadline = time.time() + 25.0
+            while time.time() < deadline and not self.stack.pool.alive(lease["id"]):
+                time.sleep(0.25)
+            if not self.stack.pool.alive(lease["id"]):
+                return None, [], ["child worktree unreadable — no live lease"]
         env = OperationEnvelope(
             operation_id=ids.new_id("effect"),
             operation_kind=OperationKind.FILES_READ,
@@ -583,7 +600,11 @@ class DelegationService:
             return None, [], [f"result read failed: {type(exc).__name__}"]
         if reply.get("state") != "succeeded":
             return None, [], ["no result file in child worktree"]
-        data = base64.b64decode((reply.get("result") or {}).get("content_b64") or "")
+        return self._decode_result((reply.get("result") or {}).get("content_b64"))
+
+    @staticmethod
+    def _decode_result(content_b64: str | None) -> tuple:
+        data = base64.b64decode(content_b64 or "")
         try:
             value = json.loads(data)
         except Exception:

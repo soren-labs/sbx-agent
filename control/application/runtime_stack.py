@@ -46,13 +46,36 @@ class RuntimeStack:
                 if row is None:
                     # hello may omit workspace — look up by id
                     row = uow.rows.one("SELECT * FROM executor_leases WHERE id=%s", (lease_id,))
-                if row is None or row["state"] not in ("allocating", "ready", "quiescing"):
+                if row is None or row["state"] not in (
+                    "allocating",
+                    "ready",
+                    "quiescing",
+                    "lost",
+                ):
                     return None
                 token = str(hello.get("enrollment_token") or "")
                 if not grants.verify_grant(row.get("handle") or {}, token):
                     return None
                 if int(hello.get("lease_generation") or -1) != int(row["generation"]):
                     return None
+                if row["state"] == "lost":
+                    # Restart/resume: a verified re-enrollment on the same
+                    # generation means the transport flapped but the runtime
+                    # survived — the lease returns to ready (RFC 167 §03).
+                    # Executions already settled 'unknown' stay unknown.
+                    from control.application.events import append_event
+
+                    uow.leases.update(row["workspace_id"], row["id"], {"state": "ready"})
+                    append_event(
+                        uow,
+                        workspace_id=row["workspace_id"],
+                        session_id=row["session_id"],
+                        event_type="executor.available",
+                        executor_lease_id=row["id"],
+                        lease_generation=row["generation"],
+                        payload={"lease_id": row["id"], "state": "ready", "recovered": True},
+                    )
+                    uow.commit()
                 return dict(row)
 
         self.ingress = IngressServer(
