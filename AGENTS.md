@@ -56,6 +56,7 @@ make docs-check     # docs-site 构建与链接检查
 | `SBX_EXECUTORS` | 启用的 Executor，默认 `local,modal` |
 | `SBX_PUBLIC_URL` / `SBX_ALLOWED_ORIGINS` / `SBX_COOKIE_SECURE` | Console 来源与 cookie 策略 |
 | `SBX_RESEND_API_KEY` | 可选；邮件发送（缺省时使用本地 outbox） |
+| `SBX_MAIL_FROM` | 启用 Resend 时必填；发件人须在 Resend 已验证的域名下 |
 
 `tests/conftest.py` 剥离宿主凭证（含 `SBX_TEST_*`、`SBX_BENCHMARK_*`）并隔离 HOME/XDG；测试所需变量一律显式传入。`import modal` 只允许出现在 `control/executors/modal.py` 与 `control/integrations/connectors/modal.py`，`make test` 不得触发真实 Modal 连接。真实凭证的检查（`make smoke-modal`、`make check-connectors`）是显式 opt-in，不打印凭证，并且必须回收所建 sandbox。
 
