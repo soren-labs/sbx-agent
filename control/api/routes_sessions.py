@@ -679,7 +679,7 @@ def create_delivery(
         replay = idem_replay(uow, request, workspace_id=ws, body=body)
         if replay is not None:
             return replay["response"]
-        d = svc.create(
+        created = svc.create(
             uow,
             workspace_id=ws,
             session_id=body.get("session_id") or c["session_id"],
@@ -690,6 +690,7 @@ def create_delivery(
             authorizing_principal=principal["id"],
             connection_id=body.get("connection_id"),
         )
+        d = uow.deliveries.get(ws, created["delivery_id"])
         steps = uow.delivery_steps.list_for(ws, d["id"])
         resp = {"delivery": views.delivery_view(d, steps=steps)}
         idem_record(
