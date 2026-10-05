@@ -51,7 +51,7 @@ class Execution:
             require(
                 not repo.one(
                     "SELECT e.id FROM executions e JOIN turns t ON t.id=e.turn_id "
-                    "WHERE t.session_id=%s AND e.state='unknown'",
+                    "WHERE t.session_id=%s AND e.state='unknown' AND e.acknowledged_at IS NULL",
                     (session["id"],),
                 ),
                 "outcome_unknown",
@@ -91,6 +91,7 @@ class Execution:
                     ),
                 )
                 lease = repo.one("SELECT * FROM executor_leases WHERE id=%s", (lid,))
+            require(lease["state"] in {"allocating", "ready"}, "waiting_capacity")
             eid = new_id("exec")
             repo.execute(
                 "INSERT INTO executions(id,workspace_id,turn_id,lease_id,attempt_ordin"
@@ -149,10 +150,29 @@ class Execution:
                 and hello["lease_generation"] == lease["generation"],
                 "version_conflict",
             )
+            current = repo.one(
+                "SELECT state FROM executor_leases WHERE id=%s FOR UPDATE", (lease["id"],)
+            )
+            require(current["state"] == "allocating", "version_conflict")
             repo.execute(
-                "UPDATE executor_leases SET handle=%s,state='ready' WHERE id=%s AND st"
+                "UPDATE executor_leases SET handle=%s,fingerprint=%s,state='ready' WHE"
+                "RE id=%s AND st"
                 "ate='allocating'",
-                (handle, lease["id"]),
+                (
+                    handle,
+                    {
+                        k: hello[k]
+                        for k in (
+                            "runtime_build_digest",
+                            "image_digest",
+                            "harnesses",
+                            "protocol_major",
+                            "protocol_minor",
+                        )
+                        if k in hello
+                    },
+                    lease["id"],
+                ),
             )
             repo.event(
                 session["workspace_id"],

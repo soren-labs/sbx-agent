@@ -5,6 +5,7 @@ from control.domain.identity import new_id
 
 JOB_TARGETS = {
     "turn": "turn_id",
+    "identity": "user_id",
     "execution": "execution_id",
     "executor": "lease_id",
     "snapshot": "snapshot_id",

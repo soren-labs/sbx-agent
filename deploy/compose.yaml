@@ -1,0 +1,27 @@
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: sbx
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  control:
+    build:
+      context: ..
+      dockerfile: Dockerfile.local
+    command: [--dsn, postgresql://postgres@database/sbx, --state-dir, /state, --host, 0.0.0.0, --console-dir, /opt/sbx/console/dist]
+    ports: ['127.0.0.1:8787:8787']
+    volumes:
+      - state:/state
+    depends_on:
+      database:
+        condition: service_healthy
+volumes:
+  database:
+  state:

@@ -103,6 +103,10 @@ class Processes:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=3)
         try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
             os.close(item["fd"])
         except OSError:
             pass

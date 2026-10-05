@@ -35,9 +35,17 @@
     "subject_digest": {
       "title": "Subject Digest",
       "type": "string"
+    },
+    "verdicts": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Verdicts",
+      "type": "array"
     }
   },
   "required": [
+    "verdicts",
     "kind",
     "schema_version",
     "enforcement",

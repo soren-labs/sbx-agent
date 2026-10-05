@@ -10,14 +10,17 @@ from control.api.schemas import (
     Capture,
     ConnectionCreate,
     ConnectionView,
+    Continuation,
     CredentialReplace,
     DeliveryCreate,
+    EmailRequest,
     FileWrite,
     Generation,
     Login,
     Merge,
     Message,
     PasswordChange,
+    PasswordReset,
     ProjectCreate,
     ProjectPublish,
     Publish,
@@ -49,6 +52,8 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
         async def work():
             while not stop.is_set():
                 worked = await asyncio.to_thread(r.worker.once)
+                if getattr(r, "outbox_worker", None):
+                    await asyncio.to_thread(r.outbox_worker.once)
                 if not worked:
                     await asyncio.sleep(0.2)
 
@@ -61,6 +66,31 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
 
     app = FastAPI(title="SBX unified business API", version="1.0.0", lifespan=lifespan)
     app.state.resources = r
+
+    @app.middleware("http")
+    async def enforce_origin(request, call_next):
+        origin = request.headers.get("origin")
+        if (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            and request.url.path.startswith("/api/")
+            and origin
+        ):
+            expected = getattr(r, "control_origin", None) or str(request.base_url).rstrip("/")
+            if origin.rstrip("/") != expected:
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": "forbidden",
+                            "category": "authorization",
+                            "message": "Origin rejected",
+                            "retryable": False,
+                            "details": {},
+                            "request_id": uuid4().hex,
+                        }
+                    },
+                    status_code=403,
+                )
+        return await call_next(request)
 
     @app.exception_handler(DomainError)
     async def domain_error(request, error):
@@ -139,19 +169,24 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
 
     @app.post("/api/auth/register", status_code=201)
     def register(value: Login, k=Depends(key)):
-        result = r.identity.register(value.email, value.password)
-        # An operator-provided transport handles verifiers. No public verification bypass.
-        if getattr(r, "email_sender", None):
-            r.email_sender(value.email, r.identity.issue_verification(result["user_id"]))
+        result = r.identity.register(value.email, value.password, key=k)
         return result
 
     @app.post("/api/auth/email-verifications")
     def verify(value: dict, k=Depends(key)):
         return r.identity.verify_email(value.get("verifier", ""))
 
+    @app.post("/api/auth/password-reset-requests", status_code=202)
+    def reset_request(value: EmailRequest, k=Depends(key)):
+        return r.identity.request_reset(value.email, k)
+
+    @app.post("/api/auth/password-resets")
+    def password_reset(value: PasswordReset, k=Depends(key)):
+        return r.identity.reset_password(value.verifier, value.password)
+
     @app.post("/api/auth/login")
     def login(value: Login, k=Depends(key)):
-        cookie, csrf = r.identity.login(value.email, value.password)
+        cookie, csrf = r.identity.login(value.email, value.password, key=k)
         response = JSONResponse({"authenticated": True})
         response.set_cookie(
             "sbx_login",
@@ -272,16 +307,20 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
 
     @app.get("/api/harnesses")
     def harnesses(p=Depends(principal)):
-        from runtime.harnesses.registry import catalog
+        from protocol.manifests import installed_catalog
 
-        return {"items": catalog()}
+        return {"items": installed_catalog()}
 
     @app.get("/api/executor-backends")
     def backends(p=Depends(principal)):
         return {
             "items": [
                 {"id": "modal", "credential_kind": "modal"},
-                {"id": "local", "credential_kind": None},
+                *(
+                    [{"id": "local", "credential_kind": None}]
+                    if getattr(r, "allow_local", False)
+                    else []
+                ),
             ]
         }
 
@@ -332,6 +371,14 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
     @app.post("/api/turns/{tid}/retries", status_code=202)
     def retry_turn(tid: str, p=Depends(principal), k=Depends(key)):
         return r.lifecycle.retry(p, tid, k)
+
+    @app.post("/api/executions/{eid}/recovery-acknowledgements")
+    def recovery(eid: str, p=Depends(principal), k=Depends(key)):
+        return r.lifecycle.acknowledge(p, eid, k)
+
+    @app.post("/api/sessions/{sid}/continuations", status_code=201)
+    def continuation(sid: str, value: Continuation, p=Depends(principal), k=Depends(key)):
+        return r.lifecycle.continuation(p, sid, body(value), k)
 
     @app.get("/api/sessions/{sid}/events")
     async def events(sid: str, request: Request, after: int = 0, p=Depends(principal)):
@@ -567,6 +614,17 @@ def create_app(resources, *, run_worker=False, secure_cookies=True, console_dir=
     @app.get("/api/jobs/{jid}")
     def job(jid: str, p=Depends(principal)):
         return r.queries.detail(p, "jobs", jid)
+
+    @app.post("/internal/tools", include_in_schema=False)
+    def tool_call(value: dict, authorization: str = Header(default=""), k=Depends(key)):
+        require(
+            authorization.startswith("Bearer ") and getattr(r, "tool_grants", None), "forbidden"
+        )
+        require(
+            isinstance(value.get("name"), str) and isinstance(value.get("arguments", {}), dict),
+            "invalid_request",
+        )
+        return r.tool_grants.invoke(authorization[7:], value["name"], value.get("arguments", {}), k)
 
     ingress = RuntimeIngress(r.uow, r.master)
 

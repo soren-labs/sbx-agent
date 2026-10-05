@@ -1,6 +1,8 @@
 """Bounded, owner-scoped projections. No effect settlement or network calls."""
 
 from control.application.access import owned, workspace
+from control.application.assessments import current_policy, result_rows
+from control.domain.delivery import merge_reasons
 from control.domain.errors import require
 
 TABLES = {
@@ -85,4 +87,22 @@ class Queries:
                     "WHERE delivery_id=%s ORDER BY created_at,id",
                     (rid,),
                 )
+                changeset = repo.one("SELECT * FROM changesets WHERE id=%s", (row["changeset_id"],))
+                observed = next(
+                    (step for step in reversed(row["steps"]) if step["kind"] == "reconcile"), None
+                )
+                effective = {**row, "policy": current_policy(repo, row)}
+                reasons = (
+                    merge_reasons(
+                        effective, changeset, result_rows(repo, changeset), observed["evidence"]
+                    )
+                    if observed
+                    else ["remote_observation_required"]
+                )
+                row["merge_eligibility"] = {
+                    "eligible": not reasons,
+                    "reasons": reasons,
+                    "observed_at": observed["created_at"] if observed else None,
+                    "authority": "advisory",
+                }
             return row

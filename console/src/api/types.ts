@@ -87,6 +87,12 @@ export type Delivery = {
   pr_url?: string;
   reason?: string;
   steps: { kind: string; evidence: unknown }[];
+  merge_eligibility?: {
+    eligible: boolean;
+    reasons: string[];
+    observed_at: string | null;
+    authority: "advisory";
+  };
   merge_requests: { id: string; state: string; evidence: unknown }[];
 };
 export type Delegation = {

@@ -1,55 +1,9 @@
-# Security policy
+# Security
 
-## Reporting a vulnerability
+Report vulnerabilities privately to the repository maintainers; do not publish live credentials or exploit production data.
 
-**Do not open a public issue for security reports.**
+Provider secrets live only in authenticated encrypted CredentialVersion envelopes. The operator master key stays outside PostgreSQL in private durable state. Secrets are never returned by Connection reads, copied to the Console cache, placed in Session events, or used through an ambient host profile. Runtime grants are scoped and expire; provider processes receive only their selected Zen key and private HOME/XDG.
 
-- Preferred: use GitHub's private vulnerability reporting ("Report a
-  vulnerability" on the repository's Security tab).
-- If the repository does not have private reporting enabled, contact the
-  maintainers through the channel listed in the repository profile.
+Sandbox code is untrusted. Modal is the production isolation boundary; Local Executor is development-only. Files, captures and checkpoint restores reject traversal and external symlinks. Preview runs on a separate origin and strips Console authority. GitHub effects require exact immutable subject and freshly checked remote head; independent child review does not grant shipping authority.
 
-Include: affected version/commit, reproduction steps, impact, and whether
-credential material is involved. **Never include real tokens, credential
-files, or credential blobs in a report** — describe the file and field names
-instead; we will arrange a secure channel if material is needed.
-
-We aim to acknowledge reports within a few days. There is no bug bounty.
-
-## Supported versions
-
-| Version | Supported |
-| --- | --- |
-| `0.1.x` (latest tag: `v0.1.1`, public alpha) | ✅ fixes land on the release branch |
-| anything older | ❌ upgrade |
-
-This is a public alpha; only the newest release tag receives fixes.
-
-## Security model — what to know before deploying
-
-- **The Modal Sandbox is the security boundary**, not the provider CLI's own
-  sandboxing. Provider CLIs run with approvals/sandbox bypassed *inside* the
-  VM (e.g. codex's `--dangerously-bypass-approvals-and-sandbox`) because
-  in-CLI sandboxing is unreliable under gVisor. Anything an agent does is
-  contained by the sandbox VM, which holds **no Modal token and no platform
-  credentials**.
-- **Your credentials stay in your workspace.** Provider credential files are
-  imported into your Modal workspace (Secrets / Dict blobs), injected into
-  sandboxes at `0600`, and stripped from the CLI child environment. API keys
-  (`sbx_<key>`) are stored server-side as `sha256` only; plaintext is shown
-  once at creation.
-- **`/v1` is the public surface** (Bearer). `/api/*` is the internal legacy
-  dashboard API (HTTP Basic, one shared deployment credential) — do not
-  expose it or build on it; see README §API surfaces.
-- **Artifact collection fails closed**: suspected secret material in a
-  workspace snapshot aborts with `409 artifact_secret`; nothing is persisted.
-
-## Rules that protect you (and this project)
-
-- Never commit `.env`, `auth.json`, `.modal.toml`, credential files, or any
-  token — see `.gitignore`.
-- Fixtures, tests, logs, PRs and issues must use `REDACTED` placeholders, and
-  e2e tooling records only sha256-16 fingerprints.
-- Rotate any credential that may have leaked — `POST /v1/accounts/{id}/verify`
-  re-probes an account, `DELETE /v1/accounts/{id}` removes it, and
-  `DELETE /v1/api-keys/{id}` revokes an API key.
+Do not revoke the only teardown credential while live or ambiguous compute depends on it. Confirm isolation before releasing quota. Back up the database and credential-master/object volume together. Check HTTP output, events, logs, snapshots, exported subjects and repository diffs for secret leaks. The opt-in real acceptance script restricts test GitHub writes to `soren-labs/sbx-e2e-test` and records cleanup evidence.

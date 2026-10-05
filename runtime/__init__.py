@@ -1,1 +1,1 @@
-"""Sandbox runtime (image, entrypoint, runner). Populated by later work packages."""
+"""Replaceable Executor infrastructure and official CLI Harnesses."""

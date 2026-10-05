@@ -31,8 +31,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       SBX_TEST_PG_DSN: postgresql://postgres@localhost:5432/sbx_benchmark
-      # Networked legacy image builds are opt-in; the core suite stays deterministic.
-      SBX_SKIP_DOCKER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

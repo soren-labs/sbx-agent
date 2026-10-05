@@ -112,27 +112,17 @@ _CLOUD_KEYS = frozenset(
         "SBX_GROK_BIN",
     }
 )
-# Deliberately NOT scrubbed: SBX_V1_API_KEY / SBX_V1_BASE_URL /
-# SBX_POOL_GATE_REAL are the opt-in inputs of the real acceptance gate
-# (tests/acceptance, outside testpaths); tests/e2e_modal overrides this
-# fixture when SBX_E2E_MODAL=1.
 
 
 def _is_cloud_key(key: str) -> bool:
     return key in _CLOUD_KEYS or key.startswith(_CLOUD_PREFIXES)
 
 
-# Collection-time scrub (SOR-55/SOR-101): ``control.app`` builds a FastAPI app
-# at import, and ambient host env (``SBX_V1_BOOTSTRAP_KEY``,
-# ``SBX_BACKEND=modal``, provider credentials) would otherwise leak into —
-# or break — collection before any fixture runs. The autouse fixture below
-# re-applies the scrub per-test so late monkeypatch snapshots stay clean.
-# ``SBX_E2E_MODAL=1`` is the documented opt-out: the Modal e2e suite needs
-# the real credentials it is handed.
-if os.environ.get("SBX_E2E_MODAL") != "1":
-    for _key in list(os.environ):
-        if _is_cloud_key(_key):
-            os.environ.pop(_key, None)
+# Strip ambient credentials before collection. Real acceptance is a separate,
+# explicitly invoked process, never a pytest collection-time opt-out.
+for _key in list(os.environ):
+    if _is_cloud_key(_key):
+        os.environ.pop(_key, None)
 
 
 @pytest.fixture(autouse=True)
@@ -148,19 +138,8 @@ def _no_cloud_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local" / "state"))
-    monkeypatch.setenv("SBX_BACKEND", "local")
 
 
 @pytest.fixture
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture
-def fake_codex(repo_root: Path) -> Path:
-    return repo_root / "tests" / "fakes" / "fake_codex.py"
-
-
-@pytest.fixture
-def stub_runner(repo_root: Path) -> Path:
-    return repo_root / "tests" / "fakes" / "stub_runner.py"

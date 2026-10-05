@@ -16,7 +16,7 @@ class SessionTools:
         r, p = self.resources, self.principal
         with r.uow.transaction() as repo:
             owned(repo, "sessions", self.session_id, p)
-            if name != "spawn":
+            if name not in {"spawn", "read", "apply"}:
                 delegation = owned(repo, "delegations", arguments["delegation_id"], p)
                 require(
                     self.session_id
@@ -25,6 +25,32 @@ class SessionTools:
                 )
             if name in {"cancel", "message", "wait"}:
                 require(delegation["parent_session_id"] == self.session_id, "forbidden")
+        if name == "read":
+            target = arguments.get("session_id", self.session_id)
+            with r.uow.transaction() as repo:
+                require(
+                    target == self.session_id
+                    or repo.one(
+                        "SELECT id FROM delegations WHERE parent_session_id=%s AND chi"
+                        "ld_session_id=%s",
+                        (self.session_id, target),
+                    ),
+                    "forbidden",
+                )
+            return r.sessions.get(p, target)
+        if name == "apply":
+            target = arguments["session_id"]
+            with r.uow.transaction() as repo:
+                require(
+                    target == self.session_id
+                    or repo.one(
+                        "SELECT id FROM delegations WHERE parent_session_id=%s AND chi"
+                        "ld_session_id=%s",
+                        (self.session_id, target),
+                    ),
+                    "forbidden",
+                )
+            return r.io.apply(p, arguments["changeset_id"], arguments, operation_id)
         if name == "spawn":
             return r.delegations.spawn(p, self.session_id, arguments, operation_id)
         if name == "message":

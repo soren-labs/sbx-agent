@@ -104,6 +104,7 @@ class ReleaseHandler:
         token = runtime_token(self.master, lease["id"], lease["generation"])
         backend = self.executor_factory(session, lease, token)
         handle = lease["handle"] or backend.lookup(lease["allocation_operation_id"])
+        require(handle is not None, "outcome_unknown")
         if handle:
             backend.terminate(handle, claim.row["effect_id"])
             require(backend.describe(handle)["status"] == "stopped", "outcome_unknown")

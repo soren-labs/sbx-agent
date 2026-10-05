@@ -56,6 +56,8 @@ class Connections:
                 return {
                     "connection_id": cid,
                     "credential_version_id": vid,
+                    "job_id": repo.one("SELECT id FROM jobs WHERE effect_id=%s", (vid,))["id"],
+                    "operation_id": vid,
                     "version": 1,
                     "health": "unverified",
                 }
@@ -97,6 +99,8 @@ class Connections:
                 return {
                     "connection_id": cid,
                     "credential_version_id": vid,
+                    "job_id": repo.one("SELECT id FROM jobs WHERE effect_id=%s", (vid,))["id"],
+                    "operation_id": vid,
                     "version": row["version"] + 1,
                 }
 

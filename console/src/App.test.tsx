@@ -34,7 +34,7 @@ it("offers the four-class setup without Codex and never stores a submitted provi
   expect(screen.getByText("✓ Email and password")).toBeInTheDocument();
   expect(screen.queryByText("Codex login")).not.toBeInTheDocument();
   fireEvent.click(
-    screen.getByRole("button", { name: "Connections", exact: true }),
+    screen.getByRole("button", { name: /^Connections$/ }),
   );
   const field = await screen.findByLabelText("api key");
   expect(field).toHaveAttribute("type", "password");

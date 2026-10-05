@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,6 +15,8 @@ class LocalObjects:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     def put(self, workspace, content):
+        if not re.fullmatch(r"wsp_[A-Za-z0-9_]+", workspace):
+            raise DomainError("not_found")
         folder = self.root / workspace
         folder.mkdir(mode=0o700, exist_ok=True)
         key = uuid4().hex + "-" + hashlib.sha256(content).hexdigest()
@@ -25,7 +28,9 @@ class LocalObjects:
         return key
 
     def get(self, workspace, key):
-        if not workspace.startswith("wsp_") or "/" in key or ".." in key:
+        if not re.fullmatch(r"wsp_[A-Za-z0-9_]+", workspace) or not re.fullmatch(
+            r"[a-f0-9]{32}-[a-f0-9]{64}", key
+        ):
             raise DomainError("not_found")
         try:
             content = (self.root / workspace / key).read_bytes()

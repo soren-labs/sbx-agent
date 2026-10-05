@@ -8,15 +8,20 @@ from fastapi.testclient import TestClient
 
 
 def resources(database, tmp_path):
+    key_file = tmp_path / "test-master"
+    if not key_file.exists():
+        key_file.write_bytes(os.urandom(32))
+    master = key_file.read_bytes()
+
     class GitHub:
         def client(self, credential):
             raise AssertionError("a pure request must not contact GitHub")
 
     return assemble(
         database,
-        EnvelopeVault({"1": os.urandom(32)}),
+        EnvelopeVault({"1": master}),
         LocalObjects(tmp_path / "objects"),
-        os.urandom(32),
+        master,
         lambda *args: (_ for _ in ()).throw(AssertionError("read launched compute")),
         {"github": GitHub()},
     )

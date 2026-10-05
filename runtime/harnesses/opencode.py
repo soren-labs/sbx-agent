@@ -6,9 +6,10 @@ Source protocol: anomalyco/opencode v1.18.29 cli/cmd/run.ts and auth/index.ts.
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
-from protocol.capabilities import NAMES, Capability, HarnessManifest
+from protocol.manifests import opencode_manifest
 from protocol.runtime import ProtocolError
 
 from runtime.harnesses.protocol import HarnessOutcome, NativeInvocation
@@ -29,41 +30,12 @@ class OpenCodeHarness:
         self.distribution_digest = distribution_digest
 
     def describe(self):
-        caps = {name: Capability() for name in NAMES}
-        if self.cli_version != "1.18.29":
-            return HarnessManifest(
-                "opencode",
-                "1",
-                self.cli_version,
-                self.distribution_digest,
-                "jsonl",
-                "disabled",
-                caps,
-            )
-        for name in ("native_resume", "event_stream", "usage", "model_discovery"):
-            caps[name] = Capability("supported", "opencode-v1.18.29-run.ts")
-        for name in (
-            "steer",
-            "interactive_approval",
-            "credential_writeback",
-            "account_portable_resume",
-        ):
-            caps[name] = Capability("unsupported", "noninteractive-run-static-key")
-        caps["structured_output"] = Capability("unsupported", "platform-validation", "prompt-only")
-        caps["native_state_export"] = Capability("supported", "sqlite-after-process-stop")
-        caps["interrupt"] = Capability("supported", "supervisor-process-group", "process-stop only")
-        return HarnessManifest(
-            "opencode",
-            "1",
-            self.cli_version,
-            self.distribution_digest,
-            "jsonl",
-            "experimental",
-            caps,
-        )
+        return opencode_manifest(self.cli_version, self.distribution_digest)
 
     def prepare(self, context, credential_bundle):
         if context.settings.get("effort") or context.settings.get("steer"):
+            raise ProtocolError("unsupported_capability")
+        if self.describe().support_tier == "disabled":
             raise ProtocolError("unsupported_capability")
         home = context.home
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -85,6 +57,35 @@ class OpenCodeHarness:
             if name in {"HOME", "PATH"} or name.startswith(("SBX_", "XDG_", "OPENCODE_")):
                 raise ProtocolError("forbidden")
             env[name] = value
+        instructions = home / ".config/sbx/instructions.md"
+        instructions.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        instructions.write_text(
+            "You are running in an isolated SBX Worktree through the official CLI. "
+            "Use ordinary repository tools and report actual test evidence. "
+            "Do not claim a push, review, approval or restore without observed evidence. "
+            "Cross-session actions, when authorized, use python /opt/sbx/runtime/daemon/tool.py "
+            "NAME --operation-id STABLE_ID --arguments JSON. "
+            "The gateway supplies scoped authority through environment; never print th"
+            "at environment. "
+            "It never provides provider secrets or shipping authority. "
+            "Unavailable tools must be reported truthfully."
+        )
+        instructions.chmod(0o600)
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"instructions": [str(instructions)]})
+        if self.binary == ("opencode",):
+            try:
+                observed = subprocess.run(
+                    [*self.binary, "--version"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=True,
+                ).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                raise ProtocolError("runtime_incompatible") from None
+            if observed != self.cli_version:
+                raise ProtocolError("runtime_incompatible")
         if credential_bundle:
             key = credential_bundle.get("api_key")
             if not isinstance(key, str) or not key:

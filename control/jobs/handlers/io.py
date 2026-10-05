@@ -25,6 +25,7 @@ class IOHandler:
             kind, payload = "terminal.close", {"terminal_id": oid}
         if kind == "terminal.open":
             payload["terminal_id"] = oid
+            payload.setdefault("command", ["/bin/bash", "--noprofile", "--norc"])
         if kind == "changes.apply":
             with self.uow.transaction() as repo:
                 cs = repo.one(

@@ -20,13 +20,21 @@ class RuntimeClient:
             raise DomainError("runtime_incompatible")
 
     def get(self, path, **params):
-        response = self.http.get(path, params=params)
+        try:
+            response = self.http.get(path, params=params)
+        except httpx.TransportError:
+            raise DomainError("executor_unavailable") from None
+        if response.status_code == 404:
+            raise DomainError("not_found")
         if response.status_code >= 400:
             raise DomainError("executor_unavailable")
         return response.json()
 
     def post(self, path, body):
-        response = self.http.post(path, json=body)
+        try:
+            response = self.http.post(path, json=body)
+        except httpx.TransportError:
+            raise DomainError("executor_unavailable") from None
         if response.status_code >= 400:
             raise DomainError(response.json().get("error", "executor_unavailable"))
         return response.json()

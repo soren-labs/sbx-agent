@@ -1,4 +1,0 @@
-{"type": "step_start", "timestamp": 1789000000000, "sessionID": "ses_01a09b11abcd", "part": {"id": "prt_0", "sessionID": "ses_01a09b11abcd", "messageID": "msg_1", "type": "step-start", "snapshot": "snap0"}}
-this is not json
-{"type": "text", "timestamp": 1789000000001, "sessionID": "ses_01a09b11abcd", "part": {"id": "prt_1", "sessionID": "ses_01a09b11abcd", "messageID": "msg_1", "type": "text", "text": "Created hello.txt in the workspace."}}
-{"type": "step_finish", "timestamp": 1789000000002, "sessionID": "ses_01a09b11abcd", "part": {"id": "prt_2", "sessionID": "ses_01a09b11abcd", "messageID": "msg_1", "type": "step-finish", "reason": "stop", "snapshot": "snap1", "cost": 0.0, "tokens": {"input": 200, "output": 7, "reasoning": 0, "cache": {"read": 0, "write": 0}}}}

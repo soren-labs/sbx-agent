@@ -1,15 +1,21 @@
 """Dedicated untrusted preview origin. No Console cookies or admin headers forwarded."""
 
-from control.domain.errors import require
+from control.domain.errors import DomainError, require
 from control.domain.identity import Principal
 from control.security.identity import hashed
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 
 def create_preview_app(resources):
     r = resources
     app = FastAPI(docs_url=None, openapi_url=None)
+
+    @app.exception_handler(DomainError)
+    async def denied(request, error):
+        return JSONResponse(
+            {"error": error.code}, status_code=403 if error.code == "forbidden" else 409
+        )
 
     @app.api_route(
         "/p/{grant}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]

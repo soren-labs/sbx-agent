@@ -1,3 +1,0 @@
-{"type": "init", "sessionId": "01a09b11-0000-7f90-b96e-42adeefa05e0", "model": "grok-build", "resumed": true}
-{"type": "text", "text": "Updated hello.txt in the workspace."}
-{"type": "end", "sessionId": "01a09b11-0000-7f90-b96e-42adeefa05e0", "stopReason": "stop", "requestId": "req-fake-grok-2", "usage": {"input_tokens": 8100, "output_tokens": 210, "thinking_tokens": 120, "cache_read_tokens": 5400}}

@@ -1,5 +1,8 @@
+from datetime import UTC, datetime
+
 from control.domain.delegation import validate_result
 from control.domain.errors import DomainError, require
+from control.domain.events import canonical
 from control.domain.identity import Principal, new_id
 
 
@@ -13,6 +16,8 @@ class ResultHandler:
                 "SELECT * FROM delegations WHERE id=%s FOR UPDATE", (claim.row["delegation_id"],)
             )
             self.claims.assert_current(repo, claim)
+            if delegation["state"] == "cancelled":
+                return
             if repo.one(
                 "SELECT id FROM delegation_results WHERE delegation_id=%s", (delegation["id"],)
             ):
@@ -131,7 +136,7 @@ class ResultHandler:
                     "evidence_result_id=%s WHERE id=%s",
                     (result_id, wait["id"]),
                 )
-                if parent["lifecycle"] == "open":
+                if parent["lifecycle"] == "open" and wait["expires_at"] > datetime.now(UTC):
                     principal = Principal(parent["creator_id"], (parent["workspace_id"],))
                     self.sessions.send_in(
                         repo,
@@ -142,7 +147,38 @@ class ResultHandler:
                             "content": "Child result "
                             + result_id
                             + " for subject "
-                            + value["subject_digest"],
+                            + value["subject_digest"]
+                            + ": "
+                            + canonical(value),
                         },
                     )
             # Wake notices are ordinary Messages, not hidden provider work.
+
+
+class DeadlineHandler:
+    def __init__(self, uow, claims, delegations):
+        self.uow, self.claims, self.delegations = uow, claims, delegations
+
+    def __call__(self, claim):
+        with self.uow.transaction() as repo:
+            row = repo.one(
+                "SELECT * FROM delegations WHERE id=%s FOR UPDATE", (claim.row["delegation_id"],)
+            )
+            self.claims.assert_current(repo, claim)
+            if claim.row["kind"] == "delegation.expire_wait":
+                wait = repo.one(
+                    "SELECT * FROM wait_subscriptions WHERE id=%s FOR UPDATE",
+                    (claim.row["effect_id"],),
+                )
+                if wait and wait["state"] == "pending":
+                    repo.execute(
+                        "UPDATE wait_subscriptions SET state='expired' WHERE id=%s", (wait["id"],)
+                    )
+                    repo.event(
+                        row["workspace_id"],
+                        row["parent_session_id"],
+                        "delegation.wait_expired",
+                        {"subscription_id": wait["id"], "delegation_id": row["id"]},
+                    )
+            elif row["state"] == "active":
+                self.delegations.cancel_tree_in(repo, row, reason="budget_expired")

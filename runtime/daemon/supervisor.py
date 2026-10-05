@@ -31,9 +31,20 @@ class Supervisor:
                 self.kill_group(self.process)
             row = self.journal.get(operation)
             if row and row["state"] == "accepted":
-                self.journal.update(
-                    operation, "terminal", result={"outcome": "cancelled", "stopped": True}
-                )
+                result = {"outcome": "cancelled", "stopped": True}
+                try:
+                    result["final_watermark"] = self.journal.append(
+                        operation, "execution.stopped", result
+                    )
+                except ProtocolError:
+                    result = {
+                        "outcome": "unknown",
+                        "stopped": True,
+                        "error": "spool_pressure",
+                        "evidence_complete": False,
+                    }
+                self.journal.metadata("generation", int(self.journal.metadata("generation")) + 1)
+                self.journal.update(operation, "terminal", result=result)
 
     @staticmethod
     def kill_group(process):
@@ -56,8 +67,12 @@ class Supervisor:
         operation = frame.operation_id
         payload = frame.payload
         credentials = payload.get("credential_bundle", {})
-        redactor = Redactor(credentials.values())
+        redactor = Redactor((*self.known_secrets, *credentials.values()))
         self.known_secrets.update(redactor.values)
+        tooling = payload.get("tooling")
+        if tooling:
+            self.known_secrets.update(Redactor([tooling.get("token")]).values)
+            redactor = Redactor(self.known_secrets)
         state = {"expected_native_id": payload.get("native_id")}
         context = TurnContext(
             frame.session_id,
@@ -90,6 +105,12 @@ class Supervisor:
                 # Durable starting before spawn. Repeated accepted/starting never relaunches.
                 self.journal.update(operation, "starting")
                 env = harness.prepare(context, credentials)
+                if tooling:
+                    from urllib.parse import urlparse
+
+                    if urlparse(tooling.get("url", "")).scheme != "https":
+                        raise ProtocolError("forbidden")
+                    env["SBX_TOOL_URL"], env["SBX_TOOL_GRANT"] = tooling["url"], tooling["token"]
                 invocation = (
                     harness.resume_turn(context, env)
                     if context.native_id
@@ -178,6 +199,18 @@ class Supervisor:
                     "evidence_complete": False,
                 }
             self.journal.metadata("generation", int(self.journal.metadata("generation")) + 1)
-            self.journal.update(operation, "terminal", result=result)
+            try:
+                self.journal.update(operation, "terminal", result=result)
+            except ProtocolError:
+                self.journal.update(
+                    operation,
+                    "terminal",
+                    result={
+                        "outcome": "unknown",
+                        "stopped": True,
+                        "error": "quota_exhausted",
+                        "evidence_complete": False,
+                    },
+                )
             if self.active_operation == operation:
                 self.active_operation, self.process = None, None

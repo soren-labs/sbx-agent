@@ -146,6 +146,10 @@ class Ingest:
                 except DomainError:
                     verdict = "failed"
                     result = {**result, "error": "output_contract_invalid"}
+            current_generation = repo.one(
+                "SELECT generation FROM worktrees WHERE session_id=%s", (session["id"],)
+            )["generation"]
+            result = {**result, "worktree_generation": current_generation + 1}
             # Stop and complete evidence precede terminalization; cancellation wins.
             repo.execute(
                 "UPDATE turns SET state=%s,evidence_complete=%s,outcome=%s,reason=%s WHERE id=%s",
@@ -219,6 +223,6 @@ class Ingest:
                     session["workspace_id"],
                     "delegation.publish_result",
                     delegation["id"],
-                    delegation["id"] + "-result",
+                    delegation["id"] + "-result-" + turn["id"],
                 )
             return verdict

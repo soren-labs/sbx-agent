@@ -139,9 +139,19 @@ class Sessions:
                 (sid,),
             )["ordinal"]
             repo.execute(
-                "INSERT INTO turns(id,workspace_id,session_id,message_id,ordinal,settings) "
-                "VALUES(%s,%s,%s,%s,%s,%s)",
-                (tid, ws, sid, mid, ordinal, body.get("settings", {})),
+                "INSERT INTO turns(id,workspace_id,session_id,message_id,ordinal,setti"
+                "ngs,result_contract,retry_of_turn_id) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    tid,
+                    ws,
+                    sid,
+                    mid,
+                    ordinal,
+                    body.get("settings", {}),
+                    session["effective_inputs"].get("result_contract"),
+                    body.get("retry_of_turn_id"),
+                ),
             )
             seq = repo.event(ws, sid, "turn.queued", {"turn_id": tid}, turn_id=tid)
             job = repo.enqueue(ws, "turn.dispatch", tid, tid)
@@ -154,34 +164,34 @@ class Sessions:
             turn = owned(repo, "turns", tid, principal, lock=True)
 
             def perform():
-                if turn["state"] not in TURN_TERMINAL:
-                    state = "cancelled" if turn["state"] == "queued" else "cancelling"
-                    repo.execute(
-                        "UPDATE turns SET state=%s,cancel_requested=true WHERE id=%s", (state, tid)
-                    )
-                    if state == "cancelled":
-                        repo.execute(
-                            "UPDATE jobs SET state='cancelled' WHERE turn_id=%s "
-                            "AND state IN ('queued','retry_wait')",
-                            (tid,),
-                        )
-                    repo.event(
-                        turn["workspace_id"],
-                        turn["session_id"],
-                        "turn.cancelled" if state == "cancelled" else "turn.cancel_requested",
-                        {"turn_id": tid},
-                        turn_id=tid,
-                    )
-                return {
-                    "turn_id": tid,
-                    "state": turn["state"]
-                    if turn["state"] in TURN_TERMINAL
-                    else ("cancelled" if turn["state"] == "queued" else "cancelling"),
-                }
+                return self.cancel_in(repo, turn)
 
             return command(
                 repo, principal, turn["workspace_id"], "turn.cancel", key, {"turn_id": tid}, perform
             )
+
+    @staticmethod
+    def cancel_in(repo, turn):
+        if turn["state"] in TURN_TERMINAL:
+            return {"turn_id": turn["id"], "state": turn["state"]}
+        state = "cancelled" if turn["state"] == "queued" else "cancelling"
+        repo.execute(
+            "UPDATE turns SET state=%s,cancel_requested=true WHERE id=%s", (state, turn["id"])
+        )
+        if state == "cancelled":
+            repo.execute(
+                "UPDATE jobs SET state='cancelled' WHERE turn_id=%s AND state IN ('que"
+                "ued','retry_wait')",
+                (turn["id"],),
+            )
+        repo.event(
+            turn["workspace_id"],
+            turn["session_id"],
+            "turn.cancelled" if state == "cancelled" else "turn.cancel_requested",
+            {"turn_id": turn["id"]},
+            turn_id=turn["id"],
+        )
+        return {"turn_id": turn["id"], "state": state}
 
     def get(self, principal, sid):
         with self.uow.transaction() as repo:

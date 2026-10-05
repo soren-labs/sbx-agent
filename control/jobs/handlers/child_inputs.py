@@ -1,6 +1,6 @@
 import base64
 
-from control.domain.errors import require
+from control.domain.errors import DomainError, require
 
 
 class ChildInputs:
@@ -22,17 +22,26 @@ class ChildInputs:
             for path, key in cs["manifest"]["blobs"].items()
         }
         operation = lease["allocation_operation_id"] + "-input"
-        client.submit(
-            operation,
-            "changes.apply",
-            {
-                "generation": client.hello["worktree_generation"],
-                "subject": cs["manifest"]["subject"],
-                "subject_digest": cs["subject_digest"],
-                "contents": contents,
-            },
-        )
-        applied = client.wait(operation)
+        try:
+            accepted = client.get("/operations/" + operation)
+        except DomainError as error:
+            if error.code != "not_found":
+                raise
+            client.submit(
+                operation,
+                "changes.apply",
+                {
+                    "generation": client.hello["worktree_generation"],
+                    "subject": cs["manifest"]["subject"],
+                    "subject_digest": cs["subject_digest"],
+                    "contents": contents,
+                },
+            )
+            applied = client.wait(operation)
+        else:
+            applied = (
+                accepted["result"] if accepted["state"] == "terminal" else client.wait(operation)
+            )
         require(applied.get("applied"), applied.get("error", "capture_failed"))
         with self.uow.transaction() as repo:
             self.claims.assert_current(repo, claim)

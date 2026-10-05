@@ -30,11 +30,25 @@ def validate_environment(spec):
         require(isinstance(value, str), "output_contract_invalid")
     for service in spec.get("services", []):
         require(
-            bool(service.get("name")) and isinstance(service.get("argv"), list),
+            bool(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,63}", service.get("name", "")))
+            and isinstance(service.get("argv"), list)
+            and bool(service["argv"])
+            and all(isinstance(arg, str) and 0 < len(arg) <= 4000 for arg in service["argv"]),
             "output_contract_invalid",
         )
         require(
             ".." not in service.get("cwd", ".") and not service.get("cwd", ".").startswith("/"),
             "forbidden",
+        )
+    require(
+        len({s["name"] for s in spec.get("services", [])}) == len(spec.get("services", [])),
+        "invalid_request",
+    )
+    for service in spec.get("services", []):
+        require(
+            service.get("port") is None
+            or isinstance(service["port"], int)
+            and 1 <= service["port"] <= 65535,
+            "invalid_request",
         )
     return spec

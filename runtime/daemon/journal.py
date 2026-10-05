@@ -8,7 +8,7 @@ from protocol.runtime import ProtocolError, canonical
 
 
 class Journal:
-    def __init__(self, path: Path, max_spool_bytes=16_000_000):
+    def __init__(self, path: Path, max_spool_bytes=16_000_000, max_journal_bytes=128_000_000):
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -23,6 +23,13 @@ class Journal:
         self.db.execute("INSERT OR IGNORE INTO metadata VALUES(?,?)", ("generation", "0"))
         self.db.execute("INSERT OR IGNORE INTO metadata VALUES(?,?)", ("fence", "0"))
         self.max_spool_bytes = max_spool_bytes
+        self.max_journal_bytes = max_journal_bytes
+
+    def used(self):
+        return self.db.execute(
+            "SELECT coalesce((SELECT sum(length(result)) FROM operations),0) + coalesc"
+            "e((SELECT sum(length(payload)) FROM spool),0)"
+        ).fetchone()[0]
 
     @property
     def epoch(self):
@@ -49,6 +56,14 @@ class Journal:
                         raise ProtocolError("idempotency_conflict")
                     self.db.execute("COMMIT")
                     return False
+                if self.used() >= self.max_journal_bytes and frame.operation_kind not in {
+                    "turn.cancel",
+                    "terminal.close",
+                    "service.stop",
+                }:
+                    raise ProtocolError("quota_exhausted")
+                if self.db.execute("SELECT count(*) FROM operations").fetchone()[0] >= 4096:
+                    raise ProtocolError("quota_exhausted")
                 if frame.resource_fence < int(self.metadata("fence")):
                     raise ProtocolError("version_conflict")
                 self.metadata("fence", frame.resource_fence)
@@ -73,9 +88,12 @@ class Journal:
 
     def update(self, operation, state, *, pid=None, result=None):
         with self.lock:
+            content = canonical(result) if result is not None else None
+            if content and self.used() + len(content.encode()) > self.max_journal_bytes:
+                raise ProtocolError("quota_exhausted")
             self.db.execute(
                 "UPDATE operations SET state=?,pid=coalesce(?,pid),result=? WHERE id=?",
-                (state, pid, canonical(result) if result is not None else None, operation),
+                (state, pid, content, operation),
             )
 
     def append(self, operation, kind, payload):
@@ -84,7 +102,12 @@ class Journal:
                 "SELECT coalesce(sum(length(payload)),0) FROM spool WHERE acked=0"
             ).fetchone()[0]
             content = canonical(payload)
-            if used + len(content.encode()) > self.max_spool_bytes:
+            # Reserve a bounded terminal lane so output pressure stops the CLI
+            # while retaining final stop evidence for the contiguous acknowledgement.
+            reserve = 65536 if kind == "execution.stopped" else 0
+            if used + len(content.encode()) > self.max_spool_bytes + reserve:
+                raise ProtocolError("spool_pressure")
+            if self.used() + len(content.encode()) > self.max_journal_bytes:
                 raise ProtocolError("spool_pressure")
             row = self.db.execute(
                 "INSERT INTO spool(operation_id,type,payload) VALUES(?,?,?)",
@@ -108,6 +131,8 @@ class Journal:
 
     def ack(self, seq):
         with self.lock:
+            if not isinstance(seq, int) or not 0 <= seq <= self.watermark:
+                raise ProtocolError("invalid_cursor")
             self.db.execute("UPDATE spool SET acked=1 WHERE seq<=?", (seq,))
             self.db.execute("DELETE FROM spool WHERE acked=1")
 

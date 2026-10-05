@@ -93,3 +93,42 @@ Tests include API accepted-intent retry, CSRF, pure reads, reconstructed API pro
 Known limits: email transport is injected by the operator; public registration has no verification bypass. Interactive PTY UI currently uses bounded polling/input frames; the process is a real PTY, but a WebSocket attachment UX is not advertised. Preview is bounded HTTP, not a general WebSocket tunnel. Native cross-session MCP transport remains unadvertised; the same primitives are accessible through the product/SDK and a Session-scoped application gateway. Environment build caches and later extension/automation features are not advertised. Final phase retires the remaining legacy backend/SDK/CLI deployment roots and runs the real four-credential path.
 
 Phase 5 results: full isolated suite **3543 passed, 14 skipped** (154.35s), with one pre-existing legacy watcher-thread warning (that machinery is deleted in phase 6); final unified focused suite **36 passed** after operation/spec changes. `make lint`, generated spec drift, Console typecheck, **4 Console tests**, and production build passed. All four Phase 4 GitHub CI jobs passed before progressing.
+
+## Phase 6 — cutover and live acceptance
+
+Retired the remaining deployed Task/Agent/Run/V1/V2/hosted review/revision/workflow,
+broker, runner, legacy SDK/CLI, old tests/fakes and deployment roots. Old normative
+contracts/docs are explicitly archived under `docs/archive/legacy`; the thirteen
+unified RFC files remain byte-for-byte frozen. New deployment, SDK/CLI, documentation
+site and active API index use only unified resources.
+
+Added shared outbox claim delivery, durable child/wait deadlines, idempotent subtree
+cancellation, explicit unknown recovery acknowledgement and fresh linked continuation,
+actual runtime source fingerprints, installed CLI version verification, a bounded
+journal with a reserved terminal spool lane, safe checkpoint symlinks, strict remote
+Git tree verification, native/Execution/Worktree review independence and current
+mandatory policy tightening. Warm compute no longer restores/reset-prepares a newer
+checkpoint; a typed preparation marker distinguishes initialization from continuation.
+Manual compute release rejects active Turns and never treats ambiguous missing handles
+as confirmed teardown.
+
+Email verification/reset notices are encrypted and dispatched by shared Jobs through
+an explicit operator transport. Login/registration receipts survive restart without
+plaintext passwords/cookies in the receipt table. Console account recovery and cache
+purge use the same API. Optional HTTPS Session tool grants bind the current execution,
+lease, allowed actions and expiry; the official CLI's narrow shell tool uses application
+commands and has no secret-read or shipping grant. Native MCP remains unadvertised.
+
+A conservative offline archival importer outside the deployed application rehearses
+sanitized export integrity, explicit ownership, mirror conflicts, deterministic
+provenance and idempotence. It imports history as archived notes and reports unverifiable
+outcomes/native/remote effects; it does not manufacture resumable work or approvals.
+A complete production-format migration remains an operator-specific release exercise,
+not an automatic benchmark write to production.
+
+Validation and the final gate matrix are recorded in the final acceptance report.
+Earlier live runs proved real stored connections, free Zen inference, native follow-up,
+sandbox tests, immutable capture and draft PR delivery. Strict child results rejected
+an invented head and an invalid `approved` verdict. The contract now includes literal
+verdict enums and patch-only head instructions; corrections use ordinary child Turns.
+All earlier disposable sandboxes/PRs/branches were cleaned up. No benchmark PR is merged.

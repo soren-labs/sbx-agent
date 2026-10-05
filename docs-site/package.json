@@ -5,14 +5,10 @@
   "private": true,
   "description": "sbx-browser documentation website (Astro Starlight)",
   "scripts": {
-    "prepare-openapi": "node scripts/prepare-openapi.mjs",
-    "dev": "npm run prepare-docs && astro dev",
-    "build": "npm run prepare-docs && astro build",
-    "check": "npm run prepare-docs && astro build && node scripts/check-links.mjs",
-    "check:links": "node scripts/check-links.mjs",
-    "preview": "astro preview",
-    "astro": "astro",
-    "prepare-docs": "uv run python scripts/generate-reference.py && node scripts/generate-machine-docs.mjs && node scripts/prepare-openapi.mjs"
+    "dev": "astro dev",
+    "build": "astro build",
+    "check": "astro build && node scripts/check-links.mjs",
+    "preview": "astro preview"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.42.3",

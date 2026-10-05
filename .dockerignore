@@ -1,0 +1,14 @@
+.git
+.venv
+.cache
+**/node_modules
+**/__pycache__
+**/dist
+.pytest_cache
+.ruff_cache
+.env*
+*.pem
+auth.json
+.modal.toml
+.codex
+*.log

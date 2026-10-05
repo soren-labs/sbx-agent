@@ -23,6 +23,26 @@ class GitHubEffects:
             )
         return result.json()
 
+    def verify_tree(self, client, path, sha, delivery, manifest):
+        value = self.response(client.get(path + "/git/trees/" + sha, params={"recursive": "1"}))
+        require(not value.get("truncated"), "stale_subject")
+        actual = {
+            item["path"]: (item["mode"], item["sha"])
+            for item in value["tree"]
+            if item["type"] != "tree"
+        }
+        expected = {}
+        for entry in manifest["subject"]["files"]:
+            if entry["type"] == "deleted":
+                continue
+            body = self.objects.get(delivery["workspace_id"], manifest["blobs"][entry["path"]])
+            require(hashlib.sha256(body).hexdigest() == entry["content_digest"], "stale_subject")
+            expected[entry["path"]] = (
+                entry["mode"],
+                hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest(),
+            )
+        require(actual == expected, "stale_subject")
+
     def materialize(self, credential, delivery, changeset):
         manifest = changeset["manifest"]
         subject = manifest["subject"]
@@ -32,6 +52,7 @@ class GitHubEffects:
             if subject.get("head_sha"):
                 commit = self.response(client.get(path + "/git/commits/" + subject["head_sha"]))
                 require(commit["tree"]["sha"] == subject["tree_sha"], "stale_subject")
+                self.verify_tree(client, path, commit["tree"]["sha"], delivery, manifest)
                 return commit["sha"], {
                     "head": commit["sha"],
                     "tree": commit["tree"]["sha"],
@@ -62,6 +83,7 @@ class GitHubEffects:
                     path + "/git/trees", json={"base_tree": base["tree"]["sha"], "tree": tree}
                 )
             )
+            self.verify_tree(client, path, result["sha"], delivery, manifest)
             commit = self.response(
                 client.post(
                     path + "/git/commits",

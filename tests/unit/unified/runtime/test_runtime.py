@@ -162,3 +162,43 @@ def test_checkpoint_restore_preserves_worktree_native_identity(runtime, tmp_path
     with pytest.raises(ProtocolError, match="capture_failed"):
         restore(replacement, sealed["manifest"])
     assert (replacement.worktree / "saved.txt").read_text() == "saved marker"
+
+
+def test_cancel_before_spawn_retains_final_stop_evidence(runtime):
+    accepted = frame("before-spawn")
+    runtime.journal.accept(accepted)
+    runtime.supervisor.stop(accepted.operation_id)
+    row = runtime.journal.get(accepted.operation_id)
+    assert row["state"] == "terminal"
+    assert row["result"]["final_watermark"] == 1
+    assert runtime.journal.events()[0]["type"] == "execution.stopped"
+    assert runtime.journal.metadata("generation") == "1"
+
+
+def test_pressure_reserves_stop_lane_and_bounds_operation_results(tmp_path):
+    journal = Journal(tmp_path / "bounded", max_spool_bytes=10, max_journal_bytes=1000)
+    with pytest.raises(ProtocolError, match="spool_pressure"):
+        journal.append("op", "message.part_updated", {"text": "long output"})
+    seq = journal.append("op", "execution.stopped", {"stopped": True})
+    assert seq == 1
+    with pytest.raises(ProtocolError, match="invalid_cursor"):
+        journal.ack(seq + 1)
+    journal.accept(frame())
+    with pytest.raises(ProtocolError, match="quota_exhausted"):
+        journal.update("op1", "terminal", result={"text": "x" * 2000})
+    assert journal.get("op1")["state"] == "accepted"
+
+
+def test_checkpoint_internal_symlink_integrity_and_escape(runtime, tmp_path):
+    from runtime.daemon.snapshots import capture, restore
+
+    (runtime.worktree / "target").write_text("preserved")
+    (runtime.worktree / "link").symlink_to("target")
+    sealed = capture(runtime)
+    replacement = Runtime(tmp_path / "restore", "sess_one", "lease_two", 2, "REDACTED")
+    restore(replacement, sealed["manifest"])
+    assert (replacement.worktree / "link").is_symlink()
+    assert (replacement.worktree / "link").read_text() == "preserved"
+    (runtime.worktree / "outside").symlink_to(tmp_path / "outside")
+    with pytest.raises(ProtocolError, match="forbidden"):
+        capture(runtime)

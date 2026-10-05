@@ -35,6 +35,7 @@ class Delegations:
                     < 8,
                     "quota_exhausted",
                 )
+                require(1 <= body.get("budget_seconds", 900) <= 1800, "quota_exhausted")
                 role = body.get("role", "review")
                 contract = result_contract(role, cs["subject_digest"], cs["head_sha"])
                 inputs = {
@@ -67,9 +68,28 @@ class Delegations:
                         role,
                         contract,
                         contract_digest(contract),
-                        {"depth": 3, "children": 8, "deadline_seconds": 600},
+                        {
+                            "depth": 3,
+                            "children": 8,
+                            "deadline_seconds": body.get("budget_seconds", 900),
+                        },
                     ),
                 )
+                timeout_job = repo.enqueue(
+                    parent["workspace_id"], "delegation.expire", did, did + "-deadline"
+                )
+                repo.execute(
+                    "UPDATE jobs SET due_at=now()+%s*interval '1 second' WHERE id=%s",
+                    (body.get("budget_seconds", 900), timeout_job),
+                )
+                template = {
+                    "kind": contract["kind"],
+                    "subject_digest": cs["subject_digest"],
+                    "head_sha": cs["head_sha"],
+                    "verdict": "choose an allowed verdict from actual evidence",
+                    "findings": [],
+                    "checks": [],
+                }
                 prompt = (
                     f"You are an independent {role} child. "
                     "Examine the exact applied immutable subject. "
@@ -77,6 +97,13 @@ class Delegations:
                     "ever push or modify parent work. "
                     "Respond with ONLY JSON matching this ResultContract: "
                     + canonical(contract)
+                    + ". Copy kind, subject_digest and head_sha EXACTLY from this contract. "
+                    "If head_sha is null, it MUST remain JSON null: Git HEAD is only "
+                    "the baseline and MUST NOT replace the reviewed patch-only head. "
+                    "The platform verifies the canonical subject digest; inspect the "
+                    "applied files rather than inventing another digest algorithm. "
+                    "Output template (choose verdict from your evidence): "
+                    + canonical(template)
                     + ". Include kind, subject_digest, head_sha, verdict, "
                     "findings (list of message/severity/path), "
                     "checks (list of name/status/command/evidence). Empty lists are al"
@@ -141,6 +168,14 @@ class Delegations:
                         result["id"] if result else None,
                     ),
                 )
+                if state == "pending":
+                    job = repo.enqueue(
+                        delegation["workspace_id"], "delegation.expire_wait", did, subscription
+                    )
+                    repo.execute(
+                        "UPDATE jobs SET due_at=%s WHERE id=%s",
+                        (datetime.now(UTC) + timedelta(seconds=min(max(seconds, 1), 3600)), job),
+                    )
                 return {
                     "subscription_id": subscription,
                     "state": state,
@@ -165,7 +200,10 @@ class Delegations:
 
             def perform():
                 job = repo.enqueue(
-                    row["workspace_id"], "delegation.publish_result", did, did + "-result"
+                    row["workspace_id"],
+                    "delegation.publish_result",
+                    did,
+                    did + "-result-" + turn_id,
                 )
                 return {"delegation_id": did, "job_id": job}
 
@@ -192,23 +230,48 @@ class Delegations:
         return self.sessions.send(principal, row["child_session_id"], {"content": content}, key)
 
     def cancel(self, principal, did, key):
-        row = self.get(principal, did)
         with self.uow.transaction() as repo:
+            row = owned(repo, "delegations", did, principal, lock=True)
+            return command(
+                repo,
+                principal,
+                row["workspace_id"],
+                "delegation.cancel",
+                key,
+                {"delegation_id": did},
+                lambda: self.cancel_tree_in(repo, row),
+            )
+
+    def cancel_tree_in(self, repo, root, *, reason="cancelled"):
+        rows = repo.all(
+            "WITH RECURSIVE tree AS (SELECT * FROM delegations WHERE id=%s UNION ALL S"
+            "ELECT d.* FROM delegations d JOIN tree t ON d.parent_session_id=t.child_s"
+            "ession_id) SELECT * FROM tree ORDER BY child_session_id",
+            (root["id"],),
+        )
+        for row in rows:
+            repo.one("SELECT id FROM sessions WHERE id=%s FOR UPDATE", (row["child_session_id"],))
+            current = repo.one("SELECT state FROM delegations WHERE id=%s FOR UPDATE", (row["id"],))
+            if current["state"] != "active":
+                continue
             turns = repo.all(
-                "SELECT id FROM turns WHERE session_id=%s "
-                "AND state IN ('queued','preparing','running','cancelling')",
+                "SELECT * FROM turns WHERE session_id=%s AND state IN ('queued','prepa"
+                "ring','running','cancelling') ORDER BY ordinal FOR UPDATE",
                 (row["child_session_id"],),
             )
-        for turn in turns:
-            self.sessions.cancel(principal, turn["id"], key + ":" + turn["id"])
-        with self.uow.transaction() as repo:
+            for turn in turns:
+                self.sessions.cancel_in(repo, turn)
+            repo.execute("UPDATE delegations SET state='cancelled' WHERE id=%s", (row["id"],))
             repo.execute(
-                "UPDATE delegations SET state='cancelled' WHERE id=%s AND state='active'", (did,)
+                "UPDATE wait_subscriptions SET state='expired' WHERE delegation_id=%s "
+                "AND state='pending'",
+                (row["id"],),
             )
             repo.event(
                 row["workspace_id"],
                 row["parent_session_id"],
                 "delegation.cancelled",
-                {"delegation_id": did},
+                {"delegation_id": row["id"], "reason": reason},
             )
-        return {"delegation_id": did, "state": "cancelled"}
+        # No capacity or lease is freed before confirmed process isolation.
+        return {"delegation_id": root["id"], "state": "cancelled"}

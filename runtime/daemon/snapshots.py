@@ -2,7 +2,9 @@
 
 import base64
 import hashlib
+import os
 import shutil
+from pathlib import Path
 
 from protocol.runtime import ProtocolError, digest
 
@@ -15,7 +17,9 @@ MAX_SNAPSHOT = 64_000_000
 def capture(runtime):
     if runtime.journal.metadata("cleanup_failed") == "true":
         raise ProtocolError("capture_failed")
-    if runtime.supervisor.active_operation:
+    if runtime.supervisor.active_operation or any(
+        item["process"].poll() is None for item in runtime.processes.items.values()
+    ):
         raise ProtocolError("waiting_capacity")
     files, total = [], 0
     for namespace, root in [
@@ -28,14 +32,19 @@ def capture(runtime):
             else sorted((root / ".local/share/opencode").glob("opencode.db*"))
         )
         for path in paths:
-            if not path.is_file() or path.is_symlink():
+            if not path.is_file() and not path.is_symlink():
                 continue
             rel = path.relative_to(root)
             if namespace == "worktree" and any(
                 p in EXCLUDED - {".git"} or p.startswith(".env") for p in rel.parts
             ):
                 continue
-            body = path.read_bytes()
+            if path.is_symlink():
+                if namespace != "worktree" or not path.resolve().is_relative_to(root.resolve()):
+                    raise ProtocolError("forbidden")
+                body = os.readlink(path).encode()
+            else:
+                body = path.read_bytes()
             total += len(body)
             if total > MAX_SNAPSHOT:
                 raise ProtocolError("quota_exhausted")
@@ -45,7 +54,8 @@ def capture(runtime):
                 {
                     "root": namespace,
                     "path": rel.as_posix(),
-                    "mode": path.stat().st_mode & 0o777,
+                    "mode": path.lstat().st_mode & 0o777,
+                    "type": "symlink" if path.is_symlink() else "file",
                     "digest": hashlib.sha256(body).hexdigest(),
                     "content": base64.b64encode(body).decode(),
                 }
@@ -73,6 +83,7 @@ def restore(runtime, manifest):
         shutil.rmtree(stage)
     stage.mkdir(mode=0o700)
     try:
+        total, seen, links = 0, set(), []
         for entry in manifest["files"]:
             namespace = entry["root"]
             if namespace not in {"worktree", "native"}:
@@ -81,15 +92,36 @@ def restore(runtime, manifest):
                 ".local/share/opencode/opencode.db"
             ):
                 raise ProtocolError("forbidden")
+            identity = (namespace, entry["path"])
+            if identity in seen or not 0 <= entry["mode"] <= 0o777:
+                raise ProtocolError("capture_failed")
+            seen.add(identity)
             body = base64.b64decode(entry["content"], validate=True)
+            total += len(body)
+            if total > MAX_SNAPSHOT:
+                raise ProtocolError("quota_exhausted")
             if hashlib.sha256(body).hexdigest() != entry["digest"]:
                 raise ProtocolError("capture_failed")
             root = stage / namespace
             root.mkdir(mode=0o700, exist_ok=True)
             path = confined(root, entry["path"])
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(body)
-            path.chmod(entry["mode"] & 0o777)
+            if entry.get("type", "file") == "symlink":
+                if namespace != "worktree":
+                    raise ProtocolError("forbidden")
+                target = body.decode()
+                if Path(target).is_absolute() or not (
+                    path.parent / target
+                ).resolve().is_relative_to(root.resolve()):
+                    raise ProtocolError("forbidden")
+                links.append((path, target))
+            elif entry.get("type", "file") == "file":
+                path.write_bytes(body)
+                path.chmod(entry["mode"] & 0o777)
+            else:
+                raise ProtocolError("forbidden")
+        for path, target in links:
+            path.symlink_to(target)
         # All integrity/path validation finishes before replacing either tree.
         for namespace, destination in [
             ("worktree", runtime.worktree),

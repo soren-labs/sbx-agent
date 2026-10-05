@@ -87,6 +87,7 @@ class Merge(Version):
 
 
 class Spawn(Strict):
+    budget_seconds: int = Field(default=900, ge=1, le=1800)
     changeset_id: str
     role: Literal["review", "test", "research", "integration"] = "review"
     summary: str = Field(default="", max_length=10000)
@@ -205,9 +206,25 @@ class EventView(BaseModel):
 
 
 class ResultContract(Strict):
+    verdicts: list[str]
     kind: str
     schema_version: int
     enforcement: Literal["platform"]
     subject_digest: str
     head_sha: str | None
     required: list[str]
+
+
+class Continuation(Strict):
+    summary: str = Field(min_length=1, max_length=100000)
+    title: str = Field(default="Linked continuation", max_length=200)
+    changeset_id: str | None = None
+
+
+class EmailRequest(Strict):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class PasswordReset(Strict):
+    verifier: str = Field(min_length=1, max_length=200, json_schema_extra={"writeOnly": True})
+    password: str = Field(min_length=8, max_length=1024, json_schema_extra={"writeOnly": True})

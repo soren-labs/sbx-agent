@@ -1,1 +1,1 @@
-"""Control plane (sbx-control). `backend.py` is frozen after WP0."""
+"""Unified control authority: typed PostgreSQL projections and committed Session events."""

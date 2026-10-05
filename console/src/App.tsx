@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useRef,
+  type FormEvent,
+} from "react";
 import { api, ApiError } from "./api/client";
 import type {
   Changeset,
@@ -65,6 +71,8 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState("");
   const wid = user?.workspace_ids[0];
+  const activeWorkspace = useRef(wid);
+  activeWorkspace.current = wid;
   useEffect(() => {
     void api
       .me()
@@ -83,12 +91,17 @@ export function App() {
         api.projects(wid),
         api.sessions(wid),
       ]);
+      if (activeWorkspace.current !== wid) return;
       setConnections(c.items);
       setProjects(p.items);
       setSessions(s.items);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
         cache.clear();
+        setConnections([]);
+        setProjects([]);
+        setSessions([]);
+        setSelected(null);
         setUser(null);
       } else setError(String(e));
     }
@@ -115,6 +128,10 @@ export function App() {
             await api.login(value(data, "email"), value(data, "password"));
             const u = await api.me();
             cache.setOwner(u.id);
+            setConnections([]);
+            setProjects([]);
+            setSessions([]);
+            setSelected(null);
             setUser(u);
           }}
         >
@@ -157,6 +174,58 @@ export function App() {
             <button>Create account</button>
           </Form>
         </details>
+        <details>
+          <summary>Verify email or reset password</summary>
+          <Form
+            onSubmit={async (data) => {
+              await api.request("/api/auth/email-verifications", "POST", {
+                verifier: value(data, "verifier"),
+              });
+              setError("Email verified. You can sign in.");
+            }}
+          >
+            <label>
+              Email verification code
+              <input name="verifier" type="password" required />
+            </label>
+            <button>Verify email</button>
+          </Form>
+          <Form
+            onSubmit={async (data) => {
+              await api.request("/api/auth/password-reset-requests", "POST", {
+                email: value(data, "email"),
+              });
+              setError(
+                "If the account is eligible, a reset code will be delivered.",
+              );
+            }}
+          >
+            <label>
+              Account email
+              <input name="email" type="email" required />
+            </label>
+            <button>Request reset code</button>
+          </Form>
+          <Form
+            onSubmit={async (data) => {
+              await api.request("/api/auth/password-resets", "POST", {
+                verifier: value(data, "verifier"),
+                password: value(data, "password"),
+              });
+              setError("Password reset. Sign in again.");
+            }}
+          >
+            <label>
+              Reset code
+              <input name="verifier" type="password" required />
+            </label>
+            <label>
+              New password
+              <input name="password" type="password" minLength={8} required />
+            </label>
+            <button>Reset password</button>
+          </Form>
+        </details>
         {error && <p role="status">{error}</p>}
       </main>
     );
@@ -188,6 +257,10 @@ export function App() {
             onClick={() =>
               void api.logout().then(() => {
                 cache.clear();
+                setConnections([]);
+                setProjects([]);
+                setSessions([]);
+                setSelected(null);
                 setUser(null);
                 setSelected(null);
               })
@@ -941,6 +1014,10 @@ function Detail({ id, open }: { id: string; open: (id: string) => void }) {
             <article>
               <h3>Delivery · {delivery.state}</h3>
               <p>{delivery.reason}</p>
+              <p>
+                {delivery.merge_eligibility?.reasons.join(", ") ||
+                  "Reconcile and inspect server eligibility"}
+              </p>
               {delivery.pr_url && (
                 <a href={delivery.pr_url} target="_blank" rel="noreferrer">
                   Open draft PR
@@ -987,7 +1064,9 @@ function Detail({ id, open }: { id: string; open: (id: string) => void }) {
                           path: string;
                           content: string;
                           digest: string;
-                        }>(`/api/sessions/${id}/files?path=${encodeURIComponent(f.path)}`)
+                        }>(
+                          `/api/sessions/${id}/files?path=${encodeURIComponent(f.path)}`,
+                        )
                         .then(setFile)
                     }
                   >

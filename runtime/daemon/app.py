@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from protocol.build import runtime_source_digest
 from protocol.runtime import OperationFrame, ProtocolError
 
 from runtime.daemon import changes, files, snapshots
@@ -40,6 +41,7 @@ class Runtime:
             self.journal, self.worktree, self.root / "native-home", **kwargs
         )
 
+        self.supervisor.known_secrets.update(Redactor([token]).values)
         self.processes = Processes(self)
 
     def hello(self):
@@ -50,7 +52,7 @@ class Runtime:
             "lease_id": self.lease_id,
             "lease_generation": self.generation,
             "runtime_epoch": self.journal.epoch,
-            "runtime_build_digest": "sbx-runtime-1",
+            "runtime_build_digest": runtime_source_digest(),
             "image_digest": os.environ.get("SBX_IMAGE_DIGEST", "local"),
             "harnesses": catalog(),
             "spool_watermark": self.journal.watermark,
@@ -288,6 +290,8 @@ def create_runtime_app(runtime):
             )
         if len(upstream.content) > 4_000_000:
             raise ProtocolError("quota_exhausted")
+        if any(value.encode() in upstream.content for value in runtime.supervisor.known_secrets):
+            raise ProtocolError("forbidden")
         return Response(
             upstream.content,
             status_code=upstream.status_code,

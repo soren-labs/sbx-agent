@@ -2,6 +2,7 @@ import hashlib
 import io
 import zipfile
 
+from control.application.assessments import current_policy, result_rows
 from control.domain.delivery import merge_reasons
 from control.domain.errors import DomainError, require
 from control.domain.events import canonical
@@ -208,31 +209,14 @@ class DeliveryHandler:
                     ),
                 )
 
-    def result_rows(self, repo, delivery, changeset):
-        rows = repo.all(
-            "SELECT r.*,d.parent_session_id,d.child_session_id AS assigned_child FROM "
-            "delegation_results r "
-            "JOIN delegations d ON d.id=r.delegation_id WHERE d.changeset_id=%s",
-            (changeset["id"],),
-        )
-        for row in rows:
-            child = repo.one(
-                "SELECT id FROM worktrees WHERE session_id=%s", (row["child_session_id"],)
-            )
-            parent = repo.one(
-                "SELECT id FROM worktrees WHERE session_id=%s", (row["parent_session_id"],)
-            )
-            row["independent"] = (
-                row["assigned_child"] != row["parent_session_id"] and child["id"] != parent["id"]
-            )
-        return rows
-
     def merge(self, claim, delivery, changeset, generation):
         with self.uow.transaction() as repo:
             request = repo.one(
                 "SELECT * FROM merge_requests WHERE id=%s", (claim.row["effect_id"],)
             )
-            results = self.result_rows(repo, delivery, changeset)
+            results = result_rows(repo, changeset)
+            delivery["policy"] = current_policy(repo, delivery)
+            require(request["method"] in delivery["policy"]["merge_methods"], "forbidden")
         credential = self.credential(delivery, claim.row["effect_id"])
         remote = self.github.observe(credential, delivery)
         if remote.get("merged"):

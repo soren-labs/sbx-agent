@@ -1,6 +1,0 @@
-{"type":"thread.started","thread_id":"01a09a36-b4fb-7f90-b96e-42adeefa05e0"}
-{"type":"turn.started"}
-{"type":"item.started","item":{"id":"item_0","type":"file_change","changes":[{"path":"/work/hello.txt","kind":"update"}],"status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"/work/hello.txt","kind":"update"}],"status":"completed"}}
-{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Appended a resume line to hello.txt."}}
-{"type":"turn.completed","usage":{"input_tokens":26100,"cached_input_tokens":22100,"cache_write_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":40}}

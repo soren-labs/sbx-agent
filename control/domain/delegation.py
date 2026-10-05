@@ -18,6 +18,9 @@ def result_contract(role, subject, head):
         "enforcement": "platform",
         "subject_digest": subject,
         "head_sha": head,
+        "verdicts": ["approve", "request_changes", "comment"]
+        if role == "review"
+        else ["pass", "fail", "unknown"],
         "required": ["subject_digest", "head_sha", "verdict", "findings", "checks"],
     }
 

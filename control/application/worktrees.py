@@ -14,6 +14,13 @@ class Worktrees:
             wt = repo.one("SELECT * FROM worktrees WHERE session_id=%s FOR UPDATE", (sid,))
 
             def perform():
+                require(
+                    not repo.one(
+                        "SELECT id FROM service_instances WHERE session_id=%s AND state='running'",
+                        (sid,),
+                    ),
+                    "waiting_capacity",
+                )
                 require(wt["generation"] == generation, "version_conflict")
                 require(
                     not repo.one(
@@ -63,6 +70,14 @@ class Worktrees:
             session = owned(repo, "sessions", sid, principal, lock=True)
 
             def perform():
+                require(
+                    not repo.one(
+                        "SELECT id FROM turns WHERE session_id=%s AND state IN ('prepa"
+                        "ring','running','cancelling')",
+                        (sid,),
+                    ),
+                    "waiting_capacity",
+                )
                 lease = repo.one(
                     "SELECT * FROM executor_leases WHERE session_id=%s AND cleanup_confirmed=false "
                     "ORDER BY generation DESC LIMIT 1 FOR UPDATE",
@@ -79,6 +94,10 @@ class Worktrees:
                     "executor.release",
                     lease["id"],
                     lease["id"] + "-release",
+                )
+                repo.execute(
+                    "UPDATE jobs SET state='queued',due_at=now() WHERE id=%s AND state='failed'",
+                    (job,),
                 )
                 return {"lease_id": lease["id"], "job_id": job}
 

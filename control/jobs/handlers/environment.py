@@ -24,7 +24,7 @@ class EnvironmentResolver:
                 "repository": pver["repository"],
                 "base_ref": pver["base_ref"],
             }
-        if wt["last_snapshot_id"]:
+        if wt["last_snapshot_id"] or lease.get("environment_prepared_at"):
             return {**inputs, "base_sha": wt["base_sha"]}, {}
         credential = {}
         repository = inputs.get("repository")

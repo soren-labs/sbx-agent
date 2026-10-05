@@ -13,26 +13,30 @@ class Claim:
 
 
 class Claims:
-    def __init__(self, uow):
-        self.uow = uow
+    def __init__(self, uow, *, table="jobs"):
+        require(table in {"jobs", "outbox_messages"}, "unsupported_capability")
+        self.uow, self.table = uow, table
+        self.attempts = "job_attempts" if table == "jobs" else "outbox_attempts"
 
     def take(self, holder: str, seconds=120):
         with self.uow.transaction() as repo:
             job = repo.one(
-                "SELECT * FROM jobs WHERE ((state IN ('queued','retry_wait') AND due_at<=now()) "
+                f"SELECT * FROM {self.table} "
+                "WHERE ((state IN ('queued','retry_wait') AND due_at<=now()) "
                 "OR (state='claimed' AND claim_expires_at<now())) AND deadline>now() "
                 "ORDER BY priority DESC,due_at,id FOR UPDATE SKIP LOCKED LIMIT 1"
             )
             if not job:
                 return None
             row = repo.one(
-                "UPDATE jobs SET state='claimed',holder=%s,claim_generation=claim_generation+1,"
+                f"UPDATE {self.table} SET state='claimed',holder=%s,"
+                "claim_generation=claim_generation+1,"
                 "claim_expires_at=now()+%s*interval '1 second',attempts=attempts+1 "
                 "WHERE id=%s RETURNING *",
                 (holder, seconds, job["id"]),
             )
             repo.execute(
-                "INSERT INTO job_attempts(id,workspace_id,job_id,generation,holder) "
+                f"INSERT INTO {self.attempts}(id,workspace_id,job_id,generation,holder) "
                 "VALUES(%s,%s,%s,%s,%s)",
                 (
                     new_id("attempt"),
@@ -45,7 +49,7 @@ class Claims:
             return Claim(row["id"], holder, row["claim_generation"], row)
 
     def assert_current(self, repo, claim):
-        row = repo.one("SELECT * FROM jobs WHERE id=%s FOR UPDATE", (claim.job_id,))
+        row = repo.one(f"SELECT * FROM {self.table} WHERE id=%s FOR UPDATE", (claim.job_id,))
         require(
             row
             and row["state"] == "claimed"
@@ -55,7 +59,8 @@ class Claims:
         )
         require(
             repo.one(
-                "SELECT claim_expires_at>now() AS valid FROM jobs WHERE id=%s", (claim.job_id,)
+                f"SELECT claim_expires_at>now() AS valid FROM {self.table} WHERE id=%s",
+                (claim.job_id,),
             )["valid"],
             "version_conflict",
         )
@@ -65,7 +70,8 @@ class Claims:
         with self.uow.transaction() as repo:
             self.assert_current(repo, claim)
             repo.execute(
-                "UPDATE jobs SET state=%s,last_error=%s,due_at=now()+%s*interval '1 second',"
+                f"UPDATE {self.table} SET state=%s,last_error=%s,"
+                "due_at=now()+%s*interval '1 second',"
                 "holder=NULL,claim_expires_at=NULL WHERE id=%s",
                 (state, error, delay, claim.job_id),
             )
@@ -74,6 +80,7 @@ class Claims:
         with self.uow.transaction() as repo:
             self.assert_current(repo, claim)
             repo.execute(
-                "UPDATE jobs SET claim_expires_at=now()+%s*interval '1 second' WHERE id=%s",
+                f"UPDATE {self.table} SET claim_expires_at=now()+%s*interval '1 second' "
+                "WHERE id=%s",
                 (seconds, claim.job_id),
             )

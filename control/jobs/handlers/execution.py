@@ -1,8 +1,10 @@
 import time
 
+from protocol.build import runtime_source_digest
+
 from control.application.execution import Execution
 from control.application.ingest import Ingest
-from control.domain.errors import DomainError
+from control.domain.errors import DomainError, require
 from control.domain.sessions import TURN_TERMINAL
 from control.executors.port import AllocationSpec
 from control.runtime_client.grants import runtime_token
@@ -16,12 +18,13 @@ class ExecutionHandler:
         self.snapshot_reader = None
         self.environment_resolver = None
         self.child_inputs = None
+        self.tooling_resolver = None
 
     def __call__(self, claim):
         try:
             self.run(claim)
         except DomainError as error:
-            if error.code in {"executor_unavailable", "outcome_unknown"}:
+            if error.code not in {"waiting_capacity", "version_conflict"}:
                 with self.uow.transaction() as repo:
                     execution = repo.one(
                         "SELECT id FROM executions WHERE turn_id=%s "
@@ -43,7 +46,7 @@ class ExecutionHandler:
             session["id"],
             lease["id"],
             lease["generation"],
-            "sbx-runtime-opencode-1.18.29",
+            runtime_source_digest(),
             token,
             connection_id=lease["connection_id"],
         )
@@ -51,6 +54,9 @@ class ExecutionHandler:
         if not handle:
             handle = backend.allocate(spec, lease["allocation_operation_id"])
         client = backend.connect_runtime(handle)
+        require(
+            client.hello["runtime_build_digest"] == runtime_source_digest(), "runtime_incompatible"
+        )
         if lease["state"] == "allocating":
             self.execution.bind(claim, session, lease, handle, client.hello)
         inputs = session["effective_inputs"]
@@ -59,31 +65,45 @@ class ExecutionHandler:
             inputs, clone_credential = self.environment_resolver(session, execution, lease)
         with self.uow.transaction() as repo:
             worktree = repo.one("SELECT * FROM worktrees WHERE session_id=%s", (session["id"],))
-        if worktree["last_snapshot_id"] and self.snapshot_reader:
+        if (
+            worktree["last_snapshot_id"]
+            and self.snapshot_reader
+            and not lease.get("environment_prepared_at")
+        ):
             manifest = self.snapshot_reader(session["workspace_id"], worktree["last_snapshot_id"])
             restore_id = lease["allocation_operation_id"] + "-restore"
             client.submit(restore_id, "worktree.restore", {"manifest": manifest})
             restored = client.wait(restore_id)
             if restored.get("error"):
                 raise DomainError(restored["error"])
-        envop = lease["allocation_operation_id"] + "-environment"
-        # Same deterministic prepare operation is always deduped at runtime.
-        client.submit(
-            envop,
-            "environment.prepare",
-            {
-                "repository": None if worktree["last_snapshot_id"] else inputs.get("repository"),
-                "base_sha": inputs.get("base_sha"),
-                "setup": inputs.get("resume", [])
-                if worktree["last_snapshot_id"]
-                else inputs.get("setup", []),
-                "env": inputs.get("env", {}),
-                "clone_credential": clone_credential,
-            },
-        )
-        prepared = client.wait(envop)
-        if prepared.get("error"):
-            raise DomainError(prepared["error"])
+        if not lease.get("environment_prepared_at"):
+            envop = lease["allocation_operation_id"] + "-environment"
+            # Same deterministic prepare operation is always deduped at runtime.
+            client.submit(
+                envop,
+                "environment.prepare",
+                {
+                    "repository": None
+                    if worktree["last_snapshot_id"]
+                    else inputs.get("repository"),
+                    "base_sha": inputs.get("base_sha"),
+                    "setup": inputs.get("resume", [])
+                    if worktree["last_snapshot_id"]
+                    else inputs.get("setup", []),
+                    "env": inputs.get("env", {}),
+                    "clone_credential": clone_credential,
+                },
+            )
+            prepared = client.wait(envop)
+            if prepared.get("error"):
+                raise DomainError(prepared["error"])
+            with self.uow.transaction() as repo:
+                self.claims.assert_current(repo, claim)
+                repo.execute(
+                    "UPDATE executor_leases SET environment_prepared_at=coalesce(envir"
+                    "onment_prepared_at,now()) WHERE id=%s",
+                    (lease["id"],),
+                )
         if self.child_inputs:
             self.child_inputs(session, execution, lease, client, claim)
         with self.uow.transaction() as repo:
@@ -115,12 +135,17 @@ class ExecutionHandler:
             "credential_bundle": credential,
             "settings": {**turn["settings"], "env": inputs.get("env", {})},
             "timeout": 600,
+            "tooling": self.tooling_resolver(session, execution, lease)
+            if self.tooling_resolver
+            else None,
         }
         # Replaced credential material cannot change an already accepted operation body.
         # Inspect accepted operation first, then only submit if never accepted.
         try:
             operation = client.get("/operations/" + execution["operation_id"])
-        except DomainError:
+        except DomainError as error:
+            if error.code != "not_found":
+                raise
             operation = client.submit(
                 execution["operation_id"], "turn.resume" if native else "turn.start", payload
             )

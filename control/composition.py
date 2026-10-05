@@ -21,11 +21,13 @@ from control.jobs.claims import Claims
 from control.jobs.handlers.changes import CaptureHandler
 from control.jobs.handlers.child_inputs import ChildInputs
 from control.jobs.handlers.connections import ValidationHandler
-from control.jobs.handlers.delegation import ResultHandler
+from control.jobs.handlers.delegation import DeadlineHandler, ResultHandler
 from control.jobs.handlers.delivery import DeliveryHandler
 from control.jobs.handlers.environment import EnvironmentResolver
 from control.jobs.handlers.execution import ExecutionHandler
+from control.jobs.handlers.identity import NoticeHandler
 from control.jobs.handlers.io import IOHandler
+from control.jobs.handlers.outbox import OutboxNotify
 from control.jobs.handlers.snapshots import ReleaseHandler, SnapshotHandler
 from control.jobs.worker import Worker
 
@@ -54,12 +56,16 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
     execution.environment_resolver = EnvironmentResolver(uow, connections, connectors["github"])
     sessions = Sessions(uow)
     execution.child_inputs = ChildInputs(uow, objects, claims)
+    delegations = Delegations(uow, sessions)
     delivery = DeliveryHandler(
         uow, claims, connections, GitHubEffects(connectors["github"], objects)
     )
     io = SessionIO(uow, claims, executor_factory, master, objects)
     iohandler = IOHandler(uow, claims, io, objects)
     handlers = {
+        "delegation.expire": DeadlineHandler(uow, claims, delegations),
+        "delegation.expire_wait": DeadlineHandler(uow, claims, delegations),
+        "identity.notice": NoticeHandler(uow, claims, vault),
         "worktree.perform": iohandler,
         "worktree.terminal_close": iohandler,
         "delivery.perform": delivery,
@@ -74,7 +80,7 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
     }
     return SimpleNamespace(
         uow=uow,
-        identity=Identity(uow),
+        identity=Identity(uow, vault, master),
         projects=Projects(uow),
         sessions=sessions,
         queries=Queries(uow),
@@ -83,7 +89,7 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
         services=Services(uow, io),
         changes=Changes(uow, objects),
         deliveries=Deliveries(uow),
-        delegations=Delegations(uow, sessions),
+        delegations=delegations,
         connections=connections,
         worktrees=Worktrees(uow),
         objects=objects,
@@ -91,6 +97,12 @@ def assemble(uow, vault, objects, master, executor_factory, connectors):
         claims=claims,
         handlers=handlers,
         worker=Worker(uow, handlers),
+        outbox_worker=Worker(
+            uow,
+            {"outbox.notify": OutboxNotify(uow, Claims(uow, table="outbox_messages"))},
+            holder="outbox",
+            claims=Claims(uow, table="outbox_messages"),
+        ),
         executor_factory=executor_factory,
         master=master,
     )

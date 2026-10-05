@@ -14,6 +14,13 @@ class Changes:
             wt = repo.one("SELECT * FROM worktrees WHERE session_id=%s FOR UPDATE", (sid,))
 
             def perform():
+                require(
+                    not repo.one(
+                        "SELECT id FROM service_instances WHERE session_id=%s AND state='running'",
+                        (sid,),
+                    ),
+                    "waiting_capacity",
+                )
                 require(wt["generation"] == body["generation"], "version_conflict")
                 origin = body.get("origin", "explicit")
                 require(origin in {"automatic", "explicit", "salvage"}, "capture_failed")
@@ -25,6 +32,7 @@ class Changes:
                     and turn["state"] == "succeeded"
                     and turn["evidence_complete"]
                     and origin != "salvage"
+                    and (turn["outcome"] or {}).get("worktree_generation") == wt["generation"]
                 )
                 require(origin != "automatic" or eligible, "capture_failed")
                 require(

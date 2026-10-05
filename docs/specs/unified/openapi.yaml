@@ -103,6 +103,28 @@ components:
       - health
       title: ConnectionView
       type: object
+    Continuation:
+      additionalProperties: false
+      properties:
+        changeset_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Changeset Id
+        summary:
+          maxLength: 100000
+          minLength: 1
+          title: Summary
+          type: string
+        title:
+          default: Linked continuation
+          maxLength: 200
+          title: Title
+          type: string
+      required:
+      - summary
+      title: Continuation
+      type: object
     CredentialReplace:
       additionalProperties: false
       properties:
@@ -145,6 +167,18 @@ components:
           title: Transport
           type: string
       title: DeliveryCreate
+      type: object
+    EmailRequest:
+      additionalProperties: false
+      properties:
+        email:
+          maxLength: 254
+          minLength: 3
+          title: Email
+          type: string
+      required:
+      - email
+      title: EmailRequest
       type: object
     FileWrite:
       additionalProperties: false
@@ -326,6 +360,26 @@ components:
       - current_password
       - password
       title: PasswordChange
+      type: object
+    PasswordReset:
+      additionalProperties: false
+      properties:
+        password:
+          maxLength: 1024
+          minLength: 8
+          title: Password
+          type: string
+          writeOnly: true
+        verifier:
+          maxLength: 200
+          minLength: 1
+          title: Verifier
+          type: string
+          writeOnly: true
+      required:
+      - verifier
+      - password
+      title: PasswordReset
       type: object
     ProjectCreate:
       additionalProperties: false
@@ -536,6 +590,12 @@ components:
     Spawn:
       additionalProperties: false
       properties:
+        budget_seconds:
+          default: 900
+          maximum: 1800.0
+          minimum: 1.0
+          title: Budget Seconds
+          type: integer
         changeset_id:
           title: Changeset Id
           type: string
@@ -873,6 +933,64 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Password Change
+  /api/auth/password-reset-requests:
+    post:
+      operationId: reset_request_api_auth_password_reset_requests_post
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          title: Idempotency-Key
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Reset Request
+  /api/auth/password-resets:
+    post:
+      operationId: password_reset_api_auth_password_resets_post
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          title: Idempotency-Key
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordReset'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Password Reset
   /api/auth/register:
     post:
       operationId: register_api_auth_register_post
@@ -1436,6 +1554,35 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Retry Delivery
+  /api/executions/{eid}/recovery-acknowledgements:
+    post:
+      operationId: recovery_api_executions__eid__recovery_acknowledgements_post
+      parameters:
+      - in: path
+        name: eid
+        required: true
+        schema:
+          title: Eid
+          type: string
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          title: Idempotency-Key
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Recovery
   /api/executor-backends:
     get:
       operationId: backends_api_executor_backends_get
@@ -1910,6 +2057,41 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Endpoint
+  /api/sessions/{sid}/continuations:
+    post:
+      operationId: continuation_api_sessions__sid__continuations_post
+      parameters:
+      - in: path
+        name: sid
+        required: true
+        schema:
+          title: Sid
+          type: string
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          title: Idempotency-Key
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Continuation'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Continuation
   /api/sessions/{sid}/delegations:
     post:
       operationId: spawn_api_sessions__sid__delegations_post

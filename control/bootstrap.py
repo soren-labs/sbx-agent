@@ -15,7 +15,15 @@ from control.security.vault import EnvelopeVault
 from control.storage.local import LocalObjects
 
 
-def build(dsn, state_dir, *, allow_local=False):
+def build(
+    dsn,
+    state_dir,
+    *,
+    allow_local=False,
+    control_origin=None,
+    preview_origin=None,
+    email_command=None,
+):
     state = Path(state_dir)
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     state.chmod(0o700)
@@ -45,7 +53,7 @@ def build(dsn, state_dir, *, allow_local=False):
         if lease.get("_read_only"):
             credential = resources.connections.read_material(principal, lease["connection_id"])
             return ModalExecutor(credential, runtime_token)
-        credential, _ = resources.connections.resolve(
+        credential, version = resources.connections.resolve(
             principal,
             lease["connection_id"],
             "teardown" if lease["state"] in {"lost", "quiescing"} else "compute",
@@ -53,6 +61,11 @@ def build(dsn, state_dir, *, allow_local=False):
             lease_id=lease["id"],
             operation_id=lease["allocation_operation_id"],
         )
+        with db.transaction() as repo:
+            repo.execute(
+                "UPDATE executor_leases SET credential_id=%s WHERE id=%s AND credential_id IS NULL",
+                (version, lease["id"]),
+            )
         return ModalExecutor(credential, runtime_token)
 
     resources = assemble(
@@ -63,4 +76,37 @@ def build(dsn, state_dir, *, allow_local=False):
         executor,
         {"github": GitHubConnector(), "modal": ModalConnector(), "opencode_zen": ZenConnector()},
     )
+    from urllib.parse import urlparse
+
+    from control.tooling.grants import ToolGrants
+
+    if control_origin:
+        from control.domain.errors import require
+
+        require(urlparse(control_origin).scheme == "https", "forbidden")
+    resources.tool_grants = ToolGrants(resources, master, control_origin)
+    resources.handlers["turn.dispatch"].tooling_resolver = resources.tool_grants.issue
+    resources.services.preview_origin = preview_origin
+    if email_command:
+        import subprocess
+
+        def send_notice(email, purpose, verifier, identity):
+            body = (
+                f"To: {email}\nMessage-ID: <{identity}@sbx.invalid>\n"
+                f"Subject: SBX {purpose}\n\nUse this one-time verifier in SBX: {verifier}\n"
+            )
+            subprocess.run(
+                email_command,
+                input=body.encode(),
+                env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8"},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=True,
+            )
+
+        resources.identity.email_enabled = True
+        resources.handlers["identity.notice"].sender = send_notice
+    resources.control_origin = control_origin
+    resources.allow_local = allow_local
     return resources
