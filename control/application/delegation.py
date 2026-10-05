@@ -77,9 +77,13 @@ def _result_schema_check(contract: dict, value: dict) -> list[str]:
 
 
 class DelegationService:
-    def __init__(self, db, *, runtime_stack=None) -> None:
+    def __init__(self, db, *, runtime_stack=None, change_service=None) -> None:
         self.db = db
         self.stack = runtime_stack
+        # Bound late at composition: changeset inputs are staged into the
+        # child Worktree via the ChangeSet apply path (RFC 167 §07
+        # explicit ChangeSet transfer).
+        self.changes = change_service
 
     # ------------------------------------------------------------- spawn
     def spawn(
@@ -199,6 +203,19 @@ class DelegationService:
                     "digest": inp.get("digest"),
                 }
             )
+        if self.changes is not None:
+            for inp in inputs:
+                if inp.get("kind") == "changeset":
+                    # Stage the pinned ChangeSet into the child's worktree
+                    # inside this txn: the apply job + worktree_operations
+                    # barrier land atomically with the Delegation, and
+                    # turn.dispatch JobRetries while the barrier is active.
+                    self.changes.apply(
+                        uow,
+                        workspace_id=workspace_id,
+                        changeset_id=inp["ref"],
+                        dest_session_id=child_id,
+                    )
         append_event(
             uow,
             workspace_id=workspace_id,

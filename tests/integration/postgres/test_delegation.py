@@ -55,7 +55,7 @@ def plane(pg, tmp_path, monkeypatch):
     )
     blobs = BlobStore(tmp_path / "blobs")
     changes = ChangeSetService(pg, blobs, runtime_stack=stack)
-    delegations = DelegationService(pg, runtime_stack=stack)
+    delegations = DelegationService(pg, runtime_stack=stack, change_service=changes)
     handlers.set_runtime_stack(stack)
     handlers.set_change_plane(changes, delegations)
     yield {
@@ -365,3 +365,66 @@ def test_input_digest_pin_enforced(pg, workspace, plane):
                 },
                 projectless_spec={"backend": "local"},
             )
+
+
+def test_changeset_input_stages_apply_barrier(pg, workspace, plane):
+    """A valid changeset input enqueues a changeset.apply job AND a
+    worktree_operations barrier on the child worktree in the same txn —
+    this is the explicit ChangeSet transfer of RFC 167 §07."""
+    ws = workspace["workspace_id"]
+    parent = _session(pg, workspace)
+
+    from control.domain import ids
+    from control.persistence.unit_of_work import SqlUnitOfWork
+
+    with SqlUnitOfWork(pg) as uow:
+        wt = uow.worktrees.get_by_session(ws, parent["session_id"])["id"]
+        digest = "sha256:" + "a" * 64
+        cs = ids.new_id("changeset")
+        uow.changesets.insert(
+            {
+                "id": cs,
+                "workspace_id": ws,
+                "session_id": parent["session_id"],
+                "worktree_id": wt,
+                "worktree_generation": 1,
+                "subject_digest": digest,
+                "manifest_version": 1,
+                "capture_origin": "explicit",
+                "manifest": {"entries": []},
+            }
+        )
+        uow.commit()
+        out = plane["delegations"].spawn(
+            uow,
+            principal={"kind": "user", "id": workspace["user_id"]},
+            workspace_id=ws,
+            parent_session_id=parent["session_id"],
+            role="reviewer",
+            result_contract={"kind": "GenericResult", "schema_version": 1},
+            inputs=[{"kind": "changeset", "ref": cs, "digest": digest}],
+            prompt="review the staged changeset",
+            harness={
+                "provider_id": "opencode",
+                "model": "opencode/big-pickle",
+                "effort": "default",
+                "adapter_version": "1",
+                "cli_version": "fake",
+            },
+            projectless_spec={"backend": "local"},
+        )
+        child_wt = uow.worktrees.get_by_session(ws, out["child_session_id"])
+        barrier = uow.rows.one(
+            "SELECT * FROM worktree_operations"
+            " WHERE worktree_id=%s AND kind='apply' AND state='active'",
+            (child_wt["id"],),
+        )
+        apply_job = uow.rows.one(
+            "SELECT * FROM jobs WHERE kind='changeset.apply'"
+            " AND workspace_id=%s AND state='queued'",
+            (ws,),
+        )
+        uow.commit()
+    assert barrier is not None, "apply barrier missing — dispatch would race the apply"
+    assert apply_job is not None, "changeset.apply job missing — input never staged"
+    assert apply_job["payload"]["dest_session_id"] == out["child_session_id"]

@@ -71,8 +71,12 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def build_world(dsn: str, workdir: Path) -> dict:
-    """Compose the whole product exactly as a deployment would."""
+def build_world(dsn: str, workdir: Path, vault=None) -> dict:
+    """Compose the whole product exactly as a deployment would.
+
+    ``vault`` may be shared across restarts — a real deployment keeps its
+    master keyring outside the DB (env/injected), so a restart must NOT
+    silently rotate sealing keys."""
     from control.api.app import create_app
     from control.application.auth import AuthService
     from control.application.changes import ChangeSetService
@@ -97,7 +101,7 @@ def build_world(dsn: str, workdir: Path) -> dict:
     from control.storage.blobs import BlobStore
 
     db = open_database(dsn)
-    vault = Vault.generate()
+    vault = vault or Vault.generate()
     registry = register_builtin_connectors()
     connections = ConnectionService(db, vault)
     sessions = SessionService(db)
@@ -109,8 +113,6 @@ def build_world(dsn: str, workdir: Path) -> dict:
         blob_store=blobs,
         scratch_root=workdir / "delivery-scratch",
     )
-    delegations = DelegationService(db)
-
     stack = RuntimeStack(
         db,
         backends={},
@@ -133,6 +135,7 @@ def build_world(dsn: str, workdir: Path) -> dict:
     stack.register_backend("modal", ModalExecutorBackend())
 
     changes = ChangeSetService(db, blobs, runtime_stack=stack)
+    delegations = DelegationService(db, change_service=changes)
 
     handlers.set_runtime_stack(stack)
     handlers.set_connection_plane(connections, registry)

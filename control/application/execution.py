@@ -78,6 +78,21 @@ class ExecutionService:
         if turn["state"] not in (TurnState.QUEUED.value, TurnState.PREPARING.value):
             return {"turn_id": turn_id, "skipped": turn["state"]}
 
+        # Worktree apply barrier: a pending changeset.apply (e.g. a staged
+        # delegation input) fences the worktree — turns wait rather than
+        # race it. JobRetry keeps the turn queued until the barrier clears.
+        wt = uow.worktrees.get_by_session(workspace_id, session["id"])
+        if wt is not None:
+            active = uow.rows.one(
+                "SELECT count(*) AS n FROM worktree_operations"
+                " WHERE worktree_id=%s AND state='active'",
+                (wt["id"],),
+            )
+            if active and int(active["n"]) > 0:
+                from control.jobs.worker import JobRetry
+
+                raise JobRetry("worktree apply in flight", retry_after=25.0)
+
         # Idempotent resume: a PREPARING turn with an existing Execution is
         # a job retry — reuse the row (and its operation_id effect identity)
         # instead of double-allocating.

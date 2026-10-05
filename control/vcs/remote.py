@@ -23,6 +23,35 @@ class RemoteError(Exception):
     """Transport/provider failure with an ambiguous or retryable outcome."""
 
 
+def _scrub(msg: str) -> str:
+    """Never let credential material ride out in error surfaces — stderr
+    can echo URLs, config keys, or provider replies containing tokens."""
+    import re
+
+    msg = re.sub(r"x-access-token:[^@\s/]+@", "x-access-token:***@", msg)
+    msg = re.sub(
+        r"(AUTHORIZATION:\s*(?:basic|bearer)\s+)[A-Za-z0-9+/=_.-]+",
+        r"\1***",
+        msg,
+        flags=re.IGNORECASE,
+    )
+    return msg
+
+
+def _git_auth_env(token: str) -> dict:
+    """GIT_CONFIG_* env carrying the auth header — keeps tokens out of the
+    remote URL, argv, and .git/config (visible in ps/output/error text).
+    Basic ``x-access-token`` is accepted for every GitHub token class."""
+    import base64
+
+    auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {auth}",
+    }
+
+
 def _git(
     args: list[str], *, cwd: Path | None = None, env: dict | None = None, check: bool = True
 ) -> subprocess.CompletedProcess:
@@ -37,7 +66,7 @@ def _git(
         timeout=120,
     )
     if check and cp.returncode != 0:
-        raise RemoteError(f"git {' '.join(args[:2])} failed: {cp.stderr.strip()[:400]}")
+        raise RemoteError(f"git {' '.join(args[:2])} failed: {_scrub(cp.stderr.strip()[:400])}")
     return cp
 
 
@@ -99,6 +128,7 @@ def materialize_commit(
     message: str,
     scratch: Path,
     author: dict | None = None,
+    auth_env: dict | None = None,
 ) -> str:
     """Deterministically map a patch-only ChangeSet onto a commit.
 
@@ -124,6 +154,7 @@ def materialize_commit(
         _git(
             ["fetch", "-q", "--depth", "1", repository_url, base_commit],
             cwd=work,
+            env=auth_env,
         )
         _git(["checkout", "-q", "FETCH_HEAD"], cwd=work)
     for f in files:
@@ -175,8 +206,18 @@ class GitCliRemote:
             raise RemoteConflict(
                 f"refs/heads/{ref} drifted: expected {expected_old}, saw {current}"
             )
-        work = scratch / "push"
-        work.mkdir(parents=True, exist_ok=True)
+        # Push must run inside a repo that can resolve local_commit: reuse
+        # the materialized worktree when present, else init+fetch one.
+        work = scratch / "mat"
+        if not (work / ".git").exists():
+            work = scratch / "push"
+            work.mkdir(parents=True, exist_ok=True)
+            _git(["init", "-q"], cwd=work, env=self.auth_env)
+            _git(
+                ["fetch", "-q", "--depth", "1", self.remote_url, local_commit],
+                cwd=work,
+                env=self.auth_env,
+            )
         spec = f"{local_commit}:refs/heads/{ref}"
         args = ["push", self.remote_url, spec]
         if expected_old is not None:
@@ -215,7 +256,8 @@ class GithubRemote(GitCliRemote):
     """
 
     def __init__(self, token: str, *, api_base: str = "https://api.github.com") -> None:
-        super().__init__("")
+        # Auth flows via GIT_CONFIG_* extraheader, never a credentialed URL.
+        super().__init__("", auth_env=_git_auth_env(token))
         self.token = token
         self.api_base = api_base.rstrip("/")
 
@@ -245,8 +287,8 @@ class GithubRemote(GitCliRemote):
         return resp.json() if resp.content else {}
 
     def _remote_url(self, repository: str) -> str:
-        # Token is embedded in-process for git; never returned in evidence.
-        return f"https://x-access-token:{self.token}@github.com/{repository}.git"
+        # Token-free remote URL — auth rides in extraheader env only.
+        return f"https://github.com/{repository}.git"
 
     def ls_remote(self, repository: str, ref: str) -> str | None:
         data = self._request("GET", f"/repos/{repository}/git/ref/heads/{ref}", allow_404=True)

@@ -21,7 +21,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -90,7 +89,13 @@ def main() -> int:
     EVIDENCE["workdir"] = str(workdir)
     EVIDENCE["repo"] = E2E_REPO
     EVIDENCE["base_ref"] = E2E_BASE_REF
-    world = build_world(dsn, workdir)
+    from control.security.vault import Vault
+
+    # One shared master keyring across control-plane restarts (a real
+    # deployment injects it via SBX_VAULT_KEYS; the harness generates it
+    # once so restart proves encrypted credentials stay decryptable).
+    vault = Vault.generate()
+    world = build_world(dsn, workdir, vault=vault)
 
     from sbx.sdk.unified import UnifiedApiError, UnifiedClient
 
@@ -467,17 +472,9 @@ def main() -> int:
                 )
             for br in cleanup["branches"]:
                 subprocess.run(
-                    ["git", "push", "origin", "--delete", br],
-                    cwd=tempfile.mkdtemp(),
+                    ["gh", "api", "-X", "DELETE", f"repos/{E2E_REPO}/git/refs/heads/{br}"],
                     capture_output=True,
                     timeout=60,
-                    env={
-                        "PATH": os.environ["PATH"],
-                        "HOME": os.environ["HOME"],
-                        "GIT_CONFIG_COUNT": "1",
-                        "GIT_CONFIG_KEY_0": "credential.helper",
-                        "GIT_CONFIG_VALUE_0": "!gh auth git-credential",
-                    },
                 )
         except Exception:
             pass
@@ -505,22 +502,40 @@ def main() -> int:
         }
 
     # ---------- 16. restart persistence --------------------------------
-    world2 = build_world(dsn, scratch_dir())
+    world2 = build_world(dsn, scratch_dir(), vault=vault)
     try:
         with RunningWorld(world2) as running2:
             c3 = UnifiedClient(running2.base_url, timeout=60)
-            c3.token = c.login(email, password)["token"]
+            c3.token = c3.login(email, password)["token"]
             conns = c3.connections.list(ws).get("items", [])
             sess = None
             try:
                 sess = c3.sessions.get(sid)["session"]
             except Exception:
                 sess = None
+            # Decryptability across restart: the shared master keyring must
+            # still open stored CredentialVersions (not just list metadata).
+            decryptable = False
+            try:
+                from control.application.connections import PURPOSE_EXECUTOR_WORKER
+                from control.persistence.unit_of_work import SqlUnitOfWork
+
+                with SqlUnitOfWork(world2["db"], actor={"kind": "check", "id": "restart"}) as uow:
+                    mat = world2["connections"].materialize(
+                        uow,
+                        workspace_id=ws,
+                        connection_id=connections["modal"],
+                        purpose=PURPOSE_EXECUTOR_WORKER,
+                    )
+                    decryptable = bool(mat.payload.get("token_id"))
+            except Exception:
+                decryptable = False
             record(
                 16,
                 "control-plane restart persistence (connections + session)",
-                len(conns) >= 3 and sess and sess["id"] == sid,
-                f"connections={len(conns)} session={'present' if sess else 'missing'}",
+                len(conns) >= 3 and sess and sess["id"] == sid and decryptable,
+                f"connections={len(conns)} session={'present' if sess else 'missing'} "
+                f"decryptable={decryptable}",
             )
     finally:
         pass

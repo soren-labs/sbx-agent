@@ -260,6 +260,7 @@ class DeliveryService:
                         else cs.get("repository"),
                         message=f"sbx changeset {cs['id']}",
                         scratch=scratch,
+                        auth_env=getattr(remote, "auth_env", None),
                     )
                 result = remote.push(
                     cs["repository"] or (delivery["target"] or {}).get("repository"),
