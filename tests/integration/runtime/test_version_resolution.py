@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from runtime import image as image_mod
 from runtime.image import (
     IMAGE_BUILDERS,
     image_manifest,
@@ -42,6 +41,8 @@ from runtime.versions import (
     resolve_versions,
     write_lock,
 )
+
+from runtime import image as image_mod
 
 ENV: dict[str, str] = {}
 

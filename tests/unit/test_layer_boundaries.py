@@ -72,3 +72,14 @@ def test_application_depends_on_ports_not_infrastructure() -> None:
 
 def test_protocol_is_data_only() -> None:
     assert _violations("protocol", ("control", "runtime", "psycopg", "fastapi", "modal")) == []
+
+
+def test_runtime_never_imports_control() -> None:
+    for package in ("runtime/daemon", "runtime/harnesses", "runtime/security"):
+        assert _violations(package, ("control", "psycopg", "fastapi", "modal")) == []
+
+
+def test_executors_do_not_import_harness_adapters() -> None:
+    assert _violations("control/executors", ("runtime.harnesses", "runtime.daemon")) == []
+    assert _violations("control/runtime_client", ("runtime",)) == []
+    assert _violations("runtime/harnesses", ("modal", "control.executors")) == []

@@ -52,3 +52,5 @@ force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# Line length is enforced by `ruff format` for code; long literals are allowed.
+ignore = ["E501"]

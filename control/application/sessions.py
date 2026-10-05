@@ -200,7 +200,7 @@ def finish_turn(
             "error_message": (error_message or None) and error_message[:2000],
             "evidence_complete": evidence_complete,
             "outcome": outcome,
-            "usage": usage,
+            **({"usage": usage} if usage is not None else {}),
             "finished_at": now,
         },
         expect={"state": turn["state"], "version": turn["version"]},

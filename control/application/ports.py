@@ -35,3 +35,98 @@ class SessionResolver(Protocol):
     def resolve(
         self, uow: Any, principal: Any, workspace_id: str, body: dict[str, Any]
     ) -> dict[str, Any]: ...
+
+
+# -- Execution boundary ports ------------------------------------------------------------
+
+
+class RuntimeUnavailable(Exception):
+    """Transport-level failure talking to sbx-runtime (no domain verdict)."""
+
+
+class RuntimeRefused(Exception):
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
+class RuntimeChannel(Protocol):
+    def hello(self) -> dict[str, Any]: ...
+
+    def op(
+        self,
+        kind: str,
+        operation_id: str,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        secrets: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def query(self, kind: str, **body: Any) -> dict[str, Any]: ...
+
+    def events(self, after: int, limit: int = 500) -> dict[str, Any]: ...
+
+    def ack(self, runtime_epoch: str, through: int) -> dict[str, Any]: ...
+
+
+class RuntimeConnector(Protocol):
+    def channel(self, lease: dict[str, Any]) -> RuntimeChannel: ...
+
+    def enrollment_key(self, lease: dict[str, Any]) -> str: ...
+
+
+class ExecutorBackend(Protocol):
+    """RFC 03 executor port. Generic ``exec`` is deliberately absent."""
+
+    kind: str
+
+    def capabilities(self) -> dict[str, Any]: ...
+
+    def allocate(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]: ...
+
+    def lookup(
+        self, operation_id: str, compute: dict[str, Any] | None
+    ) -> dict[str, Any] | None: ...
+
+    def describe(
+        self, handle: dict[str, Any], compute: dict[str, Any] | None
+    ) -> dict[str, Any]: ...
+
+    def connect_runtime(self, handle: dict[str, Any], compute: dict[str, Any] | None) -> str: ...
+
+    def capture_filesystem(
+        self, handle: dict[str, Any], prepared_manifest: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
+    def restore(
+        self, spec: dict[str, Any], snapshot_ref: str, operation_id: str
+    ) -> dict[str, Any]: ...
+
+    def terminate(
+        self, handle: dict[str, Any], operation_id: str, compute: dict[str, Any] | None
+    ) -> bool: ...
+
+
+class CredentialBroker(Protocol):
+    """Resolves plaintext only at the actual effect boundary, after reauthorization."""
+
+    def check_inference(self, uow: Any, session: dict[str, Any]) -> dict[str, Any]: ...
+
+    def inference(self, session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]: ...
+
+    def compute(self, session: dict[str, Any]) -> dict[str, Any] | None: ...
+
+    def source(self, session: dict[str, Any]) -> dict[str, Any] | None: ...
+
+    def report_health(
+        self, uow: Any, connection_id: str | None, credential_version_id: str | None, health: str
+    ) -> None: ...
+
+
+class BlobStore(Protocol):
+    def put(self, key: str, data: bytes) -> None: ...
+
+    def get(self, key: str) -> bytes: ...
+
+    def delete(self, key: str) -> None: ...

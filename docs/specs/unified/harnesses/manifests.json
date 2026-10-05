@@ -1,0 +1,622 @@
+[
+  {
+    "adapter_version": "opencode-harness/1",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "not verified across Zen keys",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "-f not wired",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "static API key",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "--variant not wired",
+        "mode": "",
+        "status": "unknown"
+      },
+      "event_stream": {
+        "evidence": "--format json",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "--auto approves",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "supervisor process-group stop only",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "opencode models opencode",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "native_resume": {
+        "evidence": "opencode-ai unverified: run --session <id>",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "native_state_export": {
+        "evidence": "opencode.db + snapshot dir",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "run mode has no injection channel",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "prompt-only",
+        "mode": "prompt_only",
+        "status": "unsupported"
+      },
+      "usage": {
+        "evidence": "step_finish.tokens",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [
+      "opencode_zen api key"
+    ],
+    "distribution": "npm:opencode-ai",
+    "native_state_versions": [
+      "opencode-sqlite-1"
+    ],
+    "provider_id": "opencode",
+    "support_tier": "supported",
+    "transport": "jsonl"
+  },
+  {
+    "adapter_version": "codex-harness/1",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "refresh writeback not enabled",
+        "mode": "",
+        "status": "unknown"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "event_stream": {
+        "evidence": "exec --json",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "bypass flag",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "supervisor stop only",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_resume": {
+        "evidence": "codex exec resume <thread>",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "native_state_export": {
+        "evidence": "CODEX_HOME/sessions",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "prompt-only",
+        "mode": "prompt_only",
+        "status": "unsupported"
+      },
+      "usage": {
+        "evidence": "turn.completed.usage",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [
+      "codex native auth.json upload"
+    ],
+    "distribution": "npm:@openai/codex",
+    "native_state_versions": [
+      "codex-sessions-1"
+    ],
+    "provider_id": "codex",
+    "support_tier": "experimental",
+    "transport": "jsonl"
+  },
+  {
+    "adapter_version": "none",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "event_stream": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_resume": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_state_export": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "usage": {
+        "evidence": "",
+        "limitation": "distribution/auth not verified",
+        "mode": "",
+        "status": "unknown"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [],
+    "distribution": "npm:@anthropic-ai/claude-code",
+    "native_state_versions": [],
+    "provider_id": "claude",
+    "support_tier": "disabled",
+    "transport": "jsonl"
+  },
+  {
+    "adapter_version": "none",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "event_stream": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_resume": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_state_export": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      },
+      "usage": {
+        "evidence": "",
+        "limitation": "proprietary distribution; ACP resume not verified",
+        "mode": "",
+        "status": "unknown"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [],
+    "distribution": "static.devin.ai",
+    "native_state_versions": [],
+    "provider_id": "devin",
+    "support_tier": "disabled",
+    "transport": "acp"
+  },
+  {
+    "adapter_version": "none",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "event_stream": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_resume": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_state_export": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "usage": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [],
+    "distribution": "host binary",
+    "native_state_versions": [],
+    "provider_id": "grok",
+    "support_tier": "disabled",
+    "transport": "jsonl"
+  },
+  {
+    "adapter_version": "none",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "event_stream": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_resume": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "native_state_export": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      },
+      "usage": {
+        "evidence": "",
+        "limitation": "host-binary distribution not reproducible",
+        "mode": "",
+        "status": "unknown"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [],
+    "distribution": "host binary",
+    "native_state_versions": [],
+    "provider_id": "antigravity",
+    "support_tier": "disabled",
+    "transport": "jsonl"
+  }
+]
