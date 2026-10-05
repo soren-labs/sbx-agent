@@ -212,14 +212,9 @@ def get_capabilities(request: Request) -> Any:
     to the plane's backend (sandbox probe) or the declared fallback probe.
     """
     if getattr(request.app.state, "hosted_mode", False):
-        from control.capabilities import CapabilityCatalog, DeclaredCapabilityProbe
+        from control.hosted_accounts import HostedCapabilities
 
-        registry = get_registry(request)
-        return CapabilityCatalog(
-            DeclaredCapabilityProbe(),
-            get_account=registry.get,
-            get_blob=registry.get_credential_blob,
-        )
+        return HostedCapabilities(get_registry(request))
     catalog = getattr(request.app.state, "capabilities", None)
     if catalog is None:
         from control.capabilities import catalog_for_plane

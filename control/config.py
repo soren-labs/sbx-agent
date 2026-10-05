@@ -12,8 +12,8 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 
 
 def execution_providers(registry, env=None):
-    """Hosted compute supports Codex; self-hosted selection remains explicit."""
-    return ("codex",) if getattr(registry, "hosted", False) else selected_providers(env)
+    """Hosted compute supports Zen and optional Codex; self-hosted selection is explicit."""
+    return ("opencode", "codex") if getattr(registry, "hosted", False) else selected_providers(env)
 
 
 MAX_CONCURRENT = 2

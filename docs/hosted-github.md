@@ -1,5 +1,8 @@
 # Hosted GitHub connection
 
+The default MVP setup is the [manual credential path](manual-credentials.md).
+ChatGPT/Codex and GitHub App authorization are optional.
+
 ## Production App installation tokens (SOR-291)
 
 Use `control.real_github.GitHubFactory` as the hosted factory. The VPS keeps

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from runtime.runner.constants import USAGE_FIELDS
@@ -59,7 +61,40 @@ def add_usage(acc: dict[str, int], usage: dict[str, Any]) -> None:
             continue
 
 
+@lru_cache(maxsize=1)
+def _injected_secrets(raw: str) -> tuple[str, ...]:
+    """Manual keys can have arbitrary vendor formats; redact by value too."""
+    values = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if str(key).lower() in _SECRET_KEYS | {"key"} and isinstance(value, str):
+                    if value and value != "REDACTED":
+                        values.append(value)
+                else:
+                    collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    try:
+        for content in json.loads(raw).get("files", {}).values():
+            collect(json.loads(content))
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return tuple(values)
+
+
 def redact_text(text: str) -> str:
+    injected = _injected_secrets(os.environ.get("SBX_ACCOUNT_CREDENTIAL", ""))
+    for value in sorted(
+        (*injected, os.environ.get("GH_TOKEN", ""), os.environ.get("GITHUB_TOKEN", "")),
+        key=len,
+        reverse=True,
+    ):
+        if value and value != "REDACTED":
+            text = text.replace(value, "REDACTED")
     text = _SK_RE.sub("REDACTED", text)
     text = _BEARER_RE.sub("Bearer REDACTED", text)
     for pattern, replacement in _EXTRA_SECRET_RES:

@@ -121,3 +121,14 @@ def test_production_runs_user_image_python_instead_of_vps_virtualenv(monkeypatch
     result = hosted_server.create_hosted_app()
     assert result["runner_cmd"] == ["python", "-m", "runtime.runner"]
     assert result["max_concurrent"] == 5
+
+
+def test_production_factory_supports_manual_github_without_app_configuration(monkeypatch):
+    from control import production_adapters
+
+    for key in ("SBX_GITHUB_APP_ID", "SBX_GITHUB_APP_SLUG", "SBX_GITHUB_APP_PRIVATE_KEY_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(production_adapters, "RealModalProvider", lambda: object())
+    monkeypatch.setattr(production_adapters.ResendEmailSender, "from_env", lambda: object())
+    monkeypatch.setattr(production_adapters, "NativeCodexProvider", lambda: object())
+    assert production_adapters.create_adapters()["github_factory"] is None

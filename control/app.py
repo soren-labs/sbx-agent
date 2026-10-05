@@ -378,6 +378,8 @@ def create_app(
     connection_vault: Any = None,
     modal_provider: Any = None,
     github_factory: Any = None,
+    github_token_provider: Any = None,
+    zen_provider: Any = None,
     codex_provider: Any = None,
     compute_provider: Any = None,
     runner_cmd: list[str] | None = None,
@@ -474,6 +476,7 @@ def create_app(
     # (``plane.idle_timeout_s`` is the post-session retention only; the
     # sandbox's native bound is ``lifecycle.sandbox_idle_timeout_s``).
     lifecycle = lifecycle_config()
+    manual_connections = None
     hosted_connections = None
     github_connections = None
     if hosted:
@@ -483,10 +486,16 @@ def create_app(
         hosted_connections = ConnectionStore(
             auth_store, connection_vault if connection_vault is not None else SecretVault.from_env()
         )
+        from control.manual_connections import ManualConnections
+
+        manual_connections = ManualConnections(
+            hosted_connections, github=github_token_provider, zen=zen_provider
+        )
         github_connections = HostedGitHub(
             hosted_connections,
             mock=os.environ.get("SBX_CONNECTIONS_MODE") == "mock",
             factory=github_factory,
+            manual=manual_connections,
         )
         from control.hosted_compute import (
             FakeComputeProvider,
@@ -584,6 +593,14 @@ def create_app(
     app.state.workspaces = workspaces
     app.state.handoffs = handoffs
 
+    def _session_forbidden_values(rec, blob):
+        values = credential_forbidden_values(blob)
+        if hosted:
+            record = hosted_connections.get(rec.owner, "github_token")
+            if record is not None and record.credential_cipher:
+                values += (hosted_connections.credentials(record)["secret"].encode(),)
+        return values
+
     def _snapshot_on_close(rec: Any, handle: Any) -> None:
         """SOR-83: persist the declared workspace artifact before teardown.
 
@@ -609,7 +626,7 @@ def create_app(
             store=artifact_store,
             agent_id=rec.id,
             run_id=f"run-{run_n}" if run_n else None,
-            forbidden_values=credential_forbidden_values(blob),
+            forbidden_values=_session_forbidden_values(rec, blob),
             ledger=plane.run_ledger,
             run_n=run_n,
         )
@@ -631,7 +648,6 @@ def create_app(
         """Materialize the revision for a finished run; task_id resolved
         from the durable task store; credential blobs feed the same
         forbidden-value secret scan as artifact snapshots."""
-        from control.artifact_ops import credential_forbidden_values
 
         account_id = (rec.sandbox_tags or {}).get("account_id")
         registry = getattr(app.state, "account_registry", None)
@@ -654,7 +670,7 @@ def create_app(
             run_id=f"run-{n}",
             run_n=n,
             task_id=task.id if task is not None else None,
-            forbidden_values=credential_forbidden_values(blob),
+            forbidden_values=_session_forbidden_values(rec, blob),
             ledger=plane.run_ledger,
         )
 
@@ -765,6 +781,7 @@ def create_app(
         UnconfiguredModalProvider,
     )
 
+    app.state.manual_connections = manual_connections
     app.state.github_connections = github_connections
     app.state.connections = hosted_connections or ConnectionStore(
         app.state.auth_store,

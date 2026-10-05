@@ -73,6 +73,8 @@ GROK_ENV_EXCLUDE: tuple[str, ...] = (
 # server auth vars belong to ``opencode serve``/``--attach``, never to the
 # sandboxed ``run`` path).
 OPENCODE_ENV_EXCLUDE: tuple[str, ...] = (
+    "OPENCODE_AUTH_CONTENT",
+    "OPENCODE_API_KEY",
     "OPENCODE_CONFIG",
     "OPENCODE_CONFIG_CONTENT",
     "OPENCODE_SERVER_PASSWORD",

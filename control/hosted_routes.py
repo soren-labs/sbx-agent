@@ -41,6 +41,66 @@ class StateBody(AuthBody):
     state: SecretStr = Field(min_length=1, max_length=256)
 
 
+class ManualTokenBody(AuthBody):
+    token: SecretStr = Field(min_length=1, max_length=4096)
+
+
+class ZenKeyBody(AuthBody):
+    api_key: SecretStr = Field(min_length=1, max_length=4096)
+
+
+@router.post("/connections/github")
+def connect_github_token(body: ManualTokenBody, request: Request, owner: str = Depends(user_id)):
+    record = request.app.state.manual_connections.connect(
+        owner, "github_token", body.token.get_secret_value()
+    )
+    return {"connection": record.public()}
+
+
+@router.post("/connections/github/validate")
+def validate_github_token(request: Request, owner: str = Depends(user_id)):
+    return {
+        "connection": request.app.state.manual_connections.validate(owner, "github_token").public()
+    }
+
+
+@router.delete("/connections/github")
+def disable_github_token(request: Request, owner: str = Depends(user_id)):
+    record = request.app.state.manual_connections.disable(owner, "github_token")
+    return {"connection": record.public() if record else None}
+
+
+@router.get("/connections/opencode")
+def zen_status(request: Request, owner: str = Depends(user_id)):
+    record = request.app.state.connections.get(owner, "opencode")
+    return {"connection": record.public() if record else None, "configured": True}
+
+
+@router.post("/connections/opencode")
+def connect_zen(body: ZenKeyBody, request: Request, owner: str = Depends(user_id)):
+    record = request.app.state.manual_connections.connect(
+        owner, "opencode", body.api_key.get_secret_value()
+    )
+    return {"connection": record.public()}
+
+
+@router.post("/connections/opencode/validate")
+def validate_zen(request: Request, owner: str = Depends(user_id)):
+    return {"connection": request.app.state.manual_connections.validate(owner, "opencode").public()}
+
+
+@router.delete("/connections/opencode")
+def disable_zen(request: Request, owner: str = Depends(user_id)):
+    record = request.app.state.manual_connections.disable(owner, "opencode")
+    return {"connection": record.public() if record else None}
+
+
+@router.delete("/connections/modal")
+def disable_modal(request: Request, owner: str = Depends(user_id)):
+    record = request.app.state.manual_connections.disable(owner, "modal")
+    return {"connection": record.public() if record else None}
+
+
 @router.get("/connections/modal")
 def modal_status(request: Request, owner: str = Depends(user_id)) -> dict[str, Any]:
     service = request.app.state.modal_connections
@@ -127,6 +187,10 @@ def github_mock_approve(body: StateBody, request: Request, owner: str = Depends(
 @router.get("/repositories")
 def github_repositories(request: Request, owner: str = Depends(user_id)):
     service = request.app.state.github_connections.for_user(owner)
+    from control.hosted_github import TokenGitHubService
+
+    if isinstance(service, TokenGitHubService):
+        return {"repositories": service.repositories()}
     if service.configured and not service.mock:
         service.sync()
     return {

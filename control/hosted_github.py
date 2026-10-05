@@ -230,11 +230,76 @@ class HostedGitHubService(GitHubAppService):
         return sha
 
 
+class TokenGitHubService(HostedGitHubService):
+    """Keep all existing git/delivery seams, choosing only this owner's PAT."""
+
+    def __init__(self, connections, owner, manual):
+        super().__init__(connections, owner)
+        self.manual = manual
+
+    def status(self):
+        record = self.connections.get(self.owner, "github_token")
+        return {
+            "configured": True,
+            "mock": False,
+            "installations": [],
+            "connection": record.public() if record else None,
+            "method": "manual_token",
+        }
+
+    def repositories(self):
+        record = self.connections.get(self.owner, "github_token")
+        if record is None or record.state != "connected":
+            return []
+        rows = self.manual.providers["github_token"].repositories(
+            self.manual.secret(self.owner, "github_token")
+        )
+        return [
+            {"repo": "https://github.com/" + row["name"], "name": row["name"], "push": row["push"]}
+            for row in rows
+        ]
+
+    def installation_for_repo(self, repo):
+        from types import SimpleNamespace
+
+        canonical = canonicalize_repo(repo)
+        if canonical.kind != "github":
+            return None
+        secret = self.manual.secret(self.owner, "github_token")
+        try:
+            self.manual.providers["github_token"].request(secret, "/repos/" + canonical.slug)
+        except HostedAuthError as exc:
+            if exc.status == 403:
+                return None
+            raise
+        return SimpleNamespace(repositories=[canonical.slug], suspended=False)
+
+    def sandbox_token(self, repo=None):
+        if not repo or self.installation_for_repo(repo) is None:
+            return None
+        return self.manual.secret(self.owner, "github_token")
+
+    def remote(self, repo):
+        from control.manual_connections import TokenGitHubRemote
+
+        token = self.sandbox_token(repo)
+        if not token:
+            raise GitHubAppError("not_found", "repository not found", status_code=404)
+        return TokenGitHubRemote(
+            token,
+            api_url="https://api.github.com",
+            client=self.manual.providers["github_token"].client,
+        )
+
+
 class HostedGitHub:
-    def __init__(self, connections: ConnectionStore, *, mock=False, factory=None):
+    def __init__(self, connections: ConnectionStore, *, mock=False, factory=None, manual=None):
         self.connections, self.mock, self.factory = connections, mock, factory
+        self.manual = manual
 
     def for_user(self, owner: str) -> HostedGitHubService:
+        if self.manual and self.connections.get(owner, "github_token") is not None:
+            return TokenGitHubService(self.connections, owner, self.manual)
         if self.factory:
             return self.factory(self.connections, owner)
         client = FakeGitHubClient(owner, self.connections.auth.clock) if self.mock else None
@@ -247,8 +312,21 @@ class UserRepoResolver:
         self.service, self.source = service, source
 
     def _resolver(self, repo):
-        if repo.kind != "github" or self.service.installation_for_repo(repo.slug) is None:
-            raise TaskRefusal(404, "not_found", "repository not found")
+        try:
+            allowed = repo.kind == "github" and self.service.installation_for_repo(repo.slug)
+        except HostedAuthError as exc:
+            raise TaskRefusal(
+                503 if exc.status == 503 else 403,
+                "repo_unavailable" if exc.status == 503 else "forbidden",
+                exc.code.replace("_", " ") + "; check GitHub Token in Integrations",
+            ) from None
+        if not allowed:
+            raise TaskRefusal(
+                404,
+                "not_found",
+                "Repository not accessible; check GitHub token repository selection "
+                "and organization approval in Integrations",
+            )
         return self.source or GitHubApiResolver(env=self.service.git_env(repo.canonical))
 
     def default_branch(self, repo):
@@ -293,15 +371,29 @@ class GitHubScopedBackend:
     def exec(self, handle, argv, env=None):
         outgoing = {k: v for k, v in (env or {}).items() if not github.owns_env_key(k)}
         broker = getattr(self, "codex_broker", None)
+        native = any(command in argv for command in ("init", "turn", "resume"))
+        provider = handle.tags.get("provider", "codex")
+        codex = broker is not None and provider == "codex"
         if broker is not None:
             for key in ("CODEX_AUTH_JSON", "SBX_ACCOUNT_CREDENTIAL", "SBX_PROVIDER_API_KEY"):
                 outgoing.pop(key, None)
-            if "init" in argv or "turn" in argv or "resume" in argv:
+            if native:
                 import json
 
-                lease = broker.lease(handle.tags.get("owner", ""))
-                outgoing["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(lease.blob())
-                outgoing["SBX_ACCOUNT_ID"] = lease.connection_id
+                owner = handle.tags.get("owner", "")
+                if codex:
+                    lease = broker.lease(owner)
+                    blob, account_id = lease.blob(), lease.connection_id
+                elif provider == "opencode":
+                    manual = self.github_connections.manual
+                    blob = manual.blob(owner)
+                    account_id = manual.require(owner, "opencode").id
+                else:
+                    raise HostedAuthError("provider_connection_required", 409)
+                if handle.tags.get("account_id") not in (None, "auto", account_id):
+                    raise HostedAuthError("provider_connection_owner_mismatch", 403)
+                outgoing["SBX_ACCOUNT_CREDENTIAL"] = json.dumps(blob)
+                outgoing["SBX_ACCOUNT_ID"] = account_id
                 outgoing["SBX_HOSTED_CREDENTIAL_LEASE"] = "1"
                 import uuid
 
@@ -333,7 +425,7 @@ class GitHubScopedBackend:
             return self.source.exec(handle, command, env=operation_env)
 
         process = start(outgoing)
-        if broker is not None and ("turn" in argv or "resume" in argv):
+        if codex and ("turn" in argv or "resume" in argv):
             from control.codex_process import RetryCodexProcess
 
             owner = handle.tags.get("owner", "")
@@ -349,7 +441,7 @@ class GitHubScopedBackend:
                 refresh,
                 lambda version: broker.reject(owner, version),
             )
-        if broker is not None and any(command in argv for command in ("init", "turn", "resume")):
+        if broker is not None and native:
             from control.codex_process import AccessOnlyProcess
 
             def cleanup():

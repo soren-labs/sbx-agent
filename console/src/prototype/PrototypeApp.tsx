@@ -460,7 +460,7 @@ function Home({
   const [prompt, setPrompt] = useState("");
   const [ownedRepos, setOwnedRepos] = useState<string[]>([]);
   const [repo, setRepo] = useState(demoMode ? "soren-labs/sbx-browser" : "");
-  const [provider, setProvider] = useState(demoMode ? "codex" : "auto");
+  const [provider, setProvider] = useState(demoMode ? "codex" : hostedMode ? "opencode" : "auto");
   const [model, setModel] = useState(demoMode ? "gpt-6.1-sol" : "auto");
   const [effort, setEffort] = useState(demoMode ? "high" : "auto");
   const [delivery, setDelivery] = useState<DeliveryMode>(

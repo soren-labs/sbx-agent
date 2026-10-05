@@ -177,7 +177,7 @@ class HostedModalBackend:
         context, runtime = self._context(spec.tags.get("owner", ""))
         if snapshot_ref is not None:
             runtime = {**runtime, "image": snapshot_ref}
-        if spec.tags.get("provider", "codex") != "codex":
+        if spec.tags.get("provider", "codex") not in {"codex", "opencode"}:
             raise HostedAuthError("hosted_provider_not_supported", 400)
         key = secrets.token_urlsafe(32)
         durable_tags = {

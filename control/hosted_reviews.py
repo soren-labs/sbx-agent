@@ -60,7 +60,9 @@ def start_review(request, key, session_id, ref=None):
                 "Return the verdict and findings as JSON."
             ),
             "repository": {"repo": revision.repo, "ref": branch},
-            "execution": {"provider": "codex"},
+            "execution": {
+                "provider": (task.resolved or {}).get("execution", {}).get("provider", "codex")
+            },
             "advanced": {"output_contract": {"schema": REVIEW_SCHEMA, "enforcement": "strict"}},
         }
     )

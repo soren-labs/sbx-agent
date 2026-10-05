@@ -286,7 +286,13 @@ def test_rev002_hosted_picker_and_execution_share_provider_truth(workflow_app, m
         providers = client.get("/v1/providers", headers=headers).json()["providers"]
         codex = next(p for p in providers if p["provider"] == "codex")
         assert codex["runtime"]["enabled"] and codex["readiness"] == "ready"
-        assert all(p["readiness"] == "disabled" for p in providers if p != codex)
+        assert all(
+            p["readiness"] == "disabled"
+            for p in providers
+            if p["provider"] not in {"codex", "opencode"}
+        )
+        zen = next(p for p in providers if p["provider"] == "opencode")
+        assert zen["runtime"]["enabled"]
         models = client.get("/v1/models", headers=headers).json()["models"]
         assert models and all(m["provider"] == "codex" for m in models)
         assert any(m["availability"] == "available" for m in models)

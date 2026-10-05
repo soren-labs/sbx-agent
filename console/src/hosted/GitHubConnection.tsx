@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
+import { ManualConnection } from "./ManualConnection";
 import { hostedRequest } from "./api";
 
 export function GitHubConnection() {
+  return <><ManualConnection provider="github" title="GitHub" field="token" label="GitHub Token"
+    help="Use a personal access token (classic: repo; fine-grained: selected repositories, Contents and Pull requests read/write, Metadata read). Approve organization access if required. Tokens stay encrypted on the server. Disconnect removes the SBX copy; revoke at GitHub to invalidate it everywhere." />
+    <details><summary>Optional GitHub App connection</summary><GitHubAppConnection /></details></>;
+}
+
+function GitHubAppConnection() {
   const [installations, setInstallations] = useState<any[]>([]);
   const [configured, setConfigured] = useState(false);
   const [mock, setMock] = useState(false);

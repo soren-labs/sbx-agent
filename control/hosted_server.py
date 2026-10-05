@@ -52,7 +52,7 @@ def create_hosted_app():
     if (
         not isinstance(adapters, dict)
         or set(adapters) != required
-        or any(value is None for value in adapters.values())
+        or any(value is None for key, value in adapters.items() if key != "github_factory")
     ):
         raise ValueError("adapter factory must provide the five hosted production adapters")
     # Factory injection supplies real adapters without writing credentials to images.

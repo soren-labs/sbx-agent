@@ -7,7 +7,12 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-AUTH_PATHS = ("home/.codex/auth.json", ".codex/auth.json", "auth.json")
+AUTH_PATHS = (
+    "home/.codex/auth.json",
+    ".codex/auth.json",
+    "auth.json",
+    "home/.local/share/opencode/auth.json",
+)
 
 # Inline guards also cover retained sandboxes built before this module existed.
 # The child does not take the lock again; the parent owns its entire lifetime.
@@ -26,7 +31,8 @@ with (root/'.native-access.lock').open('a') as lock:
   child=subprocess.Popen(sys.argv[1:],env=env,stdin=subprocess.DEVNULL)
   result=child.wait()
  finally:
-  for rel in ('home/.codex/auth.json','.codex/auth.json','auth.json'):
+  for rel in ('home/.codex/auth.json','.codex/auth.json','auth.json',
+              'home/.local/share/opencode/auth.json'):
    (root/rel).unlink(missing_ok=True)
   marker.unlink(missing_ok=True)
 sys.exit(result)
@@ -39,7 +45,8 @@ with (root/'.native-access.lock').open('a') as lock:
  except BlockingIOError: sys.exit(0)
  marker=root/'.native-access-operation'
  if marker.exists() and marker.read_text()==operation:
-  for rel in ('home/.codex/auth.json','.codex/auth.json','auth.json'):
+  for rel in ('home/.codex/auth.json','.codex/auth.json','auth.json',
+              'home/.local/share/opencode/auth.json'):
    (root/rel).unlink(missing_ok=True)
   marker.unlink(missing_ok=True)
 """

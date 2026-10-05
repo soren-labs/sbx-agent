@@ -149,7 +149,7 @@ class RealModalProvider:
         sandbox = self.sdk.Sandbox.create(
             "bash",
             "-c",
-            "codex --version && python -c 'import runtime.http_service'",
+            "codex --version && opencode --version && python -c 'import runtime.http_service'",
             app=self._app(client),
             image=self.sdk.Image.from_id(image, client=client),
             client=client,

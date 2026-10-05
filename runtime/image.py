@@ -532,8 +532,9 @@ def _cli_image(
 
 
 def sbx_hosted_runtime_image(spec: PackageSpec | None = None):
-    """Codex-first hosted image: existing runner plus its read-only HTTP service."""
-    return sbx_runtime_image(spec).pip_install(
+    """Hosted runner with Codex, OpenCode Zen and the read-only HTTP service."""
+    spec = spec or _resolved_spec(None, {"codex", "opencode"})
+    return sbx_opencode_image(sbx_runtime_image(spec), spec).pip_install(
         "fastapi>=0.115.0", "uvicorn>=0.32.0", "pyjwt>=2.10.0"
     )
 

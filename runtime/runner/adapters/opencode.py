@@ -221,8 +221,19 @@ class OpencodeAdapter:
         CLI self-populates the rest of the data dir (project storage,
         session DB) under the same root — ``$HOME`` only needs to be
         writable. Approval bypass is argv-level (``--auto``) and ``model``
-        travels on argv, so no config file is written.
+        travels on argv. Hosted Zen also pins the lightweight title model
+        to the selected model, so free Sessions never silently call paid models.
         """
+        if os.environ.get("SBX_HOSTED_CREDENTIAL_LEASE") == "1" and model.startswith("opencode/"):
+            config_dir = home / ".config" / "opencode"
+            config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            config = config_dir / "opencode.json"
+            config.write_text(
+                json.dumps(
+                    {"model": model, "small_model": model, "enabled_providers": ["opencode"]}
+                )
+            )
+            config.chmod(0o600)
         data_dir = home / ".local" / "share" / "opencode"
         data_dir.mkdir(parents=True, exist_ok=True)
         data_dir.chmod(0o700)

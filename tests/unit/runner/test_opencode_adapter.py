@@ -448,3 +448,15 @@ def test_health_from() -> None:
     assert adapter.health_from(1, 'Error: Session "ses_x" not found') == "unknown"
     assert adapter.health_from(1, "something else exploded") == "unknown"
     assert adapter.health_from(None, "") == "unknown"
+
+
+def test_hosted_zen_lightweight_model_uses_selected_free_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("SBX_HOSTED_CREDENTIAL_LEASE", "1")
+    OpencodeAdapter().prepare_home(tmp_path, "opencode/free")
+    config = tmp_path / ".config/opencode/opencode.json"
+    assert json.loads(config.read_text()) == {
+        "model": "opencode/free",
+        "small_model": "opencode/free",
+        "enabled_providers": ["opencode"],
+    }
+    assert config.stat().st_mode & 0o777 == 0o600

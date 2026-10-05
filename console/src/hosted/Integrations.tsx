@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { ManualConnection } from "./ManualConnection";
 import { CodexConnection } from "./CodexConnection";
 import { GitHubConnection } from "./GitHubConnection";
 import { hostedRequest, type HostedConnection } from "./api";
@@ -34,9 +35,9 @@ export function HostedIntegrations() {
     event.preventDefault();
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form));
+    form.reset();
     void action(async () => {
       await hostedRequest("/hosted/connections/modal", values);
-      form.reset();
       await provision();
     });
   };
@@ -50,11 +51,11 @@ export function HostedIntegrations() {
   return <div className="page-scroll"><div className="settings-content">
     <div className="page-eyebrow">YOUR CONNECTIONS</div>
     <h1>Integrations</h1>
-    <p>Connect your Modal workspace to prepare compute for your Sessions.</p>
+    <p>Start with email and password, Modal tokens, an OpenCode Zen API key, and a GitHub token. ChatGPT/Codex is optional.</p>
     {error && <p role="alert">{error} <a href="/auth">Sign in</a></p>}
     <section className="settings-section">
       <h2>Modal</h2>
-      <p role="status">{connection?.state === "ready" ? "Ready" :
+      <p role="status">{connection?.state === "ready" ? "Connected · Ready" : connection?.state === "failed" ? "Invalid — check or replace tokens" :
         connection?.state.replaceAll("_", " ") ?? "Not connected"}</p>
       {mock && <p className="fine-print">Mock workspace for Alpha development.</p>}
       {!configured && <p>Modal connection is not configured for this deployment.</p>}
@@ -64,12 +65,14 @@ export function HostedIntegrations() {
       <form onSubmit={connect}>
         <label className="form-label">Modal Token ID<input name="token_id" type="password" autoComplete="off" required /></label>
         <label className="form-label">Modal Token Secret<input name="token_secret" type="password" autoComplete="off" required /></label>
-        <button disabled={busy || !configured}>Connect Modal</button>
+        <button disabled={busy || !configured}>{connection && connection.state !== "disabled" ? "Replace Modal" : "Connect Modal"}</button>
       </form>
       {oauthConfigured && <button disabled={busy || !configured} onClick={oauth}>Connect with Modal authorization</button>}
-      {connection && <button disabled={busy} onClick={() => void action(provision)}>Reconcile runtime</button>}
+      {connection && connection.state !== "disabled" && <button disabled={busy} onClick={() => void action(async () => { await hostedRequest("/hosted/connections/modal", {}, "DELETE"); })}>Disconnect Modal</button>}
+      {connection && connection.state !== "disabled" && <button disabled={busy} onClick={() => void action(provision)}>Reconcile runtime</button>}
     </section>
+    <ManualConnection provider="opencode" title="OpenCode Zen" field="api_key" label="OpenCode Zen API Key" help="Use a Zen API key. Validation checks model access with a minimal inference request; free coding models are preferred. Only verified accessible models appear in new Sessions. The key stays encrypted on the server." />
     <GitHubConnection />
-    <CodexConnection />
+    <details><summary>Optional ChatGPT / Codex</summary><CodexConnection /></details>
   </div></div>;
 }
