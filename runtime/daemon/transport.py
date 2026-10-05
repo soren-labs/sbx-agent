@@ -75,6 +75,8 @@ class _WebSocketTransport:
         host = parsed.hostname or ""
         port = parsed.port or (443 if use_tls else 80)
         raw = socket.create_connection((host, port), timeout=timeout)
+        # Clear the connect timeout — see tcp path; the channel must idle.
+        raw.settimeout(None)
         sock: socket.socket
         if use_tls:
             ctx = ssl.create_default_context()
@@ -209,6 +211,10 @@ def connect(endpoint: str, timeout: float = 30.0):
     if port == 0:
         raise ValueError(f"bad endpoint {endpoint!r}")
     sock = socket.create_connection((host, port), timeout=timeout)
+    # create_connection leaves `timeout` on the socket — recv() would raise
+    # socket.timeout after `timeout` seconds of idle and look like a transport
+    # loss. The channel is meant to idle between operations.
+    sock.settimeout(None)
     return _SocketTransport(sock)
 
 

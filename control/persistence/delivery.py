@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from psycopg.types.json import Jsonb
+
 from .base import Rows, _now
 
 
@@ -84,8 +86,8 @@ class DeliveryStepRepo(Rows):
                 "d": delivery_id,
                 "k": kind,
                 "e": effect_id,
-                "x": expected or {},
-                "r": result or {},
+                "x": Jsonb(expected or {}),
+                "r": Jsonb(result or {}),
                 "s": state,
             },
         )
@@ -161,6 +163,12 @@ class MergeRequestRepo(Rows):
     def get(self, workspace_id: str, merge_request_id: str) -> dict | None:
         return self.one(
             "SELECT * FROM merge_requests WHERE workspace_id=%s AND id=%s",
+            (workspace_id, merge_request_id),
+        )
+
+    def get_for_update(self, workspace_id: str, merge_request_id: str) -> dict | None:
+        return self.one(
+            "SELECT * FROM merge_requests WHERE workspace_id=%s AND id=%s FOR UPDATE",
             (workspace_id, merge_request_id),
         )
 

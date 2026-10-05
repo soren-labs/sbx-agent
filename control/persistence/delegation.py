@@ -105,6 +105,13 @@ class WaitSubscriptionRepo(Rows):
             version_column=None,
         )
 
+    def cancel_for_delegation(self, workspace_id: str, delegation_id: str) -> None:
+        self.conn.execute(
+            "UPDATE wait_subscriptions SET state='cancelled', updated_at=now()"
+            " WHERE workspace_id=%s AND delegation_id=%s AND state='pending'",
+            (workspace_id, delegation_id),
+        )
+
     def cancel_for_session(self, workspace_id: str, subscriber_session_id: str) -> None:
         self.conn.execute(
             "UPDATE wait_subscriptions SET state='cancelled', updated_at=now()"

@@ -17,6 +17,9 @@ from control.jobs.worker import JobContext
 _RUNTIME_STACK = None
 _CONNECTION_SERVICE = None
 _CONNECTOR_REGISTRY = None
+_CHANGE_SERVICE = None
+_DELIVERY_SERVICE = None
+_DELEGATION_SERVICE = None
 
 
 def set_runtime_stack(stack) -> None:
@@ -28,6 +31,23 @@ def set_connection_plane(connection_service, connector_registry) -> None:
     global _CONNECTION_SERVICE, _CONNECTOR_REGISTRY
     _CONNECTION_SERVICE = connection_service
     _CONNECTOR_REGISTRY = connector_registry
+
+
+def set_change_plane(change_service, delegation_service=None) -> None:
+    global _CHANGE_SERVICE, _DELEGATION_SERVICE
+    _CHANGE_SERVICE = change_service
+    if delegation_service is not None:
+        _DELEGATION_SERVICE = delegation_service
+
+
+def set_delivery_plane(delivery_service) -> None:
+    global _DELIVERY_SERVICE
+    _DELIVERY_SERVICE = delivery_service
+
+
+def set_delegation_plane(delegation_service) -> None:
+    global _DELEGATION_SERVICE
+    _DELEGATION_SERVICE = delegation_service
 
 
 def turn_dispatch(job: dict, ctx: JobContext) -> dict:
@@ -172,6 +192,36 @@ def connection_validate(job: dict, ctx: JobContext) -> dict:
     return {"ok": bool(result and result.ok), "health": health}
 
 
+def changeset_capture(job: dict, ctx: JobContext) -> dict:
+    if _CHANGE_SERVICE is None:
+        return {"skipped": "change plane not wired"}
+    return _CHANGE_SERVICE.perform_capture(job, ctx)
+
+
+def changeset_apply(job: dict, ctx: JobContext) -> dict:
+    if _CHANGE_SERVICE is None:
+        return {"skipped": "change plane not wired"}
+    return _CHANGE_SERVICE.perform_apply(job, ctx)
+
+
+def delivery_perform(job: dict, ctx: JobContext) -> dict:
+    if _DELIVERY_SERVICE is None:
+        return {"skipped": "delivery plane not wired"}
+    return _DELIVERY_SERVICE.perform_delivery(job, ctx)
+
+
+def delivery_merge(job: dict, ctx: JobContext) -> dict:
+    if _DELIVERY_SERVICE is None:
+        return {"skipped": "delivery plane not wired"}
+    return _DELIVERY_SERVICE.perform_merge(job, ctx)
+
+
+def delegation_publish_result(job: dict, ctx: JobContext) -> dict:
+    if _DELEGATION_SERVICE is None:
+        return {"skipped": "delegation plane not wired"}
+    return _DELEGATION_SERVICE.publish_result(job, ctx)
+
+
 HANDLERS = {
     "retention.cleanup": retention_cleanup,
     "outbox.deliver": outbox_deliver,
@@ -181,4 +231,9 @@ HANDLERS = {
     "connection.validate": connection_validate,
     "connection.provision": connection_validate,
     "credential.refresh": connection_validate,
+    "changeset.capture": changeset_capture,
+    "changeset.apply": changeset_apply,
+    "delivery.perform": delivery_perform,
+    "delivery.merge": delivery_merge,
+    "delegation.publish_result": delegation_publish_result,
 }

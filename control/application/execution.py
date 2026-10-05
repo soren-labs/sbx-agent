@@ -685,6 +685,30 @@ class ExecutionService:
                     session_id,
                     {"active_turn_id": None},
                 )
+            # Delegation finalization: if this session is a delegation child,
+            # enqueue result publication so contract validation + waiter
+            # wakeup survive worker restarts.
+            delegation = uow.delegations.get_by_child_session(workspace_id, session_id)
+            if delegation is not None and delegation["state"] in (
+                "pending",
+                "active",
+                "waiting_result",
+            ):
+                from control.application.sessions import enqueue_job
+                from control.domain.jobs import JobKind, TargetFamily
+
+                enqueue_job(
+                    uow,
+                    workspace_id=workspace_id,
+                    kind=JobKind.DELEGATION_PUBLISH_RESULT,
+                    target_family=TargetFamily.DELEGATION,
+                    target_id=delegation["id"],
+                    dedupe_key=f"delegation.publish_result:{delegation['id']}:{turn_id}",
+                    payload={
+                        "delegation_id": delegation["id"],
+                        "completing_turn_id": turn_id,
+                    },
+                )
             uow.commit()
 
     def _fail_execution(

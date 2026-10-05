@@ -204,10 +204,16 @@ class IngressServer:
                 for future in channel.pending.values():
                     if not future.done():
                         future.set_exception(ConnectionError("runtime detached"))
-                try:
-                    self._on_detach(channel.lease_row, channel.runtime_epoch)
-                except Exception:
-                    pass
+                # Only report detach when this channel is still the lease's
+                # current channel — a stale closing channel must not mark a
+                # reconnected lease lost.
+                with self._lock:
+                    current = self._channels.get(lease_id)
+                if current is None or current is channel:
+                    try:
+                        self._on_detach(channel.lease_row, channel.runtime_epoch)
+                    except Exception:
+                        pass
             writer.close()
 
     async def _read_loop(self, channel: _Channel, reader: asyncio.StreamReader) -> None:
@@ -243,7 +249,11 @@ class IngressServer:
                     pass
             elif kind == "operation.accepted" or kind == "operation.rejected":
                 future = channel.pending.get(str(frame.get("operation_id") or ""))
-                if future is not None and not future.done():
+                if future is None or future.done():
+                    pass
+                elif getattr(future, "sbx_await_result", False) and kind == "operation.accepted":
+                    pass  # keep waiting for the terminal operation.result frame
+                else:
                     future.set_result(frame)
             elif kind == "health.report":
                 pass  # evidence only; no domain verdict
@@ -265,8 +275,16 @@ class IngressServer:
     def attached(self, lease_id: str) -> bool:
         return lease_id in self._channels
 
-    def submit_operation(self, lease_id: str, envelope: dict, timeout: float = 30.0) -> dict:
-        """Send operation.submit; block for accepted/rejected."""
+    def submit_operation(
+        self,
+        lease_id: str,
+        envelope: dict,
+        timeout: float = 30.0,
+        await_result: bool = False,
+    ) -> dict:
+        """Send operation.submit; block for accepted/rejected — or, with
+        ``await_result``, for the terminal operation.result frame (control
+        ops like changes.capture / files.read whose payload IS the verdict)."""
         channel = self._channels.get(lease_id)
         if channel is None:
             raise ConnectionError(f"no runtime channel for lease {lease_id}")
@@ -274,6 +292,7 @@ class IngressServer:
 
         async def go() -> dict:
             future = asyncio.get_event_loop().create_future()
+            future.sbx_await_result = await_result  # read_loop honors this
             channel.pending[op_id] = future
             self._send(channel.writer, make_frame(FRAME_OPERATION_SUBMIT, **envelope))
             try:

@@ -283,6 +283,16 @@ def run_scenario(
         replay(fixture(provider, "badjson"), rewrite=rw)
         sys.exit(0)
 
+    # Delegation result hook: on any successful first turn, write the typed
+    # result file the control plane reads for contract validation (RFC 167
+    # §05). Placed before the custom-fixture early-exit so providers with a
+    # success.jsonl fixture still honour it.
+    result_json = os.environ.get("FAKE_RESULT_JSON")
+    if result_json and not is_resume:
+        result_dir = cwd / ".sbx"
+        result_dir.mkdir(exist_ok=True)
+        (result_dir / "result.json").write_text(result_json, encoding="utf-8")
+
     # Extension point: a scenario outside the built-in set replays
     # ``fixtures/events/<provider>/<scenario>.jsonl`` when one exists
     # (e.g. SOR-130's ``structured`` output fixtures). Path components are

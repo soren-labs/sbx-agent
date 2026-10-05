@@ -30,6 +30,10 @@ class RuntimePool:
         """operation.submit → accepted/rejected frame."""
         return self.ingress.submit_operation(lease_id, envelope, timeout)
 
+    def submit_for_result(self, lease_id: str, envelope: dict, timeout: float = 30.0) -> dict:
+        """operation.submit → terminal operation.result frame (control ops)."""
+        return self.ingress.submit_operation(lease_id, envelope, timeout, await_result=True)
+
     def alive(self, lease_id: str) -> bool:
         return self.ingress.attached(lease_id)
 

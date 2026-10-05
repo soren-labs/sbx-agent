@@ -16,6 +16,7 @@ from protocol.runtime import (
     FRAME_PING,
     FRAME_PONG,
     OperationEnvelope,
+    OperationKind,
     hello_frame,
     make_frame,
 )
@@ -246,7 +247,7 @@ class DaemonApp:
 
         def execute() -> None:
             try:
-                self.operations.run(env)
+                result = self.operations.run(env)
             except OperationError as exc:
                 self.operations.settle_terminal(
                     env.operation_id, "failed", {"error": exc.error.to_dict()}
@@ -257,6 +258,15 @@ class DaemonApp:
                     "failed",
                     {"error": {"code": "process_error", "message": str(exc)}},
                 )
+            else:
+                # Turn spawns are async — their terminal verdict is emitted by
+                # on_process_terminal. Every other operation settles here so
+                # submit_for_result callers receive operation.result.
+                if env.operation_kind not in (
+                    OperationKind.TURN_START,
+                    OperationKind.TURN_RESUME,
+                ):
+                    self.operations.settle_terminal(env.operation_id, "succeeded", result or {})
 
         threading.Thread(target=execute, daemon=True).start()
 
