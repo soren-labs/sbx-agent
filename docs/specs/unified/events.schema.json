@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sbx:session-event:1",
+  "type": "object",
+  "required": ["id", "workspace_id", "session_id", "seq", "type", "schema_version", "recorded_at", "source", "payload"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^evt_"},
+    "workspace_id": {"type": "string", "pattern": "^wsp_"},
+    "session_id": {"type": "string", "pattern": "^sess_"},
+    "seq": {"type": "integer", "minimum": 1},
+    "type": {"type": "string"},
+    "schema_version": {"const": 1},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "source": {"type": "object"},
+    "payload": {"type": "object"}
+  }
+}

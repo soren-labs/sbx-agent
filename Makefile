@@ -10,7 +10,7 @@ lint:
 
 # Unit + integration. Must not talk to Modal (no `make image`, no credentials).
 test:
-	uv run pytest tests/unit tests/integration
+	uv run pytest tests/unit tests/integration -n 4
 
 test-e2e:
 	npm --prefix web ci
