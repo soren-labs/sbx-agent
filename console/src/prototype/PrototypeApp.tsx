@@ -17,6 +17,8 @@ import {
 } from "react-router-dom";
 import { hostedMode, hostedRequest } from "../hosted/api";
 import { ApiKeys } from "../hosted/ApiKeys";
+import { useHostedUser } from "../hosted/AuthGate";
+import { useSetupStatus } from "../hosted/setup";
 import { AccountSettings } from "../hosted/AccountSettings";
 import { useApi } from "../state/api";
 import type {
@@ -35,6 +37,7 @@ import { Status, Worklog } from "./Worklog";
 import { Changes, Progress, Review, DeliveryDialog } from "./Panels";
 import { Integrations } from "./Integrations";
 import "./prototype.css";
+import "../hosted/hosted.css";
 import { mergeSession, mergeActivity, mergeTurn } from "./session-state";
 
 function age(date: string) {
@@ -63,6 +66,8 @@ export function PrototypeApp() {
   const [listError, setListError] = useState("");
   const [listLoading, setListLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const user = useHostedUser();
+  const setup = useSetupStatus(hostedMode);
   const [collapsed, setCollapsed] = useState(false);
   const [pinned, setPinned] = useState<string[]>(() => {
     try {
@@ -274,29 +279,28 @@ export function PrototypeApp() {
           <NavLink to="/integrations">
             <Icon name="plug" />
             Connections
-            <span className="integration-alert" />
+            {hostedMode && !setup.loading && setup.done < 3 && (
+              <span className="integration-alert" title={`${setup.done} of 3 connected`} />
+            )}
           </NavLink>
           <NavLink to="/settings">
             <Icon name="settings" />
             Settings
           </NavLink>
-          <div className="sidebar-runtime">
-            <span className="status-dot" />
-            <span>
-              {demoMode
-                ? "Prototype workspace"
-                : listError
-                  ? "Connection needs attention"
-                  : listLoading
-                    ? "Connecting…"
-                    : "Connected workspace"}
-            </span>
-            <span className="small-tag">{demoMode ? "DEMO" : "LIVE"}</span>
-          </div>
           <div className="sidebar-user">
-            <span className="user-avatar avatar">S</span>
+            <span className="user-avatar avatar">{(user?.email ?? (demoMode ? "Soren" : "SBX"))[0].toUpperCase()}</span>
             <span>
-              {demoMode ? "Soren" : "SBX"}<small>{demoMode ? "Sorenforge workspace" : "Session workspace"}</small>
+              {user?.email.split("@")[0] ?? (demoMode ? "Soren" : "SBX")}
+              <small className={`sidebar-user-status ${listError ? "attention" : ""}`}>
+                <i />
+                {demoMode
+                  ? "Prototype workspace"
+                  : listError
+                    ? "Connection needs attention"
+                    : listLoading
+                      ? "Connecting…"
+                      : user?.email ?? "Connected workspace"}
+              </small>
             </span>
             <button
               className="icon-button"
@@ -334,12 +338,9 @@ export function PrototypeApp() {
             </>
           )}
           <div className="topbar-right">
-            <span className="demo-indicator">
+            <span className={`topbar-status ${listError ? "attention" : listLoading ? "pending" : ""}`}>
               <span />
-              {demoMode ? "Prototype mode" : "Live workspace"}
-            </span>
-            <span className="small-tag">
-              {demoMode ? "Local data" : listError ? "Needs attention" : listLoading ? "Connecting" : "Connected"}
+              {demoMode ? "Prototype · local data" : listError ? "Needs attention" : listLoading ? "Connecting" : "Live"}
             </span>
           </div>
         </header>
@@ -359,6 +360,7 @@ export function PrototypeApp() {
               element={
                 <Home
                   onCreated={refresh}
+                  sessions={sessions}
                   recentRepos={[
                     ...new Set(
                       sessions
@@ -445,13 +447,68 @@ function SessionRows({ sessions }: { sessions: Session[] }) {
     </div>
   );
 }
+const suggestions = [
+  { icon: "code", label: "Fix a bug", prompt: "Find and fix the bug where " },
+  { icon: "check", label: "Add tests", prompt: "Add regression tests covering " },
+  { icon: "refresh", label: "Refactor", prompt: "Refactor the following module for readability without changing behaviour: " },
+  { icon: "file", label: "Update docs", prompt: "Update the README to document " },
+];
+function greeting(email?: string) {
+  const hour = new Date().getHours();
+  const part = hour < 5 ? "Working late" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const name = email?.split("@")[0];
+  return name ? `${part}, ${name}` : part;
+}
+function SetupChecklist() {
+  const setup = useSetupStatus(hostedMode);
+  if (!hostedMode || setup.loading || setup.done === 3) return null;
+  const steps = [
+    { id: "modal", done: setup.modal, title: "Connect Modal", text: "Compute for your sandboxes" },
+    { id: "github", done: setup.github, title: "Connect GitHub", text: "Repositories agents can work on" },
+    { id: "codex", done: setup.codex, title: "Connect Codex", text: "The agent that writes the code" },
+  ];
+  return (
+    <section className="setup-card" aria-label="Finish setup">
+      <div className="setup-card-head">
+        <div>
+          <h2>Finish setting up your workspace</h2>
+          <p>{setup.done} of 3 connected · Sessions start once all three are ready.</p>
+        </div>
+        <span className="setup-ring" style={{ ["--p" as string]: setup.done / 3 }}>
+          {setup.done}/3
+        </span>
+      </div>
+      <div className="setup-steps">
+        {steps.map((step) => (
+          <Link key={step.id} to="/integrations" className={`setup-step ${step.done ? "done" : ""}`}>
+            <span className="setup-step-check">
+              {step.done ? <Icon name="check" size={12} /> : null}
+            </span>
+            <span>
+              <strong>{step.title}</strong>
+              <small>{step.done ? "Connected" : step.text}</small>
+            </span>
+            {!step.done && <Icon name="arrowRight" size={14} />}
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
 function Home({
   onCreated,
+  sessions,
   recentRepos,
 }: {
   onCreated: () => void;
+  sessions: Session[];
   recentRepos: string[];
 }) {
+  const user = useHostedUser();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const recent = [...sessions]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 4);
   const api = useApi();
   const navigate = useNavigate();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -537,22 +594,19 @@ function Home({
   return (
     <div className="page-scroll home-page">
       <div className="home-content">
-        <div className="home-composer-title">
-          <h1>
-            <Mark />
-            SBX <span>Browser</span>
-          </h1>
-          <span className="agent-mode">
-            <Icon name="code" size={13} />
-            Agent session
-          </span>
+        <div className="home-hero">
+          <span className="home-hero-mark"><Mark /></span>
+          <h1>{greeting(user?.email ?? (demoMode ? "soren@" : undefined))}</h1>
+          <p>What should your agents work on next?</p>
         </div>
+        <SetupChecklist />
         <form
           ref={formRef}
           className="session-composer"
           onSubmit={(e) => void submit(e)}
         >
           <textarea
+            ref={textareaRef}
             aria-label="Session task"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -564,15 +618,12 @@ function Home({
               }
             }}
           />
-          <div className="composer-mention">
-            <Icon name="github" size={12} />
-            {repo || "No repository selected"}
-          </div>
           <div className="composer-tools">
             <details className="composer-picker">
-              <summary title="Select repository">
-                <Icon name="plus" size={17} />
-                <span className="sr-only">Repository</span>
+              <summary title="Select repository" className={`repo-chip ${repo ? "selected" : ""}`}>
+                <Icon name="github" size={14} />
+                <span className="repo-chip-label">{repo || "Select repository"}</span>
+                <Icon name="down" size={11} />
               </summary>
               <div className="picker-popover">
                 <h2>Repository</h2>
@@ -620,9 +671,19 @@ function Home({
               </div>
             </details>
             <details className="composer-picker">
-              <summary title="Session configuration">
-                <Icon name="settings" size={17} />
+              <summary title="Session configuration" className="config-chip">
+                <Icon name="settings" size={14} />
                 <span className="sr-only">Session configuration</span>
+                <span className="composer-configuration-label" aria-hidden="true">
+                  {effort === "auto" ? "Auto effort" : `${effort} effort`} ·{" "}
+                  {delivery === "draft_pr"
+                    ? "Draft PR"
+                    : delivery === "pr"
+                      ? "PR"
+                      : delivery === "branch"
+                        ? "Branch"
+                        : "No delivery"}
+                </span>
               </summary>
               <div className="picker-popover config-picker">
                 <h2>Session configuration</h2>
@@ -689,16 +750,6 @@ function Home({
                 </details>
               </div>
             </details>
-            <span className="composer-configuration-label">
-              {effort} ·{" "}
-              {delivery === "draft_pr"
-                ? "Draft PR"
-                : delivery === "pr"
-                  ? "PR"
-                  : delivery === "branch"
-                    ? "Branch"
-                    : "No delivery"}
-            </span>
             <details className="composer-picker model-picker">
               <summary>
                 {selectedModel?.displayName ??
@@ -785,13 +836,54 @@ function Home({
             <Link to="/integrations">Check connections</Link>
           </div>
         )}
-        {demoMode && (
-          <div className="home-demo-links">
-            <span className="small-tag">DEMO</span>
-            <Link to="/sessions/stream-reconnect">Follow active work</Link>
-            <span>·</span>
-            <Link to="/sessions/event-replay">Review a draft PR</Link>
+        <div className="composer-footnote">
+          <span><kbd>{shortcutModifier}</kbd><kbd>Enter</kbd> to start</span>
+          <span>Agents work in an isolated sandbox and never push without your delivery choice.</span>
+        </div>
+        {!prompt && (
+          <div className="suggestion-row" aria-label="Suggestions">
+            {suggestions.map((sug) => (
+              <button
+                type="button"
+                key={sug.label}
+                className="suggestion-chip"
+                onClick={() => {
+                  setPrompt(sug.prompt);
+                  requestAnimationFrame(() => {
+                    const el = textareaRef.current;
+                    el?.focus();
+                    el?.setSelectionRange(sug.prompt.length, sug.prompt.length);
+                  });
+                }}
+              >
+                <Icon name={sug.icon} size={13} />
+                {sug.label}
+              </button>
+            ))}
           </div>
+        )}
+        {recent.length > 0 && (
+          <section className="home-recent" aria-label="Recent sessions">
+            <div className="home-recent-head">
+              <h2>Recent sessions</h2>
+              <Link to="/sessions">View all<Icon name="arrowRight" size={12} /></Link>
+            </div>
+            <div className="home-recent-grid">
+              {recent.map((s) => (
+                <Link key={s.id} to={`/sessions/${s.id}`} className="recent-card">
+                  <span className="recent-card-top">
+                    <Status phase={s.phase} />
+                    <small>{age(s.updatedAt)}</small>
+                  </span>
+                  <strong>{s.title}</strong>
+                  <small className="recent-card-repo">
+                    <Icon name="github" size={11} />
+                    {s.repo?.name ?? "No repository"}
+                  </small>
+                </Link>
+              ))}
+            </div>
+          </section>
         )}
       </div>
     </div>

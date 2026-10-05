@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { hostedRequest } from "./api";
+import { Icon } from "../prototype/Icon";
+import { Badge, ConnectionCard, notifyConnectionChange } from "./ui";
 
 export function GitHubConnection() {
   const [installations, setInstallations] = useState<any[]>([]);
@@ -27,7 +29,7 @@ export function GitHubConnection() {
   }, []);
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true); setError("");
-    try { await work(); await refresh(); } catch (e) { setError((e as Error).message); }
+    try { await work(); await refresh(); notifyConnectionChange(); } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
   const connect = () => void act(async () => {
@@ -35,18 +37,24 @@ export function GitHubConnection() {
     if (authorization.mock) await hostedRequest("/hosted/connections/github/mock-approve", {state: authorization.state});
     else window.location.assign(authorization.authorize_url);
   });
-  return <section className="settings-section" aria-label="GitHub connection">
-    <h2>GitHub</h2>
-    <p>Authorize repositories for your Sessions. GitHub access is independent of your compute workspace.</p>
-    {error && <p role="alert">{error}</p>}
-    {mock && <p>Mock GitHub installations for Alpha development.</p>}
-    {operatorBinding && <p>Install SBX Agent on your repositories, then ask the deployment operator to approve the installation for your SBX account. Reload this page after approval.</p>}
-    {!configured && <p>GitHub installation is not configured for this deployment.</p>}
-    {installations.map(installation => <div key={installation.installation_id}>
-      <p>Connected: {installation.account_login}</p>
-      <ul>{installation.repositories.map((repo: string) => <li key={repo}>{repo}</li>)}</ul>
-      <button disabled={busy} onClick={() => void act(() => hostedRequest(`/hosted/connections/github/installations/${installation.installation_id}`, {}, "DELETE"))}>Disconnect {installation.account_login}</button>
-    </div>)}
-    <button disabled={busy || !configured} onClick={connect}>Connect GitHub</button>
+  const connected = installations.length > 0;
+  return <section className={`settings-section hs-card ${connected ? "is-ready" : ""}`} aria-label="GitHub connection">
+    <ConnectionCard icon="github" step={2} title="GitHub" description="Authorize repositories for your Sessions. GitHub access is independent of your compute workspace."
+      badge={<Badge tone={connected ? "ok" : "idle"}>{connected ? `${installations.length} installation${installations.length > 1 ? "s" : ""}` : "Not connected"}</Badge>}>
+      {error && <p className="hs-alert" role="alert">{error}</p>}
+      {mock && <p className="fine-print">Mock GitHub installations for Alpha development.</p>}
+      {operatorBinding && <p className="hs-note">Install SBX Agent on your repositories, then ask the deployment operator to approve the installation for your SBX account. Reload this page after approval.</p>}
+      {!configured && <p className="fine-print">GitHub installation is not configured for this deployment.</p>}
+      {installations.map(installation => <div className="hs-install" key={installation.installation_id}>
+        <div className="hs-install-head">
+          <span className="user-avatar avatar">{installation.account_login[0]?.toUpperCase()}</span>
+          <p>Connected: {installation.account_login}</p>
+          <small>{installation.repositories.length} repositories</small>
+          <button className="button ghost danger" disabled={busy} onClick={() => void act(() => hostedRequest(`/hosted/connections/github/installations/${installation.installation_id}`, {}, "DELETE"))}>Disconnect {installation.account_login}</button>
+        </div>
+        <ul className="hs-repo-list">{installation.repositories.map((repo: string) => <li key={repo}><Icon name="branch" size={12} />{repo}</li>)}</ul>
+      </div>)}
+      <div className="hs-actions"><button className={`button ${connected ? "" : "primary"}`} disabled={busy || !configured} onClick={connect}><Icon name="plus" size={13} />Connect GitHub</button></div>
+    </ConnectionCard>
   </section>;
 }

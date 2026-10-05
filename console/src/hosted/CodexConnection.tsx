@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { hostedRequest, type HostedConnection } from "./api";
+import { Badge, ConnectionCard, notifyConnectionChange } from "./ui";
 
 const labels: Record<string, string> = {connected: "Connected", refreshing: "Refreshing", reauth_required: "Reauth required", disabled: "Disabled"};
 export function CodexConnection() {
@@ -39,7 +40,7 @@ export function CodexConnection() {
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true); setError("");
     try { await work(); } catch(e) { setError((e as Error).message); }
-    finally { setBusy(false); await refresh().catch(() => {}); }
+    finally { setBusy(false); await refresh().catch(() => {}); notifyConnectionChange(); }
   };
   const connect = () => void act(async () => {
     const authorization = await hostedRequest("/hosted/connections/codex/authorize", {});
@@ -47,16 +48,20 @@ export function CodexConnection() {
     else if (authorization.device) setAuthorization(authorization);
     else window.location.assign(authorization.authorization_url);
   });
-  return <section className="settings-section" aria-label="Codex connection">
-    <h2>Codex / ChatGPT plan</h2>
-    <p>{connection ? labels[connection.state] ?? connection.state : "Not connected"}</p>
-    <p>Up to three concurrent Sessions share your connection. Credentials refresh on the control plane.</p>
-    {mock && <p>Mock Codex authorization and rotation for Alpha development.</p>}
-    {!configured && <p>Codex authorization is not configured for this deployment.</p>}
-    {error && <p role="alert">{error}</p>}
-    {authorization && <p>Open <a href={authorization.authorization_url} target="_blank" rel="noreferrer">ChatGPT authorization</a> and enter <strong>{authorization.user_code}</strong>. This page will update after you authorize.</p>}
-    <button disabled={busy || !configured} onClick={connect}>{connection?.state === "reauth_required" ? "Reconnect Codex" : "Connect Codex"}</button>
-    {connection && <><button disabled={busy} onClick={() => void act(() => hostedRequest("/hosted/connections/codex/refresh", {}))}>Check Codex connection</button>
-      <button disabled={busy} onClick={() => void act(() => hostedRequest("/hosted/connections/codex", {}, "DELETE"))}>Disable Codex</button></>}
+  const st = connection?.state;
+  const ok = st === "connected" || st === "refreshing";
+  return <section className={`settings-section hs-card ${ok ? "is-ready" : st === "reauth_required" ? "is-failed" : ""}`} aria-label="Codex connection">
+    <ConnectionCard icon="sparkle" step={3} title="Codex / ChatGPT plan" description="Up to three concurrent Sessions share your connection. Credentials refresh on the control plane."
+      badge={<Badge tone={ok ? "ok" : st === "reauth_required" ? "warn" : st === "refreshing" ? "busy" : "idle"}>{connection ? labels[connection.state] ?? connection.state : "Not connected"}</Badge>}>
+      {mock && <p className="fine-print">Mock Codex authorization and rotation for Alpha development.</p>}
+      {!configured && <p className="fine-print">Codex authorization is not configured for this deployment.</p>}
+      {error && <p className="hs-alert" role="alert">{error}</p>}
+      {authorization && <div className="hs-device"><p>Open <a href={authorization.authorization_url} target="_blank" rel="noreferrer">ChatGPT authorization</a> and enter</p><strong>{authorization.user_code}</strong><p>This page will update after you authorize.</p></div>}
+      <div className="hs-actions">
+        <button className={`button ${ok ? "" : "primary"}`} disabled={busy || !configured} onClick={connect}>{connection?.state === "reauth_required" ? "Reconnect Codex" : "Connect Codex"}</button>
+        {connection && <><button className="button" disabled={busy} onClick={() => void act(() => hostedRequest("/hosted/connections/codex/refresh", {}))}>Check Codex connection</button>
+          <button className="button ghost danger" disabled={busy} onClick={() => void act(() => hostedRequest("/hosted/connections/codex", {}, "DELETE"))}>Disable Codex</button></>}
+      </div>
+    </ConnectionCard>
   </section>;
 }
