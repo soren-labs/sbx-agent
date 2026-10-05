@@ -1,2275 +1,1070 @@
-# sbx-browser — public documentation bundle
+# SBX documentation bundle
 
-Generated from canonical public documentation pages. For exact request/response schemas use /openapi.json; for the compact index use /llms.txt.
+Generated from the canonical documentation pages. For exact request and response schemas use /openapi.json; for the compact index use /llms.txt.
 
 # Introduction
 
 Source: /getting-started/introduction/
 
-SBX is **self-hosted orchestration for coding-agent CLIs**. You submit a
-**task** — a prompt, optionally a repository and delivery target — and SBX
-runs an official provider CLI in an isolated Modal Sandbox. The control plane
-keeps durable task/run state and turns repository work into revisions that can
-be delivered, reviewed and merged.
+SBX runs **official provider CLIs** inside isolated executors and keeps the
+durable record of the work in PostgreSQL. Its durable identity is the
+**Session**; the machine that happens to run a Turn is a replaceable
+**ExecutorLease**; the provider boundary is a thin **Harness** adapter to the
+official CLI.
 
-## Who it is for
+## Architecture at a glance
 
-- teams that want one task API in front of several coding-agent subscriptions;
-- developers who want resumable cloud tasks without manually managing sandboxes;
-- multi-agent systems that need durable revisions, exact-head reviews and deterministic recovery;
-- self-hosters who want credentials, execution and state in their own Modal workspace.
-
-## The public model
-
-| Concept | What it means |
+| Part | Role |
 | --- | --- |
-| **Task** | The user intent: prompt, optional source repo, execution preference and delivery policy. |
-| **Run** | One turn on the task's agent. Follow-ups create more runs on the same native session. |
-| **Revision** | A durable repository result pinned to exact base/head commits. |
-| **Delivery** | The published branch and optional pull request for a revision. |
-| **Review** | A verdict pinned to an exact revision head; newer revisions make older reviews stale. |
-| **Integration** | A verified provider login or GitHub installation the control plane can use. |
+| Control plane (`control/`) | One FastAPI application serving the `/api` business surface plus `/healthz` and `/readyz`. Run with `sbx serve` or `python -m control.composition serve`. |
+| PostgreSQL | The only business authority: journal, projections, Jobs, encrypted credential versions. |
+| Job workers | Run slow or recoverable effects (provisioning, validation, capture, delivery) under fenced claims. They run in-process with `serve`, or alone with `worker`. |
+| Executors | `modal` (production) and `local` (development). Both speak the same `sbx-runtime` protocol. |
+| `sbx-runtime` | Supervises operations, processes and files in the sandbox and spools evidence. It contains no reasoning loop. |
+| Console | A React web app that talks only to `/api`. |
+| Python SDK and `sbx` CLI | Clients of the same `/api` surface. |
 
-The lower-level Agent, Sandbox, Workspace, Artifact and Workflow objects are
-still available for advanced integrations, but normal callers should start
-with `/v1/tasks` and `client.tasks`.
+## What SBX does
 
-## Deployment boundary
+- Accepts a Message, queues a Turn, provisions an executor if needed, runs the
+  CLI, and records committed events for every step.
+- Keeps the Worktree across lease replacement by sealing private checkpoints.
+- Captures immutable ChangeSets, delivers them to GitHub as a branch and draft
+  pull request, and gates merge on the exact reviewed subject.
+- Delegates review, test, research, security and integration work to ordinary
+  child Sessions with validated ResultContracts.
+- Stores external credentials as write-only Connections, encrypted at rest.
 
-A self-hosted deployment contains:
+## What SBX does not do
 
-- **Control plane** — FastAPI, task/run ledger, scheduler, revisions/reviews and the web console;
-- **Modal durable stores** — state that survives sandbox teardown and control-plane restarts;
-- **Modal Sandboxes** — isolated execution environments running the provider's official CLI;
-- **Provider accounts** — verified logins captured through the provider's own authentication flow;
-- **Optional GitHub installation** — short-lived repository tokens minted from the installed SBX GitHub App.
-
-SBX does not proxy model APIs or resell provider quota. Provider CLIs run
-under your own subscriptions.
-
-## Public interfaces
-
-Use these in preference order:
-
-1. **Web console** for interactive operation and inspection.
-2. **Python SDK (`sbx.sdk.SbxClient`)** for programmatic task workflows.
-3. **REST `/v1` API** for language-neutral integrations.
-4. **CLI** for deployment, provider/GitHub connection and operator tasks.
-
-The legacy/internal `/api/*` surface is not a public integration contract.
-
-## Security boundary
-
-The Modal Sandbox is the execution boundary. Provider credentials are
-materialized only where the provider CLI needs them. Public API calls use a
-Bearer `sbx_…` key; administrative operations require the `admin` scope.
-GitHub installation tokens are short-lived and are not persisted into cloned
-repositories.
-
-## Version and status
-
-Current package/docs line: **v0.1.1, public alpha**. Use the deployment's
-`sbx status` output and the docs site's `/version.json` to verify which
-release the documentation describes. `/v1` may still evolve before 1.0.
+- It does not call model APIs itself or implement a tool-selection loop.
+- It does not read credentials from the host environment or files.
+- It does not offer preview origins or OAuth sign-in with providers yet.
+  Preview-grant requests return an error naming the missing capability, and
+  credentials are entered manually.
+- Terminals poll for output; there is no WebSocket attach.
 
 ## Next
 
-- [Quick start](/getting-started/quick-start/)
-- [Core concepts](/concepts/)
-- [Task lifecycle](/guides/tasks/)
-- [Python SDK](/sdk/python/quickstart/)
+Start with the [Quick start](/getting-started/quick-start/), then read
+[Concepts](/concepts/).
 
 # Quick start
 
 Source: /getting-started/quick-start/
 
-<a id="use-an-existing-deployment"></a>
+This path runs everything on your machine except the sandbox, which runs on
+Modal.
 
-You need only two values from the operator:
+## Prerequisites
 
-```bash
-export SBX_BASE_URL=https://sbx.example.com
-export SBX_API_KEY=sbx_...
-```
+- Python 3.12+ with [uv](https://docs.astral.sh/uv/), and Node 22+ for the Console.
+- A reachable PostgreSQL database.
+- The repository checked out (`uv sync`).
 
-### 1. Verify the connection
+## Minimum accounts and credentials
 
-```bash
-curl -fsS "$SBX_BASE_URL/v1/me" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
+| Needed | Why |
+| --- | --- |
+| Email and password account | Product sign-in. Self-hosted verification mail lands in a local directory unless you configure Resend. |
+| Modal token (`token_id`, `token_secret`) | Creates and tears down sandboxes. |
+| GitHub token | Clones repositories and delivers pull requests. |
+| OpenCode Zen API key | Inference for the OpenCode Harness (free models run only through the official OpenCode CLI). |
+| Codex `auth.json` (optional) | Only if you want the experimental Codex Harness. |
 
-A valid key returns its identity and scopes. If the call is rejected, fix the
-key before creating work.
-
-### 2. Preflight a repository task
-
-Preflight resolves the repository and checks capabilities without allocating a
-sandbox:
+## 1. Configure and start the control plane
 
 ```bash
-curl -fsS -X POST "$SBX_BASE_URL/v1/tasks/preflight" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": {"text": "Fix the flaky date test"},
-    "source": {"repo": "https://github.com/owner/repo"},
-    "delivery": {"pull_request": {}}
-  }'
+export SBX_DATABASE_URL=postgresql://sbx:YOUR_PASSWORD@127.0.0.1:5432/sbx
+export SBX_VAULT_KEYS="k1:$(openssl rand -base64 32)"
+export SBX_RUNTIME_MASTER_KEY="$(openssl rand -hex 32)"
+export SBX_DATA_DIR=./.sbx-data
+# Console dev server origin (used in verification links and CSRF checks)
+export SBX_PUBLIC_URL=http://localhost:5174
+
+uv run sbx migrate   # optional: `serve` also migrates on start
+uv run sbx serve --port 8800
 ```
 
-For a private GitHub repository the operator must have connected the
-[GitHub integration](/integrations/github/).
+`serve` applies migrations, starts the in-process workers and listens on
+`127.0.0.1:8800`. Check `curl http://127.0.0.1:8800/readyz`. See
+[Configuration](/self-hosting/configuration/) for every variable.
 
-### 3. Create and wait for the task
+## 2. Start the Console
 
-```python
-from sbx.sdk import SbxClient
+`sbx serve` serves the API only. Run the Console from its own directory; it
+proxies `/api` to the control plane.
 
-client = SbxClient()  # reads SBX_BASE_URL + SBX_API_KEY
-created = client.tasks.create(
-    "Fix the flaky date test and add a regression test",
-    source={"repo": "https://github.com/owner/repo"},
-    delivery={"pull_request": {}},
-)
-
-task = client.tasks.wait(created.task.id)
-print(task.id, task.status)
+```bash
+cd console
+npm ci
+SBX_API_PROXY_TARGET=http://127.0.0.1:8800 npm run dev   # http://localhost:5174
 ```
 
-If you want live events, stream the current run:
+## 3. Create and verify your account
 
-```python
-for event in client.runs.watch(created.agent.id, created.run.id):
-    print(event.type, event.data)
+Register at `/register`. Registration always answers `202`, whether or not the
+email exists. Without `SBX_RESEND_API_KEY` the verification email is written as
+a JSON file under `$SBX_DATA_DIR/mail/`; open the link it contains
+(`/verify-email?token=VERIFICATION_TOKEN`, valid 24 hours), then sign in.
+
+## 4. Add Connections
+
+The Console's setup checklist (home page) lists what is missing. Open
+**Connections** and add, in any order: Modal, GitHub, OpenCode Zen, and
+optionally Codex. Secret fields are write-only; after submit SBX validates each
+Connection in the background and shows its health.
+
+From the CLI the same inputs are read from stdin or a file, never argv:
+
+```bash
+uv run sbx auth login --email you@example.com          # password via stdin or prompt
+printf '%s' "$GITHUB_TOKEN" | uv run sbx connections add github
+echo '{"token_id":"MODAL_TOKEN_ID","token_secret":"MODAL_TOKEN_SECRET"}' | uv run sbx connections add modal
 ```
 
-### 4. Deliver, review and merge
+## 5. Run a first Turn
 
-A repository task produces durable revisions. Publish the latest revision,
-record an independent approval, then merge:
+Start a new Session from the Console home page (the composer defaults to the
+OpenCode Harness, the preferred free model and Modal), or from the CLI:
 
-```python
-revision = client.tasks.deliver(created.task.id)
-review = client.tasks.review(created.task.id, verdict="approve")
-merged = client.tasks.merge(created.task.id)
-print(merged.delivery)
+```bash
+uv run sbx execute "Add a CONTRIBUTING.md with one paragraph."
 ```
 
-The merge call fails closed if the approval is stale or not independent.
-See [Repositories, revisions and delivery](/guides/repositories/).
+Follow the Turn in the Conversation and Activity tabs. When it succeeds in a
+Session with a repository, SBX captures a ChangeSet automatically; review it
+and request a Delivery from the Changes tab. A scripted version of the same flow
+is `examples/unified_mvp.py`; see the [Python SDK](/sdk/python/).
 
-A fresh clone can deploy the platform before any provider is connected.
-`./sbx` bootstraps `uv` and a managed Python environment when needed.
+## Troubleshooting
 
-1. Clone and deploy:
+See [Troubleshooting](/troubleshooting/) for the most common first-run
+failures.
 
-   ```bash
-   git clone https://github.com/soren-labs/sbx-browser.git
-   cd sbx-browser
-   ./sbx deploy
-   ```
-
-   On an interactive terminal, `deploy` initializes config and opens Modal
-   authentication if no workspace login exists. A **zero-provider** platform
-   deployment is valid.
-
-2. Connect a provider:
-
-   ```bash
-   ./sbx auth login --provider devin
-   ./sbx auth status
-   ```
-
-   The command runs the provider's official login/OAuth flow, captures the
-   resulting credential, verifies it in the deployment and makes the account
-   schedulable only after verification succeeds.
-
-3. Connect GitHub when you need private repositories or pull requests:
-
-   ```bash
-   ./sbx github connect
-   ```
-
-   The first GitHub page is the official SBX GitHub App installation screen.
-   Choose an account/repositories and click **Install** once. No PAT, PEM or
-   per-deployment App registration is required for the default path.
-
-4. Verify and open the console:
-
-   ```bash
-   ./sbx doctor
-   ./sbx open
-   ```
-
-   `sbx deploy` writes the durable bootstrap admin key to
-   `~/.local/state/sbx/bootstrap.key` and records the deployment URL in local
-   state/config.
-
-`sbx init`, manual credential import, PATs and deployment-owned GitHub Apps
-still exist for advanced/operator workflows. They are not required for the
-normal fresh-deploy path.
-
-Now use the same SDK or REST examples from the first tab.
-
-## Next steps
-
-- [Tasks](/guides/tasks/)
-- [Repositories and delivery](/guides/repositories/)
-- [Python SDK](/sdk/python/quickstart/)
-- [Provider integrations](/integrations/providers/)
-- [Self-hosting](/self-hosting/deploy/)
-
-# Core concepts
+# Concepts
 
 Source: /concepts/
 
-## Task
+IDs are opaque, prefixed identifiers (for example `sess_…`, `turn_…`). An ID
+conveys type, never authorization: every owned record carries a `workspace_id`
+and every lookup checks it. Access to another workspace's resource is reported
+as `not_found`.
 
-A **Task** is the user-facing unit of work. It contains a prompt and may also
-declare a source repository, execution preference, delivery target, metadata,
-structured-output contract or advanced resources.
+## Work
 
-Normal callers start here: `POST /v1/tasks` or `client.tasks.create(...)`.
-SBX resolves automatic choices — repository ref, provider, verified account,
-model and other defaults — and stores the resulting evidence on the task.
+**Session** (`sess_`). The durable conversation and work. It has a lifecycle
+(`open`, `archived`, `closed`) and a role (`developer`, `review`, `test`,
+`research`, `security`, `integration`, `coordinator`). A Session may belong to a
+Project (pinned to an immutable ProjectVersion) or be projectless with an
+explicit repository.
 
-## Run
+**Message** (`msg_`). An accepted piece of authored input. Routing is `note`,
+`queue` (default) or `steer`. Accepted user content is immutable.
 
-A **Run** is one execution turn on the task's agent. The first run is created
-with the task; follow-ups create additional runs on the same agent and resume
-the provider's native session when supported.
+**Turn** (`turn_`). One accepted work request, ordered within the Session. States:
+`queued → preparing → running → succeeded | failed | cancelling → cancelled | interrupted`.
+At most one Turn is active per Session. A `reason` explains waiting or failure
+(for example `waiting_capacity`, `credential_invalid`, `outcome_unknown`).
 
-Run state is durable. Use task polling for product state and the run's SSE
-stream when you need live events.
+**Execution** (`exec_`). One attempt to perform a Turn on an ExecutorLease:
+operational evidence, not another unit of work.
 
-## Revision
+## Compute and state
 
-A **Revision** is the durable code result of a repository run. It pins the
-repository, base commit, head commit and result artifact needed to inspect or
-redeliver the work after the live sandbox is gone.
+**ExecutorLease** (`lease_`). A replaceable allocation of compute (`modal` or
+`local`). Many historical leases may exist; at most one is live per Session.
+Leases carry a generation that fences stale writers.
 
-Each later code-changing run can materialize a new revision.
+**Worktree** (`wt_`). The Session's single logical mutable filesystem. It
+survives lease replacement because work is restored from a checkpoint, never
+reset to the repository's current main.
 
-## Delivery
+**Snapshot** (`snap_`). An immutable manifest, either `environment` (reusable
+setup for a Project version) or `checkpoint` (private Session state). Credential
+files are excluded, and process, PTY and socket state is never claimed as
+restored.
 
-**Delivery** publishes a revision: normally a work branch and optionally a
-pull request. It records the pushed head, PR metadata and merge result.
-Delivery can be automatic or explicitly triggered after the run.
+## Results
 
-## Review
+**ChangeSet** (`cs_`). An immutable captured subject with a manifest, per-file
+digests, a binary patch and a `subject_digest`. Capture runs after a successful
+Turn or on request. A capture from a failed, cancelled or interrupted Turn is
+recorded as `salvage`.
 
-A **Review** is a durable verdict (`approve`, `request_changes` or `comment`)
-pinned to a revision's exact head. If a newer revision changes the head, the
-old approval becomes stale. A review produced by the same agent/run as the
-revision is not considered independent for merge.
+**Delivery** (`dlv_`). The intent and outcome of delivering exactly one
+ChangeSet to an external target (a GitHub branch and draft pull request), with
+append-only step evidence. Merge is a separate, gated operation.
 
-## Integration
+**Delegation** (`del_`). A parent's assignment of work to an ordinary child
+Session with pinned inputs and a ResultContract. The validated, immutable
+**DelegationResult** is the only thing that counts as a review or test verdict.
 
-An **Integration** is an external capability connected to the deployment:
+## Credentials and infrastructure
 
-- a verified provider account that can execute tasks;
-- a GitHub App installation that covers private repositories/PR operations;
-- Modal itself, which hosts the self-hosted control plane and sandboxes.
+**Connection** (`con_`). One external authority of kind `modal`, `github`,
+`opencode_zen` or `codex`. Its secret material lives in encrypted
+**CredentialVersions**; replacing a credential appends a version.
 
-The console presents these as connection state and next action rather than raw
-credential files.
+**Job** (`job_`). A durable internal continuation or effect, claimed by a worker
+with a fenced generation. Jobs are not user work; status is visible through
+`GET /api/jobs/{id}` and `GET /api/operations/{id}`.
 
-## Provider and account
+**Harness**. The thin adapter to an official CLI, described by a versioned
+capability manifest. See [Providers](/reference/providers/).
 
-A **Provider** identifies a supported coding-agent CLI/runtime. An **Account**
-is one verified login for that provider. Automatic scheduling picks an
-eligible account with a free slot; most callers should not pin account ids.
+## Authority
 
-## Lower-level objects
+Only application commands mutate state, and each resource has one writer.
+Reads never settle or launch work: for example `GET` on files or services
+reports `executor_unavailable` instead of waking compute. The committed Session
+journal explains history; typed relational projections decide current state.
 
-These are real public/advanced objects but are not the normal starting point:
+# Connections
 
-- **Agent** — the live/resumable sandbox session underneath a task;
-- **Sandbox** — the isolated Modal execution environment;
-- **Workspace** — lower-level repository/git state for an agent;
-- **Artifact** — persisted package/diff/handoff material;
-- **Workflow** — durable binding/recovery metadata for multi-agent orchestration.
+Source: /guides/connections/
 
-Use these surfaces only when the higher-level Task API does not express the
-advanced operation you need.
+Every external account is a **Connection** with encrypted, versioned
+credentials. There are four kinds, all added by manual input:
 
-## Durable vs ephemeral
+| Kind | Fields | Used for | Validation probe |
+| --- | --- | --- | --- |
+| `modal` | `token_id`, `token_secret` | Creating and releasing sandboxes. Only the executor worker sees it; the sandbox gets a lease-scoped key. | `App.lookup` with the token |
+| `github` | `token` | Cloning repositories and Delivery (push, pull request, merge). | `GET /user`, plus repository permission for Project repos |
+| `opencode_zen` | `api_key` | Inference for the OpenCode Harness. Written to an isolated HOME and scrubbed after each Turn. | One minimal free-model chat request (this consumes quota and is recorded) |
+| `codex` (optional) | `auth_json` | The experimental Codex Harness, in an isolated `CODEX_HOME`. | Format check only |
 
-**Durable:** task/run terminal state, account metadata, revision/review data,
-workflow metadata and stored result artifacts.
+## Secrets are write-only
 
-**Ephemeral:** the live sandbox process tree, temporary provider home state,
-short-lived GitHub tokens and other execution-only material.
+Responses never contain plaintext, ciphertext or fingerprints. They expose the
+credential version id, ordinal and format. Validation errors never echo your
+input. The Console clears secret fields after submit and never stores them in
+web storage.
 
-The durable contract is what lets clients recover after sandbox or
-control-plane restarts without guessing what happened.
+## Health
 
-# Tasks
+Configuration state is `configured`, `disabled` or `revoked`. Observed health is
+separate: `unverified`, `verifying`, `ready`, `degraded` or `reauth_required`.
+Validation runs as a background Job against the exact credential version, so a
+freshly added Connection starts `unverified` and settles shortly after.
 
-Source: /guides/tasks/
+```python
+conn = client.connections.add("github", {"token": token})
+view = client.connections.wait_health(conn["id"])
+print(view["health"])
+```
 
-A **task** is the primary way to run work: you describe the goal and any
-constraints (a repository, a provider preference, a pull-request policy), and
-the control plane resolves the rest — which repository ref to start from,
-which provider account and model to use, and where the result goes.
+## Replace and disconnect
 
-Tasks sit on top of the lower-level [agents and runs](/guides/agents-and-runs/)
-surface. A task owns one agent; every prompt you send it is a run on that
-agent, resuming the provider's native session. You rarely need to touch the
-agent yourself — the task record carries it.
+- **Replace** appends a new CredentialVersion with a compare-and-set on the
+  Connection version (`expected_version`), invalidates old health and
+  capability observations, and queues validation of the new version. A
+  validation result that no longer matches the current version is discarded.
+- **Disconnect** is refused with `409 connection_in_use` while live or
+  quarantined leases or live Executions depend on it. Once released it revokes
+  the Connection, cancels queued Jobs that target it and makes the vault refuse
+  to decrypt it. Revoking the token at the provider is separate and reported
+  as `not_performed`.
 
-## Try it without committing
+## Selection
 
-`POST /v1/tasks/preflight` evaluates a request against live state — repository
-access, ref resolution, account capacity — and returns the resolution it
-*would* use, with per-field evidence. Nothing is reserved and nothing runs.
+A Session only considers Connections in its own workspace: those named
+explicitly, or the configured ones chosen by priority (skipping
+`reauth_required`). Environment variables, host files and other users'
+credentials are never consulted. A missing one surfaces as
+`connection_required` or `credential_invalid` on the Turn.
+
+## Models
+
+`GET /api/models` crosses the Zen model list with public pricing. Free models
+are marked `usable_via: official_opencode_cli`, and the first free model in a
+fixed preference order is the `preferred_model`, used when a Session sets none.
+
+## CLI
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/preflight" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": {"text": "Fix the flaky date test"},
-    "source": {"repo": "https://github.com/acme/api"},
-    "execution": {"provider": "codex"}
-  }'
+printf '%s' "$TOKEN" | sbx connections add github --label work
+sbx connections list
+sbx connections validate CONNECTION_ID
+sbx connections replace CONNECTION_ID --credential-file new.json
 ```
 
-The console's **New task** form runs the same checks as you fill it in.
+# Sessions and Turns
 
-## Create a task
+Source: /guides/sessions-and-turns/
+
+## Create and send
+
+`POST /api/workspaces/{workspace_id}/sessions` creates a Session, optionally
+with an initial Message in the same transaction. The response returns the
+Session, Message and Turn ids immediately; no request waits for a sandbox to
+boot. Further input goes to `POST /api/sessions/{id}/messages` with routing
+`queue` (default), `note` or `steer`.
+
+```python
+result = client.execute(
+    "Add a CONTRIBUTING.md with one paragraph.",
+    repository={"full_name": "owner/repo"},
+    executor={"backend": "modal"},
+)
+print(result["turn"]["state"])
+```
+
+Resolution order for settings is Project defaults, then the caller's explicit
+values. The OpenCode Harness defaults to the preferred free model.
+
+## Turn lifecycle
+
+`queued → preparing → running → succeeded | failed | interrupted`, with
+`cancelling → cancelled | interrupted` after a cancel request. One Turn is
+active per Session; later Messages queue. A queued or preparing Turn may carry a
+`reason` such as `waiting_capacity`, `executor_unavailable` or
+`credential_invalid`. Only the control plane decides terminal state, never a
+process exit code.
+
+## Events, SSE and watermarks
+
+Every committed fact is an event with a per-Session sequence number `seq`.
+Mutating responses include `event_watermark`, the highest committed sequence at
+that moment. See [Events](/api/events/) for the envelope and endpoint.
+
+- Read history with `GET /api/sessions/{id}/events?after=N` (JSON), or stream
+  with `Accept: text/event-stream`. Resume with `after=N` or `Last-Event-ID`.
+- Dedupe by `seq`. If the stream drops, reconnect from the last `seq` you
+  processed; reconnecting never creates another Turn.
+- A cursor ahead of the journal fails with `invalid_cursor`.
 
 ```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": {"text": "Fix the flaky date test"},
-    "name": "fix-date-test",
-    "source": {"repo": "https://github.com/acme/api"},
-    "delivery": {
-      "pull_request": {"title": "Fix flaky date test", "draft": true}
-    }
-  }'
+sbx sessions events SESSION_ID --after 0 --follow
 ```
-
-**Response: 201 Created**
-
-```json
-{
-  "task": {
-    "id": "task_2f8c…",
-    "status": "queued",
-    "prompt": "Fix the flaky date test",
-    "agent_id": "agent_abc123…",
-    "run_id": "run_xyz789…"
-  },
-  "agent": {"id": "agent_abc123…", "provider": "codex", "status": "creating"},
-  "run": {"id": "run_xyz789…", "status": "CREATING"}
-}
-```
-
-### Request fields
-
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `prompt` | ✅ | `{ "text": "…" }` — the goal, in plain language. |
-| `name` | — | Display name; the console generates a short title from the prompt when omitted. |
-| `source` | — | `{repo, ref}` — what to work on. `repo` is any git URL the sandbox can reach (github.com URLs are canonicalized). `ref` defaults to the repo's default branch; a branch/tag resolves to its sha, a 40-hex sha pins the commit. Leave empty for a plain sandbox task. |
-| `execution` | — | `{provider, account_id, model, reasoning_effort}` — each accepts an explicit value or `auto` (the default): the scheduler picks among eligible accounts and discovered models. |
-| `delivery` | — | `{branch, pull_request, auto_publish}` — where the result goes. `branch` names the work branch; `pull_request` takes `{title, body, draft, target}`; `auto_publish` pushes on every finished run. See [Repositories and delivery](/guides/repositories/). |
-| `metadata` | — | `{workflow_id, task_id, role, parent_task_id}` — binds the task's agent to a [workflow](/guides/workflows/). |
-| `output_contract` | — | `{schema, enforcement}` — a JSON Schema the result must satisfy ([structured output](/guides/structured-output/)). |
-| `resources` | — | `{secrets, mcp}` — allow-listed Modal Secrets and MCP servers ([resources](/guides/resources-and-compute/)). |
-| `compute` | — | `{cpu, memory_mib}` — sandbox sizing as `[request, limit]` pairs ([limits](/reference/limits/)). |
-| `idle_timeout_s` | — | How long the agent stays warm for follow-ups. |
-
-The response echoes `resolved`: what the control plane actually chose
-(canonical repo, base ref, exact base sha, provider, account, model, effort)
-and, per field, whether it came from your request, the account, the LRU
-schedule, model discovery, or a default.
-
-## Watch a task
-
-```bash
-curl "$SBX_BASE_URL/v1/tasks/$TASK_ID" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-`GET /v1/tasks/{id}` returns the task record plus live `agent` and `run`
-views. Poll it, or open the task in the [console](/guides/console/) — the
-console shows the same status, the live run conversation, and a **Publish**
-step when the task produces code.
-
-### Task statuses
-
-| Status | Meaning |
-| --- | --- |
-| `queued` | Waiting for a slot or dispatching (`awaiting_dispatch` inside) |
-| `running` | A run is in progress on the task's agent |
-| `delivering` | The run finished; the declared delivery (push/PR) is still in flight |
-| `finished` | Done, including any required delivery |
-| `delivery_failed` | The run finished but a required delivery failed — [retry](/guides/tasks/#retry) publishes it without re-running |
-| `error` | The latest run failed — see the run's structured `error` |
-| `expired` | The agent hit a lifecycle timeout |
-| `cancelled` | Cancelled by `POST /v1/tasks/{id}/cancel` |
-
-Statuses are computed from the durable run ledger and workspace record, so a
-terminal status never regresses. A run that `FINISHED` but whose required
-delivery failed reports `delivery_failed`, not `finished`.
-
-### Watch the run itself
-
-Each task run streams canonical events over SSE — the same stream the console
-renders as a conversation:
-
-```bash
-curl -N "$SBX_BASE_URL/v1/agents/$AGENT_ID/runs/$RUN_ID/stream" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-The task detail's `run.id` names the latest run; `GET /v1/tasks/{id}/runs`
-lists them all. See [Streaming](/guides/streaming/) for `Last-Event-ID`
-resume and the polling fallback.
-
-## Follow up
-
-Send another instruction on the same task — it queues a run on the same
-agent, which keeps its sandbox and resumes the provider's native session:
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/runs" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": {"text": "Now add a regression test"}}'
-```
-
-Follow-ups **queue** while a run is in flight (`on_busy: "queue"`, the
-default). Pass `"on_busy": "reject"` to get a `409 task_active` instead. Each
-follow-up may carry its own `metadata` and `output_contract`.
 
 ## Cancel
 
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/cancel" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-Cancels the active run and drops queued work. Anything already published
-stays published. Cancel is idempotent — repeating it on a terminal task
-replays the current state.
+`POST /api/turns/{id}/cancellations` records the intent. A queued Turn is
+cancelled immediately; an active Turn moves to `cancelling` and ends
+`cancelled` or `interrupted`. If the Turn already finished, a committed result
+wins and the call is a no-op.
 
 ## Retry
 
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/retry" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "delivery"}'
-```
+`POST /api/turns/{id}/retries` creates a new Turn from the original Message
+(linked with `retry_of`). Only `failed`, `cancelled` or `interrupted` Turns can
+be retried; otherwise the call returns `invalid_transition`.
 
-Retry is lane-aware:
+## Unknown outcomes
 
-- `"delivery"` — republish the existing work: rerun the declared delivery
-  policy against the recorded head. Use this for `delivery_failed`.
-- `"run"` — queue a fresh run on the same agent (optionally with a new
-  `prompt`), e.g. after `error` or `expired`.
+If SBX cannot prove how a Turn ended (for example the runtime restarted
+mid-operation), the Turn ends with reason `outcome_unknown`. SBX never relaunches
+it and never reports success.
 
-A task that never reached a retryable state returns `409
-task_not_retryable`. For mid-flight work use [cancel](#cancel) or a
-[follow-up](#follow-up) instead.
+1. The SDK raises `OutcomeUnknown` from `turns.wait` and `execute`.
+2. Inspect the Worktree and the Activity events to decide whether the work
+   landed.
+3. Acknowledge with `POST /api/turns/{id}/acknowledgements`. Until then, retry
+   and the next queued Turn are held (`outcome_unknown`, action `acknowledge`),
+   and acknowledgement itself waits while old compute is not yet confirmed
+   isolated (retryable).
 
-## Idempotency
+## Idempotent retries of requests
 
-Every task mutation honors `Idempotency-Key`: replaying the same key returns
-the original result instead of creating a second task. The Python SDK sends a
-fresh key automatically, so a transport-failed `tasks.create` retries safely
-— pass `idempotency_key=` to pin your own, or `False` to opt out.
+Every mutation needs an `Idempotency-Key`. Send the same key when you retry
+after a network error; see [API overview](/api/overview/).
 
-## With the Python SDK
+## Lifecycle commands
 
-```python
-from sbx.sdk import SbxClient
+`archives`, `unarchives` and `closures` move a Session between `open`,
+`archived` and `closed`. A closed Session rejects new work and closes its child
+Sessions. `executor/activations` and `executor/releases` wake or release compute
+explicitly; reads never do.
 
-client = SbxClient()  # SBX_BASE_URL + SBX_API_KEY
+# Changes and Delivery
 
-created = client.tasks.create(
-    "Fix the flaky date test",
-    source={"repo": "https://github.com/acme/api"},
-    delivery={"pull_request": {"title": "Fix flaky date test"}},
-)
-task = client.tasks.wait(created.task.id)  # polls until a terminal status
-print(task.status)
+Source: /guides/changes-and-delivery/
 
-run = client.tasks.followup(created.task.id, "Now add a regression test")
-detail = client.tasks.get(created.task.id)  # task + agent + run views
-```
+## ChangeSets
 
-`tasks.create` returns a `TaskCreated` (`task` + `agent` + `run`);
-`tasks.wait` returns the last observed `Task` — check `task.status` rather
-than assuming success. The full method list is in the
-[Python SDK reference](/reference/python-client/).
+A ChangeSet is an immutable snapshot of what changed in a Worktree.
 
-## Errors
-
-Task routes return the canonical error shape
-(`{"error": {"code", "message", "retryable", "action", …}}`). The common
-ones:
-
-| Code | Status | Meaning |
-| --- | --- | --- |
-| `invalid_source` | 400 | The repository URL or ref can't be resolved. |
-| `invalid_provider` | 400 | Unknown provider, or provider not enabled on this deployment. |
-| `provider_exhausted` | 409/429 | No eligible account has a free slot — `retry_after` hints when. |
-| `concurrency_limit` | 429 | The live-agent cap is reached; close idle agents or wait. |
-| `task_active` | 409 | A run is already in flight and `on_busy` was `reject`. |
-| `task_not_retryable` | 409 | Retry was requested on a task that has nothing to retry. |
-| `not_found` | 404 | Unknown task id, or a task owned by a different API key. |
-
-Full catalog: [error reference](/reference/errors/).
-
-# Repositories, revisions and delivery
-
-Source: /guides/repositories/
-
-A [task](/guides/tasks/) can work on a git repository: the control plane
-clones it inside the task's sandbox, tracks every commit the work moves
-through, and delivers the result as a durable **revision** you can push to a
-branch, open as a pull request, review, and merge.
-
-Everything on this page is optional. A task without a `source` runs in a
-plain sandbox directory.
-
-## Source: what to work on
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": {"text": "Fix the flaky date test"},
-    "source": {"repo": "https://github.com/acme/api"}
-  }'
-```
-
-| Field | Meaning |
-| --- | --- |
-| `repo` | Any git URL the sandbox can reach, or a filesystem path. `https://github.com/…` and `git@github.com:…` forms are canonicalized to the same repository. |
-| `ref` | `auto`/`HEAD`/absent → the repository's default branch. A branch or tag resolves to its sha; a 40-hex sha pins that commit. |
-
-The control plane resolves the ref to an **exact commit** before the run
-starts — you never write `base_sha` yourself — and persists it on the task's
-`resolved` evidence. If the repo is unreachable or the ref does not exist,
-the task fails with `invalid_source` before a sandbox is allocated; run
-`POST /v1/tasks/preflight` to check resolution without committing.
-
-Public repositories and non-GitHub remotes need no credentials. Private
-github.com repositories need the [GitHub integration](/integrations/github/).
-
-## Delivery: where the result goes
-
-`delivery` declares what happens with the work once a run leaves commits:
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `branch` | derived `sbx/…` name | The work branch the revision publishes to. |
-| `auto_publish` | `false` | Push the work branch automatically after every run that finishes successfully. |
-| `pull_request` | — | Open a pull request on publish: `{title, body, draft, target}`; `target` defaults to the resolved base ref. |
-
-```json
-{
-  "prompt": {"text": "Fix the flaky date test"},
-  "source": {"repo": "https://github.com/acme/api"},
-  "delivery": {
-    "branch": "sbx/flaky-date",
-    "pull_request": {"title": "Fix flaky date test", "draft": true}
-  }
-}
-```
-
-With `auto_publish`, the publish step runs after every finished run. Without
-it, publish on demand:
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/delivery" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-Publishing verifies the remote branch resolves to exactly the pushed head —
-drift fails closed with `repo_unavailable`. Pull requests need the GitHub
-integration; pushes work with any remote the sandbox can reach.
-
-The task's `delivery` view reports `required`/`pending`/`delivered`/`failed`
-plus the recorded `pushed_head_sha`, `pull_request` and `merge` metadata.
-A task whose required delivery did not land reports `delivery_failed`; retry
-with `POST /v1/tasks/{id}/retry` (`mode: "delivery"`) — the run does not
-re-execute.
-
-## Revisions
-
-Each run's result materializes into a durable **revision** — a content-row
-pinning `repo`, `base_sha`, `head_sha` and the artifact carrying the diff.
-Revisions survive the sandbox and are addressable per task:
-
-```bash
-curl "$SBX_BASE_URL/v1/tasks/$TASK_ID/revisions" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-curl "$SBX_BASE_URL/v1/tasks/$TASK_ID/revisions/latest" \
-  -H "Authorization: Bearer $SBX_API_KEY"   # or rev-…, or the n counter
-```
-
-`status` is `ready` once materialized or `materialization_failed` when the
-changes could not be packaged (retry the task to re-materialize). The
-console's task page links each revision to its diff.
-
-## Reviews
-
-A **review** is a durable verdict pinned to a revision:
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/reviews" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "verdict": "approve",
-    "revision": "latest",
-    "comment": "Tests pass locally."
-  }'
-```
-
-- `verdict` is `approve`, `request_changes` or `comment`; `findings` carries
-  structured per-file notes.
-- `reviewer` (`{identity, agent_id, run_id}`) defaults to the calling API
-  key. A review from the revision's own agent or run is recorded but never
-  counts as `independent`.
-- `reviewed_head_sha` pins the exact commit that was reviewed; a review
-  turns `stale` when a newer revision materializes — review again after new
-  commits.
-- `comment` posts a machine-readable comment on the delivered pull request.
-  It is deliberately never a formal GitHub approval.
-
-`GET /v1/tasks/{id}/reviews` lists them (`?revision=` filters).
-
-## Merge
-
-```bash
-curl -X POST "$SBX_BASE_URL/v1/tasks/$TASK_ID/merge" \
-  -H "Authorization: Bearer $SBX_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"revision": "latest"}'
-```
-
-Merge lands the delivered pull request only when **all** hold — otherwise it
-fails closed:
-
-- the revision was delivered and its pull request is recorded;
-- a non-stale **independent** `approve` review pins the revision's exact
-  `head_sha` — `404 revision_not_found` / `409 review_required`,
-  `review_stale` or `independence_violation` when not;
-- the remote pull request still points at that head.
-
-The merge commit sha is recorded on the revision's `delivery`.
-
-## The Python SDK
+- **Capture** runs as the `changeset.capture` Job. It starts automatically
+  after a successful Turn in developer, integration or coordinator Sessions that
+  have a repository, or on request with `POST /api/sessions/{id}/changesets`.
+  A capture whose source Turn failed, was cancelled or interrupted is recorded
+  with origin `salvage` and is not eligible for automatic delivery.
+- The runtime writes the exact tree and reports a manifest, per-file SHA-256
+  digests, the patch and file blobs. Credential paths (`.env*`, `auth.json`,
+  `*.pem`) are excluded, and a known secret pattern fails the capture.
+- Before sealing, the control plane rebuilds the manifest from its own pinned
+  repository and base commit, recomputes `subject_digest` and re-verifies every
+  blob. A failed capture is `failed`; there is never a fake ready subject.
+- States include `ready` and `failed`. A sealed ChangeSet cannot be modified.
 
 ```python
-from sbx.sdk import SbxClient
-
-client = SbxClient()
-created = client.tasks.create(
-    "Fix the flaky date test",
-    source={"repo": "https://github.com/acme/api"},
-    delivery={"pull_request": {"title": "Fix flaky date test"}},
-)
-task = client.tasks.wait(created.task.id)
-
-revision = client.tasks.revision(created.task.id)  # latest
-review = client.tasks.review(created.task.id, verdict="approve")
-merged = client.tasks.merge(created.task.id)  # gated on the review
+cs = client.changesets.wait_ready(session_id, source_turn_id=turn["id"])
+print(client.changesets.diff(cs["id"]))
 ```
 
-## Lower-level: agent workspaces
+`GET /api/sessions/{id}/changes` shows live, uncaptured changes without waking
+compute. `POST /api/changesets/{id}/applications` applies a ChangeSet to another
+Session only if its working tree equals the ChangeSet baseline; otherwise nothing
+is written.
 
-Tasks resolve onto the same machinery the agent API exposes directly:
-`GET /v1/agents/{id}/workspace` reads the durable workspace record (repo,
-refs, shas, resolved git policy, `pushed_head_sha`, `pull_request`, `merge`,
-`publish_error`), `POST /v1/agents/{id}/git/publish` and
-`POST /v1/agents/{id}/git/merge` drive it, and
-`POST /v1/agents/{id}/workspace/review` pins a review commit. Agents created
-via `POST /v1/agents` also accept an explicit `workspace` (`repo`, `base_ref`,
-`base_sha`) and `git` policy (`push`, `auto_create_pr`, `auto_publish`,
-`merge`, `target`, `draft`, `title`, `body`) for callers that need to pin an
-exact starting commit — see [Agents and runs](/guides/agents-and-runs/) and
-the [API reference](/reference/api/).
+## Delivery
 
-Handoffs — starting an agent from an artifact, a commit or a pull-request
-ref — are covered in [Artifacts and handoffs](/guides/handoffs-and-artifacts/).
+`POST /api/changesets/{id}/deliveries` requests delivery of exactly that
+ChangeSet. The Delivery Job performs three steps and records each as evidence:
 
-## Errors
+1. **Materialize**: fetch the pinned base, apply the patch, verify the tree
+   equals the sealed tree, and create a deterministic commit.
+2. **Push** to `sbx/SESSION/CHANGESET` using `--force-with-lease`. If the remote
+   branch holds a different head the Delivery blocks with
+   `remote_head_changed`; there is no plain force-push.
+3. **Pull request**: find the existing PR for the head ref or open a **draft** PR,
+   then verify its head equals the commit.
 
-| Code | Meaning |
-| --- | --- |
-| `invalid_source` | The task's `source.repo`/`ref` cannot be resolved. |
-| `workspace_invalid` | Malformed declaration: invalid git policy, unsafe ref or workdir. |
-| `workspace_not_found` | The agent has no repository. |
-| `repo_unavailable` | Clone, fetch, push or pull request failed: unreachable repository, missing GitHub access, or remote drift on push. |
-| `checkout_failed` | A ref or sha does not resolve in the fresh clone. |
-| `base_sha_mismatch` | The resolved ref disagrees with a pinned sha, or a handed-off commit is not a descendant of the base. |
-| `head_sha_mismatch` | A review or handoff head disagrees with the recorded head, or a pull request ref drifted from its pin. |
-| `review_required` | Merge was requested without a qualifying review. |
-| `review_stale` | The approving review predates the current revision head. |
-| `independence_violation` | Only the revision's own agent/run reviewed it — not mergeable. |
-| `revision_not_found` / `revision_not_ready` | Unknown ref, or the revision has not finished materializing. |
-| `merge_not_allowed` | The resolved delivery policy does not permit merging. |
+Use `retries` for a same-intent transport retry and `refreshes` to reconcile
+with the remote. `delivery_unresolved` means the remote result could not be
+proven yet.
 
-When they happen while a run prepares its workspace, these are also stored
-on the run as a structured error with `source: "control"` and
-`retryable: false`.
+## Merge gate
 
-# Streaming events
+Merge is a separate operation, `POST /api/deliveries/{id}/merge-requests`. The
+server evaluates the gate from stored rows plus a fresh remote observation. All
+of the following must hold:
 
-Source: /guides/streaming/
+- The ChangeSet is sealed, the Delivery is verified, and the remote head equals
+  the mapped commit equals `expected_head_sha`.
+- The expected Delivery `version` matches and the merge method is allowed.
+- Every required DelegationResult is pinned to this exact `subject_digest`, comes
+  from an independent child Session and is valid; no `request_changes` result
+  exists for this subject.
+- Required checks pass on the exact head and the PR is open. A draft PR merges
+  only if the request sets `mark_ready`.
+- `require_base_unchanged` is unsupported, so a policy that needs it blocks.
 
-## Event stream basics
+Otherwise the call fails with `gate_blocked` and reasons. The provider merge is
+called with `sha=expected_head_sha`, so a head that moved after the check is
+refused by the provider too. A new ChangeSet is a new subject: earlier approvals
+do not carry over (`stale_subject`).
 
-Every run emits canonical events over **Server-Sent Events (SSE)**. Events are streamed as JSON lines with stable IDs for resumption.
-
-```bash
-GET /v1/agents/{id}/runs/{runId}/stream
-Authorization: Bearer sbx_<key>
-```
-
-Each SSE frame carries:
-- **id** — line number in `events.jsonl` (use in `Last-Event-ID` to resume)
-- **event** — canonical event type
-- **data** — JSON payload
-
-Example:
-
-```text
-id: 1
-event: sbx.session_meta
-data: {"provider":"codex","account_id":"codex-1"}
-
-id: 2
-event: sbx.turn_started
-data: {"n":1}
-
-id: 3
-event: turn.started
-data: {}
-
-id: 4
-event: item.started
-data: {"item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc \"echo hello\""}}
-
-: keepalive
-
-id: 5
-event: item.completed
-data: {"item":{"id":"item_0","type":"command_execution","exit_code":0,"aggregated_output":"hello","status":"success"}}
-
-id: 6
-event: turn.completed
-data: {"usage":{"input_tokens":2100,"cached_input_tokens":1000,"output_tokens":450}}
-
-id: 7
-event: sbx.turn_finished
-data: {"status":"success","exit_code":0,"duration_s":2.5,"usage":{"input_tokens":2100,"cached_input_tokens":1000,"output_tokens":450}}
-```
-
-## Event types
-
-See [Event Reference](/reference/events/) for the canonical event catalog.
-
-## Keepalives and timeouts
-
-Every 15 seconds of inactivity, the server sends:
-
-```text
-: keepalive
-```
-
-This keeps the connection alive and helps detect dead links. If you don't see a frame (event or keepalive) for 60+ seconds, reconnect.
-
-## Reconnection with Last-Event-ID
-
-If the connection drops, reconnect and resume from where you left off:
-
-```bash
-curl -X GET \
-  "$SBX_BASE_URL/v1/agents/{id}/runs/{runId}/stream" \
-  -H "Authorization: Bearer sbx_<key>" \
-  -H "Last-Event-ID: 5"
-```
-
-The server resumes from event 6 (the next one after `id: 5`).
-
-**Bounded reconnect:** Most clients should reconnect at most 5–10 times. After repeated failures, fall back to polling `GET /v1/agents/{id}/runs/{runId}` to read the durable run state.
-
-## Python client example
+The SDK sends the server's pins for you:
 
 ```python
-from sbx.sdk import SbxClient
-
-client = SbxClient(api_key="sbx_...", base_url="$SBX_BASE_URL")
-
-agent = client.create_agent(text="...", provider="codex")
-agent_id = agent["agent"]["id"]
-run_id = agent["run"]["id"]
-
-# Watch events with automatic Last-Event-ID reconnect
-for event in client.watch(agent_id, run_id, read_timeout_s=120):
-    print(f"{event.type}: {event.data}")
-    if event.type == "sbx.turn_finished":
-        print(f"Turn finished: {event.data['status']}")
-        break
-
-# Fall back to polling if watch exhausts retries
-run = client.wait(agent_id, run_id=run_id)
-print(f"Final status: {run['status']}")
+delivery = client.deliveries.wait(client.deliveries.request(cs["id"])["id"])
+client.deliveries.merge(delivery["id"], method="squash")
 ```
 
-The client:
-- Handles SSE parsing
-- Tracks `Last-Event-ID` automatically
-- Retries up to a limit with exponential backoff
-- Falls back to `GET /v1/agents/{id}/runs/{runId}` after retries exhaust
-- Never re-sends a received event (deduplicated by ID)
+Humans cannot post verdicts. Review and test results come only from
+[child Sessions](/guides/child-sessions/).
 
-## curl example
+# Child Sessions
 
-```bash
-# Stream events with curl -N (no buffering)
-curl -N \
-  "$SBX_BASE_URL/v1/agents/{id}/runs/{runId}/stream" \
-  -H "Authorization: Bearer sbx_<key>"
+Source: /guides/child-sessions/
 
-# Resume from event 5
-curl -N \
-  "$SBX_BASE_URL/v1/agents/{id}/runs/{runId}/stream" \
-  -H "Authorization: Bearer sbx_<key>" \
-  -H "Last-Event-ID: 5"
+A **Delegation** creates an ordinary child Session with its own Worktree and
+native context. There is no special review subsystem: a review is a child
+Session whose result is validated against a contract.
+
+## Spawn
+
+`POST /api/sessions/{id}/delegations` takes a `role` (`review`, `test`,
+`research`, `security` or `integration`), optional `changeset_id` (the subject
+to pin), optional context, and optionally an explicit `result_kind`. In one
+transaction SBX creates the child Session, the Delegation, the pinned inputs and
+the first Message and Turn carrying the ResultContract, then dispatches it.
+The input ChangeSet is applied and committed locally as the child's baseline.
+
+Limits: depth 3 and 10 children per parent.
+
+```python
+d = client.delegations.spawn(session_id, "review", changeset_id=cs["id"])
+result = client.delegations.wait_result(d["delegation_id"])
 ```
 
-## JavaScript in the browser
+## ResultContracts
 
-Browser `EventSource` cannot send `Authorization` headers, so fetch + custom parsing is required:
-
-```javascript
-const apiKey = process.env.SBX_API_KEY;
-const baseUrl = process.env.SBX_BASE_URL;
-
-async function watchRun(agentId, runId, lastEventId = null) {
-  const headers = {
-    "Authorization": `Bearer ${apiKey}`,
-  };
-  if (lastEventId) {
-    headers["Last-Event-ID"] = lastEventId;
-  }
-
-  const response = await fetch(
-    `${baseUrl}/v1/agents/${agentId}/runs/${runId}/stream`,
-    { headers }
-  );
-
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${response.statusText}`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop(); // retain incomplete line
-
-    for (const line of lines) {
-      if (line === "") continue;
-      if (line.startsWith(":")) continue; // keepalive
-      console.log(line);
-    }
-  }
-}
-
-// Note: Standard fetch + EventSource cannot send Authorization.
-// Use fetch (as above), a library like `eventsource` with custom
-// headers (Node.js), or proxy through a Bearer-aware gateway.
-```
-
-## Polling fallback
-
-If SSE is unavailable or exhausts reconnects, poll the run:
-
-```bash
-GET /v1/agents/{id}/runs/{runId}
-```
-
-The response includes `status` and, once terminal, structured `error`. This is the durable source of truth.
-
-See [Errors](/reference/errors/) for error codes that can occur mid-stream.
-
-# Recovery
-
-Source: /guides/recovery/
-
-SBX is designed so a client can recover from its durable records instead of
-assuming what a timed-out request or lost browser session did.
-
-## Lost connection while a run is active
-
-1. Read `GET /v1/tasks/{id}`.
-2. Read `GET /v1/tasks/{id}/runs` when you need the exact run history.
-3. Resume the latest run stream with `Last-Event-ID`, or fall back to polling.
-
-The terminal run/task record is the source of truth.
-
-## Transport error on a mutation
-
-With the Python SDK, catch `SbxTransportError`. If it names a `check` read,
-perform that durable read before retrying. Keyed mutations can safely replay
-the original result.
-
-## Task failed
-
-Use the structured task/run error to decide the lane:
-
-- transient provider/capacity conditions: respect `retry_after` when present;
-- failed code execution: `client.tasks.retry(task_id, mode="run")`;
-- delivery-only failure: `client.tasks.retry(task_id, mode="delivery")`;
-- invalid repository/auth/config: fix the integration/request first, then retry.
-
-## Sandbox was reclaimed
-
-Durable task/run/revision/review records remain. A follow-up/retry may create
-or reattach the required runtime as the product contract allows; clients
-should not depend on the original sandbox id.
-
-## Multi-agent workflow recovery
-
-The lower-level workflow API can reattach durable workflow bindings with
-`client.recover(workflow_id)`. Use that only when your orchestrator truly uses
-workflow bindings; ordinary Task callers do not need a workflow id.
-
-# Examples
-
-Source: /guides/examples/
-
-The repository keeps the core documentation examples as normal Python files
-under `examples/docs/`. They use only the public `sbx.sdk` surface and read
-`SBX_BASE_URL` / `SBX_API_KEY` through `SbxClient`.
-
-| Example | Purpose |
+| Role | Default contract |
 | --- | --- |
-| `examples/docs/verify.py` | Verify authentication with `/v1/me`. |
-| `examples/docs/create_task.py` | Create a task, optionally on a repository. |
-| `examples/docs/watch_task.py` | Watch the current run and read durable task state. |
-| `examples/docs/follow_up.py` | Send a follow-up and wait for the new run. |
-| `examples/docs/deliver.py` | Deliver the latest revision. |
-| `examples/docs/review.py` | Record a revision-pinned verdict. |
-| `examples/docs/merge.py` | Request the review-gated merge. |
-| `examples/docs/full_workflow.py` | Task → delivery → review → merge. |
+| `review`, `security` | `ReviewAssessment`: `verdict` of `approve`, `request_changes` or `comment`, with findings and checks |
+| `test` | `TestResult`: `status` of `pass`, `fail` or `unknown`, with checks |
+| `research` | `ResearchResult`: summary and sources |
+| `integration` | `IntegrationResult`: `integrated`, `conflict` or `failed` |
+| other | `GenericResult` |
 
-Examples are kept deliberately small so they can be copied into automation
-without hidden framework dependencies.
+Subject-bound contracts echo the pinned `subject_digest`.
+
+## Publishing a result
+
+When the child's Turn ends, `delegation.publish_result` extracts the **last
+fenced JSON block** from its output and validates kind, schema and subject pin.
+
+- Exactly one immutable result is published. Missing or malformed output fails
+  the Delegation (`output_contract_invalid`) and never counts as approval.
+- For `TestResult`, the platform also runs the Project's declared checks in the
+  child sandbox and overrides the status to `fail` if any check fails.
+- Waiting for a Turn (`turns.wait`) and waiting for a validated result
+  (`delegations.wait_result`) are different calls.
+
+## Waits and cancel
+
+`POST /api/delegations/{id}/waits` registers a wait; an already-available result
+is checked in the same transaction, and satisfaction can queue a Message to the
+parent. Cancelling a Delegation or closing the parent cancels the subtree.
+
+Results feed the [merge gate](/guides/changes-and-delivery/) only when pinned to
+the exact ChangeSet subject.
+
+## Agent tools
+
+Agents inside a Session reach these operations through the private tool gateway
+(`/internal/tools/{tool}`) with Session-scoped grants, action allowlists and
+the same depth and child budgets. The grant ends with the Session. Product
+clients use `/api`, not this gateway.
+
+# Console
+
+Source: /guides/console/
+
+The Console is a React/Vite app in `console/` that talks only to `/api`. It is
+not served by `sbx serve`; run it next to the control plane.
 
 ```bash
-export SBX_BASE_URL=https://sbx.example.com
-export SBX_API_KEY=sbx_...
-
-uv run python examples/docs/verify.py
-uv run python examples/docs/create_task.py \
-  --repo https://github.com/owner/repo \
-  "Fix the flaky test"
+cd console
+npm ci
+SBX_API_PROXY_TARGET=http://127.0.0.1:8800 npm run dev   # http://localhost:5174
+npm run typecheck && npm test && npm run build
 ```
 
-CI compiles the files, validates their imports/public SDK methods and checks
-that every path referenced by the docs exists. The API/SDK implementation has
-its own request/response tests against the same public contract.
+Set `SBX_PUBLIC_URL` and `SBX_ALLOWED_ORIGINS` on the control plane to the
+origin you open in the browser; cookie mutations from other origins are
+rejected with `csrf_failed`.
+
+## Pages
+
+- **Home**: the setup checklist (account, Modal, GitHub, OpenCode Zen; Codex
+  optional) and the composer for a new Session. It defaults to the OpenCode
+  Harness, the preferred free model and Modal once a Modal Connection exists.
+- **Sessions**: the list and the Session view with Conversation, Activity,
+  Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
+  Services and Child Sessions tabs.
+- **Projects**: reusable repository and environment configuration.
+- **Connections**: add, validate, replace and disconnect, with write-only
+  secret fields.
+- **Settings**: identity, API keys (plaintext shown once) and preferences.
+
+## Rules the UI follows
+
+- It renders server fields and never re-derives turn outcomes, connection
+  health, merge eligibility or review validity. Merge sends the server's pins.
+- One store holds the snapshot and its watermark, replays events by sequence,
+  dedupes by `seq` and resyncs on gaps.
+- Secrets never enter web storage; caches are purged on logout.
+- Compute is never started implicitly. When the executor is unavailable, Files,
+  Terminal and Services show a diagnosis instead.
+- Retry buttons name what they retry: Turn, Delivery or validation.
+
+## Limits
+
+The Terminal polls for output. Service preview is not available because no
+preview origin is configured.
 
 # API overview
 
 Source: /api/overview/
 
-SBX exposes one public REST surface under `/v1`. It is the contract used by
-the web console and the Python SDK.
-
-## Base URL
-
-The operator gives you a control-plane origin such as:
-
-```text
-https://sbx.example.com
-```
-
-Every public endpoint is relative to that origin. The canonical machine
-contract is available at:
-
-```text
-GET /v1/openapi.json
-```
-
-The docs site also publishes the build-time copy at [/openapi.json](/openapi.json).
+There is **one business API**, under `/api`. `/healthz` and `/readyz` are
+operational endpoints. There are no versioned or alternate API prefixes. The
+reference is generated from `docs/specs/unified/openapi.yaml` and is browsable
+under [REST API (/api)](/reference/api/).
 
 ## Authentication
 
-Send the API key on every request:
+Two methods resolve to the same principal and permissions:
 
-```http
-Authorization: Bearer sbx_...
-```
+| Method | How | Extra requirements on mutations |
+| --- | --- | --- |
+| API key | `Authorization: Bearer sbx_key_…` | None |
+| Cookie session | `POST /api/auth/login` sets `sbx_session` (HttpOnly) and `sbx_csrf` | `X-CSRF-Token` header equal to the `sbx_csrf` cookie, and an allowed `Origin` |
 
-See [Authentication](/api/authentication/) for scopes and key lifecycle.
+Create a key with `POST /api/api-keys` (cookie session). The plaintext is
+returned once and only a hash is stored. Login requires a verified email, is
+rate limited to 10 failures per email per 15 minutes (`429 rate_limited`), and
+changing a password revokes cookie sessions.
 
-## Main task resources
+## Idempotency-Key
 
-| Resource | Purpose |
-| --- | --- |
-| `/v1/tasks` | Create/list task intent and read computed product state. |
-| `/v1/tasks/{id}/runs` | Queue and list follow-up runs. |
-| `/v1/tasks/{id}/revisions` | Read durable code results. |
-| `/v1/tasks/{id}/deliver` | Push/update a branch and optional pull request. |
-| `/v1/tasks/{id}/reviews` | Record exact-head review verdicts. |
-| `/v1/tasks/{id}/merge` | Merge only when the review gate is satisfied. |
+Every mutation requires an `Idempotency-Key` header (up to 200 characters), or
+the call fails with `validation_failed`.
 
-Use `/v1/tasks/preflight` when you want repository/provider/capability
-resolution without creating a task.
+- Same key and same body returns the original committed response.
+- Same key and a different body returns `409 idempotency_conflict`.
+- Records are kept for 7 days.
+- After a network error, retry with the **same** key. The SDK does this for you.
 
-## Error shape
+## Responses
 
-Non-2xx responses use the canonical shape:
+- `201` for immediate creates.
+- `202` for accepted long operations, with resource ids, `operation_id` or
+  `job_id` when meaningful, and `event_watermark`. Poll `/api/operations/{id}`
+  or follow events.
+- `204` for logout, which has no body.
+- Responses carry `X-Request-Id` and `Cache-Control: no-store`.
 
-```json
-{
-  "error": {
-    "code": "repo_unavailable",
-    "message": "repository cannot be reached",
-    "retryable": false,
-    "action": "fix_request"
-  }
-}
-```
-
-Some errors add `retry_after` and structured `details`. The complete catalog
-is generated from the runtime source in [Errors](/reference/errors/).
-
-## Idempotency and retries
-
-Mutating task operations accept `Idempotency-Key`. The Python SDK sends keys
-for mutations by default and surfaces bounded transport failures separately
-from API errors. See [Idempotency](/api/idempotency/) and
-[SDK errors](/sdk/python/errors/).
-
-## Lower-level resources
-
-`/v1/agents`, artifacts, workflow bindings, account administration and other
-advanced surfaces remain public where needed, but normal product integrations
-should express development work as Tasks rather than reconstruct the lower-
-level agent/workspace state machine.
-
-# Authentication
-
-Source: /api/authentication/
-
-All public API calls use a Bearer key:
-
-```http
-Authorization: Bearer sbx_...
-```
-
-## Scopes
-
-The main scopes are:
-
-- **`agents`** — task/agent/run/revision/delivery/review operations;
-- **`admin`** — administrative operations such as account verification and API-key management.
-
-The bootstrap key created by `sbx deploy` is the durable admin credential for
-the deployment. It is written locally to:
-
-```text
-~/.local/state/sbx/bootstrap.key
-```
-
-and backed by the deployment's bootstrap Secret.
-
-## Verify a key
-
-```bash
-curl -fsS "$SBX_BASE_URL/v1/me" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-The response identifies the calling key and its scopes without returning the
-key itself.
-
-## Minted API keys
-
-Admins can mint narrower keys through the console or `/v1/api-keys`. The
-plaintext token is shown once; the server stores only its hash.
-
-Current v0.1.1 behavior: runtime-minted keys are held by the live control
-plane and do **not** survive a control-plane restart/redeploy. Keep the
-bootstrap admin key in a secure operator location so you can mint replacement
-keys after an upgrade.
-
-Do not embed long-lived keys in URLs, repository files, issue comments or
-agent prompts.
-
-## Console handoff
-
-`sbx open` uses a one-time browser grant. The long-lived bootstrap key does
-not need to appear in the browser URL.
-
-# Task lifecycle
-
-Source: /api/task-lifecycle/
-
-The high-level lifecycle is:
-
-```text
-preflight (optional)
-→ create task
-→ run(s)
-→ revision
-→ delivery
-→ review
-→ merge
-```
-
-## Preflight
-
-`POST /v1/tasks/preflight` resolves repository/provider/account/model and
-checks declared capabilities without allocating a sandbox. Use it before a
-user commits an expensive or permission-sensitive task.
-
-## Create
-
-`POST /v1/tasks` stores the requested intent and the resolved execution
-choices, allocates the agent, and queues run 1.
-
-Normal callers should provide only what matters to the job:
+## Errors
 
 ```json
-{
-  "prompt": {"text": "Fix the flaky date test"},
-  "source": {"repo": "https://github.com/acme/api"},
-  "delivery": {"pull_request": {}}
-}
+{"error": {"code": "version_conflict", "category": "concurrency",
+           "message": "session version changed", "retryable": true,
+           "details": {"current_version": 4}, "request_id": "req_ab12cd34ef56ab12"}}
 ```
 
-Provider/account/model fields default to automatic selection.
+`retry_after` (also sent as `Retry-After`) and `action` appear when relevant.
+Request bodies are never echoed. Branch on `code`, not on `message`. See
+[Errors](/api/errors/) for all codes.
 
-## Follow-up runs
+## Concurrency and pagination
 
-`POST /v1/tasks/{id}/runs` sends another instruction to the same task agent.
-The default busy behavior queues the follow-up; callers can request rejection
-instead when they need strict one-at-a-time semantics.
+Updates carry an `expected_version`; a stale value returns `version_conflict`.
+Lists are bounded and ordered deterministically. Event listings use `after`
+and `limit` instead; see [Events](/api/events/).
 
-## Terminal state and retry
+## Reads do not do work
 
-Read `GET /v1/tasks/{id}` for product state. Retry is explicit:
+`GET` requests never provision compute or settle state. Files, terminals and
+services return `executor_unavailable` when no live lease exists; use
+`POST /api/sessions/{id}/executor/activations` to wake one.
 
-- `mode=run` — execute again;
-- `mode=delivery` — republish the existing result without rerunning code.
+## Not available
 
-Cancel is idempotent and never erases already-published repository state.
+`POST …/services/{name}/preview-grants` exists in the schema but returns an
+error because no dedicated preview origin is configured. Terminals use
+polling (`…/terminals/{id}/input` and `…/output`).
 
-## Revision and delivery
+# Events
 
-A repository run materializes a durable revision. Delivering the revision can
-push a work branch and create/update a pull request. The revision remains
-addressable after the live sandbox is gone.
+Source: /api/events/
 
-## Review and merge
+Each Session has an append-only journal. Sequence numbers (`seq`) are allocated
+inside the same transaction as the state change, so the journal and the
+projections never disagree. Runtime and browser caches are never authoritative.
 
-A review verdict pins an exact revision head. An independent approval is
-required for the review-gated merge. Any later revision makes the older
-approval stale.
+## Endpoint
 
-See [Repositories and delivery](/guides/repositories/) for the full code
-lifecycle and [REST reference](/reference/api/) for exact schemas.
+`GET /api/sessions/{session_id}/events`
 
-# Idempotency
-
-Source: /api/idempotency/
-
-Mutating task endpoints accept the `Idempotency-Key` request header. Reusing
-the same key for the same mutation replays the stored result instead of
-applying the operation twice.
-
-Use idempotency whenever a client might lose the response after the server has
-already persisted the mutation.
-
-## Python SDK
-
-`SbxClient` enables automatic idempotency for mutations by default:
-
-```python
-created = client.tasks.create(
-    "Fix the flaky test",
-    idempotency_key="job-2026-09-27-001",
-)
-```
-
-Pass `idempotency_key=False` for a call only when you intentionally do not
-want a key.
-
-## Transport failure rule
-
-A timeout/drop is not proof that the server did nothing. When the SDK raises
-`SbxTransportError`, inspect its `check` field and read the named durable
-resource before deciding to retry. The SDK automatically handles the safe
-keyed cases it owns.
-
-API errors (`SbxApiError`) are different: the server responded and returned a
-canonical error code/retry hint.
-
-# Pagination
-
-Source: /api/pagination/
-
-Not every v0.1.1 list endpoint uses the same paging contract.
-
-## Tasks
-
-`GET /v1/tasks` currently returns the caller's task list directly and does
-not expose a cursor. Do not invent cursor parameters for it.
-
-## Agents
-
-`GET /v1/agents` returns up to the route's fixed page size plus
-`next_cursor`. Pass that opaque/string cursor back as `?cursor=` until it is
-null.
-
-## Artifacts
-
-`GET /v1/artifacts` supports `cursor` and optional `limit`. The response
-contains `next_cursor`.
-
-## Rule for clients
-
-Treat a cursor as opaque even when the current implementation looks numeric.
-Only send pagination parameters documented by that endpoint's generated
-OpenAPI page. This avoids coupling clients to storage details.
-
-# Python SDK quickstart
-
-Source: /sdk/python/quickstart/
-
-The SDK is part of the `sbx` package:
-
-```python
-from sbx.sdk import SbxClient
-
-client = SbxClient()  # SBX_BASE_URL + SBX_API_KEY
-created = client.tasks.create(
-    "Fix the flaky date test",
-    source={"repo": "https://github.com/acme/api"},
-    delivery={"pull_request": {}},
-)
-
-task = client.tasks.wait(created.task.id)
-print(task.status)
-```
-
-`TaskCreated` contains the high-level task plus the allocated agent and first
-run. `tasks.wait()` returns the last observed Task; inspect its terminal
-status rather than assuming success.
-
-Use a context manager when the client is short-lived:
-
-```python
-with SbxClient() as client:
-    created = client.tasks.create("Explain this repository")
-    print(client.tasks.wait(created.task.id).status)
-```
-
-Next: [Task methods](/sdk/python/tasks/) and
-[Delivery/review](/sdk/python/delivery/).
-
-# Tasks with Python
-
-Source: /sdk/python/tasks/
-
-## Preflight
-
-```python
-check = client.tasks.preflight(
-    "Fix the flaky test",
-    source={"repo": "https://github.com/acme/api"},
-    delivery={"pull_request": {}},
-)
-```
-
-Preflight is side-effect free.
-
-## Create and wait
-
-```python
-created = client.tasks.create(
-    "Fix the flaky test",
-    source={"repo": "https://github.com/acme/api"},
-)
-task = client.tasks.wait(created.task.id, timeout_s=600)
-```
-
-## Follow up
-
-```python
-run = client.tasks.followup(created.task.id, "Add a regression test")
-run = client.runs.wait(created.agent.id, run.id)
-```
-
-## Cancel or retry
-
-```python
-client.tasks.cancel(created.task.id)
-client.tasks.retry(created.task.id, mode="run")
-client.tasks.retry(created.task.id, mode="delivery")
-```
-
-## Read state
-
-```python
-detail = client.tasks.get(created.task.id)
-runs = client.tasks.runs(created.task.id)
-```
-
-The SDK methods map directly to documented `/v1/tasks` operations; core task
-workflows do not require `client.http` calls.
-
-# Streaming with Python
-
-Source: /sdk/python/streaming/
-
-Task status is product-level state; run SSE is the live event stream.
-
-```python
-for event in client.runs.watch(created.agent.id, created.run.id):
-    print(event.id, event.type, event.data)
-```
-
-`client.runs.watch()` reconnects with bounded retry/resume semantics. For a
-specific lower-level recovery flow you can use `client.runs.resume(...)`.
-
-Always keep a polling fallback through `client.tasks.get()` or
-`client.runs.get()`: the durable record decides the final outcome even if the
-last SSE frame was lost.
-
-See [Streaming guide](/guides/streaming/) for event types and `Last-Event-ID`.
-
-# Revisions, delivery, review and merge
-
-Source: /sdk/python/delivery/
-
-After a repository task produces code:
-
-```python
-revision = client.tasks.revision(task_id)  # latest
-```
-
-Publish/update the branch and pull request:
-
-```python
-revision = client.tasks.deliver(
-    task_id,
-    pull_request={"title": "Fix flaky date test"},
-)
-```
-
-Record a review:
-
-```python
-review = client.tasks.review(
-    task_id,
-    verdict="approve",
-    revision=revision.id,
-    comment="Verified the regression test.",
-)
-```
-
-Then request the review-gated merge:
-
-```python
-merged = client.tasks.merge(task_id, revision=revision.id)
-```
-
-A stale or non-independent approval does not satisfy the gate. Read
-`client.tasks.reviews(task_id)` and the revision delivery state when a merge
-is refused.
-
-# Python errors and retries
-
-Source: /sdk/python/errors/
-
-```python
-from sbx.sdk import SbxApiError, SbxTransportError
-```
-
-## API errors
-
-`SbxApiError` means the server responded with the canonical error body:
-
-```python
-try:
-    client.tasks.create("Fix it", source={"repo": "bad://repo"})
-except SbxApiError as exc:
-    print(exc.status, exc.code, exc.retryable, exc.action, exc.retry_after)
-```
-
-Use the runtime-provided `retryable`, `action` and `retry_after` hints rather
-than guessing from the HTTP status alone.
-
-## Transport errors
-
-`SbxTransportError` means the bounded HTTP exchange failed (timeout, drop,
-refused connection). The mutation may already have happened server-side.
-Inspect `exc.check` and read durable state before retrying an uncertain
-mutation.
-
-Automatic idempotency protects the normal SDK mutation path; see
-[Idempotency](/api/idempotency/).
-
-# AI providers
-
-Source: /integrations/providers/
-
-SBX runs **official provider CLIs** under subscriptions you already own. A
-provider is usable only when its runtime is available and at least one account
-has passed the cloud verification probe.
-
-## Supported providers
-
-| Provider | Public status | Normal login path | Multi-turn | Multi-account |
-| --- | --- | --- | --- | --- |
-| Codex | Supported | `./sbx auth login --provider codex` | Yes | Yes |
-| Devin | Supported | `./sbx auth login --provider devin` | Yes | Yes |
-| Antigravity | Supported | `./sbx auth login --provider antigravity` | Yes | Yes |
-| Grok | Supported | `./sbx auth login --provider grok` | Yes | Yes |
-| OpenCode | Supported | `./sbx auth login --provider opencode` | Yes | Yes |
-| Claude | Experimental/advanced | explicit experimental path only | Adapter-dependent | Adapter-dependent |
-
-Exact installed CLI versions are frozen per deployment; inspect them with
-`./sbx status` rather than copying version numbers from documentation.
-
-The exact provider support tier, runtime distribution and built-in model defaults for this docs build are generated from `runtime.provider_runtime` at [`/provider-reference.json`](/provider-reference.json).
-
-## Connect an account
-
-```bash
-./sbx auth login --provider devin
-./sbx auth status
-```
-
-`auth login` runs the provider's own login/OAuth flow, captures the credential
-it writes, stores it in the deployment, then runs a cloud verification probe.
-Only a verified account becomes schedulable.
-
-To capture an existing provider login without signing in again:
-
-```bash
-./sbx auth import-existing --provider devin --from <credential-path>
-```
-
-Manual credential paths are an advanced migration tool, not the normal user
-flow.
-
-## Account selection
-
-Tasks default to automatic scheduling. SBX selects an eligible verified
-account with an available slot, taking cooldown/failover into account. Normal
-task callers do not need to know an account id.
-
-Pin `execution.provider`, `execution.account_id`, `model` or reasoning options
-only when reproducibility or policy requires it. The [Task guide](/guides/tasks/)
-shows the public request shape.
-
-## Reconnect and verify
-
-Use the same lifecycle from the console or CLI:
-
-```bash
-./sbx auth status
-./sbx auth verify --provider devin
-./sbx auth relink --provider devin
-./sbx auth logout --provider devin
-```
-
-Run `./sbx auth --help` / `./sbx auth <command> --help` for the exact flags
-supported by your installed version.
-
-## Provider-specific behavior
-
-Providers differ in their native session/resume protocol, but those details
-are normalized behind Task/Run. Keep provider-specific troubleshooting in
-[Provider notes](/integrations/provider-notes/) rather than encoding it into
-normal task payloads.
-
-# GitHub
-
-Source: /integrations/github/
-
-Public repositories do not need GitHub credentials. For private repositories,
-branch pushes, pull requests and merges, connect the **SBX GitHub App**.
-
-## Default: install the SBX GitHub App once
-
-From a configured self-hosted checkout:
-
-```bash
-./sbx github connect
-```
-
-Or open **Integrations → GitHub → Connect GitHub** in the web console.
-
-The browser goes directly to GitHub's official installation screen for the
-pre-registered SBX App:
-
-1. choose the GitHub account or organization;
-2. choose **All repositories** or **Only select repositories**;
-3. click **Install**.
-
-GitHub redirects back to SBX and the integration becomes **Connected**. This
-is the normal path: no user OAuth step, PAT, PEM download, Modal Secret or
-per-deployment GitHub App registration is required.
-
-If the installation already exists, SBX can bind the deployment to that
-installation without asking you to grant the same permissions again.
-
-## What SBX stores
-
-The self-hosted control plane keeps non-secret installation metadata and the
-binding needed to request tokens. When a task needs repository access, the
-trusted GitHub broker mints a short-lived installation token scoped to that
-installation/repository.
-
-The shared App private key is **not** stored in your self-hosted deployment or
-agent sandbox. Installation tokens are short-lived and are injected only for
-git/GitHub operations; they are not written into the repository's git config.
-
-## Repository permissions
-
-The public App uses the permissions required by the product workflow:
-
-- **Contents: read/write** — clone/fetch/push branches;
-- **Pull requests: read/write** — open/update/read pull requests;
-- **Metadata: read** — granted by GitHub.
-
-Use GitHub's installation settings to change which repositories the App may
-access.
-
-## Verify the connection
-
-```bash
-curl "$SBX_BASE_URL/v1/github/app" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-The response reports connection/installations without exposing tokens or
-private keys. In the console, **Integrations → GitHub** presents the same
-canonical state as Connected / Needs attention / Reconnect / Manage
-repositories.
-
-## Use GitHub from a task
-
-Declare the repository and delivery target; no GitHub token belongs in the
-task payload:
-
-```python
-from sbx.sdk import SbxClient
-
-client = SbxClient()
-created = client.tasks.create(
-    "Add request logging and tests",
-    source={"repo": "https://github.com/acme/private-api"},
-    delivery={"pull_request": {"title": "Add request logging"}},
-)
-```
-
-Use `client.tasks.preflight(...)` first when you want to verify repository
-read/push capability without allocating a sandbox.
-
-## Reconnect or revoke
-
-If an installation is suspended, removed, or no longer covers the requested
-repository, reconnect from the Integrations page or run `./sbx github
-connect` again. Admin APIs can sync or revoke recorded installations; see the
-[REST reference](/reference/api/).
-
-## Advanced alternatives
-
-The default public-App flow is intentionally the simplest path. Advanced
-self-hosters can instead use:
-
-- a **deployment-owned GitHub App** created through GitHub's Manifest flow;
-- an **operator-supplied GitHub App**;
-- a **PAT** as a compatibility/fallback token source.
-
-Those modes require managing their own long-lived secret material and should
-be used only when the public SBX App/broker model is not acceptable for the
-deployment. The exact configuration knobs are in
-[Configuration](/self-hosting/configuration/) and the generated API/CLI
-references.
-
-## Troubleshooting
-
-| Symptom | What to check |
+| Parameter | Meaning |
 | --- | --- |
-| `repo_unavailable` during preflight | The installation exists, covers the repository, and the canonical deployment is current. |
-| Clone works but push/PR does not | The installation must have Contents read/write and Pull requests read/write. |
-| Integration says Needs attention | Reconnect or manage the GitHub installation, then sync again. |
-| A moved/renamed repo fails | Re-run preflight so SBX canonicalizes the current repository/ref. |
+| `after` | Return events with `seq` greater than this (default 0). |
+| `limit` | Page size, 1 to 1000 (default 500). |
+| `types` | Comma-separated event types to include. |
+| `turn_id` | Only events for one Turn. |
+| `max_seconds` | SSE only: how long the stream stays open (max 600). |
 
-# Modal
+Without `Accept: text/event-stream` the response is JSON:
 
-Source: /integrations/modal/
-
-A self-hosted SBX uses your Modal workspace for the control plane, durable
-stores, provider runtime images, credential Secrets and agent Sandboxes.
-
-## Authentication
-
-`./sbx deploy` checks the current Modal workspace. In an interactive terminal
-with no existing Modal credentials it can launch the normal `modal token new`
-login flow and then continue the same deployment.
-
-For CI/non-interactive deployment, provide both `MODAL_TOKEN_ID` and
-`MODAL_TOKEN_SECRET` through your secret-management system.
-
-## Resources
-
-A deployment creates/uses:
-
-- the control-plane Modal App;
-- durable Dicts for product state;
-- provider runtime images;
-- bootstrap/account Secrets;
-- one Sandbox per live agent/task execution.
-
-Use `./sbx status`, `./sbx doctor` and the Modal dashboard for operational
-visibility. Avoid teaching normal Task clients about Modal object names; they
-are self-hosting details.
-
-## Billing boundary
-
-Modal compute/storage/network costs belong to the workspace owner. Provider
-usage is billed/limited by the provider subscription authenticated inside the
-sandbox. SBX does not resell either service.
-
-# Deploy SBX
-
-Source: /self-hosting/deploy/
-
-## Fresh clone → healthy platform
-
-A normal self-hosted installation starts with one command:
-
-```bash
-git clone https://github.com/soren-labs/sbx-browser.git
-cd sbx-browser
-./sbx deploy
+```json
+{"items": [], "next_after": 12, "event_watermark": 12}
 ```
 
-`./sbx` is the zero-bootstrap launcher. It finds or installs `uv`, uses a
-managed Python 3.12+ environment, and runs the CLI. On a real interactive
-terminal, `deploy` also opens Modal authentication when no workspace login is
-available.
+With `Accept: text/event-stream` each event is an SSE frame with `id` set to
+`seq`, `event` set to the type and `data` set to the JSON envelope. Comment lines
+(`: watermark N`, `: heartbeat`) are keep-alives to ignore. `Last-Event-ID`
+resumes like `after`; if both are given they must agree.
 
-`sbx deploy` is idempotent. On a fresh clone it:
+## Watermarks
 
-- initializes the local config;
-- verifies Modal authentication;
-- creates the bootstrap API-key secret and durable stores;
-- deploys the control plane and same-origin console;
-- deploys provider runtimes that are already configured;
-- verifies the live `/v1/me` endpoint;
-- records the deployment URL and release/version evidence locally.
+`event_watermark` is the highest committed `seq`. Initial reads return the
+snapshot and its watermark from one database snapshot, so replay from `after=W`
+is gap-free. Clients dedupe by `seq`.
 
-A **zero-provider deployment is healthy**. Provider and GitHub connection are
-post-deploy product steps, not deployment prerequisites.
+## Envelope
 
-## Connect integrations after deployment
+`id`, `workspace_id`, `session_id`, `seq`, `type`, `schema_version`,
+`recorded_at`, `observed_at`, `actor`, `source`, `causation_id`,
+`correlation_id`, `turn_id`, `execution_id`, `executor_lease_id`,
+`lease_generation`, `delegation_id`, `changeset_id`, `delivery_id`,
+`runtime_epoch`, `local_seq` and `payload`.
 
-Provider:
+## Event types
 
-```bash
-./sbx auth login --provider devin
-./sbx auth status
+| Family | Types |
+| --- | --- |
+| `session.` | `created`, `settings_changed`, `archived`, `unarchived`, `closed` |
+| `message.` | `accepted`, `routed`, `part_added`, `part_updated`, `completed` |
+| `turn.` | `queued`, `preparing`, `started`, `cancel_requested`, `succeeded`, `failed`, `cancelled`, `interrupted` |
+| `execution.` | `preparing`, `started`, `native_bound`, `observed_terminal`, `stopped` |
+| `tool.` | `started`, `updated`, `completed` |
+| `usage.`, `diagnostic.` | `usage.observed`, `diagnostic.reported` |
+| `executor.` | `bound`, `quiescing`, `released`, `unavailable` |
+| `worktree.` | `restored`, `changed`, `apply_requested`, `applied` |
+| `snapshot.` | `requested`, `ready`, `failed` |
+| `changeset.` | `capture_requested`, `ready`, `capture_failed` |
+| `delivery.` | `requested`, `progressed`, `blocked`, `succeeded`, `failed`, `cancelled`, `merge_requested`, `merged`, `merge_failed` |
+| `delegation.` | `created`, `waiting`, `result_published`, `failed`, `cancel_requested`, `cancelled` |
+| `service.` | `requested`, `ready`, `degraded`, `failed`, `stopped` |
+
+`message.part_updated` replaces a part's content by revision; apply it by
+replacement, never by appending, to avoid duplicating cumulative text. A turn is
+terminal at `turn.succeeded`, `turn.failed`, `turn.cancelled` or
+`turn.interrupted`; `execution.observed_terminal` with verdict `unknown`
+corresponds to an `outcome_unknown` Turn.
+
+## Errors
+
+`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal, or
+mismatched `after` and `Last-Event-ID`. The Console treats `invalid_cursor` and
+`history_reset_required` as the signal to fetch a fresh snapshot instead of
+replaying.
+
+# Errors
+
+Source: /api/errors/
+
+All errors use the shape `{"error": {"code", "category", "message", "retryable",
+"details", "request_id"}}`. This table is the canonical vocabulary.
+
+<!-- BEGIN GENERATED: error-codes -->
+| Code | Category | Status | Retryable |
+| --- | --- | --- | --- |
+| `not_found` | access | 404 | no |
+| `forbidden` | access | 403 | no |
+| `unauthenticated` | authentication | 401 | no |
+| `csrf_failed` | authentication | 403 | no |
+| `rate_limited` | throttle | 429 | yes |
+| `validation_failed` | request | 422 | no |
+| `version_conflict` | concurrency | 409 | yes |
+| `idempotency_conflict` | request | 409 | no |
+| `invalid_transition` | state | 409 | no |
+| `unsupported_capability` | capability | 422 | no |
+| `credential_invalid` | credential | 409 | no |
+| `connection_revoked` | credential | 409 | no |
+| `connection_in_use` | credential | 409 | no |
+| `connection_required` | credential | 409 | no |
+| `waiting_capacity` | capacity | 409 | yes |
+| `quota_exhausted` | capacity | 429 | no |
+| `runtime_incompatible` | runtime | 409 | no |
+| `executor_unavailable` | runtime | 409 | yes |
+| `context_unavailable` | context | 409 | no |
+| `context_mismatch` | context | 409 | no |
+| `outcome_unknown` | outcome | 409 | no |
+| `output_contract_invalid` | outcome | 422 | no |
+| `capture_failed` | changes | 409 | yes |
+| `stale_subject` | changes | 409 | no |
+| `remote_head_changed` | delivery | 409 | no |
+| `delivery_unresolved` | delivery | 409 | yes |
+| `gate_blocked` | delivery | 409 | no |
+| `history_reset_required` | events | 409 | no |
+| `invalid_cursor` | events | 400 | no |
+| `stale_fence` | fencing | 409 | no |
+| `operation_conflict` | runtime | 409 | no |
+| `internal_error` | platform | 500 | yes |
+<!-- END GENERATED: error-codes -->
+
+# Python SDK
+
+Source: /sdk/python/
+
+The `sbx` package ships a synchronous client over the `/api` surface, built on
+`httpx`.
+
+```python
+from sbx import SBXClient
+
+client = SBXClient("http://127.0.0.1:8800", api_key="sbx_key_YOUR_KEY")
+print(client.me()["workspaces"])
 ```
 
-GitHub (only when you need private repositories / PR delivery):
+`api_key` is sent as a Bearer token. To use a cookie session instead, call
+`client.login(email, password)`; the client then sends the CSRF header for you.
+`workspace_id` defaults to the first workspace of the principal.
 
-```bash
-./sbx github connect
+## `execute`
+
+```python
+result = client.execute(
+    "Add a CONTRIBUTING.md with one paragraph.",
+    repository={"full_name": "owner/repo"},
+    executor={"backend": "modal"},
+    deadline=1800,
+    on_event=lambda e: print(e["type"]),
+)
+session_id, turn = result["session_id"], result["turn"]
 ```
 
-Then:
+`execute` creates a Session (or sends a Message to `session_id`), then follows
+committed events until the accepted Turn is terminal. It accepts `project_id`,
+`project_version_id`, `harness`, `executor`, `repository`, `deadline` and
+`on_event`. It contains no agent loop and never treats a process exit as the
+outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
+`DeadlineExceeded` if the deadline passes.
+
+## Namespaces
+
+| Namespace | Methods |
+| --- | --- |
+| `projects` | `list`, `create`, `get`, `publish` |
+| `connections` | `list`, `add`, `get`, `replace`, `validate`, `disconnect`, `wait_health` |
+| `sessions` | `create`, `list`, `get`, `send`, `close`, `archive`, `executor`, `activate`, `release`, `export`, `events`, `stream` |
+| `messages` | `list` |
+| `turns` | `list`, `get`, `cancel`, `retry`, `acknowledge`, `wait` |
+| `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
+| `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
+| `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
+| `operations` | `get` |
+
+Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
+`models` and the raw `get`, `post` and `request`.
+
+## Events
+
+`sessions.events(session_id, after=0, follow=False)` replays the journal by
+sequence using the JSON endpoint; with `follow=True` it polls until the
+deadline. `sessions.stream(session_id, after=0)` reads the SSE stream.
+
+## Waiting helpers
+
+`turns.wait` (a Turn is terminal), `delegations.wait_result` (a validated
+DelegationResult exists), `changesets.wait_ready`, `deliveries.wait` and
+`connections.wait_health` are separate, explicit-deadline calls. Waiting for a
+Turn and waiting for a result are never interchangeable.
+
+## Errors and retries
+
+API failures raise `SBXError` with `code`, `message`, `status`, `details`,
+`retryable`, `request_id` and `action`. `OutcomeUnknown` and `DeadlineExceeded`
+subclass it.
+
+Network failures are retried with the same `Idempotency-Key` (3 retries with
+backoff), and 5xx responses to mutations are retried the same way. After the
+last attempt the client raises `SBXError` with code `transport_error`. Pass
+`idempotency_key=` to `sessions.send` to control the key yourself.
+
+## Example
+
+`examples/unified_mvp.py` runs the whole flow: pick the preferred model,
+execute a Turn, wait for the ChangeSet, spawn a review, deliver and print the
+pull request URL.
 
 ```bash
-./sbx doctor
-./sbx open
+SBX_BASE_URL=http://127.0.0.1:8800 SBX_API_KEY=sbx_key_YOUR_KEY \
+  python examples/unified_mvp.py owner/repo
 ```
 
-The durable bootstrap admin key is stored at
-`~/.local/state/sbx/bootstrap.key` (mode `0600`). `sbx open` uses a one-time
-browser handoff so the long-lived key does not need to appear in a URL.
+# CLI
 
-## What gets created
+Source: /reference/cli/
 
-Names can be overridden by configuration, but a deployment typically owns:
+The exact generated help for every command is published as
+[cli-help.txt](/cli-help.txt). Client defaults are listed in
+[config-reference.json](/config-reference.json).
 
-- one Modal control-plane App;
-- per-provider runtime images as providers are enabled;
-- durable Dicts for tasks/runs/accounts/revisions/workspaces/workflows;
-- the bootstrap/admin Secret and per-account credential Secrets;
-- the web console served from the control-plane origin.
+## Client configuration
 
-Inspect the resolved non-secret configuration with:
+| Field | Environment | Default |
+| --- | --- | --- |
+| `base_url` | `SBX_BASE_URL` (or `--base-url`) | `http://127.0.0.1:8800` |
+| `api_key` | `SBX_API_KEY` | none; stored by `sbx auth login` |
+| `workspace_id` | `SBX_WORKSPACE_ID` | first workspace of the principal |
+
+`sbx auth login --email you@example.com` reads the password from stdin or a
+prompt, signs in, mints an API key and writes it to
+`$XDG_CONFIG_HOME/sbx/client.json` (default `~/.config/sbx/client.json`) with
+mode `0600`. Environment variables override the file.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `auth login` | Sign in and store an API key. |
+| `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
+| `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `opencode_zen`, `codex`. Secrets come from stdin or `--credential-file`, never argv. |
+| `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. |
+| `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
+| `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
+| `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
+| `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
+| `operations show ID` | Long-operation status. |
+| `serve [--host H] [--port P]` | Run the control plane and workers (operator). |
+| `migrate` | Apply database migrations (operator). |
+
+Output is JSON. Errors print a JSON object with `code`, `message` and `action`
+to stderr and exit with status 1.
+
+`serve` and `migrate` read the control-plane variables described in
+[Configuration](/self-hosting/configuration/); they are equivalent to
+`python -m control.composition serve` and `migrate`.
+
+# Providers
+
+Source: /reference/providers/
+
+Harness support is declared in pinned manifests. The machine-readable table is
+[provider-reference.json](/provider-reference.json).
+
+| Provider | Support tier | Credentials |
+| --- | --- | --- |
+| `opencode` | supported | `opencode_zen` Connection |
+| `codex` | experimental | optional `codex` Connection |
+| `claude` | disabled | n/a |
+| `devin` | disabled | n/a |
+| `grok` | disabled | n/a |
+| `antigravity` | disabled | n/a |
+
+A disabled provider cannot be selected. Capability values are `supported`,
+`unsupported` or `unknown`, and `unknown` is never treated as supported. For
+OpenCode, `event_stream`, `model_discovery`, `native_resume`, `native_state_export`
+and `usage` are supported; `interrupt`, `steer`, `interactive_approval` and
+`credential_writeback` are not.
+
+Use `GET /api/harnesses` for the installed catalog, `GET /api/models` for
+Connection-scoped model availability and `GET /api/executor-backends` for
+executors. These reads have no side effects.
+
+A Harness switch creates a new linked Session with an explicit summary Message.
+SBX never silently translates hidden context between CLIs.
+
+# Configuration
+
+Source: /self-hosting/configuration/
+
+The control plane reads its configuration from the environment at start-up.
 
 ```bash
-./sbx config
-./sbx status
+sbx serve --host 127.0.0.1 --port 8800        # API + workers in one process
+python -m control.composition serve            # same thing
+python -m control.composition worker           # workers only
+python -m control.composition migrate          # apply migrations and exit
 ```
 
-## Configuration
+Each command applies pending migrations first, under an advisory lock. `serve`
+runs `SBX_WORKER_THREADS` job workers and a one-minute timer that releases idle
+executors.
 
-Most users should deploy the defaults first, then change only the settings
-they understand. `~/.config/sbx/config.toml` and documented `SBX_*`
-environment variables control names, concurrency, timeouts, account slots,
-resources and advanced integrations.
+## Required
 
-See [Configuration](/self-hosting/configuration/) for the full operator
-reference.
+| Variable | Meaning |
+| --- | --- |
+| `SBX_DATABASE_URL` | PostgreSQL connection string. The only business authority. |
+| `SBX_VAULT_KEYS` | Credential keyring, `KID:BASE64KEY,KID2:BASE64KEY2`. The first key encrypts; older keys still decrypt after rotation. Keep it outside the database and backups. |
+| `SBX_RUNTIME_MASTER_KEY` | Hex-encoded master key from which per-lease runtime keys are derived. Not stored in the database. |
 
-## Upgrade
+The process exits at start-up if any of these is missing.
 
-```bash
-git pull --ff-only
-./sbx upgrade
-./sbx doctor
-```
+## Optional
 
-Upgrade preserves durable Modal Dict state and rebuilds/redeploys the runtime
-components. If you separately front the product with a statically bundled
-edge worker, redeploy that worker after upgrading so it serves the new
-Console bundle. See [Upgrade and uninstall](/self-hosting/upgrade-and-uninstall/).
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SBX_DATA_DIR` | `./.sbx-data` | Local blobs, git work area, local executor state and the mail sink. |
+| `SBX_PUBLIC_URL` | `http://localhost:8800` | Base URL used in verification and reset links. |
+| `SBX_ALLOWED_ORIGINS` | the public URL | Comma-separated origins allowed for cookie mutations. |
+| `SBX_COOKIE_SECURE` | `0` | Set to `1` to mark cookies `Secure` (use behind HTTPS). |
+| `SBX_EXECUTORS` | `local,modal` | Enabled executor backends. |
+| `SBX_RESEND_API_KEY` | unset | Send email through Resend. Without it, mail is written to `$SBX_DATA_DIR/mail/` (directory `0700`, files `0600`). |
+| `SBX_WORKER_THREADS` | `4` | In-process job worker threads. |
 
-## Platform vs provider health
+Generate keys with `openssl rand -base64 32` for a vault key and
+`openssl rand -hex 32` for the master key.
 
-Deployment health and provider health are intentionally separate:
+## Health
 
-- the platform can be healthy with zero providers;
-- a missing/expired provider login makes that provider unavailable, not the
-  whole control plane unhealthy;
-- only verified accounts are eligible for scheduling.
+`GET /healthz` returns `{"ok": true}`. `GET /readyz` returns `503` when the
+database cannot be read.
 
-Use `./sbx doctor` for platform checks and `./sbx auth status` for provider
-account state.
+## Client variables
 
-## Documentation site
+`SBX_BASE_URL`, `SBX_API_KEY` and `SBX_WORKSPACE_ID` configure the CLI and SDK
+only; see [CLI](/reference/cli/).
 
-The docs are a separate static Astro/Starlight site:
+## Running in production
 
-```bash
-make docs-check
-make docs-deploy
-```
+Run behind HTTPS and set `SBX_COOKIE_SECURE=1`. `sbx serve` does not serve the
+Console; host the built `console/` bundle and route `/api` to the control plane,
+and set `SBX_PUBLIC_URL` and `SBX_ALLOWED_ORIGINS` to the Console's origin.
+Back up PostgreSQL and the vault keys separately: the database alone cannot
+decrypt credentials, and the keys alone hold no data.
 
-Set `DOCS_SITE_URL=https://docs.example.com` when building the canonical
-production copy so canonical links and the sitemap use the final domain. See
-[Custom domains](/self-hosting/custom-domain/).
-
-## Uninstall
-
-```bash
-./sbx uninstall
-```
-
-Use the purge flags only when you intentionally want to erase durable data or
-credentials. Review [Upgrade and uninstall](/self-hosting/upgrade-and-uninstall/)
-before destructive cleanup.
-
-# Security model
+# Security
 
 Source: /self-hosting/security/
 
-## Trust boundary
+## Identity
 
-A Modal Sandbox is the primary **execution isolation boundary** for an agent
-run. Provider CLIs execute inside that sandbox; the control plane, Modal
-workspace credentials and long-lived operator secrets stay outside it.
+- Passwords use argon2id; unknown accounts cost the same work as known ones.
+- Email verification and reset tokens are single use and stored only as hashes.
+  Verification expires after 24 hours.
+- Cookie sessions are `HttpOnly`, `SameSite=Lax` and `Secure` when configured.
+  Cookie mutations need a CSRF token and an allowed `Origin`.
+- API keys (`sbx_key_` prefix) are stored hashed; plaintext is shown once.
+- Changing or resetting a password bumps `auth_epoch` and revokes cookie
+  sessions.
+- Cross-workspace access is reported as `not_found`; holding an ID grants
+  nothing.
 
-Some provider CLIs run with their own confirmation/sandbox layer relaxed
-because SBX relies on the outer isolated VM for execution containment. Treat a
-sandboxed coding agent as untrusted code with access only to the credentials
-and resources explicitly injected for that task.
+## Vault
 
-## Provider credentials
+CredentialVersions are encrypted with AES-256-GCM. The associated data binds
+the workspace, Connection, version and format, so ciphertext cannot be moved
+between records. The keyring (`SBX_VAULT_KEYS`) lives outside the database.
+Replacing or disconnecting a Connection bumps a revocation epoch that
+invalidates grants, and the broker refuses to decrypt revoked material.
 
-Normal connection uses the provider's official login flow:
+## No ambient credentials
 
-```bash
-./sbx auth login --provider devin
-```
+SBX never reads provider or cloud credentials from the host environment, host
+files or other users. A Session uses only Connections in its own workspace.
+The runtime builds the CLI's environment from an explicit allowlist rather than
+inheriting `os.environ`.
 
-SBX captures the provider credential, stores it in the managed account
-credential path and verifies it before scheduling. Credential contents are not
-returned by account APIs or printed by normal status commands.
+| Secret | Where plaintext goes |
+| --- | --- |
+| Modal token | the executor worker only |
+| GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
+| OpenCode Zen key | the CLI's isolated HOME, scrubbed after each Turn |
+| Codex `auth.json` | an isolated `CODEX_HOME`, scrubbed after each Turn |
 
-At sandbox creation, only the selected account's credential is restored into
-the provider's expected home/config location. Provider-specific credential
-environment variables are stripped from child-command environments where the
-runtime supports that protection.
+Checkpoints and environment snapshots exclude credential files, and the runtime
+refuses archives that escape their directory.
 
-OAuth providers can refresh/rotate their own credential. SBX can capture that
-write-back and update the managed account atomically.
+## Redaction
 
-Manual credential-file import exists for migration/advanced automation, but it
-is not the default user workflow.
+Known secrets and secret-looking structured fields are redacted before runtime
+evidence is spooled, and before public errors are emitted. Request validation
+errors never echo input. ChangeSet capture excludes credential paths and fails on
+known-secret patterns. Audit records store the target, version, purpose, actor
+and result, never secret material.
 
-## GitHub credentials
+## Runtime channel
 
-The default GitHub integration is the pre-registered SBX GitHub App. The user
-grants repository access once on GitHub; a trusted broker holds the App's
-long-lived private key and mints **short-lived installation tokens** when the
-self-hosted deployment needs repository access.
+The control plane talks to each runtime with HMAC-signed grants derived from
+`SBX_RUNTIME_MASTER_KEY`, scoped to one lease and generation with a 5-minute
+TTL. A stale generation is rejected (`stale_fence`). The runtime offers no
+generic exec; mutating operations are a fixed set.
 
-The shared App private key is not copied into the self-hosted control plane or
-agent sandbox. Installation tokens are not written into repository config.
+## Limits to know
 
-Deployment-owned Apps and PATs are advanced alternatives. If you choose them,
-you own their long-lived secret storage/rotation.
-
-## Public API keys
-
-`/v1` uses:
-
-```http
-Authorization: Bearer sbx_...
-```
-
-- plaintext is shown only when the key is created;
-- the running server stores the hash, not plaintext;
-- normal task work uses the `agents` scope;
-- account/API-key/GitHub administration requires `admin`.
-
-The durable operator recovery credential is the bootstrap admin key created by
-`sbx deploy` at `~/.local/state/sbx/bootstrap.key`, backed by the deployment
-bootstrap Secret.
-
-Current v0.1.1 limitation: keys minted through `/v1/api-keys` or the Console
-are held in the running control plane and are cleared on restart/redeploy.
-Use the bootstrap key to mint replacement scoped keys after an upgrade.
-
-`sbx open` uses a one-time browser grant so the long-lived bootstrap key does
-not have to appear in a Console URL.
-
-## Secrets requested by tasks
-
-Sandbox resource requests are allowlisted by the operator. Do not expose a
-Modal Secret/MCP entry just because a task names it; configure only the
-resources your deployment intentionally allows coding agents to receive.
-
-## Artifact leak prevention
-
-Artifact/workspace packaging fails closed when it detects known credential
-values or credential/key-material files. This reduces accidental exfiltration
-through durable artifacts but is not a substitute for keeping secrets out of
-the repository/workspace in the first place.
-
-If a credential enters git history, rotate it and remove it from history; do
-not rely on artifact filtering to make the credential safe again.
-
-## Operator rules
-
-1. Keep Modal tokens and the bootstrap admin key in an operator secret store.
-2. Connect only provider/GitHub accounts the deployment actually needs.
-3. Grant the GitHub App only the repositories required by the product.
-4. Prefer scoped runtime API keys for clients; rotate/re-mint them when needed.
-5. Keep task resource Secret/MCP allowlists minimal.
-6. Never put real tokens in prompts, screenshots, logs, issues or documentation examples.
-
-## Vulnerability reporting
-
-Do not open a public issue containing exploit details or credentials. Use the
-repository's private GitHub vulnerability-reporting channel when available, or
-contact the maintainers privately. Include affected version, reproduction and
-impact with secret values redacted.
-
-# State and backup
-
-Source: /self-hosting/state-and-backup/
-
-## Durable state
-
-SBX stores task/run/account/workspace/workflow/artifact/revision-related state
-in deployment-owned durable stores. Upgrades are expected to preserve those
-stores unless you explicitly purge them.
-
-The exact store names are deployment details; use `sbx status` and the Modal
-workspace rather than hard-coding them into clients.
-
-## Operator credentials
-
-Preserve these separately from application data:
-
-- Modal workspace authentication used by the operator/CI;
-- the local durable bootstrap admin key (`~/.local/state/sbx/bootstrap.key`);
-- provider logins through the managed account lifecycle;
-- GitHub installation/broker binding metadata managed by the product.
-
-Runtime-minted API keys are currently in-memory and should not be treated as
-backup material; mint them again from the bootstrap admin key after a control-
-plane restart when needed.
-
-## Deployment evidence
-
-Local SBX state records the deployed app URL/version and frozen provider CLI
-version evidence. Keep your repository/tag plus that state when you need a
-reproducible rollback.
-
-## Before destructive uninstall
-
-Use non-purge uninstall when you only want to stop compute. Purge flags erase
-state/credentials intentionally and should be treated as destructive backup
-boundaries.
-
-# Custom domains
-
-Source: /self-hosting/custom-domain/
-
-A deployment works on its native Modal URLs. Stable product/documentation
-hostnames are optional but recommended for long-lived installations.
-
-## Control plane and console
-
-The simplest setup is to point users at the native control-plane URL printed
-by `sbx deploy`; the console is same-origin with `/v1`.
-
-If you front it with the repository's Cloudflare Worker, remember that the
-worker bundles the `web/` console at deploy time. After an SBX upgrade,
-redeploy the worker as well or the custom domain can serve an older Console
-while `/v1` points at the new backend.
-
-See [Edge](/self-hosting/edge/) for the worker configuration.
-
-## Documentation
-
-Build/deploy the docs with their final canonical URL:
-
-```bash
-DOCS_SITE_URL=https://docs.example.com make docs-deploy
-```
-
-Then configure DNS/custom-domain routing at your hosting/DNS provider to the
-printed docs origin. Verify:
-
-```text
-/
-/llms.txt
-/llms-full.txt
-/openapi.json
-/version.json
-/sitemap-index.xml
-```
-
-all resolve on the public hostname before publishing it as the canonical docs
-URL.
+Project code and the official CLI can read any credential explicitly placed in
+their environment, so SBX does not claim tamper-proof attestation. Provider-side
+token revocation on disconnect is not performed. Preview origins and OAuth
+sign-in are not implemented.
 
 # Troubleshooting
 
 Source: /troubleshooting/
 
-Start with the layer that failed. Do not treat every provider/repository error
-as a broken deployment.
-
-## Platform/deployment
-
-### Modal is not authenticated
-
-On an interactive fresh clone, `./sbx deploy` can launch the normal Modal
-login flow. You can also authenticate explicitly:
-
-```bash
-modal token new
-./sbx deploy
-./sbx doctor
-```
-
-CI/non-interactive deployments need valid `MODAL_TOKEN_ID` and
-`MODAL_TOKEN_SECRET`.
-
-### Platform is healthy but no provider is available
-
-A zero-provider deployment is valid. Connect one after deployment:
-
-```bash
-./sbx auth login --provider devin
-./sbx auth status
-```
-
-Provider runtime/account problems should degrade that provider, not require
-manually creating provider Secrets just to make the core platform healthy.
-
-### Custom domain shows an older Console than the backend
-
-If the native Modal control-plane URL has the new UI but a Cloudflare edge
-hostname does not, redeploy `deploy/sbx-edge`: the optional worker bundles
-static `web/` files at deploy time. See [Custom domains](/self-hosting/custom-domain/).
-
-## Authentication and provider accounts
-
-### API key is rejected
-
-Verify with:
-
-```bash
-curl -i "$SBX_BASE_URL/v1/me" \
-  -H "Authorization: Bearer $SBX_API_KEY"
-```
-
-If the control plane was restarted, a runtime-minted key may have been
-cleared. Use the durable bootstrap admin key to mint a new scoped key.
-
-### Provider says Needs attention / `auth_invalid`
-
-```bash
-./sbx auth verify --provider devin
-./sbx auth relink --provider devin --relogin
-```
-
-Only verified accounts are schedulable. Avoid repeated Task retries until the
-integration itself is healthy.
-
-### `account_unavailable` / `provider_unavailable`
-
-The requested provider/model/account currently has no eligible verified slot.
-Prefer automatic account selection, wait for `retry_after` when present, or
-connect/repair another account. Reduce concurrency when the provider itself is
-throttling the subscription.
-
-## Repository / GitHub
-
-### `repo_unavailable` during preflight/create
-
-Check:
-
-1. the GitHub integration is Connected;
-2. the installation covers the target repository;
-3. the deployment is running the latest expected version;
-4. preflight on the exact repository/ref succeeds.
-
-```bash
-./sbx github connect
-```
-
-Do **not** work around a failed `delivery.pull_request` preflight by silently
-creating a different kind of task. Fix the repository capability first.
-
-### Clone works but push/PR fails
-
-The installation must cover the repo and have Contents read/write + Pull
-requests read/write. Reconnect/manage the GitHub installation, then rerun
-preflight.
-
-### Review is stale / merge is refused
-
-A later code revision changed the delivered head after the recorded review.
-Review the newest revision, then merge again. Never bypass the exact-head gate
-by copying an old approval to a new SHA.
-
-## Task/run failures
-
-### Task is queued for a long time
-
-Read the task detail and structured run error, then check provider slots and
-account status. A busy follow-up normally queues behind the active run; this is
-not the same as a failed Task.
-
-### Run timed out
-
-Increase the appropriate **turn** timeout only when the work genuinely needs
-more wall time; do not confuse it with post-session idle retention or the
-sandbox hard timeout. Exact config fields/defaults are generated in
-[`/config-reference.json`](/config-reference.json).
-
-### Retry the right lane
-
-- code/execution failure → `client.tasks.retry(task_id, mode="run")`;
-- publish/PR-only failure after good code → `mode="delivery"`;
-- invalid auth/repository/config → repair the integration/request before retrying.
-
-See [Recovery](/guides/recovery/).
-
-## Streaming/network
-
-SSE disconnects are recoverable. Resume with `Last-Event-ID` or use the SDK's
-run watch/resume behavior. The durable Task/Run record remains the terminal
-source of truth even when the last event was lost.
-
-For an uncertain mutation timeout, catch `SbxTransportError`, read the
-suggested durable `check` resource, then decide whether a retry is necessary.
-Idempotency keys protect normal SDK mutation retries.
-
-## Artifacts / secret detection
-
-If artifact collection returns `artifact_secret`, remove the sensitive content
-from the workspace and rotate it if it was a real credential. The artifact
-collector intentionally fails closed rather than persisting suspected secret
-material.
-
-## Diagnostics for operators
-
-```bash
-./sbx status
-./sbx doctor
-./sbx auth status
-```
-
-Then inspect Modal application logs/dashboard when the control plane itself is
-unhealthy. Prefer these product/status surfaces over reading Dict/Secret
-contents directly.
-
-## Still blocked?
-
-Collect the affected SBX version, task/run id, canonical structured error code
-and the smallest reproduction. Do not include API keys, provider credentials,
-GitHub tokens or Secret contents.
-
-# Deterministic agent workflow
-
-Source: /agents/guide/
-
-This page is intentionally operational. Do not inspect SBX source code or
-infer hidden routes. If a documented call fails, use the documented error and
-reference pages rather than guessing an internal endpoint.
-
-## Required
-
-```text
-SBX_BASE_URL
-SBX_API_KEY
-TARGET_REPOSITORY   # when the task modifies a repository
-```
-
-## 1. Verify auth
-
-```http
-GET /v1/me
-Authorization: Bearer $SBX_API_KEY
-```
-
-Success: HTTP 200 with the calling key/scopes.
-
-Failure: stop and fix credentials. Do not create work with an invalid key.
-
-## 2. Preflight the intended task
-
-```http
-POST /v1/tasks/preflight
-Authorization: Bearer $SBX_API_KEY
-Content-Type: application/json
-
-{
-  "prompt": {"text": "<goal>"},
-  "source": {"repo": "<TARGET_REPOSITORY>"},
-  "delivery": {"pull_request": {}}
-}
-```
-
-Success: `ok: true` and resolved source/execution/capability evidence.
-
-Failure: follow the canonical error `action`; do not work around a missing
-repository/provider/GitHub capability by silently changing the requested
-workflow.
-
-## 3. Create the task
-
-Use `POST /v1/tasks` with the same task intent and a stable
-`Idempotency-Key` for your job.
-
-Persist the returned `task.id`, `agent.id` and first `run.id`.
-
-## 4. Observe progress
-
-Primary durable read:
-
-```http
-GET /v1/tasks/{task_id}
-```
-
-Optional live stream:
-
-```http
-GET /v1/agents/{agent_id}/runs/{run_id}/stream
-```
-
-Resume the SSE stream with `Last-Event-ID` after a disconnect. The durable
-task/run record decides terminal outcome.
-
-## 5. Follow up when needed
-
-```http
-POST /v1/tasks/{task_id}/runs
-{"prompt":{"text":"<follow-up>"}}
-```
-
-Wait for the new run to finish before assuming the requested change exists.
-
-## 6. Read the durable revision
-
-```http
-GET /v1/tasks/{task_id}/revisions/latest
-```
-
-Use the revision id/head as the identity of the code result.
-
-## 7. Deliver
-
-```http
-POST /v1/tasks/{task_id}/deliver
-{}
-```
-
-Confirm the returned revision records the pushed branch / pull request.
-
-## 8. Review independently
-
-Record a verdict pinned to the delivered revision:
-
-```http
-POST /v1/tasks/{task_id}/reviews
-{"verdict":"approve","revision":"<revision_id>"}
-```
-
-The same agent/run that produced the revision cannot satisfy the independent
-merge gate.
-
-## 9. Merge
-
-```http
-POST /v1/tasks/{task_id}/merge
-{"revision":"<revision_id>"}
-```
-
-If the review is stale, review the new revision instead of bypassing the
-gate.
-
-## 10. Recover or clean up
-
-- uncertain mutation → read durable state before retrying;
-- run failure → use `/retry` with the appropriate run/delivery lane;
-- active work no longer needed → `/cancel`;
-- lower-level live agent no longer needed → close it through the documented
-  agent/console flow when appropriate.
-
-Use [/reference/errors/](/reference/errors/),
-[/openapi.json](/openapi.json) and [/llms-full.txt](/llms-full.txt) for exact
-schemas and recovery details.
+| Symptom | Cause and action |
+| --- | --- |
+| Process exits: `SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required` | Export all three before `serve`, `worker` or `migrate`. |
+| `GET /readyz` returns `503` | The control plane cannot read PostgreSQL; check `SBX_DATABASE_URL`. |
+| Cannot sign in after registering | Email verification is required. Without `SBX_RESEND_API_KEY` the link is in `$SBX_DATA_DIR/mail/*.json`. Tokens expire after 24 hours. |
+| `429 rate_limited` on login | 10 failures per email in 15 minutes. Wait and retry. |
+| `csrf_failed` in the Console | The browser origin is not in `SBX_ALLOWED_ORIGINS`, or the CSRF token is missing. Set the public URL and origins to the Console address. |
+| `validation_failed` mentioning `Idempotency-Key` | Every mutation needs the header. The SDK and CLI add it. |
+| Connection stays `unverified` | Validation is a background Job; make sure workers run (`serve` runs them). `reauth_required` means the provider rejected the credential: replace it. |
+| Turn waits with `connection_required` or `credential_invalid` | Add or replace the Modal, GitHub or OpenCode Zen Connection. |
+| Turn waits with `waiting_capacity` | Connection capacity is in use; the Turn continues when a slot frees. |
+| `executor_unavailable` on Files, Terminal or Services | No live executor. Reads never wake compute; activate it from the Session. |
+| Turn ended `outcome_unknown` | SBX could not prove the result. Inspect the Worktree, then acknowledge the Turn before retrying. See [Sessions and Turns](/guides/sessions-and-turns/). |
+| Delivery blocked with `remote_head_changed` | The remote branch holds another head. Reconcile with a refresh; SBX never force-pushes. |
+| Merge fails with `gate_blocked` | A required result is missing, stale or for a different `subject_digest`, checks are not green, or the head moved. Read the reasons in the response. |
+| `409 connection_in_use` on disconnect | Live leases or Executions use the Connection. Release them first. |
+| Preview grant fails | No preview origin is configured; preview is not available. |
+| `invalid_cursor` on events | The cursor is ahead of the journal or `after` and `Last-Event-ID` disagree. Fetch a fresh snapshot and resume from its watermark. |

@@ -1,85 +1,78 @@
 ---
-title: Core concepts
-description: The public Task → Run → Revision → Delivery → Review model, plus the lower-level objects beneath it.
+title: Concepts
+description: The SBX vocabulary - Session, Message, Turn, Execution, ExecutorLease, Worktree, Snapshot, ChangeSet, Delivery, Delegation, Connection and Job.
 ---
 
-## Task
+IDs are opaque, prefixed identifiers (for example `sess_…`, `turn_…`). An ID
+conveys type, never authorization: every owned record carries a `workspace_id`
+and every lookup checks it. Access to another workspace's resource is reported
+as `not_found`.
 
-A **Task** is the user-facing unit of work. It contains a prompt and may also
-declare a source repository, execution preference, delivery target, metadata,
-structured-output contract or advanced resources.
+## Work
 
-Normal callers start here: `POST /v1/tasks` or `client.tasks.create(...)`.
-SBX resolves automatic choices — repository ref, provider, verified account,
-model and other defaults — and stores the resulting evidence on the task.
+**Session** (`sess_`). The durable conversation and work. It has a lifecycle
+(`open`, `archived`, `closed`) and a role (`developer`, `review`, `test`,
+`research`, `security`, `integration`, `coordinator`). A Session may belong to a
+Project (pinned to an immutable ProjectVersion) or be projectless with an
+explicit repository.
 
-## Run
+**Message** (`msg_`). An accepted piece of authored input. Routing is `note`,
+`queue` (default) or `steer`. Accepted user content is immutable.
 
-A **Run** is one execution turn on the task's agent. The first run is created
-with the task; follow-ups create additional runs on the same agent and resume
-the provider's native session when supported.
+**Turn** (`turn_`). One accepted work request, ordered within the Session. States:
+`queued → preparing → running → succeeded | failed | cancelling → cancelled | interrupted`.
+At most one Turn is active per Session. A `reason` explains waiting or failure
+(for example `waiting_capacity`, `credential_invalid`, `outcome_unknown`).
 
-Run state is durable. Use task polling for product state and the run's SSE
-stream when you need live events.
+**Execution** (`exec_`). One attempt to perform a Turn on an ExecutorLease:
+operational evidence, not another unit of work.
 
-## Revision
+## Compute and state
 
-A **Revision** is the durable code result of a repository run. It pins the
-repository, base commit, head commit and result artifact needed to inspect or
-redeliver the work after the live sandbox is gone.
+**ExecutorLease** (`lease_`). A replaceable allocation of compute (`modal` or
+`local`). Many historical leases may exist; at most one is live per Session.
+Leases carry a generation that fences stale writers.
 
-Each later code-changing run can materialize a new revision.
+**Worktree** (`wt_`). The Session's single logical mutable filesystem. It
+survives lease replacement because work is restored from a checkpoint, never
+reset to the repository's current main.
 
-## Delivery
+**Snapshot** (`snap_`). An immutable manifest, either `environment` (reusable
+setup for a Project version) or `checkpoint` (private Session state). Credential
+files are excluded, and process, PTY and socket state is never claimed as
+restored.
 
-**Delivery** publishes a revision: normally a work branch and optionally a
-pull request. It records the pushed head, PR metadata and merge result.
-Delivery can be automatic or explicitly triggered after the run.
+## Results
 
-## Review
+**ChangeSet** (`cs_`). An immutable captured subject with a manifest, per-file
+digests, a binary patch and a `subject_digest`. Capture runs after a successful
+Turn or on request. A capture from a failed, cancelled or interrupted Turn is
+recorded as `salvage`.
 
-A **Review** is a durable verdict (`approve`, `request_changes` or `comment`)
-pinned to a revision's exact head. If a newer revision changes the head, the
-old approval becomes stale. A review produced by the same agent/run as the
-revision is not considered independent for merge.
+**Delivery** (`dlv_`). The intent and outcome of delivering exactly one
+ChangeSet to an external target (a GitHub branch and draft pull request), with
+append-only step evidence. Merge is a separate, gated operation.
 
-## Integration
+**Delegation** (`del_`). A parent's assignment of work to an ordinary child
+Session with pinned inputs and a ResultContract. The validated, immutable
+**DelegationResult** is the only thing that counts as a review or test verdict.
 
-An **Integration** is an external capability connected to the deployment:
+## Credentials and infrastructure
 
-- a verified provider account that can execute tasks;
-- a GitHub App installation that covers private repositories/PR operations;
-- Modal itself, which hosts the self-hosted control plane and sandboxes.
+**Connection** (`con_`). One external authority of kind `modal`, `github`,
+`opencode_zen` or `codex`. Its secret material lives in encrypted
+**CredentialVersions**; replacing a credential appends a version.
 
-The console presents these as connection state and next action rather than raw
-credential files.
+**Job** (`job_`). A durable internal continuation or effect, claimed by a worker
+with a fenced generation. Jobs are not user work; status is visible through
+`GET /api/jobs/{id}` and `GET /api/operations/{id}`.
 
-## Provider and account
+**Harness**. The thin adapter to an official CLI, described by a versioned
+capability manifest. See [Providers](/reference/providers/).
 
-A **Provider** identifies a supported coding-agent CLI/runtime. An **Account**
-is one verified login for that provider. Automatic scheduling picks an
-eligible account with a free slot; most callers should not pin account ids.
+## Authority
 
-## Lower-level objects
-
-These are real public/advanced objects but are not the normal starting point:
-
-- **Agent** — the live/resumable sandbox session underneath a task;
-- **Sandbox** — the isolated Modal execution environment;
-- **Workspace** — lower-level repository/git state for an agent;
-- **Artifact** — persisted package/diff/handoff material;
-- **Workflow** — durable binding/recovery metadata for multi-agent orchestration.
-
-Use these surfaces only when the higher-level Task API does not express the
-advanced operation you need.
-
-## Durable vs ephemeral
-
-**Durable:** task/run terminal state, account metadata, revision/review data,
-workflow metadata and stored result artifacts.
-
-**Ephemeral:** the live sandbox process tree, temporary provider home state,
-short-lived GitHub tokens and other execution-only material.
-
-The durable contract is what lets clients recover after sandbox or
-control-plane restarts without guessing what happened.
+Only application commands mutate state, and each resource has one writer.
+Reads never settle or launch work: for example `GET` on files or services
+reports `executor_unavailable` instead of waking compute. The committed Session
+journal explains history; typed relational projections decide current state.

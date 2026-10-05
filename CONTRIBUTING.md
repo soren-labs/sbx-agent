@@ -1,97 +1,51 @@
 # Contributing
 
-Thanks for helping. A few project-specific rules matter more than style —
-read them before your first PR.
-
 ## Dev environment
 
 ```bash
-uv sync            # python >=3.12, hatchling build, dev deps in [dependency-groups]
-make lint          # ruff check + ruff format --check (spike/ is excluded)
-make test          # pytest tests/unit tests/integration — MUST pass with no
-                   # cloud credentials and no Modal connection
-make test-e2e      # Playwright: web console vs a real local control plane (Node 22)
-make docs-build    # build the documentation website in docs-site/
+uv sync              # Python >= 3.12, dev deps in [dependency-groups]
+make lint            # ruff check + ruff format --check (spike/ is excluded)
+make test            # pytest tests/unit tests/integration — embedded PostgreSQL,
+                     # local Executor, recorded fixtures; no cloud credentials
+make console-check   # Console typecheck, vitest, build (Node 22)
+make docs-check      # docs-site build + link checks
 ```
 
-Local control plane without Modal, with the web console mounted at `/`:
+## Architecture rules
 
-```bash
-make console-dev   # real /v1 control plane (SBX_BACKEND=local) + fake provider
-                   # CLIs + a demo git repo; prints the URL and a dev API key
-make docs-dev      # documentation site with hot reload (docs-site/)
-```
+- The RFC in `docs/architecture/unified/` is normative; `docs/specs/unified/` documents the
+  implemented behaviour and must be updated with it.
+- PostgreSQL is the only business authority. Each resource has one writer
+  (`docs/specs/unified/authority.md`); side effects run as Jobs with claims and fences.
+- `tests/unit/test_layer_boundaries.py` enforces import direction
+  (`domain` ← `application` ← `api`/`jobs`/`integrations`/`executors`; `runtime` and
+  `protocol` never import `control`).
+- The OpenAPI document is generated (`make openapi`); `tests/unit/test_openapi_drift.py` fails
+  on drift.
+- `import modal` is confined to `control/executors/modal.py` and
+  `control/integrations/connectors/modal.py`; tests never reach a real Modal client.
 
-In the console, prompts containing `hang`, `slow`, `fail` or `auth` select the
-matching fake-CLI scenario, so every run state can be reproduced by typing.
+## Harnesses
 
-`make test` must never open a real Modal connection — `modal` is only
-imported in Modal-specific paths (the backend, Modal-backed stores, image
-build, deploy app, host-run e2e gates) and tests must not trigger them.
+Each provider CLI implements the `Harness` Protocol in `runtime/harnesses/protocol.py`
+(`describe`, `prepare`, `start_turn`/`resume_turn`, `normalize`/`finish`, `classify_outcome`,
+`native_state_paths`, `release`). Manifests are pinned in
+`docs/specs/unified/harnesses/manifests.json`. Recorded native streams live in
+`tests/fixtures/harnesses/<provider>/`; the fake official CLI is in `tests/fakes/official/`.
+Normalizers must never invent usage, and a stale resume id must fail the Turn rather than fork.
 
-## Test isolation (hard rules)
+## Test isolation and secrets
 
-- `tests/conftest.py` strips host credentials and isolates `HOME`/XDG. Tests
-  must not read, print, or inherit real credentials.
-- `LocalProcessBackend.exec` inherits only a whitelist (`PATH`, `HOME`,
-  `LANG`) plus `SandboxSpec.env` / explicit `env=` — tests pass every needed
-  variable explicitly.
-- Provider fakes live in `tests/fakes/` with scenario env vars
-  (`FAKE_CODEX_SCENARIO`, `FAKE_AGY_SCENARIO`, …: `success` / `resume` /
-  `nonzero` / `hang` / `badjson` / `slow` / `auth_invalid`). Extend
-  **scenarios**, never rename events, exit codes, or path semantics.
-- Token/password/secret fields in fixtures are always the literal
-  `REDACTED`.
-
-## Provider adapters
-
-Each provider implements the frozen `AgentAdapter` Protocol
-(`runtime/runner/adapter.py`):
-
-```python
-provider: str
-credential_files: tuple[str, ...]  # relative to $HOME, restored @0600
-
-
-def prepare_home(home, model): ...  # config/instructions before turn 1
-def first_turn_argv(prompt, model): ...  # argv for turn 1
-def resume_argv(prompt, session_id): ...  # argv for follow-ups
-def translate(raw_line): ...  # native line -> 0..n canonical events
-def extract_session_id(events): ...  # native session id, if seen
-def health_from(exit_code, stderr_tail): ...  # ok|auth_invalid|rate_limited|unknown
-```
-
-Adapter expectations (learned from real-CLI spikes — keep them honest):
-
-- One process per turn, **stdin closed**; prompt as positional arg, never `-`.
-- Unknown-but-parseable JSON lines return the NOOP event (forward
-  compatibility); only truly unparseable lines count as bad JSON.
-- A stale resume id must fail the turn — never silently fork the session
-  onto a new native id.
-- Strip alternate auth channels from the child env (`ACP_BACKEND`,
-  `DEVIN_*`, `WINDSURF_*`, `GROK_*`, `XAI_*` as applicable).
-- Fixtures for new providers follow `tests/fixtures/events/<provider>/*.jsonl`.
-
-## Real-credential tests
-
-- Real-account gates (`tests/e2e_modal/*_gate.py`, `spike/`) run on the host
-  with your own credentials. They must: check prerequisites up front and exit
-  `SKIP` (code 2) rather than fake a PASS; never print credential material
-  (sha256-16 fingerprints and booleans only); capture `export-credentials`
-  output without echoing; and leave zero sandboxes behind.
-- A missing credential is `CREDENTIAL_DEFERRED`, never a PASS — and never a
-  failure for unrelated lanes.
-
-## Contracts
-
-`docs/contracts/*`, `control/backend.py`, `control/ports.py` and
-`runtime/runner/adapter.py` are frozen per release. Behaviour that crosses
-packages must match the canonical blocks (`canonical-yaml` / `x-canonical`);
-`tests/unit/test_contract_consistency.py` enforces it. Contract changes are
-proposed in an issue, not edited in a feature PR.
+- `tests/conftest.py` strips host credentials (including `SBX_TEST_*` and `SBX_BENCHMARK_*`)
+  and isolates `HOME`/XDG. Tests pass every needed variable explicitly.
+- Token/password/secret fields in fixtures are always the literal `REDACTED`.
+- Opt-in live scripts (`make smoke-modal`, `make check-connectors`, `make mvp-acceptance`) read
+  credentials from the environment, never print them, and must terminate every sandbox they
+  create. `make mvp-acceptance` writes redacted evidence and scans API responses, logs, the
+  database and the pull request for credential values.
 
 ## PR checklist
 
-- `make lint` and `make test` green, no cloud credentials required.
-- No credentials, tokens, or real account data anywhere in the diff.
-- Docs updated if behaviour, env vars, commands, or the provider matrix moved.
+- `make lint`, `make test` and `make console-check` green without cloud credentials.
+- No credentials, tokens or real account data anywhere in the diff.
+- Specs/docs updated when behaviour, env vars, commands or routes change.

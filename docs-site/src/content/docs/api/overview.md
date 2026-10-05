@@ -1,80 +1,72 @@
 ---
 title: API overview
-description: The public /v1 contract, authentication, errors and task-oriented resource model.
+description: The single /api surface - authentication, CSRF, Idempotency-Key, status codes, errors and pagination.
 ---
 
-SBX exposes one public REST surface under `/v1`. It is the contract used by
-the web console and the Python SDK.
-
-## Base URL
-
-The operator gives you a control-plane origin such as:
-
-```text
-https://sbx.example.com
-```
-
-Every public endpoint is relative to that origin. The canonical machine
-contract is available at:
-
-```text
-GET /v1/openapi.json
-```
-
-The docs site also publishes the build-time copy at [/openapi.json](/openapi.json).
+There is **one business API**, under `/api`. `/healthz` and `/readyz` are
+operational endpoints. There are no versioned or alternate API prefixes. The
+reference is generated from `docs/specs/unified/openapi.yaml` and is browsable
+under [REST API (/api)](/reference/api/).
 
 ## Authentication
 
-Send the API key on every request:
+Two methods resolve to the same principal and permissions:
 
-```http
-Authorization: Bearer sbx_...
-```
+| Method | How | Extra requirements on mutations |
+| --- | --- | --- |
+| API key | `Authorization: Bearer sbx_key_…` | None |
+| Cookie session | `POST /api/auth/login` sets `sbx_session` (HttpOnly) and `sbx_csrf` | `X-CSRF-Token` header equal to the `sbx_csrf` cookie, and an allowed `Origin` |
 
-See [Authentication](/api/authentication/) for scopes and key lifecycle.
+Create a key with `POST /api/api-keys` (cookie session). The plaintext is
+returned once and only a hash is stored. Login requires a verified email, is
+rate limited to 10 failures per email per 15 minutes (`429 rate_limited`), and
+changing a password revokes cookie sessions.
 
-## Main task resources
+## Idempotency-Key
 
-| Resource | Purpose |
-| --- | --- |
-| `/v1/tasks` | Create/list task intent and read computed product state. |
-| `/v1/tasks/{id}/runs` | Queue and list follow-up runs. |
-| `/v1/tasks/{id}/revisions` | Read durable code results. |
-| `/v1/tasks/{id}/deliver` | Push/update a branch and optional pull request. |
-| `/v1/tasks/{id}/reviews` | Record exact-head review verdicts. |
-| `/v1/tasks/{id}/merge` | Merge only when the review gate is satisfied. |
+Every mutation requires an `Idempotency-Key` header (up to 200 characters), or
+the call fails with `validation_failed`.
 
-Use `/v1/tasks/preflight` when you want repository/provider/capability
-resolution without creating a task.
+- Same key and same body returns the original committed response.
+- Same key and a different body returns `409 idempotency_conflict`.
+- Records are kept for 7 days.
+- After a network error, retry with the **same** key. The SDK does this for you.
 
-## Error shape
+## Responses
 
-Non-2xx responses use the canonical shape:
+- `201` for immediate creates.
+- `202` for accepted long operations, with resource ids, `operation_id` or
+  `job_id` when meaningful, and `event_watermark`. Poll `/api/operations/{id}`
+  or follow events.
+- `204` for logout, which has no body.
+- Responses carry `X-Request-Id` and `Cache-Control: no-store`.
+
+## Errors
 
 ```json
-{
-  "error": {
-    "code": "repo_unavailable",
-    "message": "repository cannot be reached",
-    "retryable": false,
-    "action": "fix_request"
-  }
-}
+{"error": {"code": "version_conflict", "category": "concurrency",
+           "message": "session version changed", "retryable": true,
+           "details": {"current_version": 4}, "request_id": "req_ab12cd34ef56ab12"}}
 ```
 
-Some errors add `retry_after` and structured `details`. The complete catalog
-is generated from the runtime source in [Errors](/reference/errors/).
+`retry_after` (also sent as `Retry-After`) and `action` appear when relevant.
+Request bodies are never echoed. Branch on `code`, not on `message`. See
+[Errors](/api/errors/) for all codes.
 
-## Idempotency and retries
+## Concurrency and pagination
 
-Mutating task operations accept `Idempotency-Key`. The Python SDK sends keys
-for mutations by default and surfaces bounded transport failures separately
-from API errors. See [Idempotency](/api/idempotency/) and
-[SDK errors](/sdk/python/errors/).
+Updates carry an `expected_version`; a stale value returns `version_conflict`.
+Lists are bounded and ordered deterministically. Event listings use `after`
+and `limit` instead; see [Events](/api/events/).
 
-## Lower-level resources
+## Reads do not do work
 
-`/v1/agents`, artifacts, workflow bindings, account administration and other
-advanced surfaces remain public where needed, but normal product integrations
-should express development work as Tasks rather than reconstruct the lower-
-level agent/workspace state machine.
+`GET` requests never provision compute or settle state. Files, terminals and
+services return `executor_unavailable` when no live lease exists; use
+`POST /api/sessions/{id}/executor/activations` to wake one.
+
+## Not available
+
+`POST …/services/{name}/preview-grants` exists in the schema but returns an
+error because no dedicated preview origin is configured. Terminals use
+polling (`…/terminals/{id}/input` and `…/output`).

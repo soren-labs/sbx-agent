@@ -39,3 +39,7 @@ auth.json
 # lives under $SBX_STATE_DIR or is replayed via SBX_VERSIONS_LOCK; never
 # a committed artifact.
 runtime/versions.lock.json
+
+# Local acceptance artifacts and runtime data
+.evidence/
+.sbx-data/

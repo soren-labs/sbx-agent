@@ -1,3 +1,0 @@
-{"type": "session.started", "session_id": "devin-session-01a09b11", "model": "swe-2-high"}
-{"type": "turn.started", "turn": 1}
-{"type": "turn.failed", "error": {"message": "fake_devin nonzero scenario"}}

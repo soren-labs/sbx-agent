@@ -20,29 +20,29 @@ We aim to acknowledge reports within a few days. There is no bug bounty.
 
 | Version | Supported |
 | --- | --- |
-| `0.1.x` (latest tag: `v0.1.1`, public alpha) | ✅ fixes land on the release branch |
+| unreleased unified architecture (`main`) | ✅ |
+| `0.1.x` (pre-unification, latest tag `v0.1.1`) | ❌ superseded |
 | anything older | ❌ upgrade |
 
-This is a public alpha; only the newest release tag receives fixes.
+This is pre-1.0 software; only the current `main` receives fixes.
 
 ## Security model — what to know before deploying
 
-- **The Modal Sandbox is the security boundary**, not the provider CLI's own
-  sandboxing. Provider CLIs run with approvals/sandbox bypassed *inside* the
-  VM (e.g. codex's `--dangerously-bypass-approvals-and-sandbox`) because
-  in-CLI sandboxing is unreliable under gVisor. Anything an agent does is
-  contained by the sandbox VM, which holds **no Modal token and no platform
-  credentials**.
-- **Your credentials stay in your workspace.** Provider credential files are
-  imported into your Modal workspace (Secrets / Dict blobs), injected into
-  sandboxes at `0600`, and stripped from the CLI child environment. API keys
-  (`sbx_<key>`) are stored server-side as `sha256` only; plaintext is shown
-  once at creation.
-- **`/v1` is the public surface** (Bearer). `/api/*` is the internal legacy
-  dashboard API (HTTP Basic, one shared deployment credential) — do not
-  expose it or build on it; see README §API surfaces.
-- **Artifact collection fails closed**: suspected secret material in a
-  workspace snapshot aborts with `409 artifact_secret`; nothing is persisted.
+- **The sandbox is the security boundary**, not the provider CLI's own
+  sandboxing. Official CLIs run with in-CLI approvals bypassed *inside* the
+  Executor sandbox (Modal or local); the sandbox holds no control-plane
+  database access, vault keys or other users' credentials.
+- **Credentials are encrypted CredentialVersions.** Connection secrets are
+  envelope-encrypted with `SBX_VAULT_KEYS`, never returned by `/api`, and
+  delivered to `sbx-runtime` only as lease-scoped grants for the Turn that
+  needs them. API keys are stored as hashes; plaintext is shown once.
+- **One authenticated surface, `/api`.** Browser sessions use HttpOnly cookies
+  plus `X-CSRF-Token` on mutations; programmatic access uses API keys. Every
+  resource is owner/workspace scoped and other owners' resources return
+  `404 not_found`.
+- **Shipping is gated.** Deliveries push only the exact immutable ChangeSet
+  subject; merges re-check the exact-subject gate (fresh review/check
+  evidence, remote head) before acting.
 
 ## Rules that protect you (and this project)
 
@@ -50,6 +50,6 @@ This is a public alpha; only the newest release tag receives fixes.
   token — see `.gitignore`.
 - Fixtures, tests, logs, PRs and issues must use `REDACTED` placeholders, and
   e2e tooling records only sha256-16 fingerprints.
-- Rotate any credential that may have leaked — `POST /v1/accounts/{id}/verify`
-  re-probes an account, `DELETE /v1/accounts/{id}` removes it, and
-  `DELETE /v1/api-keys/{id}` revokes an API key.
+- Rotate any credential that may have leaked: replace the Connection's
+  credential (`sbx connections replace`, or **Settings → Connections**) or
+  disconnect it, and revoke exposed API keys in **Settings → API keys**.

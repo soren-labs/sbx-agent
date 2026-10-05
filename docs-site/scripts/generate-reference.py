@@ -10,9 +10,7 @@ from typing import Any
 SITE = Path(__file__).resolve().parents[1]
 ROOT = SITE.parent
 PUBLIC = SITE / "public"
-PUBLIC_ZH = PUBLIC / "zh-cn"
 PUBLIC.mkdir(parents=True, exist_ok=True)
-PUBLIC_ZH.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -22,7 +20,6 @@ from sbx.config import reference  # noqa: E402
 
 def write(name: str, text: str) -> None:
     (PUBLIC / name).write_text(text, encoding="utf-8")
-    (PUBLIC_ZH / name).write_text(text, encoding="utf-8")
 
 
 def provider_reference() -> list[dict[str, Any]]:

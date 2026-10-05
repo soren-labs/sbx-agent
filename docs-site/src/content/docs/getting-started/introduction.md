@@ -1,77 +1,47 @@
 ---
 title: Introduction
-description: The SBX product model, deployment boundary, and public interfaces.
+description: What SBX is, how its parts fit together, and what it deliberately does not do.
 ---
 
-SBX is **self-hosted orchestration for coding-agent CLIs**. You submit a
-**task** — a prompt, optionally a repository and delivery target — and SBX
-runs an official provider CLI in an isolated Modal Sandbox. The control plane
-keeps durable task/run state and turns repository work into revisions that can
-be delivered, reviewed and merged.
+SBX runs **official provider CLIs** inside isolated executors and keeps the
+durable record of the work in PostgreSQL. Its durable identity is the
+**Session**; the machine that happens to run a Turn is a replaceable
+**ExecutorLease**; the provider boundary is a thin **Harness** adapter to the
+official CLI.
 
-## Who it is for
+## Architecture at a glance
 
-- teams that want one task API in front of several coding-agent subscriptions;
-- developers who want resumable cloud tasks without manually managing sandboxes;
-- multi-agent systems that need durable revisions, exact-head reviews and deterministic recovery;
-- self-hosters who want credentials, execution and state in their own Modal workspace.
-
-## The public model
-
-| Concept | What it means |
+| Part | Role |
 | --- | --- |
-| **Task** | The user intent: prompt, optional source repo, execution preference and delivery policy. |
-| **Run** | One turn on the task's agent. Follow-ups create more runs on the same native session. |
-| **Revision** | A durable repository result pinned to exact base/head commits. |
-| **Delivery** | The published branch and optional pull request for a revision. |
-| **Review** | A verdict pinned to an exact revision head; newer revisions make older reviews stale. |
-| **Integration** | A verified provider login or GitHub installation the control plane can use. |
+| Control plane (`control/`) | One FastAPI application serving the `/api` business surface plus `/healthz` and `/readyz`. Run with `sbx serve` or `python -m control.composition serve`. |
+| PostgreSQL | The only business authority: journal, projections, Jobs, encrypted credential versions. |
+| Job workers | Run slow or recoverable effects (provisioning, validation, capture, delivery) under fenced claims. They run in-process with `serve`, or alone with `worker`. |
+| Executors | `modal` (production) and `local` (development). Both speak the same `sbx-runtime` protocol. |
+| `sbx-runtime` | Supervises operations, processes and files in the sandbox and spools evidence. It contains no reasoning loop. |
+| Console | A React web app that talks only to `/api`. |
+| Python SDK and `sbx` CLI | Clients of the same `/api` surface. |
 
-The lower-level Agent, Sandbox, Workspace, Artifact and Workflow objects are
-still available for advanced integrations, but normal callers should start
-with `/v1/tasks` and `client.tasks`.
+## What SBX does
 
-## Deployment boundary
+- Accepts a Message, queues a Turn, provisions an executor if needed, runs the
+  CLI, and records committed events for every step.
+- Keeps the Worktree across lease replacement by sealing private checkpoints.
+- Captures immutable ChangeSets, delivers them to GitHub as a branch and draft
+  pull request, and gates merge on the exact reviewed subject.
+- Delegates review, test, research, security and integration work to ordinary
+  child Sessions with validated ResultContracts.
+- Stores external credentials as write-only Connections, encrypted at rest.
 
-A self-hosted deployment contains:
+## What SBX does not do
 
-- **Control plane** — FastAPI, task/run ledger, scheduler, revisions/reviews and the web console;
-- **Modal durable stores** — state that survives sandbox teardown and control-plane restarts;
-- **Modal Sandboxes** — isolated execution environments running the provider's official CLI;
-- **Provider accounts** — verified logins captured through the provider's own authentication flow;
-- **Optional GitHub installation** — short-lived repository tokens minted from the installed SBX GitHub App.
-
-SBX does not proxy model APIs or resell provider quota. Provider CLIs run
-under your own subscriptions.
-
-## Public interfaces
-
-Use these in preference order:
-
-1. **Web console** for interactive operation and inspection.
-2. **Python SDK (`sbx.sdk.SbxClient`)** for programmatic task workflows.
-3. **REST `/v1` API** for language-neutral integrations.
-4. **CLI** for deployment, provider/GitHub connection and operator tasks.
-
-The legacy/internal `/api/*` surface is not a public integration contract.
-
-## Security boundary
-
-The Modal Sandbox is the execution boundary. Provider credentials are
-materialized only where the provider CLI needs them. Public API calls use a
-Bearer `sbx_…` key; administrative operations require the `admin` scope.
-GitHub installation tokens are short-lived and are not persisted into cloned
-repositories.
-
-## Version and status
-
-Current package/docs line: **v0.1.1, public alpha**. Use the deployment's
-`sbx status` output and the docs site's `/version.json` to verify which
-release the documentation describes. `/v1` may still evolve before 1.0.
+- It does not call model APIs itself or implement a tool-selection loop.
+- It does not read credentials from the host environment or files.
+- It does not offer preview origins or OAuth sign-in with providers yet.
+  Preview-grant requests return an error naming the missing capability, and
+  credentials are entered manually.
+- Terminals poll for output; there is no WebSocket attach.
 
 ## Next
 
-- [Quick start](/getting-started/quick-start/)
-- [Core concepts](/concepts/)
-- [Task lifecycle](/guides/tasks/)
-- [Python SDK](/sdk/python/quickstart/)
+Start with the [Quick start](/getting-started/quick-start/), then read
+[Concepts](/concepts/).

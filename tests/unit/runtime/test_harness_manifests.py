@@ -28,7 +28,7 @@ def test_every_manifest_declares_all_capabilities_truthfully() -> None:
 
 
 def test_opencode_normalizes_recorded_stream_and_never_invents_usage() -> None:
-    fixture = ROOT / "tests/unit/runner/fixtures/opencode/success.jsonl"
+    fixture = ROOT / "tests/fixtures/harnesses/opencode/success.jsonl"
     harness = OpenCodeHarness("1.18.29")
     from runtime.harnesses.protocol import TurnContext
 

@@ -1,10 +1,9 @@
 {
-  "product": "sbx-browser",
+  "product": "sbx",
   "version": "0.1.1",
-  "api_version": "v1",
-  "channel": "latest",
-  "docs_url": "https://sorenlab2026--docs.modal.run",
-  "openapi_url": "https://sorenlab2026--docs.modal.run/openapi.json",
-  "llms_url": "https://sorenlab2026--docs.modal.run/llms.txt",
-  "llms_full_url": "https://sorenlab2026--docs.modal.run/llms-full.txt"
+  "api": "/api",
+  "docs_url": null,
+  "openapi_url": "/openapi.json",
+  "llms_url": "/llms.txt",
+  "llms_full_url": "/llms-full.txt"
 }

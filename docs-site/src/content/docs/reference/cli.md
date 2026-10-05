@@ -1,72 +1,44 @@
 ---
-title: CLI reference
-description: Operator-facing sbx commands, with exact flags generated from the current argparse command model.
+title: CLI
+description: The sbx command - client commands over /api and the operator commands serve and migrate.
 ---
 
-The repository launcher is `./sbx`; an installed package exposes the same CLI
-as `sbx`. Use the launcher in a fresh clone because it can bootstrap `uv` and
-the managed Python environment.
+The exact generated help for every command is published as
+[cli-help.txt](/cli-help.txt). Client defaults are listed in
+[config-reference.json](/config-reference.json).
 
-## Normal operator path
+## Client configuration
 
-```bash
-./sbx deploy
-./sbx auth login --provider devin
-./sbx github connect          # optional: private repos / PR delivery
-./sbx doctor
-./sbx open
-```
+| Field | Environment | Default |
+| --- | --- | --- |
+| `base_url` | `SBX_BASE_URL` (or `--base-url`) | `http://127.0.0.1:8800` |
+| `api_key` | `SBX_API_KEY` | none; stored by `sbx auth login` |
+| `workspace_id` | `SBX_WORKSPACE_ID` | first workspace of the principal |
+
+`sbx auth login --email you@example.com` reads the password from stdin or a
+prompt, signs in, mints an API key and writes it to
+`$XDG_CONFIG_HOME/sbx/client.json` (default `~/.config/sbx/client.json`) with
+mode `0600`. Environment variables override the file.
+
+## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `deploy` | Idempotently deploy or update the core platform. A zero-provider deployment is valid. |
-| `auth login` | Run the provider's official login, capture it and verify the account. |
-| `auth status` | Inspect provider-account connection/verification state. |
-| `github connect` | Open the official SBX GitHub App installation flow. |
-| `doctor` | Verify platform/integration health. |
-| `open` | Open the Console through a one-time signed-in browser handoff. |
-| `status` | Show recorded deployment status/version/base URL. |
-| `smoke` | Run a minimal real task against a connected provider. |
-| `upgrade` | Redeploy while preserving durable stores. |
-| `uninstall` | Stop/remove the deployment; purge flags are destructive. |
+| `auth login` | Sign in and store an API key. |
+| `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
+| `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `opencode_zen`, `codex`. Secrets come from stdin or `--credential-file`, never argv. |
+| `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. |
+| `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
+| `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
+| `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
+| `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
+| `operations show ID` | Long-operation status. |
+| `serve [--host H] [--port P]` | Run the control plane and workers (operator). |
+| `migrate` | Apply database migrations (operator). |
 
-## Provider authentication
+Output is JSON. Errors print a JSON object with `code`, `message` and `action`
+to stderr and exit with status 1.
 
-```bash
-./sbx auth status
-./sbx auth login --provider devin
-./sbx auth verify --provider devin
-./sbx auth relink --provider devin --relogin
-./sbx auth logout --provider devin
-```
-
-`import-existing` and `pair` are migration/pairing paths. They are useful, but
-normal users should start with `auth login` rather than locating credential
-files manually.
-
-## Advanced bootstrap/config commands
-
-`init` remains useful when an operator wants to write config before deployment
-or opt providers in ahead of time. Fresh-clone `deploy` does not require a
-separate `init` step.
-
-`credentials` scans provider credential locations without printing secret
-contents; it is primarily an operator/debugging command.
-
-## Exact flags for this version
-
-The full help text is generated directly from the current CLI parser during
-every docs build:
-
-- [`/cli-help.txt`](/cli-help.txt)
-
-For a local checkout, the same source of truth is always available as:
-
-```bash
-./sbx --help
-./sbx <command> --help
-./sbx auth <command> --help
-```
-
-Do not copy old flag lists from release notes or issue discussions; generated
-help is authoritative for the installed version.
+`serve` and `migrate` read the control-plane variables described in
+[Configuration](/self-hosting/configuration/); they are equivalent to
+`python -m control.composition serve` and `migrate`.

@@ -1,1 +1,1 @@
-"""WP2-H real Modal + Codex e2e (SOR-42). Skipped unless SBX_E2E_MODAL=1."""
+"""Opt-in live scripts (real Modal / connector checks). Run directly; not collected by pytest."""
