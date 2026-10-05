@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.support.postgres"]
+
 _CLOUD_PREFIXES = (
     # Provider + platform credentials/config.
     "MODAL_",

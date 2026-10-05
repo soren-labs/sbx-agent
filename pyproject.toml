@@ -34,7 +34,7 @@ build-backend = "hatchling.build"
 sbx = "sbx.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["broker", "control", "runtime", "src/sbx"]
+packages = ["broker", "control", "protocol", "runtime", "src/sbx"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -45,7 +45,7 @@ pythonpath = [".", "src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["broker", "control", "runtime", "src", "tests"]
+src = ["broker", "control", "protocol", "runtime", "src", "tests"]
 # P0 spike is orchestrator-owned and not a CI dependency (SOR-43/44/45).
 extend-exclude = ["spike"]
 force-exclude = true
