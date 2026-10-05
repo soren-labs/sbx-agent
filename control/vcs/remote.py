@@ -309,9 +309,12 @@ class GithubRemote(GitCliRemote):
         return super().push(repository, local_commit, ref, expected_old, scratch)
 
     def find_pull_request(self, repository, *, head_ref, base_ref) -> dict | None:
+        # head must be owner-qualified: a bare ref matches loosely and
+        # returns unrelated PRs on the same base (verified GitHub quirk).
+        owner = repository.split("/", 1)[0]
         data = self._request(
             "GET",
-            f"/repos/{repository}/pulls?head={head_ref}&base={base_ref}&state=open",
+            f"/repos/{repository}/pulls?head={owner}:{head_ref}&base={base_ref}&state=open",
         )
         if not data:
             return None

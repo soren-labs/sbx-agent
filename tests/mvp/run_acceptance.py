@@ -133,13 +133,19 @@ def main() -> int:
                 connections[kind] = cid
                 c.connections.validate(cid)
             for kind, cid in connections.items():
-                detail = wait_for(
-                    lambda cid=cid: (lambda r: r if r.get("health") != "unverified" else None)(
-                        c.connections.get(cid)
-                    ),
-                    timeout=90,
-                    desc=f"{kind} validation",
-                )
+                # Probe jobs retry on transient provider failures — "degraded"
+                # from a probe_failed is intermediate, not terminal. The
+                # criterion is the final validated state: wait for "ready".
+                try:
+                    detail = wait_for(
+                        lambda cid=cid: (
+                            lambda r: r if r.get("health") == "ready" else None
+                        )(c.connections.get(cid)),
+                        timeout=120,
+                        desc=f"{kind} validation",
+                    )
+                except Exception:
+                    detail = c.connections.get(cid)
                 record(
                     {"opencode_zen": 2, "modal": 3, "github": 4}[kind],
                     f"{kind} credential stored + validated",
@@ -302,14 +308,19 @@ def main() -> int:
             )
             delivery = dlv.get("delivery") or {}
             did = delivery["id"]
-            delivery_done = wait_for(
-                lambda: (lambda d: d if d.get("state") in ("succeeded", "failed") else None)(
-                    c.deliveries.get(did)
-                ),
-                timeout=420,
-                poll=4,
-                desc="delivery",
-            )
+            try:
+                delivery_done = wait_for(
+                    lambda: (
+                        lambda d: d
+                        if d.get("state") in ("succeeded", "failed", "blocked", "rejected")
+                        else None
+                    )(c.deliveries.get(did)),
+                    timeout=420,
+                    poll=4,
+                    desc="delivery",
+                )
+            except Exception:
+                delivery_done = c.deliveries.get(did) or {"state": "unknown"}
             pr_url = None
             for step in delivery_done.get("steps", []):
                 if step.get("kind") == "pull_request" and (step.get("result") or {}).get("url"):
