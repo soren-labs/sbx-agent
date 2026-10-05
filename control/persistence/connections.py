@@ -95,6 +95,6 @@ class ConnectionObservationRepo(Rows):
     def list_for(self, workspace_id: str, connection_id: str) -> list[dict]:
         return self.all(
             "SELECT * FROM connection_observations WHERE workspace_id=%s"
-            " AND connection_id=%s ORDER BY created_at",
+            " AND connection_id=%s ORDER BY observed_at",
             (workspace_id, connection_id),
         )

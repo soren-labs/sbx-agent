@@ -72,3 +72,62 @@ class RuntimeStack:
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+
+def make_connection_resolver(connection_service, db) -> object:
+    """Vault-backed credential_resolver for ExecutionService: resolves the
+    session's workspace inference connection into an isolated-HOME file
+    bundle + env allowlist through a purpose-bound grant. Never falls back
+    to ambient state — absent connection raises and the dispatch fails
+    cleanly (RFC 167 §06)."""
+
+    def resolve(session, turn, *, execution_id=None, lease_id=None, workspace_id=None):
+        import json as _json
+
+        from control.application.connections import (
+            PURPOSE_RUNTIME_EXECUTION,
+        )
+        from control.persistence.unit_of_work import SqlUnitOfWork
+
+        ws = workspace_id or session["workspace_id"]
+        provider = (
+            (turn.get("resolved_settings") or {}).get("provider_id")
+            or ((session.get("resolved_settings") or {}).get("provider_id"))
+            or session.get("provider_id")
+            or "opencode"
+        )
+        kind = "opencode_zen" if provider == "opencode" else provider
+
+        with SqlUnitOfWork(db, actor={"kind": "runtime", "id": "resolver"}) as uow:
+            conn = connection_service.select_connection(
+                uow, workspace_id=ws, kind=kind, purpose=PURPOSE_RUNTIME_EXECUTION
+            )
+            material = connection_service.materialize(
+                uow,
+                workspace_id=ws,
+                connection_id=conn["id"],
+                purpose=PURPOSE_RUNTIME_EXECUTION,
+                session_id=session["id"],
+                execution_id=execution_id,
+                lease_id=lease_id,
+            )
+            uow.commit()
+
+        payload = material.payload
+        try:
+            if conn["kind"] == "opencode_zen":
+                return {
+                    "files": {
+                        ".local/share/opencode/auth.json": _json.dumps(
+                            {"opencode": {"type": "api", "key": payload["api_key"]}}
+                        )
+                    },
+                    "env": {},
+                }
+            if conn["kind"] == "codex":
+                return {"files": dict(payload.get("files") or {}), "env": {}}
+            return {"files": {}, "env": {}}
+        finally:
+            del material, payload
+
+    return resolve

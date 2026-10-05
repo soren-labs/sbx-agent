@@ -188,7 +188,27 @@ class ExecutionService:
         # --- out-of-band: spawn/attach, submit, mark started -----------
         if lease.get("_spawned") is None:
             lease = self._spawn_and_attach(uow, session=session, lease=lease)
-        credentials = self.credential_resolver(session, turn)
+        try:
+            credentials = self.credential_resolver(
+                session,
+                turn,
+                execution_id=execution_id,
+                lease_id=lease["id"],
+                workspace_id=workspace_id,
+            )
+        except DomainError as exc:
+            # Credential authority refused (no configured connection, revoked
+            # grant, ...) — settle the turn as failed; there is no fallback.
+            self._fail_execution(
+                uow,
+                workspace_id=workspace_id,
+                session_id=session["id"],
+                turn_id=turn_id,
+                execution_id=execution_id,
+                reason=exc.code,
+                error={"code": exc.code, "message": str(exc)},
+            )
+            return {"turn_id": turn_id, "error": exc.code}
         envelope = self._turn_envelope(
             lease=lease,
             session=session,

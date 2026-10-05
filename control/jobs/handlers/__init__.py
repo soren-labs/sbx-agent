@@ -12,14 +12,22 @@ from datetime import UTC, datetime
 
 from control.jobs.worker import JobContext
 
-# Wired at composition (set_runtime_stack); handlers resolve lazily so the
-# registry stays importable without a live runtime plane.
+# Wired at composition (set_runtime_stack / set_connection_plane); handlers
+# resolve lazily so the registry stays importable without a live plane.
 _RUNTIME_STACK = None
+_CONNECTION_SERVICE = None
+_CONNECTOR_REGISTRY = None
 
 
 def set_runtime_stack(stack) -> None:
     global _RUNTIME_STACK
     _RUNTIME_STACK = stack
+
+
+def set_connection_plane(connection_service, connector_registry) -> None:
+    global _CONNECTION_SERVICE, _CONNECTOR_REGISTRY
+    _CONNECTION_SERVICE = connection_service
+    _CONNECTOR_REGISTRY = connector_registry
 
 
 def turn_dispatch(job: dict, ctx: JobContext) -> dict:
@@ -81,10 +89,96 @@ def outbox_deliver(job: dict, ctx: JobContext) -> dict:
     return {"delivered": len(rows)}
 
 
+def connection_validate(job: dict, ctx: JobContext) -> dict:
+    """Minimal documented probe of the selected credential version; only
+    safe identity/capability metadata is written back (never plaintext)."""
+    if _CONNECTION_SERVICE is None or _CONNECTOR_REGISTRY is None:
+        return {"skipped": "connection plane not wired"}
+    payload = job.get("payload") or {}
+    connection_id = payload.get("connection_id") or job.get("target_id")
+    cred_id = payload.get("credential_version_id")
+    uow = ctx.uow
+    conn = uow.connections.get(job["workspace_id"], connection_id)
+    if conn is None:
+        return {"skipped": "connection gone"}
+    # Validation is bound to the version that was current when the job was
+    # enqueued — a replacement supersedes it.
+    if conn["current_credential_version_id"] != cred_id:
+        return {"skipped": "superseded by newer credential version"}
+
+    from control.application.connections import PURPOSE_RUNTIME_EXECUTION
+
+    try:
+        material = _CONNECTION_SERVICE.materialize(
+            uow,
+            workspace_id=job["workspace_id"],
+            connection_id=connection_id,
+            purpose=(
+                PURPOSE_RUNTIME_EXECUTION
+                if conn["kind"] in ("opencode_zen", "codex")
+                else ("executor_worker" if conn["kind"] == "modal" else "delivery_worker")
+            ),
+        )
+    except Exception as exc:  # revoked/invalid between enqueue and run
+        uow.connections.update(
+            job["workspace_id"],
+            connection_id,
+            {"health": "degraded"},
+        )
+        return {"ok": False, "reason": getattr(exc, "code", "materialize_failed")}
+
+    try:
+        connector = _CONNECTOR_REGISTRY.get(conn["kind"])
+        result = connector.validate(material.format, material.payload)
+    except Exception as exc:
+        result = None
+        uow.connections.update(
+            job["workspace_id"],
+            connection_id,
+            {"health": "degraded"},
+        )
+        return {"ok": False, "reason": f"probe_error:{type(exc).__name__}"}
+    finally:
+        del material
+
+    health = (
+        "ready"
+        if (result and result.ok)
+        else ("reauth_required" if result and result.reason == "auth_failed" else "degraded")
+    )
+    uow.connections.update(
+        job["workspace_id"],
+        connection_id,
+        {
+            "health": health,
+            "external_identity": result.external_identity if result else {},
+            "capability_observations": result.capabilities if result else {},
+        },
+    )
+    _CONNECTION_SERVICE.record_observation(
+        uow,
+        workspace_id=job["workspace_id"],
+        connection_id=connection_id,
+        credential_version_id=cred_id,
+        kind="validation",
+        scope=conn["kind"],
+        result={
+            "ok": bool(result and result.ok),
+            "reason": result.reason if result else "probe_error",
+            "capabilities": result.capabilities if result else {},
+        },
+        ttl_s=3600,
+    )
+    return {"ok": bool(result and result.ok), "health": health}
+
+
 HANDLERS = {
     "retention.cleanup": retention_cleanup,
     "outbox.deliver": outbox_deliver,
     "turn.dispatch": turn_dispatch,
     "executor.reconcile": executor_reconcile,
     "execution.reconcile": executor_reconcile,
+    "connection.validate": connection_validate,
+    "connection.provision": connection_validate,
+    "credential.refresh": connection_validate,
 }

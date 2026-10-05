@@ -31,7 +31,7 @@ def runtime_stack(pg, tmp_path, monkeypatch):
     stack = RuntimeStack(
         pg,
         backends={},
-        credential_resolver=lambda session, turn: {
+        credential_resolver=lambda session, turn, **_kw: {
             "files": {".local/share/opencode/auth.json": '{"token": "REDACTED"}'},
             "env": {},
         },
@@ -212,7 +212,7 @@ class TestLeaseLoss:
         self, pg, workspace, runtime_stack, session, monkeypatch
     ):
         # A hanging CLI keeps the turn nonterminal until we kill the daemon.
-        runtime_stack.service.credential_resolver = lambda s, t: {
+        runtime_stack.service.credential_resolver = lambda s, t, **_kw: {
             "files": {".local/share/opencode/auth.json": '{"token": "REDACTED"}'},
             "env": {"FAKE_OPENCODE_SCENARIO": "hang"},
         }
