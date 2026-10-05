@@ -1,0 +1,144 @@
+import time
+
+from control.application.execution import Execution
+from control.application.ingest import Ingest
+from control.domain.errors import DomainError
+from control.domain.sessions import TURN_TERMINAL
+from control.executors.port import AllocationSpec
+from control.runtime_client.grants import runtime_token
+
+
+class ExecutionHandler:
+    def __init__(self, uow, claims, executor_factory, credentials, master):
+        self.uow, self.claims = uow, claims
+        self.execution, self.ingest = Execution(uow, claims), Ingest(uow, claims)
+        self.executor_factory, self.credentials, self.master = executor_factory, credentials, master
+
+    def __call__(self, claim):
+        try:
+            self.run(claim)
+        except DomainError as error:
+            if error.code in {"executor_unavailable", "outcome_unknown"}:
+                with self.uow.transaction() as repo:
+                    execution = repo.one(
+                        "SELECT id FROM executions WHERE turn_id=%s "
+                        "AND state IN ('preparing','started','stop_requested')",
+                        (claim.row["turn_id"],),
+                    )
+                if execution:
+                    self.execution.lost(claim, execution["id"], error.code)
+            raise
+
+    def run(self, claim):
+        session, turn, execution, lease = self.execution.admit(claim)
+        if turn["state"] in TURN_TERMINAL:
+            return
+        token = runtime_token(self.master, lease["id"], lease["generation"])
+        backend = self.executor_factory(session, lease, token)
+        spec = AllocationSpec(
+            session["workspace_id"],
+            session["id"],
+            lease["id"],
+            lease["generation"],
+            "sbx-runtime-opencode-1.18.29",
+            token,
+            connection_id=lease["connection_id"],
+        )
+        handle = lease["handle"] or backend.lookup(lease["allocation_operation_id"])
+        if not handle:
+            handle = backend.allocate(spec, lease["allocation_operation_id"])
+        client = backend.connect_runtime(handle)
+        if lease["state"] == "allocating":
+            self.execution.bind(claim, session, lease, handle, client.hello)
+        inputs = session["effective_inputs"]
+        envop = lease["allocation_operation_id"] + "-environment"
+        # Same deterministic prepare operation is always deduped at runtime.
+        client.submit(
+            envop,
+            "environment.prepare",
+            {
+                "repository": inputs.get("repository"),
+                "base_sha": inputs.get("base_sha"),
+                "setup": inputs.get("setup", []),
+            },
+        )
+        prepared = client.wait(envop)
+        if prepared.get("error"):
+            raise DomainError(prepared["error"])
+        with self.uow.transaction() as repo:
+            self.claims.assert_current(repo, claim)
+            repo.execute(
+                "UPDATE worktrees SET availability='live',repository=%s,base_sha=%s WH"
+                "ERE session_id=%s",
+                (inputs.get("repository"), inputs.get("base_sha"), session["id"]),
+            )
+            message = repo.one("SELECT content FROM messages WHERE id=%s", (turn["message_id"],))
+            native = repo.one(
+                "SELECT * FROM native_context_bindings WHERE session_id=%s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (session["id"],),
+            )
+        credential = self.credentials(session, execution, lease, "inference")
+        payload = {
+            "turn_id": turn["id"],
+            "execution_id": execution["id"],
+            "provider_id": session["provider_id"],
+            "model": inputs.get("model", ""),
+            "prompt": message["content"],
+            "native_id": native["native_id"] if native else None,
+            "credential_bundle": credential,
+            "settings": turn["settings"],
+            "timeout": 600,
+        }
+        # Replaced credential material cannot change an already accepted operation body.
+        # Inspect accepted operation first, then only submit if never accepted.
+        try:
+            operation = client.get("/operations/" + execution["operation_id"])
+        except DomainError:
+            operation = client.submit(
+                execution["operation_id"], "turn.resume" if native else "turn.start", payload
+            )
+        last_renewal = time.monotonic()
+
+        def tick(row):
+            nonlocal last_renewal
+            if time.monotonic() - last_renewal > 15:
+                self.claims.renew(claim)
+                last_renewal = time.monotonic()
+            self.execution.started(claim, session, turn, execution)
+            with self.uow.transaction() as repo:
+                cancelled = repo.one(
+                    "SELECT cancel_requested FROM turns WHERE id=%s", (turn["id"],)
+                )
+            if cancelled["cancel_requested"]:
+                client.submit(
+                    execution["operation_id"] + "-cancel",
+                    "turn.cancel",
+                    {"operation_id": execution["operation_id"]},
+                )
+            batch = client.get(
+                "/events", after=self.offset(lease["id"], client.hello["runtime_epoch"])
+            )
+            if batch["events"]:
+                ack = self.ingest.batch(
+                    claim, execution["id"], batch["runtime_epoch"], batch["events"]
+                )
+                client.post("/events/ack", {"local_seq": ack})
+
+        if operation["state"] in {"starting", "started"} and execution["state"] == "preparing":
+            # Existing live process may be adopted. A daemon restart loses pipes and
+            # reports recovered operations; stop/quarantine is required, not replay.
+            if execution["operation_id"] in client.hello.get("recovered_operation_ids", []):
+                raise DomainError("outcome_unknown")
+        result = client.wait(execution["operation_id"], tick=tick)
+        self.execution.started(claim, session, turn, execution)
+        tick({"state": "terminal"})
+        self.ingest.finish(claim, execution["id"], client.hello["runtime_epoch"], result)
+
+    def offset(self, lease_id, epoch):
+        with self.uow.transaction() as repo:
+            row = repo.one(
+                "SELECT ack FROM runtime_ingestion_offsets WHERE lease_id=%s AND runtime_epoch=%s",
+                (lease_id, epoch),
+            )
+            return row["ack"] if row else 0

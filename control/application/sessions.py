@@ -113,6 +113,12 @@ class Sessions:
                     repo.execute(
                         "UPDATE turns SET state=%s,cancel_requested=true WHERE id=%s", (state, tid)
                     )
+                    if state == "cancelled":
+                        repo.execute(
+                            "UPDATE jobs SET state='cancelled' WHERE turn_id=%s "
+                            "AND state IN ('queued','retry_wait')",
+                            (tid,),
+                        )
                     repo.event(
                         turn["workspace_id"],
                         turn["session_id"],

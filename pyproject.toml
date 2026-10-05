@@ -16,6 +16,7 @@ dependencies = [
     # token) — [crypto] pulls in cryptography for RSA signing.
     "pyjwt[crypto]>=2.10.0",
     "uvicorn>=0.32.0",
+    "websockets>=15,<16",
 ]
 
 [dependency-groups]
