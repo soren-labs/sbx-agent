@@ -57,6 +57,11 @@ class ExecutionHandler:
         require(
             client.hello["runtime_build_digest"] == runtime_source_digest(), "runtime_incompatible"
         )
+        if lease["state"] == "ready" and lease["fingerprint"].get("image_digest"):
+            require(
+                client.hello.get("image_digest") == lease["fingerprint"]["image_digest"],
+                "runtime_incompatible",
+            )
         if lease["state"] == "allocating":
             self.execution.bind(claim, session, lease, handle, client.hello)
         inputs = session["effective_inputs"]

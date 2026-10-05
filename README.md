@@ -35,7 +35,7 @@ uv run python -m control.serve --dsn postgresql://postgres@localhost:5432/sbx \
 
 Use TLS before exposing the product. Cookies are Secure by default; `--insecure-local-cookie` is only for loopback development. `deploy/compose.yaml` provides PostgreSQL plus the product image, without exposing the database. The state volume holds the encrypted-object store and an operator master key with mode 600. Back up **both** PostgreSQL and this state; losing the master key makes stored credentials unrecoverable. No provider credential belongs in server configuration.
 
-New email registrations require verification through an injected operator email transport. The trusted operator may provision an already verified account through `Identity.register(..., verified=True)`; this is not an HTTP verification bypass. The real benchmark uses this operator path for its supplied test identity. Password changes revoke login sessions and API keys.
+New email registrations require verification through an operator email transport. Configure `--email-command /path/to/send-email`: its protected stdin receives a JSON notice containing recipient, purpose and one-use code. The command must deliver the notice without logging it. Verification and password recovery forms accept this code; without a configured transport public registration fails explicitly. The trusted operator may provision an already verified account through `Identity.register(..., verified=True)`; this is not an HTTP verification bypass. The benchmark uses this operator path for its supplied test identity. Password changes revoke login sessions, API keys and Session tool grants.
 
 The Console offers Projects, Sessions, Conversation, Activity, Changes/Delivery, Files, real lease-local PTY terminals, declared Services, child Sessions, Connections and Settings. Secrets are write-only and fields clear after submission. Zen models come from the selected validated Connection, preferring a free model. Session setup uses only selected stored connections; there is no ambient fallback.
 
@@ -48,6 +48,8 @@ Checkpoint only idle Worktrees after stopping terminals and services. Checkpoint
 Delivery materializes exact Git objects using the user's GitHub token, creates a deterministic new branch and draft PR, and reconciles lost responses. Merge separately checks exact subject/head, independent typed results and current policy, then uses GitHub's head-CAS. Strict atomic base stability is unsupported and fails closed. Child Sessions have no shipping authority. Disconnect/replacement is rejected while live or unresolved dependent compute needs its credential for teardown.
 
 Local Executor is opt-in development infrastructure and provides no tenant isolation. Modal starts only the runtime daemon; all coding uses official CLI protocol frames. Runtime/CLI versions and source fingerprints are recorded on ExecutorLease binding.
+
+Set `--public-origin https://console.example.com` to enforce browser origins and enable the execution-scoped shell tool gateway. Native MCP is not advertised. A separate `--preview-origin https://preview.example.com` must use a different hostname; its application proxies only declared lease-local service ports and strips Console credentials. Preview currently supports bounded HTTP rather than WebSocket apps. Neither origin is required for loopback deterministic tests.
 
 ## Cutover
 

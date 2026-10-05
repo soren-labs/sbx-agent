@@ -14,7 +14,8 @@ def main():
     args = parser.parse_args()
     diff = subprocess.check_output(["git", "diff", "--no-ext-diff", args.base])
     signatures = re.compile(
-        rb"(?:gh[pousr]_[A-Za-z0-9_]{25,}|sk-[A-Za-z0-9_-]{25,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)"
+        rb"(?:gh[pousr]_[A-Za-z0-9_]{25,}|sk-[A-Za-z0-9_-]{25,}|"
+        rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)"
     )
     added = b"\n".join(
         line[1:]

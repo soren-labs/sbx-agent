@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from protocol.build import runtime_source_digest
 from protocol.runtime import OperationFrame, ProtocolError
@@ -212,6 +213,12 @@ class Runtime:
 
 def create_runtime_app(runtime):
     app = FastAPI()
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, error):
+        # Operation payloads contain write-only credentials. Pydantic errors
+        # include rejected input values, so never serialize their details.
+        return JSONResponse({"error": "invalid_request"}, status_code=422)
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next):

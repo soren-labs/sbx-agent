@@ -184,8 +184,14 @@ for obj in [dict(type='step_start',sessionID=sid),
     assert result["validated"] and result["verdict"] == "approve"
     with database.transaction() as repo:
         assert result_rows(repo, cs)[0]["independent"]
-    r.worktrees.release(principal, sid, "release-author")
-    assert r.worker.once()
+    released = r.worktrees.release(principal, sid, "release-author")
+    with database.transaction() as repo:
+        leases = repo.all(
+            "SELECT session_id,generation,state,cleanup_confirmed FROM executor_leases "
+            "ORDER BY session_id,generation"
+        )
+    assert released.get("job_id"), leases
+    assert r.worker.once(), released
     delivery = r.deliveries.request(principal, cs["id"], {"transport": "export"}, "export")
     assert r.worker.once()
     assert (

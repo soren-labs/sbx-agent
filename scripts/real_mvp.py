@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import httpx
 import psycopg
-from control.bootstrap import build
+from control.app import build
 from psycopg.conninfo import make_conninfo
 
 from sbx.sdk.client import ApiError, Client

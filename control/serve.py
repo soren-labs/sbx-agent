@@ -6,7 +6,7 @@ import uvicorn
 
 from control.api.app import create_app
 from control.api.preview import create_preview_app
-from control.bootstrap import build
+from control.app import build
 
 
 def main():

@@ -40,10 +40,18 @@ def test_modal_lost_allocate_response_discovers_same_effect_and_user_client():
     backend = ModalExecutor(
         {"token_id": "REDACTED", "token_secret": "REDACTED"}, "REDACTED", sdk=sdk
     )
-    backend.image = lambda: "image_test"
+
+    class FakeImage:
+        object_id = "im_test"
+
+        def build(self, app):
+            assert app.app_id == "app_test"
+
+    backend.image = FakeImage
     spec = AllocationSpec("wsp_one", "sess_one", "lease_one", 1, "digest", "REDACTED")
     assert backend.allocate(spec, "effect_one") == "opaque_handle"
     assert backend.allocate(spec, "effect_one") == "opaque_handle"
     assert len(calls) == 1
     assert calls[0]["tags"]["sbx_effect"] == "effect_one"
+    assert calls[0]["env"]["SBX_IMAGE_DIGEST"] == "im_test"
     assert not hasattr(backend, "exec")

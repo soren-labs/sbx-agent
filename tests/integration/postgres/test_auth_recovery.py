@@ -72,6 +72,12 @@ def test_tool_grants_are_execution_lease_action_and_expiry_scoped(database, prin
     with pytest.raises(DomainError, match="forbidden"):
         grants.invoke(issue["token"], "read", {"session_id": "unrelated"}, "read-other")
     with database.transaction() as repo:
+        repo.execute(
+            "UPDATE users SET identity_version=identity_version+1 WHERE id=%s", (principal.user_id,)
+        )
+    with pytest.raises(DomainError, match="forbidden"):
+        grants.invoke(issue["token"], "read", {}, "revoked-auth")
+    with database.transaction() as repo:
         repo.execute("UPDATE executor_leases SET state='lost'")
     with pytest.raises(DomainError, match="forbidden"):
         grants.invoke(issue["token"], "read", {}, "expired-lease")

@@ -139,6 +139,16 @@ def test_pressure_paths_and_auth(runtime, tmp_path):
     assert OpenCodeHarness(cli_version="unknown").describe().support_tier == "disabled"
 
 
+def test_invalid_runtime_requests_do_not_echo_credentials(runtime):
+    client = TestClient(create_runtime_app(runtime))
+    body = frame().model_dump()
+    body["lease_generation"] = {"credential_bundle": {"api_key": "REDACTED"}}
+    response = client.post("/operations", json=body, headers={"Authorization": "Bearer REDACTED"})
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid_request"}
+    assert "credential_bundle" not in response.text
+
+
 def test_checkpoint_restore_preserves_worktree_native_identity(runtime, tmp_path):
     from runtime.daemon.snapshots import capture, restore
 

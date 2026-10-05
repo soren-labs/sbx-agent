@@ -70,13 +70,15 @@ class ModalExecutor:
                 self.app = self.sdk.App.lookup(
                     "sbx-unified-benchmark", create_if_missing=True, client=self.client
                 )
+            image = self.image()
+            image.build(self.app)
             sandbox = self.sdk.Sandbox.create(
                 "python",
                 "-m",
                 "runtime.daemon.main",
                 name="sbx-" + operation_id,
                 app=self.app,
-                image=self.image(),
+                image=image,
                 client=self.client,
                 tags={
                     "sbx_effect": operation_id,
@@ -91,7 +93,9 @@ class ModalExecutor:
                     "SBX_LEASE_ID": spec.lease_id,
                     "SBX_LEASE_GENERATION": str(spec.generation),
                     "SBX_RUNTIME_TOKEN": self.runtime_token,
-                    "SBX_IMAGE_DIGEST": spec.image_digest,
+                    # Modal's immutable built image ID is separate from the
+                    # daemon source fingerprint negotiated by /hello.
+                    "SBX_IMAGE_DIGEST": image.object_id,
                 },
                 encrypted_ports=[8792],
                 timeout=1800,
