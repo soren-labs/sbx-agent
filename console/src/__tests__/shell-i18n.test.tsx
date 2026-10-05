@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { App } from "../App";
+import { PrototypeApp } from "../prototype/PrototypeApp";
 import { AppShell } from "../components/AppShell";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { ApiError } from "../api";
@@ -43,7 +43,7 @@ describe("AppShell information architecture", () => {
 
 describe("routing", () => {
   it("/ renders the composer, /sessions renders the list", async () => {
-    renderApp(<App />, { route: "/" });
+    renderApp(<PrototypeApp />, { route: "/" });
     expect(await screen.findByRole("textbox", {name:"Session task"})).toBeInTheDocument();
   });
 });

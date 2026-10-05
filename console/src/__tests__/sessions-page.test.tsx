@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionsPage } from "../pages/SessionsPage";
 import { NewSessionPage } from "../pages/NewSessionPage";
-import { App } from "../App";
+import { PrototypeApp } from "../prototype/PrototypeApp";
 import { SESSIONS } from "../api/fixtures";
 import { makeApi, renderApp } from "../test/helpers";
 
@@ -61,7 +61,7 @@ describe("NewSessionPage", () => {
 
   it("create → optimistic navigation to the session shell", async () => {
     const api = makeApi();
-    renderApp(<App />, { api });
+    renderApp(<PrototypeApp />, { api });
     const prompt=await screen.findByRole("textbox",{name:"Session task"});
     await userEvent.type(prompt,"Ship it");
     await userEvent.click(screen.getByRole("button",{name:"Start session"}));

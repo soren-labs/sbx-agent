@@ -1,0 +1,496 @@
+openapi: 3.1.0
+info:
+  title: sbx unified api
+  version: "1.0"
+  description: >-
+    The single business surface (RFC 167 §08). Owner-scoped, cookie or
+    Bearer-authenticated (login session token or `sbx_k_` API key). All
+    mutations require `Idempotency-Key`. Every error is
+    `error{code,category,message,retryable,details,request_id}`.
+servers:
+  - url: /
+security:
+  - cookieAuth: []
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { "200": { description: "liveness" } }
+  /readyz:
+    get:
+      security: []
+      responses:
+        "200": { description: "db reachable" }
+        "503": { description: "not ready" }
+  /api/auth/register:
+    post:
+      security: []
+      responses:
+        "201":
+          description: >-
+            `user_id`, `workspace_id`, `email_verification_required` —
+            verification tokens never appear in responses.
+        "409": { $ref: '#/components/responses/ConflictError' }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/auth/login:
+    post:
+      security: []
+      responses:
+        "200":
+          description: "`token`, `user`, sets `sbx_session` cookie"
+        "401": { $ref: '#/components/responses/UnauthorizedError' }
+        "429": { $ref: '#/components/responses/RateLimitError' }
+  /api/auth/logout:
+    post:
+      responses: { "200": { description: "session revoked" } }
+  /api/auth/email-verifications:
+    post:
+      security: []
+      responses:
+        "200": { description: "`user_id`" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/auth/password-resets:
+    post:
+      security: []
+      responses:
+        "202": { description: "uniform accept — no account leak" }
+  /api/auth/password-changes:
+    post:
+      security: []
+      responses:
+        "200": { description: "password reset; auth_epoch bumped" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/me:
+    get:
+      responses:
+        "200": { description: "`user` + `auth{label,scopes,auth_epoch}`" }
+        "401": { $ref: '#/components/responses/UnauthorizedError' }
+  /api/api-keys:
+    get:
+      responses:
+        "200": { description: "list (plaintext never re-readable)" }
+    post:
+      parameters: [ $ref: '#/components/parameters/idem' ]
+      responses:
+        "201":
+          description: "`{id,key,scopes}` — `key` returned once"
+        "401": { $ref: '#/components/responses/UnauthorizedError' }
+  /api/api-keys/{key_id}:
+    delete:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "revoked" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/workspaces:
+    get:
+      responses: { "200": { description: "memberships" } }
+  /api/workspaces/{workspace_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/ws' ]
+      responses:
+        "200": { description: "workspace + caller role" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/workspaces/{workspace_id}/projects:
+    get:
+      parameters: [ $ref: '#/components/parameters/ws', $ref: '#/components/parameters/limit', $ref: '#/components/parameters/cursor' ]
+      responses: { "200": { description: "`items`, `next_cursor`" } }
+    post:
+      parameters: [ $ref: '#/components/parameters/ws', $ref: '#/components/parameters/idem' ]
+      responses:
+        "201": { description: "project" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/projects/{project_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "project" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/projects/{project_id}/versions:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses: { "200": { description: "ordinals ascending" } }
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      responses:
+        "201":
+          description: >-
+            immutable ProjectVersion `{repository,base_ref,environment,
+            services,defaults,ship_policy,spec_digest}`
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/project-versions/{version_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "version" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/workspaces/{workspace_id}/connections:
+    get:
+      parameters: [ $ref: '#/components/parameters/ws', $ref: '#/components/parameters/kindParam', $ref: '#/components/parameters/stateParam' ]
+      responses: { "200": { description: "safe views — no secrets" } }
+    post:
+      parameters: [ $ref: '#/components/parameters/ws', $ref: '#/components/parameters/idem' ]
+      requestBody:
+        description: >-
+          `{kind: modal|github|opencode_zen, label?, credential:
+          {format,payload}}` — payload is write-only, sealed server-side.
+      responses:
+        "201": { description: "connection (no plaintext)" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/connections/{connection_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "connection" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+    patch:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      description: "`{state: enabled|disabled, label?, expected_version?}`"
+      responses:
+        "200": { description: "connection" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+    delete:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      description: >-
+        disconnect — revoked tombstone; rejected while live executions
+        depend on the connection's grants.
+      responses:
+        "200": { description: "connection (revoked)" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/connections/{connection_id}/credential-versions:
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      description: >-
+        replace credential — CAS pointer, revocation_epoch++, prior
+        versions superseded, grants revoked, validation job enqueued.
+      responses:
+        "201": { description: "connection + `credential_version_id` + `validation_job_id`" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/connections/{connection_id}/validations:
+    post:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "202": { description: "`job` — durable connector validation" }
+  /api/connections/{connection_id}/capabilities:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200":
+          description: "`state,health,external_identity,capability_observations,observations`"
+  /api/models:
+    get:
+      parameters:
+        - { name: workspace_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "usable models + `default_model` (free-first)" }
+  /api/harnesses:
+    get:
+      responses: { "200": { description: "truthful provider capability catalog" } }
+  /api/executor-backends:
+    get:
+      responses: { "200": { description: "`modal`, `local` + status" } }
+  /api/workspaces/{workspace_id}/sessions:
+    get:
+      parameters: [ $ref: '#/components/parameters/ws', $ref: '#/components/parameters/lifecycleParam', $ref: '#/components/parameters/roleParam', $ref: '#/components/parameters/parentParam', $ref: '#/components/parameters/limit', $ref: '#/components/parameters/cursor' ]
+      responses: { "200": { description: "sessions" } }
+    post:
+      parameters: [ $ref: '#/components/parameters/ws', $ref: '#/components/parameters/idem' ]
+      description: >-
+        `{title?, role?, project_version_id?|projectless_spec?,
+        harness{provider_id,model}, message?}` — ids returned before any
+        provisioning; unknown providers fail with `unsupported_capability`.
+      responses:
+        "201": { description: "`{session, message_id?, turn_id?}`" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/sessions/{session_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200":
+          description: "`session + worktree + active lease + active turn + watermark`"
+        "404": { $ref: '#/components/responses/NotFoundError' }
+    patch:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      description: "`{title?,labels?,expected_version?}` optimistic-concurrency"
+      responses:
+        "200": { description: "session" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/sessions/{session_id}/closures:
+    post:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "closed (idempotent)" }
+  /api/sessions/{session_id}/continuations:
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      responses:
+        "201": { description: "new session `linked_from_session_id`" }
+  /api/sessions/{session_id}/messages:
+    get:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/limit', $ref: '#/components/parameters/cursor' ]
+      responses: { "200": { description: "messages" } }
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      description: "accept input under the session lock — `{routing: queue|note|steer, content}`"
+      responses:
+        "202": { description: "`{message_id, turn_id?}` before provisioning" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/sessions/{session_id}/turns:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses: { "200": { description: "turns" } }
+  /api/turns/{turn_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "turn" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/turns/{turn_id}/cancellations:
+    post:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "cancel-intent persisted; runtime signalled" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/sessions/{session_id}/events:
+    get:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/afterSeq', $ref: '#/components/parameters/typesParam', $ref: '#/components/parameters/turnParam', $ref: '#/components/parameters/limit' ]
+      responses:
+        "200":
+          description: "committed replay `{items, event_watermark}`"
+  /api/sessions/{session_id}/executor:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "`active_lease + lease history + worktree`" }
+  /api/sessions/{session_id}/files:
+    get:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/pathParam' ]
+      responses:
+        "200": { description: "worktree listing via live lease" }
+        "503": { $ref: '#/components/responses/ExecutorUnavailableError' }
+  /api/sessions/{session_id}/files/content:
+    get:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/pathReq' ]
+      responses:
+        "200": { description: "`content_b64`" }
+        "503": { $ref: '#/components/responses/ExecutorUnavailableError' }
+  /api/sessions/{session_id}/changes:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "live observe via lease" }
+        "503": { $ref: '#/components/responses/ExecutorUnavailableError' }
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      responses:
+        "202": { description: "durable capture intent `{changeset_id?,job_id}`" }
+  /api/sessions/{session_id}/changesets:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses: { "200": { description: "sealed changesets" } }
+  /api/changesets/{changeset_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "changeset + manifest" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/changesets/{changeset_id}/files:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses: { "200": { description: "manifest entries + digests" } }
+  /api/changesets/{changeset_id}/applications:
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      description: "stage into `{session_id}` worktree under a barrier"
+      responses:
+        "202": { description: "`{job_id, worktree_operation_id}`" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/changesets/{changeset_id}/deliveries:
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      description: >-
+        `{target{repository,ref}, transport: export|git_branch|pull_request,
+        ship_policy?, connection_id?}` — claims target + enqueues perform.
+      responses:
+        "201": { description: "delivery + steps" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/deliveries/{delivery_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "delivery + steps + merge_gate + merge_requests" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/deliveries/{delivery_id}/retries:
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      responses:
+        "202": { description: "re-perform (idempotent steps skip)" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/deliveries/{delivery_id}/merge-requests:
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      description: >-
+        `{expected_head_sha, merge_method}` — exact-subject gate, one
+        active request per delivery.
+      responses:
+        "201": { description: "merge_request (pending)" }
+        "403": { $ref: '#/components/responses/ForbiddenError' }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/sessions/{session_id}/delegations:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses: { "200": { description: "child delegations" } }
+    post:
+      parameters: [ $ref: '#/components/parameters/id', $ref: '#/components/parameters/idem' ]
+      description: >-
+        `{role, result_contract, inputs[{kind,ref,digest}], prompt,
+        harness?, budget?}` — atomic child Session + first turn.
+      responses:
+        "201": { description: "delegation" }
+        "422": { $ref: '#/components/responses/ValidationError' }
+  /api/delegations/{delegation_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "delegation + inputs + result + waits" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/delegations/{delegation_id}/result:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "published result (schema-pinned)" }
+        "409": { $ref: '#/components/responses/ConflictError' }
+  /api/delegations/{delegation_id}/waits:
+    post:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "201": { description: "wait subscription (satisfied atomically if due)" }
+  /api/delegations/{delegation_id}/cancellations:
+    post:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "delegation + child turn + waits cancelled" }
+  /api/sessions/{session_id}/terminals:
+    post:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "422": { description: "unsupported_capability (honest)" }
+  /api/sessions/{session_id}/services:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses: { "200": { description: "declared service instances" } }
+  /api/jobs/{job_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "safe job view" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+  /api/operations/{operation_id}:
+    get:
+      parameters: [ $ref: '#/components/parameters/id' ]
+      responses:
+        "200": { description: "Job's evidence view (effect or job id)" }
+        "404": { $ref: '#/components/responses/NotFoundError' }
+components:
+  securitySchemes:
+    cookieAuth: { type: apiKey, in: cookie, name: sbx_session }
+    bearerAuth: { type: http, scheme: bearer }
+  parameters:
+    id: { name: id, in: path, required: true, schema: { type: string } }
+    ws: { name: workspace_id, in: path, required: true, schema: { type: string } }
+    idem:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string }
+      description: required on every mutation
+    limit: { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+    cursor: { name: cursor, in: query, schema: { type: string } }
+    kindParam: { name: kind, in: query, schema: { type: string } }
+    stateParam: { name: state, in: query, schema: { type: string } }
+    lifecycleParam: { name: lifecycle, in: query, schema: { type: string } }
+    roleParam: { name: role, in: query, schema: { type: string } }
+    parentParam: { name: parent_session_id, in: query, schema: { type: string } }
+    afterSeq: { name: after_seq, in: query, schema: { type: integer, default: 0 } }
+    typesParam: { name: types, in: query, schema: { type: string }, description: csv }
+    turnParam: { name: turn_id, in: query, schema: { type: string } }
+    pathParam: { name: path, in: query, schema: { type: string, default: "." } }
+    pathReq: { name: path, in: query, required: true, schema: { type: string } }
+  schemas:
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [ code, category, message, retryable, request_id ]
+          properties:
+            code: { type: string }
+            category: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+            retry_after: { type: number }
+            action: { type: string }
+            details: { type: object }
+            request_id: { type: string }
+  responses:
+    UnauthorizedError:
+      description: unauthenticated
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ForbiddenError:
+      description: forbidden
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFoundError:
+      description: not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ConflictError:
+      description: conflict (invalid_state / version_conflict / idempotency_conflict)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ValidationError:
+      description: validation / capability failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    RateLimitError:
+      description: rate limited
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ExecutorUnavailableError:
+      description: executor unavailable
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+x-error-codes:
+  - unauthenticated
+  - not_found
+  - forbidden
+  - validation_failed
+  - invalid_state
+  - version_conflict
+  - idempotency_conflict
+  - rate_limited
+  - quota_exhausted
+  - credential_invalid
+  - connection_revoked
+  - waiting_capacity
+  - executor_unavailable
+  - context_unavailable
+  - context_mismatch
+  - outcome_unknown
+  - output_contract_invalid
+  - capture_failed
+  - stale_subject
+  - remote_head_changed
+  - delivery_unresolved
+  - history_reset_required
+  - invalid_cursor
+  - unsupported_capability
+  - runtime_incompatible

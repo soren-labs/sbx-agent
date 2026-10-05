@@ -39,6 +39,7 @@ from sbx.sdk.models import (
     TaskDetail,
     WorkflowRecovery,
 )
+from sbx.sdk.unified import UnifiedApiError, UnifiedClient
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -61,5 +62,7 @@ __all__ = [
     "Task",
     "TaskCreated",
     "TaskDetail",
+    "UnifiedApiError",
+    "UnifiedClient",
     "WorkflowRecovery",
 ]

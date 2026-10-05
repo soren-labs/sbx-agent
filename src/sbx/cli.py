@@ -1009,6 +1009,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_deploy, probe_attempts=5)
 
+    # --- unified product surface (RFC 167 §08) ------------------------------
+    from sbx.unified_cli import add_unified_commands
+
+    add_unified_commands(sub, sub_common)
+
     p = sub.add_parser("doctor", parents=[sub_common], help="verify the deployment end to end")
     p.add_argument(
         "--verify",

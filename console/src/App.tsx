@@ -1,7 +1,9 @@
-import { hostedMode } from "./hosted/api";
-import { AuthGate } from "./hosted/AuthGate";
-import { PrototypeApp } from "./prototype/PrototypeApp";
+import { UnifiedApp } from "./unified/UnifiedApp";
 
+/**
+ * One console, one state model (RFC 167 §08): the unified app replaces the
+ * hosted/prototype split. Legacy surfaces are deleted in Phase 6.
+ */
 export function App() {
-  return hostedMode ? <AuthGate><PrototypeApp /></AuthGate> : <PrototypeApp />;
+  return <UnifiedApp />;
 }
