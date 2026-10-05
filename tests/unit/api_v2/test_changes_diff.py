@@ -8,6 +8,8 @@ without embedding them in the session detail.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from control.api_v2.diff import parse_unified_diff
 from fastapi.testclient import TestClient
@@ -26,6 +28,20 @@ from tests.unit.api_v2.test_changes_deliver import (
 @pytest.fixture
 def origin(tmp_path):
     return make_origin(tmp_path)
+
+
+def _wait_ready_revision(
+    client: TestClient, auth: dict[str, str], session_id: str, head: str, timeout: float = 15.0
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.get(f"/v2/sessions/{session_id}/changes", headers=auth)
+        assert resp.status_code == 200, resp.text
+        for revision in resp.json()["revisions"]:
+            if revision["status"] == "ready" and revision["head_sha"] == head:
+                return revision
+        time.sleep(0.1)
+    raise AssertionError(f"no ready revision at {head} for session {session_id}")
 
 
 class TestParseUnifiedDiff:
@@ -105,6 +121,9 @@ class TestChangesDiff:
             json={"prompt": "more work"},
             headers=auth,
         )
+        # The session already reads "finished" from the first run, so wait for
+        # this run's revision rather than the status.
+        _wait_ready_revision(client, auth, session["id"], head)
         wait_session(client, auth, session["id"], "finished")
         return session, head
 
