@@ -1,63 +1,42 @@
-# sbx-browser
+# SBX
 
-> Task-oriented orchestration for coding-agent CLIs on your own Modal workspace. Use an existing SBX with only a base URL + API key, or self-host with `./sbx deploy`.
+> Durable Sessions that run official coding-agent CLIs in isolated executors, capture immutable ChangeSets and deliver them with an exact-subject merge gate. One REST surface under /api.
 
 ## Start
 
-- [Introduction](/getting-started/introduction/): product model and deployment boundary
-- [Quick start](/getting-started/quick-start/): existing deployment and fresh self-host paths
-- [Core concepts](/concepts/): Task, Run, Revision, Delivery, Review and Integrations
+- [Introduction](/getting-started/introduction/): what SBX is and is not
+- [Quick start](/getting-started/quick-start/): self-host with PostgreSQL and run a first Turn
+- [Concepts](/concepts/): Session, Turn, ExecutorLease, Worktree, ChangeSet, Delivery, Delegation, Connection, Job
 
-## Use SBX
+## Guides
 
-- [Tasks](/guides/tasks/): create, monitor, follow up, cancel and retry
-- [Repositories and delivery](/guides/repositories/): revisions, branches, pull requests, review-gated merge
-- [Streaming](/guides/streaming/): SSE and reconnect
-- [Recovery](/guides/recovery/): recover after disconnects and uncertain mutations
-- [Examples](/guides/examples/): canonical executable SDK examples
+- [Connections](/guides/connections/)
+- [Sessions and Turns](/guides/sessions-and-turns/)
+- [Changes and Delivery](/guides/changes-and-delivery/)
+- [Child Sessions](/guides/child-sessions/)
+- [Console](/guides/console/)
 
 ## API
 
 - [API overview](/api/overview/)
-- [Authentication](/api/authentication/)
-- [Task lifecycle](/api/task-lifecycle/)
-- [Idempotency](/api/idempotency/)
-- [Pagination](/api/pagination/)
-- [REST reference](/reference/api/): generated from the runtime OpenAPI contract
-- [Errors](/reference/errors/): canonical codes and retry hints
-- [Events](/reference/events/): SSE event contract
+- [Events](/api/events/)
+- [Errors](/api/errors/)
+- [REST reference](/reference/api/): generated from the OpenAPI document
+- [openapi.json](/openapi.json)
 
-## Python SDK
+## SDK and CLI
 
-- [Quickstart](/sdk/python/quickstart/)
-- [Tasks](/sdk/python/tasks/)
-- [Streaming](/sdk/python/streaming/)
-- [Delivery, review and merge](/sdk/python/delivery/)
-- [Errors and retries](/sdk/python/errors/)
-- [Complete client reference](/reference/python-client/)
-
-## Integrations
-
-- [AI providers](/integrations/providers/)
-- [GitHub](/integrations/github/)
-- [Modal](/integrations/modal/)
+- [Python SDK](/sdk/python/)
+- [CLI](/reference/cli/): [cli-help.txt](/cli-help.txt), [config-reference.json](/config-reference.json)
+- [Providers](/reference/providers/): [provider-reference.json](/provider-reference.json)
 
 ## Self-hosting
 
-- [Deploy](/self-hosting/deploy/)
 - [Configuration](/self-hosting/configuration/)
-- [Custom domains](/self-hosting/custom-domain/)
-- [Upgrade and uninstall](/self-hosting/upgrade-and-uninstall/)
 - [Security](/self-hosting/security/)
-- [State and backup](/self-hosting/state-and-backup/)
 - [Troubleshooting](/troubleshooting/)
 
-## For agents
+## Bundles
 
-- [Deterministic agent workflow](/agents/guide/)
-- [Full public-doc bundle](/llms-full.txt)
-- [OpenAPI](/openapi.json)
-- [Docs/product version](/version.json)
-- [Exact CLI help](/cli-help.txt)
-- [Config reference](/config-reference.json)
-- [Provider runtime reference](/provider-reference.json)
+- [llms-full.txt](/llms-full.txt)
+- [version.json](/version.json)

@@ -1,130 +1,61 @@
 ---
 title: Configuration
-description: Config precedence, common deployment knobs and the generated exact field reference.
+description: Every environment variable of the SBX control plane, with defaults and how to run it.
 ---
 
-A fresh `./sbx deploy` initializes configuration without a pre-existing config file.
-Provision the application auth database described below before deploying. When the file
-is absent, deploy initializes `~/.config/sbx/config.toml` with the current
-code defaults.
-
-## Precedence
-
-For deployment configuration the resolution order is:
-
-1. supported command-line flags;
-2. environment overrides;
-3. `~/.config/sbx/config.toml` (or `$SBX_CONFIG`);
-4. code defaults for the installed version.
-
-Use `./sbx config` to inspect the resolved **non-secret** view instead of
-guessing which layer won.
-
-## Exact generated reference
-
-The docs build derives every config field, TOML path, environment override and
-code default from `sbx.config.BootstrapConfig` / `_FIELD_MAP`:
-
-- [`/config-reference.json`](/config-reference.json)
-
-This JSON is the exact reference for the version that built the docs. It is
-preferable to copying large default tables into prose, where they drift.
-
-## Common settings
-
-### Providers
-
-The fresh-deploy default is **no providers**. The platform is still healthy;
-connect provider accounts after deployment. Operators can also preselect
-runtime images with `deploy.providers` / `SBX_PROVIDERS`.
-
-```toml
-[deploy]
-providers = ["codex", "devin"]
-```
-
-### Concurrency and lifecycle
-
-Common deploy fields include:
-
-```toml
-[deploy]
-max_concurrent = 8
-idle_timeout_s = 300
-sandbox_idle_timeout_s = 1800
-turn_max_seconds = 900
-sandbox_timeout_s = 14400
-```
-
-The exact defaults are versioned in `config-reference.json`. Keep
-post-session idle retention, native sandbox idle timeout and hard timeout as
-separate concepts; changing one should not silently redefine the others.
-
-### Control-plane warmth
-
-The control-plane web function has separate Modal scaling knobs such as
-`control_scaledown_window_s`, `control_min_containers` and
-`control_buffer_containers`. They affect the web/control plane, not the Task
-sandbox lifecycle.
-
-### Resource allowlists
-
-`SBX_RESOURCE_SECRETS` and `SBX_MCP_REGISTRY` are advanced execution-policy
-inputs. Only explicitly allowed resources should be requestable by a task.
-
-## Accounts and models
-
-Normal provider connection uses:
+The control plane reads its configuration from the environment at start-up.
 
 ```bash
-./sbx auth login --provider devin
+sbx serve --host 127.0.0.1 --port 8800        # API + workers in one process
+python -m control.composition serve            # same thing
+python -m control.composition worker           # workers only
+python -m control.composition migrate          # apply migrations and exit
 ```
 
-Provider-specific account pool/model environment overrides still exist for
-fleet operators. Prefer the Integrations UI/`sbx auth` lifecycle unless you
-have a reproducible reason to manage the lower-level pool declaration.
+Each command applies pending migrations first, under an advisory lock. `serve`
+runs `SBX_WORKER_THREADS` job workers and a one-minute timer that releases idle
+executors.
 
-## GitHub
+## Required
 
-The default GitHub path is `./sbx github connect` with the hosted SBX GitHub
-App/broker. The older `github.*` / `SBX_GITHUB_*` App/PAT fields are advanced
-self-hosting alternatives; they are not prerequisites for a normal install.
-See [GitHub](/integrations/github/).
+| Variable | Meaning |
+| --- | --- |
+| `SBX_DATABASE_URL` | PostgreSQL connection string. The only business authority. |
+| `SBX_VAULT_KEYS` | Credential keyring, `KID:BASE64KEY,KID2:BASE64KEY2`. The first key encrypts; older keys still decrypt after rotation. Keep it outside the database and backups. |
+| `SBX_RUNTIME_MASTER_KEY` | Hex-encoded master key from which per-lease runtime keys are derived. Not stored in the database. |
 
-## Secrets
+The process exits at start-up if any of these is missing.
 
-### Application auth database
+## Optional
 
-User identities, login sessions and product API keys require an external PostgreSQL
-database on Modal. Put `DATABASE_URL` in a Modal Secret; name it through
-`secrets.auth_database` or `SBX_AUTH_DATABASE_SECRET_NAME`:
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SBX_DATA_DIR` | `./.sbx-data` | Local blobs, git work area, local executor state and the mail sink. |
+| `SBX_PUBLIC_URL` | `http://localhost:8800` | Base URL used in verification and reset links. |
+| `SBX_ALLOWED_ORIGINS` | the public URL | Comma-separated origins allowed for cookie mutations. |
+| `SBX_COOKIE_SECURE` | `0` | Set to `1` to mark cookies `Secure` (use behind HTTPS). |
+| `SBX_EXECUTORS` | `local,modal` | Enabled executor backends. |
+| `SBX_RESEND_API_KEY` | unset | Send email through Resend. Without it, mail is written to `$SBX_DATA_DIR/mail/` (directory `0700`, files `0600`). |
+| `SBX_MAIL_FROM` | unset | Sender address for Resend email, on a domain verified in Resend. Required when `SBX_RESEND_API_KEY` is set; startup fails without it. |
+| `SBX_WORKER_THREADS` | `4` | In-process job worker threads. |
 
-```toml
-[secrets]
-auth_database = "sbx-auth-database"
-```
+Generate keys with `openssl rand -base64 32` for a vault key and
+`openssl rand -hex 32` for the master key.
 
-The URL must stay in the Secret, including its password and TLS settings. The app
-mounts the named Secret and requires database/schema initialization at startup,
-before the bootstrap deployment probe can succeed. Connection, migration-permission
-and unsupported-schema failures prevent startup.
+## Health
 
-Use a separate auth database Secret. Never co-locate `DATABASE_URL` in the bootstrap
-Secret: bootstrap rotation replaces its contents. Config validation rejects an
-auth database Secret name equal to the configured bootstrap Secret name (default
-`sbx-v1-bootstrap`). Missing database configuration fails closed on Modal. Local
-development uses a
-SQLite file at `$XDG_STATE_HOME/sbx-browser/auth.sqlite3` by default, overridable
-with an absolute `SBX_AUTH_DB_PATH`; this file must not be used in a disposable
-Modal container. The database is separate from operator bootstrap credentials
-and AI-provider credentials.
+`GET /healthz` returns `{"ok": true}`. `GET /readyz` returns `503` when the
+database cannot be read.
 
-Existing bootstrap credentials and `sbx open` remain available. Keys previously
-stored only in memory must be reissued during this upgrade; newly issued keys
-survive redeployment. This foundation does not yet add end-user login pages or
-OAuth authorization flows. See the repository's `docs/auth-persistence.md` for
-schema, migration and rollout details.
+## Client variables
 
-Config stores **names and non-secret settings**, not provider tokens/private
-keys. Secret material belongs in the managed provider-account/GitHub/Modal
-credential path documented by the relevant integration page.
+`SBX_BASE_URL`, `SBX_API_KEY` and `SBX_WORKSPACE_ID` configure the CLI and SDK
+only; see [CLI](/reference/cli/).
+
+## Running in production
+
+Run behind HTTPS and set `SBX_COOKIE_SECURE=1`. `sbx serve` does not serve the
+Console; host the built `console/` bundle and route `/api` to the control plane,
+and set `SBX_PUBLIC_URL` and `SBX_ALLOWED_ORIGINS` to the Console's origin.
+Back up PostgreSQL and the vault keys separately: the database alone cannot
+decrypt credentials, and the keys alone hold no data.

@@ -7,8 +7,7 @@ Build the static site first (``make docs-build`` or
 
 The app serves ``docs-site/dist`` as static files. Pointing a custom domain
 (e.g. ``docs.sorenforge.com``) at the printed ``*.modal.run`` URL is a DNS /
-custom-domain step on the Modal workspace — see
-docs-site/README in the deploy guide ("Deploy the docs site").
+custom-domain step on the Modal workspace.
 """
 
 from pathlib import Path

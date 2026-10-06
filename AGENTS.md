@@ -5,77 +5,66 @@
 ## 0. 开工必读
 
 1. 任务说明书是分配给你的 Linear Issue。开工前完整阅读它、「P2 任务编排与 SWE 执行计划 v4」§0 / §5，以及「设计方案 v2」中被该 Issue 引用的章节。
-2. 只修改 Issue 中标明属于你的目录（§1 表）。WP0（`SOR-59`）是唯一一次允许触碰全仓库的工作包。
-3. 契约文件合入后冻结（§2）。需要变更时在 **自己的 Issue 评论** 提出「契约变更请求」，**不自行修改契约**；契约技术变更由 SWE 提案、独立 SWE 审阅，编排者只负责顺序与合并。
+2. 只修改 Issue 中标明属于你的目录（§1 表）。
+3. 契约（§2）变更需在 **自己的 Issue 评论** 提出「契约变更请求」，经独立 SWE 审阅后实施；编排者只负责顺序与合并。
 4. 提 PR 前 `make lint` 与 `make test` 必须全绿，且不依赖任何云凭证。
 5. 禁止把任何凭证、token、密码写入代码、fixture、日志、PR 或 Linear 评论。fixture 里的 token 字段一律用 `REDACTED` 占位。
 6. v4 职责：作者（SWE）= 实现 + 自测 + PR 准备；独立评审（SWE，干净环境）= 对当前提交 PASS/退回；编排者 = 派发、状态跟踪、Linear 沟通、PASS 后机械合并。**编排者不实现、不评审、不测试**；旧 Cursor/Bugbot 与「编排者技术把关」规则不再适用。
 7. 发现超出本包范围的缺陷：在本项目下新建子 Issue（父 = 当前 Issue），不顺手修。
 8. 隔离要求：开发/测试使用独立 HOME/XDG 与剥离的凭证环境（见 `tests/conftest.py`）；不读取、不打印真实凭证；不使用其他 worktree。
 
-## 1. 目录所有权（P2 / v4 §5）
+## 1. 目录结构与所有权（统一架构 RFC 167）
 
-| 所有者 | 路径 |
+目标结构以 `docs/architecture/unified/09-repository-structure.md` 为准；实际行为以 `docs/specs/unified/` 为准。一个 Issue 只改其标明的目录。
+
+| 路径 | 职责 |
 | --- | --- |
-| `SOR-59`（WP0） | `docs/contracts/**`、`runtime/runner/adapter.py`（Protocol）、`control/backend.py`、`control/ports.py`、`control/api_v1/` 空壳、`tests/fakes/`、`tests/fixtures/`、`tests/conftest.py`、`AGENTS.md`、必要 CI/开发环境配置 |
-| `SOR-60` | `spike/p2/**`；原始敏感样本留本地，脱敏样本交 WP0；不与其他包双写 fixtures |
-| `SOR-61` | `runtime/image.py`、`runtime/packages.txt`、`runtime/entrypoint.sh`、`Dockerfile.local`、`Makefile`、README 镜像章节、镜像测试 |
-| `SOR-62` / `SOR-72` | `runtime/runner/**`（冻结的 `adapter.py` Protocol 除外）、`tests/unit/runner/**`；同一作者 |
-| `SOR-63` | `control/**`（除 `backend.py`、`ports.py`、`api_v1/**`、`auth_bearer.py`）、`tests/unit/control/**`、`tests/integration/control/**` |
-| `SOR-64` | `control/api_v1/**`、`control/auth_bearer.py`、`examples/**`、`/v1` 路由与 API 单元测试 |
-| `SOR-65` → `SOR-67` | 65 负责 `web/**` 与 `tests/e2e/**`；交接后 67 负责测试，避免双写 |
-| `SOR-66` | `tests/integration/cloud_free` / `api_v1` 集成测试及必要接线；产品缺陷交回原包 |
-| `SOR-68` | `tests/e2e_modal/**` 与验收产物 |
-| `SOR-69` | 发布配置、README 发布说明、部署操作 |
+| `protocol/` | runtime 与控制面共享的线协议/数据类型（不依赖 `control`） |
+| `control/domain/` | 纯领域模型与不变量（不依赖基础设施） |
+| `control/application/` | 用例与端口；唯一写者规则见 `docs/specs/unified/authority.md` |
+| `control/persistence/` | PostgreSQL schema/migrations、UoW、仓储（唯一业务权威） |
+| `control/jobs/` | Job、claim/fence、定时器与 handler |
+| `control/api/` | 唯一 HTTP 面 `/api`（OpenAPI 由 `make openapi` 生成） |
+| `control/executors/`、`control/runtime_client/` | Executor 端口（local / Modal）与 sbx-runtime 客户端 |
+| `control/integrations/`、`control/security/` | Git/GitHub、邮件、Connection 校验器；vault、密码、脱敏 |
+| `runtime/` | `sbx-runtime` daemon 与官方 CLI Harness（不依赖 `control`） |
+| `console/` | 唯一前端 |
+| `src/sbx/` | SDK 与 CLI |
+| `docs/specs/unified/`、`docs-site/` | 实现规格与公开文档 |
+| `docs/archive/` | 已退役的旧契约与历史资料（只读，不再规范） |
 
-注意：`control/auth_bearer.py` 属于 **D（SOR-64）**，不属于 C（SOR-63）。后续包不得修改冻结路径；假件只扩展场景，不改事件名 / 退出码 / 路径语义。
+依赖方向由 `tests/unit/test_layer_boundaries.py` 强制。发现超出本 Issue 范围的缺陷：新建子 Issue，不顺手修。
 
-## 2. 契约冻结
+## 2. 契约
 
-以下文件是跨包接口，`SOR-59` 合入 `main` 后视为冻结：
-
-- `docs/contracts/filesystem.md`
-- `docs/contracts/events.md`
-- `docs/contracts/runner-cli.md`
-- `docs/contracts/api.yaml`（内部 `/api/*`，HTTP Basic）
-- `docs/contracts/api-v1.yaml`（公开 `/v1/*`，Bearer `sbx_<key>`）
-- `control/backend.py`（`SandboxBackend` / `LocalProcessBackend` / `ModalBackend` 骨架）
-- `control/ports.py`（`AccountRegistry` / `Scheduler` / `ApiKeyStore` / `SessionService` Protocol + `Account` / `ApiKey` / `ScheduleDecision`）
-- `runtime/runner/adapter.py`（`AgentAdapter` Protocol + `get_adapter` 注册表；`CodexAdapter` 行为不变）
-
-解析这些契约时，provider 集合（`codex` / `antigravity` / `grok` / `opencode` / `devin`）、事件名、路径、退出码、错误码必须一致（见各文件的 `canonical-yaml` / `x-canonical` 块）。测试入口：`tests/unit/test_contract_consistency.py`。
+跨包接口：`docs/specs/unified/openapi.yaml`（生成物，`tests/unit/test_openapi_drift.py` 检查漂移）、`protocol/runtime.py` 与 `docs/specs/unified/runtime.md`、`runtime/harnesses/protocol.py`（`Harness` Protocol）与 `docs/specs/unified/harnesses/manifests.json`、`control/persistence/migrations/*.sql`（只追加）。变更这些接口须在 Issue 中提出并经独立评审；旧 `docs/contracts/**` 已归档至 `docs/archive/contracts/`，不再生效。
 
 ## 3. 测试与本地环境
 
 ```bash
-make lint      # ruff check + ruff format --check
-make test      # pytest tests/unit tests/integration（禁止云凭证）
-make test-e2e  # Playwright → mock_api 冒烟
+make lint           # ruff check + ruff format --check
+make test           # pytest tests/unit tests/integration（嵌入式 PostgreSQL，禁止云凭证）
+make console-check  # Console typecheck + vitest + build
+make docs-check     # docs-site 构建与链接检查
 ```
-
-本地环境变量：
 
 | 变量 | 含义 |
 | --- | --- |
-| `SBX_WORK` | 工作目录。生产 `/work`，测试用临时目录 |
-| `HOME` | Sandbox 内为 `$SBX_WORK/home`；测试隔离到 `tmp_path/home` |
-| `CODEX_HOME` | 默认 `$HOME/.codex`（v1 兼容显式覆盖为 `$SBX_WORK/.codex`） |
-| `CODEX_BIN` | 默认 `codex`；测试指向 `tests/fakes/fake_codex.py` |
-| `SBX_ACCOUNT_CREDENTIAL` | 账号凭证 blob `{provider, files:{relpath: content}}`，还原到 `$SBX_WORK/home`（权限 600） |
-| `SBX_ACCOUNT_ID` | 当前会话账号 id |
-| `FAKE_CODEX_SCENARIO` | `success` / `resume` / `nonzero` / `hang` / `badjson` / `slow` / `auth_invalid` |
-| `FAKE_AGY_SCENARIO` `FAKE_GROK_SCENARIO` `FAKE_OPENCODE_SCENARIO` `FAKE_DEVIN_SCENARIO` | 同上，作用于各 provider 假件 |
-| `FAKE_CODEX_SLOW_SECONDS`（及各 `FAKE_*_SLOW_SECONDS`） | `slow` 场景在首行之后的静默秒数（默认 40） |
-| `SBX_BACKEND` | `local` 或 `modal` |
+| `SBX_DATABASE_URL` | PostgreSQL 连接串（唯一业务权威） |
+| `SBX_VAULT_KEYS` | `kid:base64key[,...]`，首个为活动密钥；CredentialVersion 信封加密 |
+| `SBX_RUNTIME_MASTER_KEY` | 十六进制；派生 sbx-runtime 每个 lease 的认证密钥 |
+| `SBX_EXECUTORS` | 启用的 Executor，默认 `local,modal` |
+| `SBX_PUBLIC_URL` / `SBX_ALLOWED_ORIGINS` / `SBX_COOKIE_SECURE` | Console 来源与 cookie 策略 |
+| `SBX_RESEND_API_KEY` | 可选；邮件发送（缺省时使用本地 outbox） |
+| `SBX_MAIL_FROM` | 启用 Resend 时必填；发件人须在 Resend 已验证的域名下 |
 
-`make test` 不得导入真实 `modal` 客户端并建立连接。`import modal` 仅允许出现在 `ModalBackend` 骨架中，且测试不得触发其方法。`LocalProcessBackend.exec` 不继承 `os.environ`（白名单 `PATH` `HOME` `LANG` + `SandboxSpec.env` + 显式 `env=`）；测试需要的变量一律显式传入。
+`tests/conftest.py` 剥离宿主凭证（含 `SBX_TEST_*`、`SBX_BENCHMARK_*`）并隔离 HOME/XDG；测试所需变量一律显式传入。`import modal` 只允许出现在 `control/executors/modal.py` 与 `control/integrations/connectors/modal.py`，`make test` 不得触发真实 Modal 连接。真实凭证的检查（`make smoke-modal`、`make check-connectors`）是显式 opt-in，不打印凭证，并且必须回收所建 sandbox。
 
 ## 4. 密钥与脱敏
 
 - 禁止提交 `.env`、`auth.json`、`.modal.toml`、真实 token。
 - fixture、stub、mock、日志、PR、Linear 评论中的 token / password / secret 字段一律 `REDACTED`。
-- HTTP Basic 的 mock 口令（`sbx` / `sbx`）只用于本地假服务，不是生产凭证。
-- 凭证 blob 只能经 `SBX_ACCOUNT_CREDENTIAL` 进出 sandbox；不打印、不记录、不写入事件。
+- 凭证只以加密 CredentialVersion 存储，经 lease 范围的 grant 投递给 sbx-runtime；API 从不返回明文，不打印、不记录、不写入事件。
 
 ## 5. 交付协议（v4）
 

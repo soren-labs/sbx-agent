@@ -1,0 +1,77 @@
+[
+  {
+    "name": "single-added-file",
+    "input": {
+      "repository": "acme/demo",
+      "base_sha": "8b7e1ebc788af685c82c4bac6dac2a7a3045e032",
+      "baseline_tree": "ecc99adaea362eff876a2051a3233b1a19ccd75d",
+      "tree_sha": "081b3bbbc244693f20cf87f9de45db666faa4dc8",
+      "head_sha": null,
+      "files": [
+        {
+          "path": "src/app.py",
+          "type": "file",
+          "mode": "100644",
+          "digest": "sha256:caf026f25d7140209f98072605307a438914b9ce6f3c14b23d15d9667241de52"
+        }
+      ]
+    },
+    "subject_digest": "sha256:09e69fdd151821b811415eb717528620f75762b1f95dab770edb762f6db7fcaf"
+  },
+  {
+    "name": "ordering-deletes-symlinks-exec",
+    "input": {
+      "repository": null,
+      "base_sha": "6ed18877fa4428085b21141924aa02e195f8fc3f",
+      "baseline_tree": null,
+      "tree_sha": "fc01489d8afd08431c7245b4216ea9d01856c3b9",
+      "head_sha": null,
+      "files": [
+        {
+          "path": "z.sh",
+          "type": "file",
+          "mode": "100755",
+          "digest": "sha256:a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf"
+        },
+        {
+          "path": "README.md",
+          "type": "deleted",
+          "mode": "100644",
+          "digest": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        },
+        {
+          "path": "link",
+          "type": "symlink",
+          "mode": "120000",
+          "digest": "sha256:34a04005bcaf206eec990bd9637d9fdb6725e0a0c0d4aebf003f17f4c956eb5c"
+        }
+      ]
+    },
+    "subject_digest": "sha256:cced909e4acd5b8439de7eb5c1feffa8d3082c83317976901b03fb8cebf7f0c7"
+  },
+  {
+    "name": "unicode-path-and-head",
+    "input": {
+      "repository": "acme/demo",
+      "base_sha": "e015f119473728dcf981d355be34530fcee1fb40",
+      "baseline_tree": "f8933dba7b7326ee773408142b906c47fa336f9f",
+      "tree_sha": "bded2037a7bf578d00b75ee681c5b35734ac6014",
+      "head_sha": "b58af3e6fa7cbc795aaf35ebbd7e88b16ca82548",
+      "files": [
+        {
+          "path": "docs/ünï.md",
+          "type": "file",
+          "mode": "100644",
+          "digest": "sha256:607474ca475a9724d7360aba71a56d5df77e61350e3f724cfa1f46e857e2d85f"
+        },
+        {
+          "path": "docs/a.md",
+          "type": "file",
+          "mode": "100644",
+          "digest": "sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+        }
+      ]
+    },
+    "subject_digest": "sha256:400c32a48d5973e35935c8cee7a84b1c616cdc7c656242867ab479ac59201bd7"
+  }
+]

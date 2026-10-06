@@ -1,0 +1,353 @@
+{
+  "run": "20261005131739",
+  "repository": "soren-labs/sbx-e2e-test",
+  "steps": {
+    "01_login_email_password": {
+      "ok": true,
+      "user_id": "usr_01a10c368bdb74bb86c08f5a7040a0ec",
+      "verified": true
+    },
+    "02_zen_connection": {
+      "ok": true,
+      "id": "con_01a10c368c617a66bc40af4c7068b937",
+      "health": "ready",
+      "validation": {
+        "status": "ready",
+        "observed_at": "2026-10-05T13:17:44.752711+00:00",
+        "details": {
+          "auth": "accepted",
+          "probe": "chat.completions minimal free-model request"
+        },
+        "quota_consuming": true
+      }
+    },
+    "03_modal_connection": {
+      "ok": true,
+      "id": "con_01a10c36907a72a593fcae619095d85d",
+      "health": "ready"
+    },
+    "04_github_connection": {
+      "ok": true,
+      "id": "con_01a10c3694a575b8be6de7e2e452c2c6",
+      "health": "ready",
+      "identity_present": true
+    },
+    "05_no_codex_connection": {
+      "ok": true,
+      "kinds": [
+        "github",
+        "modal",
+        "opencode_zen"
+      ]
+    },
+    "06_usable_free_model": {
+      "ok": true,
+      "preferred": "opencode/big-pickle",
+      "free_models": [
+        "opencode/big-pickle",
+        "opencode/deepseek-v4-flash-free",
+        "opencode/fledge-alpha-free",
+        "opencode/jev-1.13-free",
+        "opencode/ling-3.0-flash-fin-free",
+        "opencode/ling-3.1-flash-free",
+        "opencode/longcat-2.5-preview-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/mimo-v2.6-flash-free",
+        "opencode/muse-spark-1.2-contributor-free"
+      ]
+    },
+    "07_project_session": {
+      "ok": true,
+      "project_id": "prj_01a10c3699777d1489285983b6b43450",
+      "session_id": "sess_01a10c3699877ca3941b7fd686829c83",
+      "model": "opencode/big-pickle"
+    },
+    "08_modal_sandbox_via_user_credential": {
+      "ok": true,
+      "backend": "modal",
+      "lease": {
+        "id": "lease_01a10c3699d2708d9280c3c458b56e9f",
+        "generation": 1,
+        "state": "ready",
+        "reason": null,
+        "quarantined": false,
+        "image_digest": "modal:im-2un3wvJgjf1z8tjSLbS8xT",
+        "protocol_version": "1.0",
+        "created_at": "2026-10-05T13:17:47.334047+00:00"
+      }
+    },
+    "09_first_opencode_turn": {
+      "ok": true,
+      "turn_id": "turn_01a10c36999f712a8afeb15be1303604",
+      "state": "succeeded",
+      "cli": {
+        "id": "turn_01a10c36999f712a8afeb15be1303604",
+        "session_id": "sess_01a10c3699877ca3941b7fd686829c83",
+        "ordinal": 1,
+        "state": "succeeded",
+        "reason": null,
+        "triggering_message_id": "msg_01a10c3699977f76be730af368af2a04",
+        "retry_of_turn_id": null,
+        "settings": {
+          "model": "opencode/big-pickle",
+          "provider_id": "opencode"
+        },
+        "result_contract": null,
+        "error": null,
+        "evidence_complete": true,
+        "outcome": {
+          "verdict": "success",
+          "exit_code": 0,
+          "native_id": "ses_ef3c94103ffe5kAscUsz8OAJlN",
+          "credential_health": "ok"
+        },
+        "usage": {
+          "source": "opencode.step_finish",
+          "complete": true,
+          "input_tokens": 16204,
+          "output_tokens": 163,
+          "reasoning_tokens": 431,
+          "cached_input_tokens": 10733
+        },
+        "output_message_id": "msg_01a10c375890768fade08e47548f934a",
+        "cancel_requested": false,
+        "unknown_acknowledged": false,
+        "version": 4,
+        "created_at": "2026-10-05T13:17:47.266999+00:00",
+        "started_at": "2026-10-05T13:17:55.596848+00:00",
+        "finished_at": "2026-10-05T13:18:49.901246+00:00",
+        "actions": [],
+        "executions": [
+          {
+            "id": "exec_01a10c36b9287dc8a8abfdf5e2f98ec3",
+            "attempt_ordinal": 1,
+            "state": "succeeded",
+            "lease_id": "lease_01a10c3699d2708d9280c3c458b56e9f",
+            "launch_evidence": "started",
+            "cli_version": "1.18.34",
+            "adapter_version": "opencode-harness/1",
+            "image_digest": "modal:im-2un3wvJgjf1z8tjSLbS8xT",
+            "final_watermark": 12,
+            "outcome": {
+              "message": "",
+              "verdict": "success",
+              "cancelled": false,
+              "exit_code": 0,
+              "native_id": "ses_ef3c94103ffe5kAscUsz8OAJlN",
+              "timed_out": false,
+              "error_code": null,
+              "retry_advice": "none",
+              "scrub_failures": [],
+              "credential_health": "ok"
+            }
+          }
+        ]
+      },
+      "tools": [
+        "calc.py",
+        "test_calc.py",
+        "python3 -m unittest discover -v 2>&1 | tail -5"
+      ]
+    },
+    "10_followup_native_continuity": {
+      "ok": true,
+      "state": "succeeded",
+      "codeword_recalled": true,
+      "native_ids": [
+        "ses_ef3c94103ffe5kAscUsz8OAJlN",
+        "ses_ef3c94103ffe5kAscUsz8OAJlN"
+      ],
+      "same_native_session": true
+    },
+    "12_immutable_changeset": {
+      "ok": true,
+      "id": "cs_01a10c38b406783181ea8eac03f0d396",
+      "state": "ready",
+      "subject_digest": "sha256:a0a79d9790d3f5f6e12707178a30553d864597590ae68d2378b72921121b1267",
+      "files": [
+        "__pycache__/calc.cpython-312.pyc",
+        "__pycache__/test_calc.cpython-312.pyc",
+        "calc.py",
+        "test_calc.py"
+      ],
+      "eligible": true
+    },
+    "11_tests_in_sandbox": {
+      "ok": true,
+      "delegation": "del_01a10c38be6d71db927833b5a63c311b",
+      "state": "succeeded",
+      "verdict": "pass",
+      "platform_checks": [
+        {
+          "name": "unittest",
+          "status": "passed",
+          "exit_code": 0,
+          "head": "271dc328a99969e8d502bdc4c840d7ea16b0ccb0"
+        }
+      ],
+      "parent_tool_runs": [
+        "python3 -m unittest discover -v 2>&1 | tail -5"
+      ]
+    },
+    "14_independent_child_review": {
+      "ok": true,
+      "delegation": "del_01a10c39eea17264a9df0cc427951304",
+      "child_session": "sess_01a10c39ee9a7673913b0e32ea7c6509",
+      "state": "succeeded",
+      "reason": null,
+      "verdict": "approve",
+      "pinned_subject": true,
+      "independent": true,
+      "attempts": 1
+    },
+    "13_delivery_draft_pr": {
+      "ok": true,
+      "id": "dlv_01a10c3aac54721baaaf9c30940a091c",
+      "state": "succeeded",
+      "pr": {
+        "number": 24,
+        "url": "https://github.com/soren-labs/sbx-e2e-test/pull/24",
+        "state": "open",
+        "draft": true
+      },
+      "commit": "e34d48230d6390ad5f589d515a5d29e05311d506",
+      "steps": [
+        "materialize",
+        "push",
+        "pull_request"
+      ],
+      "github": {
+        "base": "sbx-opus-e2e/base-20261005131739",
+        "head": "sbx/sess_01a10c3699877ca3941b7fd686829c83/cs_01a10c38b406783181ea8eac03f0d396",
+        "head_sha": "e34d48230d6390ad5f589d515a5d29e05311d506",
+        "draft": true
+      }
+    },
+    "15_exact_subject_gate_and_merge": {
+      "ok": true,
+      "first_request": {
+        "state": "blocked",
+        "reasons": [
+          "pull_request_is_draft"
+        ]
+      },
+      "second_request": {
+        "state": "succeeded",
+        "merge_sha": "417b6521c141e82d48b343da19e7a58005477fd7",
+        "error": null
+      },
+      "eligibility": {
+        "eligible": false,
+        "reasons": [
+          "pull_request_not_open"
+        ],
+        "subject_digest": "sha256:a0a79d9790d3f5f6e12707178a30553d864597590ae68d2378b72921121b1267",
+        "head_sha": "e34d48230d6390ad5f589d515a5d29e05311d506",
+        "observed_at": "2026-10-05T13:22:28.639082+00:00"
+      },
+      "pr_state": "merged"
+    },
+    "16_restart_persistence": {
+      "ok": true,
+      "control_generation": 2,
+      "connections": [
+        [
+          "opencode_zen",
+          "ready"
+        ],
+        [
+          "modal",
+          "ready"
+        ],
+        [
+          "github",
+          "ready"
+        ]
+      ],
+      "session_lifecycle": "open",
+      "turns": [
+        "succeeded",
+        "succeeded"
+      ],
+      "changesets": 2,
+      "delivery_state": "succeeded",
+      "zen_after_restart": "ready"
+    },
+    "17_cross_owner_isolation": {
+      "ok": true,
+      "denied": {
+        "session": "not_found",
+        "connection": "not_found",
+        "changeset": "not_found",
+        "delivery": "not_found",
+        "delegation": "not_found",
+        "executor": "not_found",
+        "events": "not_found"
+      },
+      "use_other_connections": "not_found",
+      "b_without_connections": "connection_required",
+      "b_connections": 0
+    },
+    "18_disconnect_does_not_orphan_compute": {
+      "ok": true,
+      "while_live": {
+        "code": "connection_in_use",
+        "details": {
+          "executor_leases": [
+            "lease_01a10c3699d2708d9280c3c458b56e9f",
+            "lease_01a10c38be9e7efd9908cc1a48d9476d",
+            "lease_01a10c39eec37457917e6c96bb6eed8b"
+          ]
+        }
+      },
+      "after_release": "revoked",
+      "released_sessions": 3
+    }
+  },
+  "gates": {
+    "connections_ready": true,
+    "no_codex_connection": true,
+    "free_model_usable": true,
+    "base_branch_created": true,
+    "first_turn_succeeded": true,
+    "followup_turn_succeeded": true,
+    "followup_recalls_context": true,
+    "same_native_session": true,
+    "changeset_ready": true,
+    "delivery_succeeded": true,
+    "pull_request_is_draft": true,
+    "pr_head_is_delivered_commit": true,
+    "cross_owner_isolation": true,
+    "disconnect_after_release": true,
+    "no_secret_leaks": true
+  },
+  "failure": null,
+  "cleanup": {
+    "terminated_stragglers": 0,
+    "live_sandboxes_after": 0,
+    "pull_request": {
+      "url": "https://github.com/soren-labs/sbx-e2e-test/pull/24",
+      "merged": true
+    },
+    "deleted_refs": [
+      "sbx-opus-e2e/base-20261005131739",
+      "sbx/sess_01a10c3699877ca3941b7fd686829c83/cs_01a10c38b406783181ea8eac03f0d396"
+    ]
+  },
+  "secret_scan": {
+    "leaks": {
+      "api_responses": [],
+      "control_logs": [],
+      "database": [],
+      "pull_request": [],
+      "evidence": []
+    },
+    "scanned_bytes": {
+      "api_responses": 415207,
+      "control_logs": 42107,
+      "database": 99943,
+      "pull_request": 19662,
+      "evidence": 7570
+    }
+  }
+}

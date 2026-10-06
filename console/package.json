@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "SOR-257: V2 Session Console — React + TypeScript + Vite first pass",
+  "description": "SBX Console — one typed /api client, one query/event store",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && node scripts/build-manifest.mjs",

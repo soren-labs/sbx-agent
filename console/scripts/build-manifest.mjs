@@ -39,7 +39,6 @@ const manifest = {
   schema: "sbx-console-build/1",
   frontend_source: "console/",
   git_sha: process.env.VITE_BUILD_SHA || process.env.GIT_SHA || null,
-  api_mode: process.env.VITE_API_MODE || null,
   built_at: new Date().toISOString(),
   primary_asset: primary,
   files: entries,

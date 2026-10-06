@@ -1,150 +1,84 @@
-import { describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Composer } from "../components/Composer";
-import { MODELS, PROVIDERS } from "../api/fixtures";
-import { makeApi, renderApp } from "../test/helpers";
-import type { NewSessionInput } from "../api/types";
+import { Route, Routes } from "react-router-dom";
+import { describe, expect, it } from "vitest";
+import { NewSession } from "../features/sessions/NewSession";
+import { modelOptions, pickBackend, pickDefaultModel } from "../features/sessions/defaults";
+import type { ModelsView } from "../api/types";
+import { connection, identityRoutes, mockFetch, renderApp, session } from "../test/helpers";
 
-const setup = (onSubmit = vi.fn()) =>
-  renderApp(
-    <Composer
-      providers={PROVIDERS}
-      models={MODELS}
-      submitting={false}
-      onSubmit={onSubmit}
-    />,
-  );
+const MODELS: ModelsView = {
+  provider_id: "opencode",
+  preferred_model: "big-pickle",
+  connections: [
+    {
+      connection_id: "c_zen",
+      label: "zen",
+      health: "ready",
+      models: [
+        { id: "paid-pro", free: false },
+        { id: "big-pickle", free: true },
+        { id: "other-free", free: true },
+      ],
+    },
+  ],
+};
 
-describe("Composer", () => {
-  it("renders prompt, repo, provider/model Auto selects, and Send", () => {
-    setup();
-    expect(screen.getByTestId("composer-prompt")).toBeInTheDocument();
-    expect(screen.getByLabelText("Repository")).toBeInTheDocument();
-    expect(screen.getByLabelText("Provider")).toHaveValue("auto");
-    expect(screen.getByLabelText("Model")).toHaveValue("auto");
-    expect(screen.getByTestId("composer-send")).toBeInTheDocument();
+describe("defaults", () => {
+  it("prefers the server's preferred model only when it is free", () => {
+    expect(pickDefaultModel(MODELS)).toBe("big-pickle");
+    expect(pickDefaultModel({ ...MODELS, preferred_model: "paid-pro" })).toBe("big-pickle");
+    expect(pickDefaultModel({ ...MODELS, preferred_model: null })).toBe("big-pickle");
+    expect(pickDefaultModel(undefined)).toBeUndefined();
+    expect(modelOptions(MODELS).map((o) => o.id)).toEqual(["paid-pro", "big-pickle", "other-free"]);
   });
-
-  it("keeps advanced fields collapsed behind the disclosure", async () => {
-    setup();
-    const adv = screen.getByTestId("advanced");
-    expect(adv).not.toHaveAttribute("open");
-    expect(adv).not.toBeVisible();
-    await userEvent.click(screen.getByText("Advanced"));
-    expect(screen.getByTestId("advanced")).toHaveAttribute("open");
-    expect(screen.getByLabelText("Effort")).toBeInTheDocument();
-    expect(screen.getByLabelText("Delivery")).toBeInTheDocument();
-    expect(screen.getByLabelText(/Idle timeout/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/MCP servers/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Secrets/)).toBeInTheDocument();
+  it("picks Modal when a Modal connection exists", () => {
+    expect(pickBackend([connection({ kind: "modal" })])).toBe("modal");
+    expect(pickBackend([connection({ kind: "github" })])).toBe("local");
   });
+});
 
-  it("requires a prompt before submitting", async () => {
-    const onSubmit = vi.fn();
-    setup(onSubmit);
-    await userEvent.click(screen.getByTestId("composer-send"));
-    expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toHaveTextContent("prompt");
-  });
+describe("new Session composer", () => {
+  const routes = (calls?: { created?: unknown }) =>
+    mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/connections", { json: { items: [connection({ kind: "modal" }), connection({ kind: "github" }), connection({ kind: "opencode_zen", id: "c_zen" })] } }],
+      ["GET", "/api/models", { json: MODELS }],
+      ["GET", "/api/workspaces/w1/projects", { json: { items: [] } }],
+      ["POST", "/api/workspaces/w1/sessions", (c) => {
+        if (calls) calls.created = c.body;
+        return { status: 202, json: { session_id: "s9", turn_id: "t1", session: session({ id: "s9" }), event_watermark: 3 } };
+      }],
+    ]);
 
-  it("submits prompt + repo + provider/model selections", async () => {
-    const onSubmit = vi.fn();
-    setup(onSubmit);
-    await userEvent.type(
-      screen.getByTestId("composer-prompt"),
-      "Fix the flaky test",
+  it("defaults to opencode, the preferred free model and Modal — with no Codex connection", async () => {
+    const m = routes();
+    await renderApp(
+      <Routes>
+        <Route path="/" element={<NewSession />} />
+        <Route path="/sessions/:id" element={<div>opened session</div>} />
+      </Routes>,
+      m.fetch,
     );
-    await userEvent.type(screen.getByLabelText("Repository"), "a/b");
-    await userEvent.selectOptions(screen.getByLabelText("Provider"), "grok");
-    await userEvent.selectOptions(screen.getByLabelText("Model"), "grok-4");
-    await userEvent.click(screen.getByTestId("composer-send"));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-    const input = onSubmit.mock.calls[0][0] as NewSessionInput;
-    expect(input).toMatchObject({
-      prompt: "Fix the flaky test",
-      repo: "a/b",
-      provider: "grok",
-      model: "grok-4",
+    const model = (await screen.findByLabelText("Model")) as HTMLSelectElement;
+    await waitFor(() => expect(model.value).toBe("big-pickle"));
+    expect((screen.getByLabelText("Compute") as HTMLSelectElement).value).toBe("modal");
+    expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("opencode");
+    expect(screen.getByRole("option", { name: "big-pickle (free)" })).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Task"), "Fix the failing check");
+    await userEvent.type(screen.getByLabelText("Repository"), "acme/app");
+    await userEvent.click(screen.getByRole("button", { name: "Start Session" }));
+
+    await screen.findByText("opened session");
+    const post = m.find("POST", "/api/workspaces/w1/sessions")[0];
+    expect(post.body).toEqual({
+      harness: { provider_id: "opencode", model: "big-pickle" },
+      executor: { backend: "modal" },
+      repository: { full_name: "acme/app", base_ref: "main" },
+      message: { content: "Fix the failing check" },
     });
-  });
-
-  it("Auto provider leaves provider as auto and model undefined", async () => {
-    const onSubmit = vi.fn();
-    setup(onSubmit);
-    await userEvent.type(screen.getByTestId("composer-prompt"), "x");
-    await userEvent.click(screen.getByTestId("composer-send"));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-    const input = onSubmit.mock.calls[0][0] as NewSessionInput;
-    expect(input.provider).toBe("auto");
-    expect(input.model).toBeUndefined();
-  });
-
-  it("passes advanced fields through when set", async () => {
-    const onSubmit = vi.fn();
-    setup(onSubmit);
-    await userEvent.type(screen.getByTestId("composer-prompt"), "x");
-    await userEvent.click(screen.getByText("Advanced"));
-    await userEvent.selectOptions(screen.getByLabelText("Effort"), "high");
-    await userEvent.selectOptions(screen.getByLabelText("Delivery"), "draft_pr");
-    await userEvent.type(screen.getByLabelText(/Idle timeout/), "900");
-    await userEvent.type(
-      screen.getByLabelText(/Secrets/),
-      "AWS_KEY, GH_TOKEN",
-    );
-    await userEvent.click(screen.getByTestId("composer-send"));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-    const input = onSubmit.mock.calls[0][0] as NewSessionInput;
-    expect(input).toMatchObject({
-      effort: "high",
-      delivery: "draft_pr",
-      idleTimeoutS: 900,
-      secrets: ["AWS_KEY", "GH_TOKEN"],
-    });
-  });
-
-  it("surfaces provider_busy as an actionable notice", async () => {
-    const api = makeApi("provider_busy");
-    const onSubmit = vi.fn(async () => {
-      await api.createSession({ prompt: "x" });
-    });
-    setup(onSubmit);
-    await userEvent.type(screen.getByTestId("composer-prompt"), "x");
-    await userEvent.click(screen.getByTestId("composer-send"));
-    const notice = await screen.findByTestId("error-notice");
-    expect(notice).toHaveAttribute("data-kind", "provider_busy");
-    expect(notice).toHaveTextContent("busy");
-  });
-
-  it("account picker only offers real ids or Auto — never fabricated", async () => {
-    const onSubmit = vi.fn();
-    setup(onSubmit);
-    await userEvent.selectOptions(screen.getByLabelText("Provider"), "codex");
-    await userEvent.click(screen.getByText("Advanced"));
-    const select = screen.getByLabelText("Account") as HTMLSelectElement;
-    const values = [...select.options].map((o) => o.value);
-    // Real codex account ids from /v1/models rows — no <provider>/main or
-    // <provider>/acct-N fabrications.
-    expect(values).toEqual(["auto", "codex-personal", "codex-work"]);
-    expect(values).not.toContain("codex/main");
-    expect(values.join()).not.toMatch(/acct-\d/);
-  });
-
-  it("selecting a real account id passes it through", async () => {
-    const onSubmit = vi.fn();
-    setup(onSubmit);
-    await userEvent.type(screen.getByTestId("composer-prompt"), "x");
-    await userEvent.selectOptions(screen.getByLabelText("Provider"), "codex");
-    await userEvent.click(screen.getByText("Advanced"));
-    await userEvent.selectOptions(screen.getByLabelText("Account"), "codex-work");
-    await userEvent.click(screen.getByTestId("composer-send"));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-    expect(onSubmit.mock.calls[0][0]).toMatchObject({ account: "codex-work" });
-  });
-
-  it("never renders raw account/scheduler internals", () => {
-    setup();
-    const html = document.body.innerHTML;
-    expect(html).not.toMatch(/lru|scheduler candidate|modal-[a-z0-9]+/i);
+    expect(post.headers["Idempotency-Key"]).toBeTruthy();
+    expect(JSON.stringify(post.body)).not.toContain("codex");
   });
 });

@@ -6,6 +6,26 @@ source for release notes.
 
 ## [Unreleased]
 
+### Changed — unified architecture (RFC 167, breaking)
+
+- One durable domain: Projects/ProjectVersions, Sessions with logical Worktrees, Turns,
+  Executions, immutable ChangeSets, exact-subject Deliveries and child-Session Delegations,
+  persisted only in PostgreSQL through typed repositories, a journal and claimed/fenced Jobs.
+- `sbx-runtime` daemon with official CLI Harnesses (OpenCode, Codex) on a local or Modal
+  Executor; credentials are delivered as lease-scoped grants from encrypted CredentialVersions.
+- One HTTP surface, `/api` (generated OpenAPI in `docs/specs/unified/openapi.yaml`), email/password
+  product auth and API keys, manual Connections (Modal, GitHub token, OpenCode Zen, Codex).
+- Rewritten Console (single typed client/live store) and a new SDK/CLI (`SBXClient`, `sbx`).
+
+### Removed
+
+- Basic `/api/*`, public `/v1`, `/v2` and hosted routes; the legacy web dashboard (`web/`),
+  root `broker/`, hosted deploy tooling, the shell runner and its provider adapters (Devin,
+  Antigravity, Grok and Claude are listed as disabled Harness manifests until their gates
+  pass), Modal Dict/file business stores, the GitHub App requirement and the Task/Agent/Run SDK. Retired contracts and design notes moved to `docs/archive/`.
+
+## Pre-unification unreleased changes (superseded by RFC 167)
+
 ### Added
 
 - Redesigned web console (`web/`) on the public `/v1` API with Bearer keys:

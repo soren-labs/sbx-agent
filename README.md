@@ -1,90 +1,71 @@
 # sbx-browser
 
-Self-hosted orchestration for coding-agent CLIs. Give SBX a task, optional
-repository, and delivery target; it runs the provider's official CLI in an
-isolated Modal Sandbox and keeps the task, runs, revisions, delivery and
-review state behind one API.
+SBX runs coding agents as durable **Sessions**. Each Session owns a logical
+Worktree; every Turn runs the provider's official CLI (OpenCode, Codex) inside
+`sbx-runtime` on a local or Modal Executor. Finished work is captured as an
+immutable **ChangeSet**, shipped by an exact-subject **Delivery** (GitHub pull
+request and gated merge), and can be reviewed by child-Session **Delegations**.
+PostgreSQL is the only business authority; there is one API (`/api`), one
+Console and one SDK/CLI.
 
-Supported providers include Codex, Devin, Antigravity, Grok and OpenCode.
-SBX uses your own Modal workspace and your own provider subscriptions.
+The architecture is specified in [`docs/architecture/unified/`](docs/architecture/unified/README.md);
+what this implementation actually does is in [`docs/specs/unified/`](docs/specs/unified/README.md).
 
-> **v0.1.1 · public alpha.** The public `/v1` API is usable today but may
-> still evolve before 1.0.
-
-## Self-host in three steps
-
-```bash
-git clone https://github.com/soren-labs/sbx-browser.git
-cd sbx-browser
-./sbx deploy
-```
-
-On a fresh machine, `./sbx` bootstraps `uv`/Python as needed and `deploy`
-initializes config, opens Modal authentication when required, creates the
-platform, and verifies `/v1/me`. A platform-only deploy is valid: connect
-providers afterwards.
+## Run a control plane
 
 ```bash
-./sbx auth login --provider devin
-./sbx github connect        # optional; needed for private GitHub repos/PRs
-./sbx open                  # signed-in web console
+uv sync
+export SBX_DATABASE_URL=postgresql://...          # PostgreSQL 15+
+export SBX_VAULT_KEYS="k1:$(openssl rand -base64 32)"
+export SBX_RUNTIME_MASTER_KEY="$(openssl rand -hex 32)"
+export SBX_PUBLIC_URL=http://localhost:5174 SBX_ALLOWED_ORIGINS=http://localhost:5174
+make serve                                        # /api + Job workers on :8800
+make console-dev                                  # Console on :5174, proxies /api to :8800
 ```
 
-Then create a task with the API or SDK:
+Sign up with email and password, then add Connections in **Settings →
+Connections** (or `sbx connections add`): a Modal token for compute, an
+OpenCode Zen key (or Codex `auth.json`) for the agent, and a GitHub token for
+repositories and pull requests. Secrets are stored encrypted as
+CredentialVersions and are never returned by the API.
+
+## SDK and CLI
 
 ```python
-from sbx.sdk import SbxClient
+from sbx import SBXClient
 
-client = SbxClient()  # SBX_BASE_URL + SBX_API_KEY
-created = client.tasks.create(
-    "Fix the flaky test and add a regression test",
-    source={"repo": "https://github.com/owner/repo"},
-    delivery={"pull_request": {}},
+client = SBXClient("http://127.0.0.1:8800", api_key)
+result = client.execute(
+    "Add a CONTRIBUTING.md with one paragraph.",
+    repository={"full_name": "owner/repo"},
+    executor={"backend": "modal"},
 )
-task = client.tasks.wait(created.task.id)
-print(task.status)
+changeset = client.changesets.wait_ready(result["session_id"], source_turn_id=result["turn"]["id"])
+delivery = client.deliveries.wait(client.deliveries.request(changeset["id"])["id"])
 ```
-
-## Use an existing SBX
-
-If someone already operates the deployment, you only need:
-
-```text
-SBX_BASE_URL
-SBX_API_KEY
-```
-
-Start with `docs-site/src/content/docs/getting-started/quick-start.mdx` or the
-published documentation site. The task-oriented SDK covers create, wait,
-follow-up, cancel/retry, revisions, delivery, review and merge without raw
-HTTP workarounds.
-
-## Documentation
-
-The public docs live in [`docs-site/`](docs-site/), built with Astro
-Starlight. The REST reference is generated from the runtime OpenAPI contract;
-canonical error/reference data is checked for drift in CI.
 
 ```bash
-make docs-check       # build + links + generated-reference checks
-make docs-dev         # local docs server
-make docs-deploy      # deploy the static site to Modal
+sbx auth login --email you@example.com          # password from stdin or prompt
+sbx connections add opencode_zen < key.txt
+sbx execute "Fix the flaky test" --project my-project
 ```
 
-Machine-readable entry points are `/llms.txt`, `/llms-full.txt` and
-`/openapi.json` on a built docs site.
+See [`examples/unified_mvp.py`](examples/unified_mvp.py) for the full
+create → ChangeSet → review → Delivery walkthrough.
 
 ## Development
 
 ```bash
-make lint
-make test
-make test-e2e
-make console-dev
+make lint            # ruff check + format check
+make test            # unit + integration; embedded PostgreSQL, no cloud credentials
+make console-check   # Console typecheck, tests and build
+make docs-check      # documentation site build and link checks
+make openapi         # regenerate docs/specs/unified/openapi.yaml
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and
-[SECURITY.md](SECURITY.md) for vulnerability reporting.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
+[SECURITY.md](SECURITY.md) for vulnerability reporting. Pre-unification
+contracts and design notes are kept read-only under [`docs/archive/`](docs/archive/).
 
 License selection is pending owner decision; [LICENSE](LICENSE) is currently
 a placeholder, not a grant.

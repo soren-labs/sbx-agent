@@ -24,7 +24,6 @@ const errors = [];
 
 // slugs for the default (root) locale, e.g. 'guides/console', 'concepts'
 const slugs = new Set(['index']); // default locale
-const localizedSlugs = new Set(); // e.g. 'zh-cn/guides/console'
 function walk(dir) {
 	for (const name of readdirSync(dir, { withFileTypes: true })) {
 		const full = join(dir, name.name);
@@ -36,8 +35,7 @@ function walk(dir) {
 		if (!m) continue;
 		const rel = full.slice(contentRoot.length + 1).replace(/\.(md|mdx)$/, '');
 		const slug = rel.replace(/\/index$/, '') || 'index';
-		if (rel.startsWith('zh-cn/')) localizedSlugs.add(slug);
-		else slugs.add(slug);
+		slugs.add(slug);
 	}
 }
 walk(contentRoot);
@@ -51,19 +49,7 @@ if (redirectsBlock) {
 		redirects.set(m[1], m[2]);
 	}
 }
-// zh-cn copies of generated API reference pages, emitted by prepare-openapi
-// and spread into astro.config's redirects map
-const genRedirects = join(siteRoot, '.generated/api-redirects.json');
-if (existsSync(genRedirects)) {
-	for (const [from, to] of Object.entries(JSON.parse(readFileSync(genRedirects, 'utf8')))) {
-		redirects.set(from, to);
-	}
-}
-
 const EXTERNAL = /^(https?:|mailto:|#|\/\/)/;
-
-// non-root locales declared in astro.config.mjs (`'xx-yy': { label: ... }`)
-const LOCALES = [...config.matchAll(/'([a-z]{2}-[a-z]{2})':\s*\{\s*label:/g)].map((m) => m[1]);
 
 function resolves(raw, fromFile) {
 	const path = raw.split('#')[0].replace(/\/+$/, '');
@@ -72,16 +58,7 @@ function resolves(raw, fromFile) {
 	if (!path.startsWith('/')) return; // relative anchors/images handled by astro
 	if (redirects.has(path)) return;
 	const slug = path.slice(1);
-	if (slugs.has(slug) || localizedSlugs.has(slug)) return;
-	if (slug.startsWith('zh-cn/')) {
-		const base = slug.slice('zh-cn/'.length);
-		// a missing localized page falls back to the default locale's slug
-		// (content pages only — public assets do not fall back)
-		if (slugs.has(base)) return;
-		// /zh-cn/reference/api/* are astro redirects generated for every
-		// openapi sidebar href (see collectApiRedirects in astro.config.mjs)
-		if (/^reference\/api(\/|$)/.test(base)) return;
-	}
+	if (slugs.has(slug)) return;
 	if (existsSync(join(publicRoot, path))) return;
 	// starlight-openapi generates pages under /reference/api/
 	if (/^reference\/api(\/|$)/.test(slug)) return;
@@ -115,13 +92,9 @@ for (const items of config.matchAll(/items:\s*\[([^\]]*)\]/gs)) {
 	}
 }
 
-// sidebar `link:` entries render under every locale (starlight prefixes the
-// current locale), so each must resolve at the root path AND localized paths
+// sidebar `link:` entries must resolve
 for (const m of config.matchAll(/link:\s*'(\/[^']+)'/g)) {
 	resolves(m[1], 'astro.config.mjs');
-	for (const loc of LOCALES) {
-		resolves(`/${loc}${m[1]}`, `astro.config.mjs (${loc} sidebar link)`);
-	}
 }
 
 // redirect targets must exist
@@ -133,8 +106,7 @@ for (const [from, to] of redirects) {
 	}
 }
 
-// every llms.txt served under public/ (root + localized copies) must have
-// resolvable local links
+// every llms.txt served under public/ must have resolvable local links
 function* llmsFiles(dir, prefix = '') {
 	for (const name of readdirSync(dir, { withFileTypes: true })) {
 		if (name.isDirectory()) {

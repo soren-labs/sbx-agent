@@ -4,7 +4,7 @@
 # A fresh clone needs nothing but this file: it finds (or installs) uv,
 # then delegates to `uv run sbx`, which resolves a managed Python 3.12+,
 # creates .venv and syncs the locked dependencies on first run. Everything
-# after that is the regular CLI — `./sbx deploy` == `uv run sbx deploy`.
+# after that is the regular CLI — `./sbx sessions list` == `uv run sbx sessions list`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
