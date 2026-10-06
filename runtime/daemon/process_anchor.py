@@ -22,8 +22,16 @@ def scope_name(scope: str) -> str:
 
 
 def main() -> None:
-    scope, status_fd, *argv = sys.argv[1:]
+    scope, status_fd, receipt_fd, *argv = sys.argv[1:]
     fd = int(status_fd)
+    receipt = int(receipt_fd)
+
+    def mark(data: bytes) -> None:
+        if receipt >= 0:
+            os.lseek(receipt, 0, os.SEEK_SET)
+            os.write(receipt, data)
+            os.ftruncate(receipt, len(data))
+            os.fsync(receipt)
 
     def report(data: bytes) -> None:
         try:
@@ -40,8 +48,10 @@ def main() -> None:
         # Keep ownership until descendants exit. Exec resets this callable handler
         # in the command, so the command still receives ordinary SIGTERM behavior.
         signal.signal(signal.SIGTERM, lambda *_: None)
+        mark(b"spawning")  # durable before any command can outlive this anchor
         proc = subprocess.Popen(argv, close_fds=True, start_new_session=True)
     except OSError as exc:
+        mark(b"done")
         report((json.dumps({"errno": exc.errno}) + "\n").encode())
         return
     report(b"{}\n")
@@ -59,6 +69,7 @@ def main() -> None:
             os.waitpid(-1, 0)
         except ChildProcessError:
             break
+    mark(b"done")
 
 
 if __name__ == "__main__":

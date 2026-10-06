@@ -31,10 +31,11 @@ def rt(tmp_path):
 
 def wait_file(path):
     deadline = time.monotonic() + 10
-    while not path.exists() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if path.exists() and (text := path.read_text()):
+            return text
         time.sleep(0.01)
-    assert path.exists(), path
-    return path.read_text()
+    raise AssertionError(f"no complete readiness value at {path}")
 
 
 def writer(tmp_path, root):

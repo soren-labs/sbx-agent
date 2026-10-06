@@ -25,9 +25,11 @@ class Service:
         *,
         known: set[str] | None = None,
         scope: str | None = None,
+        startup_dir: Path | None = None,
     ) -> None:
         self.decl = decl
         self.scope = scope
+        self.startup_dir = startup_dir
         self.known = known if known is not None else set()
         self.root = root
         self.home = home
@@ -63,6 +65,7 @@ class Service:
                 cwd=str(cwd),
                 env=env,
                 scope=self.scope,
+                startup_dir=self.startup_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,

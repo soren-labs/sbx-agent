@@ -19,7 +19,9 @@ MAX_BUFFER = 512 * 1024
 
 
 class Terminal:
-    def __init__(self, cwd: Path, home: Path, *, scope: str | None = None) -> None:
+    def __init__(
+        self, cwd: Path, home: Path, *, scope: str | None = None, startup_dir: Path | None = None
+    ) -> None:
         self.id = "pty_" + uuid.uuid4().hex[:16]
         master, slave = pty.openpty()
         home.mkdir(parents=True, exist_ok=True)
@@ -35,6 +37,7 @@ class Terminal:
             cwd=str(cwd),
             env=env,
             scope=scope,
+            startup_dir=startup_dir,
             stdin=slave,
             stdout=slave,
             stderr=slave,

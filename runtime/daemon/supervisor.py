@@ -20,6 +20,7 @@ from typing import Any
 
 from runtime.daemon.journal import Journal, SpoolPressure
 from runtime.daemon.process_anchor import scope_name
+from runtime.daemon.startup import open_receipt, scope_dir
 from runtime.harnesses.protocol import Harness, NativeInvocation, PreparedHarness, TurnContext
 from runtime.security.redaction import Redactor
 
@@ -68,10 +69,16 @@ class ManagedProcess:
 
 
 def managed_popen(
-    argv: list[str], *, env: dict[str, str], scope: str | None = None, **kwargs: Any
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    scope: str | None = None,
+    startup_dir: Path | None = None,
+    **kwargs: Any,
 ) -> ManagedProcess:
     """Retain kernel ancestry independently of descendant environments/dumpability."""
     scope = scope or uuid.uuid4().hex
+    receipt_fd = open_receipt(startup_dir) if startup_dir is not None else None
     read_fd, write_fd = os.pipe()
     try:
         proc = subprocess.Popen(
@@ -80,10 +87,11 @@ def managed_popen(
                 str(Path(__file__).with_name("process_anchor.py")),
                 scope,
                 str(write_fd),
+                str(receipt_fd) if receipt_fd is not None else "-1",
                 *argv,
             ],
             env={**env, _PROCESS_SCOPE: scope},
-            pass_fds=(write_fd,),
+            pass_fds=(write_fd,) + ((receipt_fd,) if receipt_fd is not None else ()),
             **kwargs,
         )
     except BaseException:
@@ -91,6 +99,8 @@ def managed_popen(
         raise
     finally:
         os.close(write_fd)
+        if receipt_fd is not None:
+            os.close(receipt_fd)
     # The anchor establishes subreaping before it launches any untrusted command.
     launched = b""
     while not launched.endswith(b"\n"):
@@ -241,6 +251,7 @@ class TurnRun(threading.Thread):
                 cwd=str(self.invocation.cwd),
                 env=self.invocation.env,
                 scope=self.operation_id,
+                startup_dir=scope_dir(self.journal.path.parent, self.operation_id),
                 stdin=subprocess.DEVNULL if self.invocation.stdin is None else subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

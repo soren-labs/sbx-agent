@@ -22,6 +22,7 @@ from protocol.runtime import (
 
 from runtime.daemon.journal import Journal, SpoolPressure
 from runtime.daemon.services import Service
+from runtime.daemon.startup import prepare_scope, scope_dir, unconfirmed_startup
 from runtime.daemon.supervisor import TurnRun, kill_group
 from runtime.daemon.terminal import Terminal
 from runtime.daemon.worktree import Worktree, WorktreeError, git
@@ -92,6 +93,15 @@ class RuntimeDaemon:
             scope = op["operation_id"]
             if op["kind"] == "turn.start" or scope in self.writer_scopes:
                 self.writer_scopes.add(scope)
+                if (
+                    op["kind"] == "turn.start"
+                    and op["status"] == "accepted"
+                    and not op.get("pid")
+                    and not scope_dir(self.state_dir, scope).exists()
+                ):
+                    # TurnRun persists starting before spawn. A crash between
+                    # acceptance and scope setup therefore cannot leave a child.
+                    prepare_scope(self.state_dir, scope)
                 if not op.get("pid"):
                     self.unconfirmed_launches.add(scope)
         # Persist the unresolved startup before terminalizing any operation: a
@@ -153,12 +163,31 @@ class RuntimeDaemon:
         self.journal.set_meta("writer_scopes", json.dumps(sorted(self.writer_scopes)))
         return recovered
 
-    def _track_writer(self, scope: str) -> None:
+    def _track_writer(self, scope: str) -> Path:
+        startup_dir = prepare_scope(self.state_dir, scope)
         self.writer_scopes.add(scope)
         self.journal.set_meta("writer_scopes", json.dumps(sorted(self.writer_scopes)))
+        return startup_dir
 
     def _stop_recovered_writer(self, scope: str, pid: int = 0) -> bool:
-        stopped = kill_group(pid, scope=scope, require_presence=scope in self.unconfirmed_launches)
+        startup_dir = scope_dir(self.state_dir, scope)
+        try:
+            # Old journals without receipts retain their conservative presence rule.
+            tracked = startup_dir.exists()
+            ambiguous = (
+                unconfirmed_startup(startup_dir) if tracked else scope in self.unconfirmed_launches
+            )
+            if ambiguous:
+                self.unconfirmed_launches.add(scope)
+                self.journal.set_meta(
+                    "unconfirmed_launches", json.dumps(sorted(self.unconfirmed_launches))
+                )
+            stopped = kill_group(pid, scope=scope, require_presence=ambiguous)
+            # A named older generation cannot prove an unnamed relaunch stopped.
+            if stopped and tracked and unconfirmed_startup(startup_dir):
+                stopped = False
+        except OSError:
+            stopped = False
         if stopped:
             self.pending_writers.discard(scope)
             if scope in self.unconfirmed_launches:
@@ -446,8 +475,13 @@ class RuntimeDaemon:
             self._require_quiet()
             if not self.worktree.path.exists():
                 raise Refused("executor_unavailable", "worktree not realized")
-            self._track_writer(op_id)
-            term = Terminal(self.worktree.path, self.state_dir / "terminal-home", scope=op_id)
+            startup_dir = self._track_writer(op_id)
+            term = Terminal(
+                self.worktree.path,
+                self.state_dir / "terminal-home",
+                scope=op_id,
+                startup_dir=startup_dir,
+            )
             self.terminals[term.id] = term
             return {"terminal_id": term.id}
         if kind == "terminal.input":
@@ -486,13 +520,14 @@ class RuntimeDaemon:
             if svc is None or svc.decl != decl:
                 if svc is not None and not svc.stop():
                     raise Refused("busy", "service writers have not confirmed stop")
-                self._track_writer(op_id)
+                startup_dir = self._track_writer(op_id)
                 svc = Service(
                     decl,
                     self.worktree.path,
                     self.state_dir / "service-home" / decl["name"],
                     known=self.known_secrets,
                     scope=op_id,
+                    startup_dir=startup_dir,
                 )
                 self.services[decl["name"]] = svc
             svc.start()

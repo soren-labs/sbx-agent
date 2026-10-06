@@ -326,8 +326,10 @@ def test_recovery_retains_unconfirmed_anchor_startup(
     driver.write_text(
         "import os, signal, subprocess, sys\nfrom pathlib import Path\n"
         "from runtime.daemon.supervisor import managed_popen\n"
+        "from runtime.daemon.startup import scope_dir\n"
         + setup
         + f"managed_popen([{sys.executable!r}, {str(command)!r}], scope={scope!r}, "
+        + f"startup_dir=scope_dir(Path({str(rt.base / 'state')!r}), {scope!r}), "
         "env={'PATH': '/usr/bin:/bin'}, start_new_session=True, "
         "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
     )

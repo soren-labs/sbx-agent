@@ -21,6 +21,7 @@ class SpoolPressure(Exception):
 
 class Journal:
     def __init__(self, path: Path, *, max_unacked: int = 20000, reserve: int = 64) -> None:
+        self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         existed = path.exists()
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
