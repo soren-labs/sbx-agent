@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 import threading
@@ -216,3 +217,56 @@ def test_unconfirmed_stop_keeps_writer_managed(rt, monkeypatch, writer_kind):
     assert result["status"] == "failed" and result["result"]["error"]["code"] == "busy"
     artifact = rt.op("snapshot.prepare", "artifact", {}).json()
     assert artifact["status"] == "failed" and artifact["result"]["error"]["code"] == "busy"
+
+
+@pytest.mark.parametrize("kind", ["stop", "changes.capture", "snapshot.prepare"])
+def test_service_restart_stops_previous_generation(rt, tmp_path, monkeypatch, kind):
+    script, ready, release, changed = writer(tmp_path, rt.daemon.worktree.path)
+    wrapper = tmp_path / "restart-service.py"
+    wrapper.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        f"ready = pathlib.Path({str(ready)!r})\n"
+        "if ready.exists(): time.sleep(60)\n"
+        "else:\n"
+        f" subprocess.Popen([sys.executable, {str(script)!r}], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        " while not ready.exists(): time.sleep(0.01)\n"
+        " raise SystemExit(1)\n"
+    )
+    service = Service(
+        {"name": "writer", "argv": [sys.executable, str(wrapper)]},
+        rt.daemon.worktree.path,
+        tmp_path / "service-home",
+    )
+    rt.daemon.services["writer"] = service
+    service.start()
+    first = service.proc
+    pid = int(wait_file(ready))
+    try:
+        deadline = time.monotonic() + 10
+        while service.proc is first and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.proc is not first and service.proc.poll() is None
+        assert _alive(pid), "the old generation's writer survives its leader"
+        if kind == "stop":
+            assert service.stop()
+            assert not _alive(pid), "stop must cover every restart generation"
+        else:
+            target = changes if kind == "changes.capture" else rt.daemon.worktree
+            name = "capture" if kind == "changes.capture" else "checkpoint"
+            original = getattr(target, name)
+
+            def seal(*args, **kwargs):
+                assert not _alive(pid), "sealing must wait for every restart generation"
+                release.touch()
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(target, name, seal)
+            result = rt.op(kind, "artifact", {"base_sha": rt.base_sha}).json()
+            assert result["status"] == "succeeded", result
+        release.touch()
+        assert not changed.exists()
+    finally:
+        service.stop()
+        if _alive(pid):
+            os.kill(pid, 9)

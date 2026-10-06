@@ -26,6 +26,7 @@ class Service:
         self.home = home
         self.logs: collections.deque[str] = collections.deque(maxlen=500)
         self.proc: subprocess.Popen[bytes] | None = None
+        self.generations: list[subprocess.Popen[bytes]] = []
         self.restarts = 0
         self.wanted = False
         self.lock = threading.Lock()
@@ -59,6 +60,7 @@ class Service:
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            self.generations.append(self.proc)
             threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
 
     def _pump(self, proc: subprocess.Popen[bytes]) -> None:
@@ -81,12 +83,14 @@ class Service:
     def stop(self) -> bool:
         with self.lock:
             self.wanted = False
-            if self.proc is None:
-                return True
-            stopped = kill_group(self.proc.pid)
-            if stopped:
-                self.proc.wait(timeout=2)
-            return stopped
+            pending = []
+            for proc in self.generations:
+                if kill_group(proc.pid):
+                    proc.wait(timeout=2)
+                else:
+                    pending.append(proc)
+            self.generations = pending
+            return not pending
 
     def status(self) -> dict[str, Any]:
         running = self.proc is not None and self.proc.poll() is None
