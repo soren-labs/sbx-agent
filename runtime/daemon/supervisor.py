@@ -107,13 +107,23 @@ def managed_popen(
     return ManagedProcess(proc, read_fd)
 
 
-def kill_group(pid: int, grace: float = STOP_GRACE_SECONDS, *, scope: str | None = None) -> bool:
+def kill_group(
+    pid: int,
+    grace: float = STOP_GRACE_SECONDS,
+    *,
+    scope: str | None = None,
+    require_presence: bool = False,
+) -> bool:
     """Stop the managed process group and its session's job-control groups.
 
     A reaped leader is not proof that its descendants have stopped writing.
     """
     scope = scope or _scopes.get(pid)
     try:
+        # Before startup registration, an empty scan cannot distinguish a dead
+        # launch from an anchor suspended before assigning its scope name.
+        if require_presence and not _live_groups(pid, scope=scope):
+            return False
         for sig, timeout in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
             # The anchor is in a separate session and exits only after reaping
             # every descendant. Never kill it and lose ancestry during escalation.

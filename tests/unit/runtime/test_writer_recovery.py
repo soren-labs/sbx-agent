@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -289,6 +290,112 @@ def test_recovery_finds_turn_scope_before_pid_journaling(rt, tmp_path):
         assert not _alive(pid)
     finally:
         kill_group(proc.pid, grace=0.1)
+
+
+@pytest.mark.parametrize("kind", ["changes.capture", "snapshot.prepare"])
+@pytest.mark.parametrize("pause_at", ["before_exec", "before_scope_name"])
+def test_recovery_retains_unconfirmed_anchor_startup(
+    rt, tmp_path, repo_root, monkeypatch, kind, pause_at
+):
+    command, ready, release, changed = writer(tmp_path, rt.daemon.worktree.path)
+    anchor_ready = tmp_path / "starting-anchor"
+    scope = "paused-startup"
+    driver = tmp_path / "launcher.py"
+    setup = ""
+    if pause_at == "before_exec":
+        setup = (
+            "real_popen = subprocess.Popen\n"
+            "def suspend():\n"
+            f"    Path({str(anchor_ready)!r}).write_text(str(os.getpid()))\n"
+            "    os.kill(os.getpid(), signal.SIGSTOP)\n"
+            "def popen(*args, **kwargs):\n"
+            "    return real_popen(*args, preexec_fn=suspend, **kwargs)\n"
+            "subprocess.Popen = popen\n"
+        )
+    else:
+        # The interpreter wrapper stops before the real anchor can name itself.
+        interpreter = tmp_path / "paused-interpreter"
+        interpreter.write_text(
+            "#!/bin/sh\n"
+            f"echo $$ > {shlex.quote(str(anchor_ready))}\n"
+            "kill -STOP $$\n"
+            f'exec {shlex.quote(sys.executable)} "$@"\n'
+        )
+        interpreter.chmod(0o755)
+        setup = f"sys.executable = {str(interpreter)!r}\n"
+    driver.write_text(
+        "import os, signal, subprocess, sys\nfrom pathlib import Path\n"
+        "from runtime.daemon.supervisor import managed_popen\n"
+        + setup
+        + f"managed_popen([{sys.executable!r}, {str(command)!r}], scope={scope!r}, "
+        "env={'PATH': '/usr/bin:/bin'}, start_new_session=True, "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    )
+    rt.daemon.journal.op_insert(scope, "turn.start", "digest", "sess_test", 1)
+    rt.daemon._track_writer(scope)
+    rt.daemon.journal.op_update(scope, status="starting")
+    launcher = subprocess.Popen(
+        [sys.executable, str(driver)],
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(repo_root)},
+        start_new_session=True,
+    )
+    anchor = pid = None
+    try:
+        anchor = int(wait_file(anchor_ready))
+        deadline = time.monotonic() + 10
+        while Path(f"/proc/{anchor}/stat").read_text().rsplit(")", 1)[1].split()[0] != "T":
+            assert time.monotonic() < deadline, "anchor did not suspend"
+            time.sleep(0.01)
+        launcher.kill()
+        launcher.wait(timeout=10)
+        for restart in range(2):
+            rt.stop()
+            rt.start()
+            assert rt.daemon.journal.op_get(scope)["result"]["stopped"] is False
+            assert scope in rt.daemon.pending_writers
+            assert _alive(anchor)
+            with monkeypatch.context() as patch:
+                target, method = (
+                    (changes, "capture")
+                    if kind == "changes.capture"
+                    else (rt.daemon.worktree, "checkpoint")
+                )
+                patch.setattr(target, method, lambda *a, **kw: pytest.fail("sealed during startup"))
+                result = rt.op(kind, f"blocked-{restart}", {"require_acked": False}).json()
+                assert result["status"] == "failed"
+                assert result["result"]["error"]["code"] == "busy"
+            cancelled = rt.op(
+                "turn.cancel", f"cancel-{restart}", {"target_operation_id": scope}
+            ).json()
+            assert cancelled["result"]["stopped"] is False
+            assert scope in rt.daemon.pending_writers
+        os.kill(anchor, signal.SIGCONT)
+        pid = int(wait_file(ready))
+        assert _alive(pid)
+        original = getattr(target, method)
+
+        def seal(*args, **kwargs):
+            assert not _alive(pid), "sealing must wait for the resumed writer to die"
+            assert not _alive(anchor)
+            release.touch()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(target, method, seal)
+        result = rt.op(kind, "confirmed", {"base_sha": rt.base_sha, "require_acked": False}).json()
+        assert result["status"] == "succeeded", result
+        assert scope not in rt.daemon.pending_writers
+        assert not changed.exists()
+        rt.stop()
+        rt.start()
+        assert not rt.daemon.pending_writers, "confirmed cleanup must survive restart"
+    finally:
+        if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait(timeout=10)
+        kill_group(0, grace=0.1, scope=scope)
+        for member in (pid, anchor):
+            if member and _alive(member):
+                os.kill(member, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("kind", ["changes.capture", "snapshot.prepare"])

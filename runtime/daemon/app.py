@@ -69,6 +69,9 @@ class RuntimeDaemon:
         self.barrier: str | None = None
         self.writer_scopes: set[str] = set(json.loads(self.journal.meta("writer_scopes") or "[]"))
         self.pending_writers: set[str] = set()
+        self.unconfirmed_launches: set[str] = set(
+            json.loads(self.journal.meta("unconfirmed_launches") or "[]")
+        )
         # Every credential value handed to this lease (memory only, never journaled):
         # the artifact policy refuses/redacts them in captures, checkpoints, reads, logs.
         self.known_secrets: set[str] = set()
@@ -86,14 +89,26 @@ class RuntimeDaemon:
         recovered = []
         open_ops = self.journal.ops_open()
         for op in open_ops:
+            scope = op["operation_id"]
+            if op["kind"] == "turn.start" or scope in self.writer_scopes:
+                self.writer_scopes.add(scope)
+                if not op.get("pid"):
+                    self.unconfirmed_launches.add(scope)
+        # Persist the unresolved startup before terminalizing any operation: a
+        # second restart must not mistake an unnamed anchor for confirmed death.
+        self.journal.set_meta("writer_scopes", json.dumps(sorted(self.writer_scopes)))
+        self.journal.set_meta("unconfirmed_launches", json.dumps(sorted(self.unconfirmed_launches)))
+        for op in open_ops:
             if op["kind"] == "turn.start":
                 # Fence old in-process supervisors before any recovery signals.
                 self.journal.op_update(op["operation_id"], status="lost")
         # Launch scopes are durable before spawn, including successful services
         # and terminals whose process objects are unavailable after a restart.
-        for scope in self.writer_scopes:
-            if not kill_group(0, scope=scope):
-                self.pending_writers.add(scope)
+        pids = {op["operation_id"]: op.get("pid") or 0 for op in open_ops}
+        stopped_scopes = {
+            scope: self._stop_recovered_writer(scope, pids.get(scope, 0))
+            for scope in self.writer_scopes
+        }
         for op in open_ops:
             recovered.append(op["operation_id"])
             if op["kind"] != "turn.start":
@@ -102,10 +117,7 @@ class RuntimeDaemon:
                 )
                 continue
             pid = op.get("pid")
-            stopped = kill_group(pid or 0, scope=op["operation_id"])
-            if not stopped:
-                self.writer_scopes.add(op["operation_id"])
-                self.pending_writers.add(op["operation_id"])
+            stopped = stopped_scopes[op["operation_id"]]
             launch = "started" if pid else "ambiguous"
             execution_id = (op.get("result") or {}).get("execution_id") or op["operation_id"]
             self.journal.append(
@@ -145,10 +157,22 @@ class RuntimeDaemon:
         self.writer_scopes.add(scope)
         self.journal.set_meta("writer_scopes", json.dumps(sorted(self.writer_scopes)))
 
+    def _stop_recovered_writer(self, scope: str, pid: int = 0) -> bool:
+        stopped = kill_group(pid, scope=scope, require_presence=scope in self.unconfirmed_launches)
+        if stopped:
+            self.pending_writers.discard(scope)
+            if scope in self.unconfirmed_launches:
+                self.unconfirmed_launches.remove(scope)
+                self.journal.set_meta(
+                    "unconfirmed_launches", json.dumps(sorted(self.unconfirmed_launches))
+                )
+        else:
+            self.pending_writers.add(scope)
+        return stopped
+
     def _require_recovered_quiet(self) -> None:
         for scope in list(self.pending_writers):
-            if kill_group(0, scope=scope):
-                self.pending_writers.remove(scope)
+            self._stop_recovered_writer(scope)
         if self.pending_writers:
             raise Refused("busy", "recovered writers have not confirmed stop")
 
@@ -362,9 +386,11 @@ class RuntimeDaemon:
             run = self.runs.get(target or "")
             if run is None:
                 op = self.journal.op_get(target or "")
-                stopped = kill_group((op or {}).get("pid") or 0, scope=target) if op else True
-                if stopped:
-                    self.pending_writers.discard(target)
+                stopped = (
+                    self._stop_recovered_writer(op["operation_id"], op.get("pid") or 0)
+                    if op
+                    else True
+                )
                 return {"target_status": op["status"] if op else "unknown", "stopped": stopped}
             confirmed = run.stop()
             run.done.wait(timeout=15)
