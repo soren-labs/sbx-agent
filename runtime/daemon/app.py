@@ -22,7 +22,7 @@ from protocol.runtime import (
 
 from runtime.daemon.journal import Journal, SpoolPressure
 from runtime.daemon.services import Service
-from runtime.daemon.supervisor import TurnRun, _live_groups, kill_group
+from runtime.daemon.supervisor import TurnRun, kill_group
 from runtime.daemon.terminal import Terminal
 from runtime.daemon.worktree import Worktree, WorktreeError, git
 from runtime.harnesses.protocol import Harness, HarnessError, TurnContext
@@ -94,8 +94,8 @@ class RuntimeDaemon:
             # tests keep its thread alive; it must not overwrite recovery evidence.
             self.journal.op_update(op["operation_id"], status="lost")
             stopped = True
-            if pid and _live_groups(pid):
-                stopped = kill_group(pid)
+            if pid:
+                stopped = kill_group(pid, scope=op["operation_id"])
             launch = "started" if pid else "ambiguous"
             execution_id = (op.get("result") or {}).get("execution_id") or op["operation_id"]
             self.journal.append(

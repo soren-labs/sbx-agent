@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import os
 import pty
-import subprocess
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
-from runtime.daemon.supervisor import kill_group
+from runtime.daemon.supervisor import kill_group, managed_popen
 
 MAX_BUFFER = 512 * 1024
 
@@ -31,7 +30,7 @@ class Terminal:
             "LANG": "C.UTF-8",
             "PS1": "$ ",
         }
-        self.proc = subprocess.Popen(
+        self.proc = managed_popen(
             ["/bin/bash", "--noprofile", "--norc", "-i"],
             cwd=str(cwd),
             env=env,

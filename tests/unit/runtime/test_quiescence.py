@@ -10,7 +10,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from runtime.daemon import changes, services
+from runtime.daemon import changes, services, supervisor
 from runtime.daemon.services import Service
 from runtime.daemon.supervisor import _alive, kill_group
 from tests.support.runtime import DaemonHarness
@@ -50,8 +50,9 @@ def writer(tmp_path, root):
 
 
 @pytest.mark.parametrize("inherit_pipes", [False, True])
+@pytest.mark.parametrize("detached", [False, True])
 def test_successful_cli_stops_descendant_before_terminal_evidence(
-    rt, tmp_path, monkeypatch, inherit_pipes
+    rt, tmp_path, monkeypatch, inherit_pipes, detached
 ):
     script, ready, release, changed = writer(tmp_path, rt.daemon.worktree.path)
     wrapper = tmp_path / "cli.py"
@@ -60,6 +61,7 @@ def test_successful_cli_stops_descendant_before_terminal_evidence(
     wrapper.write_text(
         "import pathlib, runpy, subprocess, sys, time\n"
         f"subprocess.Popen([sys.executable, {str(script)!r}], "
+        f"start_new_session={detached!r}, "
         + ("" if inherit_pipes else "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,")
         + ")\n"
         f"while not pathlib.Path({str(ready)!r}).exists(): time.sleep(0.01)\n"
@@ -88,21 +90,27 @@ def test_successful_cli_stops_descendant_before_terminal_evidence(
         assert not changed.exists()
     finally:
         kill_group(rt.daemon.runs["turn"].proc.pid, grace=0.1)
+        if _alive(pid):
+            os.kill(pid, 9)
 
 
 @pytest.mark.parametrize("kind", ["changes.capture", "snapshot.prepare"])
 @pytest.mark.parametrize("writer_kind", ["terminal", "service"])
-def test_artifacts_stop_background_writers(rt, tmp_path, monkeypatch, kind, writer_kind):
+@pytest.mark.parametrize("detached", [False, True])
+def test_artifacts_stop_background_writers(rt, tmp_path, monkeypatch, kind, writer_kind, detached):
     script, ready, release, changed = writer(tmp_path, rt.daemon.worktree.path)
     if writer_kind == "terminal":
         term_id = rt.op("terminal.create", "terminal", {}).json()["result"]["terminal_id"]
-        command = shlex.join([sys.executable, str(script)]) + " &\n"
+        command = (
+            shlex.join((["setsid"] if detached else []) + [sys.executable, str(script)]) + " &\n"
+        )
         rt.op("terminal.input", "input", {"terminal_id": term_id, "data": command})
     else:
         wrapper = tmp_path / "service.py"
         wrapper.write_text(
             "import pathlib, subprocess, sys, time\n"
             f"subprocess.Popen([sys.executable, {str(script)!r}], "
+            f"start_new_session={detached!r}, "
             "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
             f"while not pathlib.Path({str(ready)!r}).exists(): time.sleep(0.01)\n"
         )
@@ -138,7 +146,11 @@ def test_artifacts_stop_background_writers(rt, tmp_path, monkeypatch, kind, writ
             return original(*args, **kwargs)
 
         monkeypatch.setattr(rt.daemon.worktree, "checkpoint", checkpoint)
-    result = rt.op(kind, "artifact", {"base_sha": rt.base_sha}).json()
+    try:
+        result = rt.op(kind, "artifact", {"base_sha": rt.base_sha}).json()
+    finally:
+        if _alive(pid):
+            os.kill(pid, 9)
     assert result["status"] == "succeeded", result
     assert not changed.exists()
     if writer_kind == "terminal":
@@ -147,6 +159,55 @@ def test_artifacts_stop_background_writers(rt, tmp_path, monkeypatch, kind, writ
             "terminal.input", "late-input", {"terminal_id": term_id, "data": "echo late\n"}
         ).json()
         assert refused["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "mode,allow_stop", [("direct", False), ("direct", True), ("restart", True)]
+)
+def test_kill_group_tracks_detached_child_after_leader_exit(
+    rt, tmp_path, monkeypatch, mode, allow_stop
+):
+    script, ready, release, changed = writer(tmp_path, rt.daemon.worktree.path)
+    wrapper = tmp_path / "detach.py"
+    wrapper.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, {str(script)!r}], start_new_session=True, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        f"while not pathlib.Path({str(ready)!r}).exists(): time.sleep(0.01)\n"
+    )
+    service = Service(
+        {"name": "writer", "argv": [sys.executable, str(wrapper)], "restart": "never"},
+        rt.daemon.worktree.path,
+        tmp_path / "service-home",
+    )
+    service.start()
+    pid = int(wait_file(ready))
+    service.proc.wait(timeout=10)
+    try:
+        assert _alive(pid)
+        with monkeypatch.context() as patch:
+            if not allow_stop:
+                patch.setattr(os, "killpg", lambda *_: None)
+            if mode == "restart":
+                # Lose the in-memory attribution, as a fresh daemon process would.
+                scope = getattr(supervisor, "_scopes", {}).pop(
+                    service.proc.pid, "detached-recovery"
+                )
+                rt.daemon.journal.op_insert(scope, "turn.start", "digest", "sess_test", 1)
+                rt.daemon.journal.op_update(scope, status="started", pid=service.proc.pid)
+                rt.stop()
+                rt.start()
+                assert rt.daemon.journal.op_get(scope)["result"]["stopped"] is True
+            else:
+                assert kill_group(service.proc.pid, grace=0.01) is allow_stop
+            assert _alive(pid) is not allow_stop
+        if allow_stop:
+            release.touch()
+            assert not changed.exists()
+    finally:
+        service.stop()
+        if _alive(pid):
+            os.kill(pid, 9)
 
 
 @pytest.mark.parametrize("kind", ["changes.capture", "snapshot.prepare"])

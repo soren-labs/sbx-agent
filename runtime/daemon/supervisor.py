@@ -12,6 +12,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -20,53 +21,65 @@ from runtime.harnesses.protocol import Harness, NativeInvocation, PreparedHarnes
 from runtime.security.redaction import Redactor
 
 STOP_GRACE_SECONDS = 5.0
+_PROCESS_SCOPE = "SBX_MANAGED_PROCESS_SCOPE"
+_scopes: dict[int, str] = {}
 
 
-def kill_group(pid: int, grace: float = STOP_GRACE_SECONDS) -> bool:
+def managed_popen(
+    argv: list[str], *, env: dict[str, str], scope: str | None = None, **kwargs: Any
+) -> subprocess.Popen[bytes]:
+    """Attribute descendants even when they leave the leader's process session.
+
+    The non-secret scope is inherited across exec/setsid, including children whose
+    leader exits before we can observe their ancestry. Turns reuse their journaled
+    operation identity so recovery can find them after a daemon restart.
+    """
+    scope = scope or uuid.uuid4().hex
+    proc = subprocess.Popen(argv, env={**env, _PROCESS_SCOPE: scope}, **kwargs)
+    _scopes[proc.pid] = scope
+    return proc
+
+
+def kill_group(pid: int, grace: float = STOP_GRACE_SECONDS, *, scope: str | None = None) -> bool:
     """Stop the managed process group and its session's job-control groups.
 
     A reaped leader is not proof that its descendants have stopped writing.
     """
+    scope = scope or _scopes.get(pid)
     try:
-        for group in {pid, *_live_groups(pid)}:
-            try:
-                os.killpg(group, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-    except ProcessLookupError:
-        return True
-    except PermissionError:
+        for sig, timeout in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
+            for group in _live_groups(pid, scope=scope):
+                try:
+                    os.killpg(group, sig)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not _live_groups(pid, scope=scope):
+                    _scopes.pop(pid, None)
+                    return True
+                time.sleep(0.05)
         return False
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
-        if not _live_groups(pid):
-            return True
-        time.sleep(0.05)
-    try:
-        for group in {pid, *_live_groups(pid)}:
-            try:
-                os.killpg(group, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-    except ProcessLookupError:
-        return True
     except PermissionError:
-        return False
-    for _ in range(40):
-        if not _live_groups(pid):
-            return True
-        time.sleep(0.05)
-    return False
+        return False  # inability to inspect or signal cannot confirm stop
 
 
-def _live_groups(pid: int) -> set[int]:
+def _live_groups(pid: int, *, scope: str | None = None) -> set[int]:
     """Live members of a managed session, excluding zombies that cannot write."""
     groups = set()
+    scope = scope or _scopes.get(pid)
+    marker = f"{_PROCESS_SCOPE}={scope}".encode() if scope else None
     for stat in Path("/proc").glob("[0-9]*/stat"):
         try:
             fields = stat.read_text().rsplit(")", 1)[1].split()
             group, session = int(fields[2]), int(fields[3])
-            if fields[0] != "Z" and (group == pid or session == pid):
+            if fields[0] == "Z":
+                continue
+            belongs = group == pid or session == pid
+            if marker and not belongs and stat.stat().st_uid == os.getuid():
+                # Inspect only the public scope; never decode or retain credential fields.
+                belongs = marker in stat.with_name("environ").read_bytes().split(b"\0")
+            if belongs:
                 groups.add(group)
         except (OSError, ValueError, IndexError):
             continue  # processes can exit while /proc is being read
@@ -127,10 +140,11 @@ class TurnRun(threading.Thread):
         manifest = self.harness.describe()
         try:
             self.journal.op_update(self.operation_id, status="starting")
-            self.proc = subprocess.Popen(
+            self.proc = managed_popen(
                 self.invocation.argv,
                 cwd=str(self.invocation.cwd),
                 env=self.invocation.env,
+                scope=self.operation_id,
                 stdin=subprocess.DEVNULL if self.invocation.stdin is None else subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

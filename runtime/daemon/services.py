@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from runtime.daemon.supervisor import kill_group
+from runtime.daemon.supervisor import kill_group, managed_popen
 from runtime.security.paths import safe_join
 from runtime.security.redaction import Redactor
 
@@ -51,7 +51,7 @@ class Service:
             if self.decl.get("port"):
                 env["PORT"] = str(self.decl["port"])
             self.home.mkdir(parents=True, exist_ok=True)
-            self.proc = subprocess.Popen(
+            self.proc = managed_popen(
                 self.decl["argv"],
                 cwd=str(cwd),
                 env=env,
