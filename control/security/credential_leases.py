@@ -102,6 +102,48 @@ class VaultCredentialBroker:
         material, _ = self._decrypt("source", "github", session, "source_control")
         return {"username": "x-access-token", "password": material["token"]}
 
+    def artifact_material(self, session: dict[str, Any]) -> list[dict[str, Any]]:
+        """Filter-only history of the Session's pinned runtime-visible Connections.
+
+        Revocation forbids using a credential, but cannot make already materialized
+        bytes safe to export. Session pins are durable; retaining their encrypted
+        versions also covers source credentials and rotation between execution
+        preparation and launch, where the execution reference alone is insufficient.
+        This material is sent only as redaction values, never as usable credentials.
+        """
+
+        def read(uow: Any) -> list[dict[str, Any]]:
+            current = uow.get("sessions", session["id"], workspace_ids=[session["workspace_id"]])
+            if current is None:
+                raise DomainError("connection_required", "Session is unavailable")
+            versions = []
+            for slot in ("inference", "source"):
+                connection_id = current[f"{slot}_connection_id"]
+                if connection_id:
+                    versions.extend(
+                        uow.find(
+                            "credential_versions",
+                            {
+                                "workspace_id": current["workspace_id"],
+                                "connection_id": connection_id,
+                            },
+                        )
+                    )
+            return versions
+
+        return [
+            self.vault.open(
+                SealedRef(version["key_id"], version["nonce"], version["ciphertext"]),
+                self.vault.aad(
+                    version["workspace_id"],
+                    version["connection_id"],
+                    version["id"],
+                    version["format"],
+                ),
+            )
+            for version in self.tx.read(read)
+        ]
+
     def source_token(self, workspace_id: str, connection_id: str) -> tuple[str, dict[str, Any]]:
         """Delivery boundary: resolve the selected GitHub Connection under current authority."""
         session_like = {

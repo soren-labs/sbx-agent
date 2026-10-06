@@ -120,6 +120,98 @@ def test_git_username_is_not_treated_as_a_selected_secret(rt) -> None:
     assert "worktree/example.txt" in members(snap)
 
 
+@pytest.mark.parametrize("slot", ["inference", "source"])
+@pytest.mark.parametrize("change", ["replace", "disconnect"])
+def test_historical_credential_is_filtered_after_runtime_restart(rt, db, tmp_path, slot, change):
+    from control.application.artifact_secrets import runtime_visible
+    from tests.support.api import ApiStack, User
+
+    stack = ApiStack(db, tmp_path / "control")
+    user = User(stack)
+    old, new, unrelated = (
+        "REDACTED_A_HISTORY_000",
+        "REDACTED_B_HISTORY_000",
+        "REDACTED_UNRELATED_000",
+    )
+    kind, field = ("opencode_zen", "api_key") if slot == "inference" else ("github", "token")
+    zen = user.connect("opencode_zen", {"api_key": old if slot == "inference" else "REDACTED_ZEN"})
+    selected = zen if slot == "inference" else user.connect("github", {"token": old})
+    user.connect(kind, {field: unrelated})
+    other = User(stack)
+    other.connect(kind, {field: "REDACTED_OTHER_OWNER"})
+    stack.drain()
+    body = {
+        "harness": {"provider_id": "opencode"},
+        "executor": {"backend": "local"},
+        "connections": {"inference": zen["id"], slot: selected["id"]},
+    }
+    if slot == "source":
+        body["repository"] = {"full_name": "example/repo"}
+    created = user.post(f"/api/workspaces/{user.workspace_id}/sessions", body)
+    assert created.status_code == 201, created.text
+    sid = created.json()["session"]["id"]
+    session = db.read(lambda u: u.get("sessions", sid))
+    broker = stack.services.execution.credentials
+    try:
+        if slot == "inference":
+            # A real Turn materializes the selected value in an ordinary file.
+            rt.op(
+                "turn.start",
+                "history-turn",
+                start_payload(f"[write:ordinary.txt={old}]"),
+                secrets_=broker.inference(session)[0],
+            )
+            assert rt.wait_op("history-turn")["status"] == "succeeded"
+        else:
+            # Source material is handed to worktree restore, not to the CLI.
+            source = broker.source(session)
+            assert source["password"] == old
+            put(rt, "ordinary.txt", source["password"])
+            rt.daemon.known_secrets |= collect_known({"git": source})
+        if change == "replace":
+            replaced = user.post(
+                f"/api/connections/{selected['id']}/credential-versions",
+                {"credential": {field: new}, "expected_version": selected["version"]},
+            )
+            assert replaced.status_code == 201, replaced.text
+        else:
+            revoked = user.delete(f"/api/connections/{selected['id']}")
+            assert revoked.status_code == 200, revoked.text
+        rt.stop()
+        rt.start()
+        assert not rt.daemon.known_secrets
+        bundle = runtime_visible(broker, session)
+        # Even an older, unfiltered checkpoint is sanitized on restore.
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(wt(rt), arcname="worktree")
+        restored = DaemonHarness(tmp_path / "legacy-restore")
+        try:
+            result = restored.op(
+                "worktree.restore",
+                "restore-history",
+                {"checkpoint_b64": base64.b64encode(buf.getvalue()).decode()},
+                secrets_=bundle,
+            ).json()
+            assert result["status"] == "succeeded", result
+            assert not (wt(restored) / "ordinary.txt").exists()
+        finally:
+            restored.stop()
+        snap = checkpoint(rt, "history-checkpoint", secrets_=bundle)
+        assert "worktree/ordinary.txt" not in members(snap)
+        assert all(old.encode() not in data for data in members(snap).values())
+        rt.stop()
+        rt.start()
+        result = capture(rt, "history-capture", secrets_=bundle)
+        assert result["status"] == "failed", "historical material must not escape after restart"
+        assert result["result"]["error"]["code"] == "capture_failed"
+        assert old in rt.daemon.known_secrets
+        assert unrelated not in rt.daemon.known_secrets
+        assert "REDACTED_OTHER_OWNER" not in rt.daemon.known_secrets
+    finally:
+        stack.shutdown()
+
+
 # ---------------------------------------------------------------------------- capture
 def test_capture_excludes_credential_files_but_keeps_templates(rt) -> None:
     put(rt, ".env", "API_KEY=local-dev-value\n")
