@@ -167,7 +167,7 @@ def build_services(
     )
     execution.hooks.turn_terminal += [changes.on_turn_terminal, delegations.on_turn_terminal]
     execution.post_restore_hooks.append(delegations.apply_inputs)
-    live = LiveWorkspace(db, connector)
+    live = LiveWorkspace(db, connector, broker)
     service_desires = ServiceDesires(db, connector)
     execution.post_restore_hooks.append(service_desires.ensure_on_activation)
     changes.ready_hooks.append(deliveries.on_changeset_ready)

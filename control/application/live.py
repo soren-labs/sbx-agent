@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from control.application import access
+from control.application.artifact_secrets import runtime_visible
 from control.application.ports import RuntimeConnector, RuntimeRefused, RuntimeUnavailable
 from control.domain.errors import DomainError
 from control.domain.identity import Principal
@@ -12,9 +13,10 @@ from control.domain.ids import new_id
 
 
 class LiveWorkspace:
-    def __init__(self, tx: Any, connector: RuntimeConnector) -> None:
+    def __init__(self, tx: Any, connector: RuntimeConnector, credentials: Any) -> None:
         self.tx = tx
         self.connector = connector
+        self.credentials = credentials
 
     def _lease(
         self, principal: Principal, session_id: str
@@ -65,8 +67,12 @@ class LiveWorkspace:
         return self._call(lambda: self.connector.channel(lease).query("files.list", path=path))
 
     def read_file(self, principal: Principal, session_id: str, path: str) -> dict[str, Any]:
-        _, lease = self._lease(principal, session_id)
-        return self._call(lambda: self.connector.channel(lease).query("files.read", path=path))
+        session, lease = self._lease(principal, session_id)
+        return self._call(
+            lambda: self.connector.channel(lease).query(
+                "files.read", path=path, secrets=runtime_visible(self.credentials, session)
+            )
+        )
 
     def write_file(
         self, principal: Principal, session_id: str, body: dict[str, Any], *, idempotency_key: str

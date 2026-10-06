@@ -124,6 +124,7 @@ def test_git_username_is_not_treated_as_a_selected_secret(rt) -> None:
 @pytest.mark.parametrize("change", ["replace", "disconnect"])
 def test_historical_credential_is_filtered_after_runtime_restart(rt, db, tmp_path, slot, change):
     from control.application.artifact_secrets import runtime_visible
+    from control.domain.ids import new_id
     from tests.support.api import ApiStack, User
 
     stack = ApiStack(db, tmp_path / "control")
@@ -178,9 +179,37 @@ def test_historical_credential_is_filtered_after_runtime_restart(rt, db, tmp_pat
             revoked = user.delete(f"/api/connections/{selected['id']}")
             assert revoked.status_code == 200, revoked.text
         rt.stop()
+        # Bind the existing daemon to the API's real lease-scoped connector.
+        lease = {
+            "id": new_id("lease"),
+            "workspace_id": user.workspace_id,
+            "session_id": sid,
+            "backend": "local",
+            "allocation_operation_id": new_id("operation"),
+            "generation": rt.generation,
+            "state": "ready",
+            "image_digest": "sha256:test",
+            "resource_class": "standard",
+        }
+        rt.lease_id = lease["id"]
+        rt.key = bytes.fromhex(stack.services.live.connector.enrollment_key(lease))
         rt.start()
+        db.run(lambda u: u.insert("executor_leases", {**lease, "handle": {"endpoint": rt.url}}))
         assert not rt.daemon.known_secrets
+        path = f"/api/sessions/{sid}/files/content?path=ordinary.txt"
+        assert other.get(path).status_code == 404
+        assert not rt.daemon.known_secrets, "another owner must not reach the runtime"
+        # The first authorized read must filter history before any capture/checkpoint.
+        read = user.get(path)
+        assert read.status_code == 200, read.text
+        assert read.json()["redacted"] is True
+        assert "REDACTED" in read.json()["content"]
+        assert old not in read.text
         bundle = runtime_visible(broker, session)
+        assert rt.daemon.known_secrets == set(bundle["redact"])
+        assert old in rt.daemon.known_secrets
+        assert unrelated not in rt.daemon.known_secrets
+        assert "REDACTED_OTHER_OWNER" not in rt.daemon.known_secrets
         # Even an older, unfiltered checkpoint is sanitized on restore.
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:

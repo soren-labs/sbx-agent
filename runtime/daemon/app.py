@@ -531,6 +531,7 @@ class RuntimeDaemon:
         if kind == "files.list":
             return {"items": self.worktree.list(body.get("path") or "")}
         if kind == "files.read":
+            self.known_secrets |= collect_known(body.get("secrets") or {})
             return self.worktree.read(body["path"], self.known_secrets)
         raise Refused("unsupported_capability", f"{kind} not implemented", 422)
 
