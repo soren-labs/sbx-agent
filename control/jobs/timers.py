@@ -32,3 +32,25 @@ def enqueue_idle_releases(db: Any, *, idle_seconds: float) -> int:
         return count
 
     return db.run(fn)
+
+
+def enqueue_quarantine_releases(db: Any) -> int:
+    """Keep resolving quarantined compute: re-enqueue release until stop is confirmed.
+
+    ``enqueue_job`` dedupes on (kind, target), so this is safe to run periodically even
+    while a release Job for the lease is still queued or retrying.
+    """
+
+    def fn(uow: Any) -> int:
+        leases = uow.find("executor_leases", {"quarantined": True})
+        for lease in leases:
+            uow.enqueue_job(
+                workspace_id=lease["workspace_id"],
+                kind="executor.release",
+                target_id=lease["id"],
+                session_id=lease["session_id"],
+                input={"reason": "quarantine"},
+            )
+        return len(leases)
+
+    return db.run(fn)

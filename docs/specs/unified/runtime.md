@@ -63,6 +63,22 @@ carry the tags `sbx_alloc`, `sbx_lease`, `sbx_session` and `sbx_workspace`, have
 timeout, and expose only the encrypted runtime port 8790. No Modal Secrets are attached. Image
 builds and sandbox time are billed to that workspace.
 
+**Allocation identity and release.** Each lease has a durable `allocation_operation_id` (the
+effect identity). Before any backend create the lease records `observed_status=allocate_requested`;
+Modal sandboxes are created with the unique name `sbx-<operation id>` *and* their tags in the same
+call, so a lost create response, a retry or a lagging tag index rediscovers the sandbox (Modal
+refuses a second running sandbox with that name) instead of creating a twin. The handle is persisted
+before the runtime handshake; once persisted, retries only observe it, and a dead allocation loses
+the lease (confirmed) rather than being replaced under the same identity. Lookup failures are never
+treated as absence. The Local executor registers each daemon before its readiness wait, kills a
+failed start, and adopts a registered daemon on retry (per-operation file lock).
+
+`executor.release` first fences the lease (no new create can start), then confirms the stop: with a
+handle it requires confirmed termination; without one it resolves the allocation by operation
+identity, and absence is authoritative only after the in-flight create window
+(`allocation_window_seconds`). An unconfirmed stop quarantines the lease (blocking new leases for
+the Session) and a periodic sweep re-enqueues release until termination is confirmed.
+
 ## Journal and spool
 
 SQLite WAL with `synchronous=FULL` in the protected state dir (outside the Worktree).

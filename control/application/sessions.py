@@ -144,21 +144,30 @@ def queue_turn(
     return turn
 
 
+def unacknowledged_unknown(uow: Any, session_id: str) -> int:
+    """Turns whose possibly-started work has an unknown outcome nobody acknowledged yet.
+
+    Independent of the terminal state wording (interrupted, failed or cancelled): any
+    unacknowledged ``outcome_unknown`` blocks later dispatch (RFC 02, A14).
+    """
+    return uow.count(
+        "turns",
+        {
+            "session_id": session_id,
+            "state": ["interrupted", "failed", "cancelled"],
+            "unknown_acknowledged_at": None,
+            "reason": "outcome_unknown",
+        },
+    )
+
+
 def schedule_next(uow: Any, session: dict[str, Any]) -> str | None:
     """Enqueue dispatch for the head queued Turn when no Turn is active."""
     if session["lifecycle"] != "open":
         return None
     if uow.count("turns", {"session_id": session["id"], "state": list(rules.ACTIVE_TURN_STATES)}):
         return None
-    if uow.count(
-        "turns",
-        {
-            "session_id": session["id"],
-            "state": "interrupted",
-            "unknown_acknowledged_at": None,
-            "reason": "outcome_unknown",
-        },
-    ):
+    if unacknowledged_unknown(uow, session["id"]):
         # Unknown outcomes require explicit acknowledgement before new work (RFC 02).
         return None
     head = uow.query_one("turns.next_queued", session_id=session["id"])

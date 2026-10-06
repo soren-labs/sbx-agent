@@ -2,8 +2,13 @@
 
 Modal credentials stay in this worker; the sandbox receives only the per-lease
 enrollment key. The bounded boot command starts sbx-runtime; Turns/files use
-runtime operations over the encrypted tunnel. Discovery uses sandbox tags keyed
-by the allocation operation ID.
+runtime operations over the encrypted tunnel.
+
+Allocation is idempotent by the allocation operation ID (the effect identity): the
+sandbox is created with a unique name and its tags in one call, so a lost create
+response, a retry or a lagging tag index rediscovers it instead of creating a twin
+(Modal refuses a second running sandbox with the same name). Lookup failures are
+never treated as absence.
 """
 
 from __future__ import annotations
@@ -100,10 +105,46 @@ class ModalExecutor:
             "multi_tenant": True,
         }
 
+    @staticmethod
+    def sandbox_name(operation_id: str) -> str:
+        return f"sbx-{operation_id}"[:63]
+
+    def _find(self, client: Any, app: Any, operation_id: str) -> dict[str, Any] | None:
+        """Running allocation for the operation, else a finished one, else ``None``."""
+        finished = None
+        for sandbox in self.sdk.Sandbox.list(
+            app_id=app.app_id, tags={"sbx_alloc": operation_id}, client=client
+        ):
+            handle = {"sandbox_id": sandbox.object_id, "operation_id": operation_id}
+            if sandbox.poll() is None:
+                return {**handle, "status": "running"}
+            finished = finished or {**handle, "status": "terminated"}
+        # The tag index can lag creation; the unique name resolves running sandboxes.
+        try:
+            named = self.sdk.Sandbox.from_name(
+                APP_NAME, self.sandbox_name(operation_id), client=client
+            )
+        except self.sdk.exception.NotFoundError:
+            return finished
+        if named.poll() is None:
+            return {
+                "sandbox_id": named.object_id,
+                "operation_id": operation_id,
+                "status": "running",
+            }
+        return finished or {
+            "sandbox_id": named.object_id,
+            "operation_id": operation_id,
+            "status": "terminated",
+        }
+
     def allocate(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
         compute = spec.get("compute")
         client = self._client(compute)
         app = self._app(client)
+        existing = self._lookup(client, app, operation_id)
+        if existing is not None:
+            return {**existing, "lease_id": spec["lease_id"]}
         image = self.image(client, app, spec.get("compute_connection_id") or "default")
         cpu, memory = RESOURCE_CLASSES.get(
             spec.get("resource_class") or "standard", RESOURCE_CLASSES["standard"]
@@ -128,6 +169,8 @@ class ModalExecutor:
                 "--port",
                 str(RUNTIME_PORT),
                 app=app,
+                name=self.sandbox_name(operation_id),
+                tags=tags,
                 image=image,
                 client=client,
                 env={
@@ -143,10 +186,15 @@ class ModalExecutor:
                 cpu=cpu,
                 memory=memory,
             )
-            sandbox.set_tags(tags)
-        except DomainError:
-            raise
         except Exception as exc:
+            # Lost response, a same-name twin already running, or a real failure: the
+            # outcome is resolved by identity, never by creating again here.
+            try:
+                found = self._find(client, app, operation_id)
+            except Exception:
+                found = None
+            if found is not None:
+                return {**found, "lease_id": spec["lease_id"], "image_id": image.object_id}
             raise DomainError(
                 "executor_unavailable",
                 f"Modal sandbox create failed ({type(exc).__name__})",
@@ -157,22 +205,30 @@ class ModalExecutor:
             "operation_id": operation_id,
             "lease_id": spec["lease_id"],
             "image_id": image.object_id,
+            "status": "running",
         }
+
+    def _lookup(self, client: Any, app: Any, operation_id: str) -> dict[str, Any] | None:
+        try:
+            return self._find(client, app, operation_id)
+        except Exception as exc:
+            raise DomainError(
+                "executor_unavailable",
+                f"Modal allocation lookup failed ({type(exc).__name__})",
+                retryable=True,
+            ) from None
 
     def lookup(self, operation_id: str, compute: dict[str, Any] | None) -> dict[str, Any] | None:
         client = self._client(compute)
-        app = self._app(client)
-        for sandbox in self.sdk.Sandbox.list(
-            app_id=app.app_id, tags={"sbx_alloc": operation_id}, client=client
-        ):
-            if sandbox.poll() is None:
-                tags = sandbox.get_tags()
-                return {
-                    "sandbox_id": sandbox.object_id,
-                    "operation_id": operation_id,
-                    "lease_id": tags.get("sbx_lease"),
-                }
-        return None
+        try:
+            app = self._app(client)
+        except Exception as exc:
+            raise DomainError(
+                "executor_unavailable",
+                f"Modal app lookup failed ({type(exc).__name__})",
+                retryable=True,
+            ) from None
+        return self._lookup(client, app, operation_id)
 
     def _sandbox(self, handle: dict[str, Any], compute: dict[str, Any] | None) -> Any:
         client = self._client(compute)

@@ -86,9 +86,16 @@ class ExecutorBackend(Protocol):
 
     def allocate(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]: ...
 
-    def lookup(
-        self, operation_id: str, compute: dict[str, Any] | None
-    ) -> dict[str, Any] | None: ...
+    def lookup(self, operation_id: str, compute: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Rediscover the allocation made under ``operation_id`` (the effect identity).
+
+        Returns the handle plus ``status`` (``running`` | ``terminated``) when found,
+        ``None`` only when the backend authoritatively has no live allocation for the
+        operation, and raises (``DomainError`` retryable) when it cannot tell. Callers
+        never treat a failed lookup as absence. ``allocate`` is itself idempotent by
+        ``operation_id``: a retry adopts the existing allocation instead of a twin.
+        """
+        ...
 
     def describe(
         self, handle: dict[str, Any], compute: dict[str, Any] | None

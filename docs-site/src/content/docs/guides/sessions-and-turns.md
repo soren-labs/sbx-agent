@@ -64,8 +64,9 @@ be retried; otherwise the call returns `invalid_transition`.
 ## Unknown outcomes
 
 If SBX cannot prove how a Turn ended (for example the runtime restarted
-mid-operation), the Turn ends with reason `outcome_unknown`. SBX never relaunches
-it and never reports success.
+mid-operation), the Turn ends with reason `outcome_unknown` (state `interrupted`,
+or `failed` if it was still preparing). SBX never relaunches it and never reports
+success.
 
 1. The SDK raises `OutcomeUnknown` from `turns.wait` and `execute`.
 2. Inspect the Worktree and the Activity events to decide whether the work

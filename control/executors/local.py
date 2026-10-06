@@ -1,12 +1,16 @@
 """Local development/test Executor: one sbx-runtime daemon subprocess per lease.
 
 Same runtime protocol as Modal; explicitly not a multi-tenant security sandbox.
-Allocation discovery uses an operation-tag registry so a lost allocate
-response is adopted instead of starting a second runtime.
+Allocation is idempotent by operation ID: under a per-operation file lock the
+spawned daemon is registered *before* the readiness wait, a failed start is killed
+(and only forgotten once its death is confirmed), and a retry or a lost allocate
+response adopts the registered daemon instead of starting a second one.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import signal
@@ -49,12 +53,19 @@ def _alive(pid: int) -> bool:
 class LocalExecutor:
     kind = "local"
 
-    def __init__(self, base_dir: Path, *, extra_env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        *,
+        extra_env: dict[str, str] | None = None,
+        start_timeout: float = 20.0,
+    ) -> None:
         self.base = Path(base_dir)
         self.registry = self.base / "registry"
         self.registry.mkdir(parents=True, exist_ok=True)
         self.extra_env = extra_env or {}
         self.digest = local_image_digest()
+        self.start_timeout = start_timeout
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -64,11 +75,16 @@ class LocalExecutor:
             "multi_tenant": False,
         }
 
-    def allocate(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
-        lease_dir = self.base / "leases" / spec["lease_id"]
-        (lease_dir / "home").mkdir(parents=True, exist_ok=True)
-        port_file = lease_dir / "port"
-        port_file.unlink(missing_ok=True)
+    @contextlib.contextmanager
+    def _operation_lock(self, operation_id: str) -> Any:
+        with open(self.registry / f"{operation_id}.lock", "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def _spawn(self, spec: dict[str, Any], lease_dir: Path, port_file: Path) -> Any:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(lease_dir / "home"),
@@ -80,58 +96,90 @@ class LocalExecutor:
             "SBX_IMAGE_DIGEST": self.digest,
             **self.extra_env,
         }
-        log = open(lease_dir / "daemon.log", "ab")  # noqa: SIM115 - handed to the child
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "runtime.daemon.main",
-                "--state-dir",
-                str(lease_dir / "state"),
-                "--work-dir",
-                str(lease_dir / "work"),
-                "--port",
-                "0",
-                "--port-file",
-                str(port_file),
-            ],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-            cwd=str(REPO_ROOT),
-        )
-        deadline = time.monotonic() + 20
-        while not port_file.exists():
-            if proc.poll() is not None or time.monotonic() > deadline:
-                raise DomainError(
-                    "executor_unavailable", "local runtime failed to start", retryable=True
-                )
-            time.sleep(0.05)
-        handle = {
-            "pid": proc.pid,
-            "port": int(port_file.read_text()),
-            "dir": str(lease_dir),
-            "lease_id": spec["lease_id"],
-            "operation_id": operation_id,
-        }
-        (self.registry / f"{operation_id}.json").write_text(json.dumps(handle))
-        return handle
+        with open(lease_dir / "daemon.log", "ab") as log:
+            return subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "runtime.daemon.main",
+                    "--state-dir",
+                    str(lease_dir / "state"),
+                    "--work-dir",
+                    str(lease_dir / "work"),
+                    "--port",
+                    "0",
+                    "--port-file",
+                    str(port_file),
+                ],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+                cwd=str(REPO_ROOT),
+            )
+
+    def allocate(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
+        with self._operation_lock(operation_id):
+            existing = self.lookup(operation_id, None)
+            if existing is not None:
+                return existing
+            lease_dir = self.base / "leases" / spec["lease_id"]
+            (lease_dir / "home").mkdir(parents=True, exist_ok=True)
+            port_file = lease_dir / "port"
+            port_file.unlink(missing_ok=True)
+            proc = self._spawn(spec, lease_dir, port_file)
+            handle: dict[str, Any] = {
+                "pid": proc.pid,
+                "port": None,
+                "dir": str(lease_dir),
+                "lease_id": spec["lease_id"],
+                "operation_id": operation_id,
+            }
+            record = self.registry / f"{operation_id}.json"
+            # Registered before readiness: a crash or timeout below can never orphan it.
+            record.write_text(json.dumps(handle))
+            deadline = time.monotonic() + self.start_timeout
+            while not port_file.exists():
+                if proc.poll() is not None or time.monotonic() > deadline:
+                    if self.terminate(handle, f"{operation_id}:failed-start", None):
+                        record.unlink(missing_ok=True)
+                    proc.poll()  # reap
+                    raise DomainError(
+                        "executor_unavailable", "local runtime failed to start", retryable=True
+                    )
+                time.sleep(0.05)
+            handle["port"] = int(port_file.read_text())
+            record.write_text(json.dumps(handle))
+            return {**handle, "status": "running"}
 
     def lookup(self, operation_id: str, compute: dict[str, Any] | None) -> dict[str, Any] | None:
         path = self.registry / f"{operation_id}.json"
         if not path.exists():
             return None
         handle = json.loads(path.read_text())
-        return handle if _alive(handle["pid"]) else None
+        if not _alive(handle["pid"]):
+            return {**handle, "status": "terminated"}
+        if handle.get("port") is None:
+            port_file = Path(handle["dir"]) / "port"
+            if port_file.exists():
+                handle["port"] = int(port_file.read_text())
+        return {**handle, "status": "running"}
 
     def describe(self, handle: dict[str, Any], compute: dict[str, Any] | None) -> dict[str, Any]:
         pid = handle.get("pid")
         return {"status": "running" if pid and _alive(pid) else "terminated"}
 
     def connect_runtime(self, handle: dict[str, Any], compute: dict[str, Any] | None) -> str:
-        url = f"http://127.0.0.1:{handle['port']}"
+        port = handle.get("port")
+        port_file = Path(handle.get("dir") or self.base) / "port"
+        if port is None and port_file.exists():
+            port = int(port_file.read_text())
+        if port is None:
+            raise DomainError(
+                "executor_unavailable", "local runtime still starting", retryable=True
+            )
+        url = f"http://127.0.0.1:{port}"
         for _ in range(100):
             try:
                 if httpx.get(url + "/healthz", timeout=1).status_code == 200:

@@ -217,7 +217,7 @@ def build_worker(services: Services, *, holder: str | None = None) -> Worker:
 
 
 def start_workers(services: Services, stop: threading.Event) -> list[threading.Thread]:
-    from control.jobs.timers import enqueue_idle_releases
+    from control.jobs.timers import enqueue_idle_releases, enqueue_quarantine_releases
 
     threads = []
     for i in range(services.config.worker_threads):
@@ -234,6 +234,7 @@ def start_workers(services: Services, stop: threading.Event) -> list[threading.T
                 enqueue_idle_releases(
                     services.tx, idle_seconds=services.config.idle_release_seconds
                 )
+                enqueue_quarantine_releases(services.tx)
             except Exception:
                 log.exception("timer failure")
 

@@ -25,7 +25,7 @@ from control.application.ports import (
     RuntimeUnavailable,
     Transactions,
 )
-from control.application.sessions import finish_turn
+from control.application.sessions import finish_turn, unacknowledged_unknown
 from control.domain.digests import sha256_hex
 from control.domain.errors import DomainError
 from control.domain.execution import LIVE_EXECUTION_STATES, LIVE_LEASE_STATES
@@ -52,6 +52,9 @@ class ExecutionSettings:
     poll_idle: float = 1.0
     unreachable_threshold: int = 5
     capacity_retry: float = 2.0
+    # Upper bound for an in-flight backend create; after it, "no allocation found for
+    # the operation" is authoritative even if an allocate was requested.
+    allocation_window_seconds: float = 600.0
 
 
 def compose_prompt(message: dict[str, Any], turn: dict[str, Any]) -> str:
@@ -297,6 +300,14 @@ class ExecutionService:
         )
         if other is not None and other["id"] != turn_id:
             return {"action": "done", "result": {"waiting_for": other["id"]}}
+        if (
+            live is None
+            and turn["state"] == "queued"
+            and unacknowledged_unknown(uow, session["id"])
+        ):
+            # A stale/duplicate dispatch Job must not bypass the acknowledgement gate;
+            # acknowledge_unknown re-schedules the head Turn.
+            return {"action": "done", "result": {"blocked": "outcome_unknown"}}
         if live is not None:
             uow.enqueue_job(
                 workspace_id=session["workspace_id"],
@@ -407,18 +418,42 @@ class ExecutionService:
             "compute": compute,
             "compute_connection_id": lease["compute_connection_id"],
         }
+        operation_id = lease["allocation_operation_id"]
         try:
-            # Idempotent by operation tag: adopt an existing allocation before allocating.
-            handle = backend.lookup(lease["allocation_operation_id"], compute)
-            if handle is None:
-                handle = backend.allocate(spec, lease["allocation_operation_id"])
+            if lease["handle"]:
+                # Identity already persisted: observe it; never allocate a twin under it.
+                status = backend.describe(lease["handle"], compute).get("status")
+                found = {**lease["handle"], "status": status}
+            else:
+                if not ctx.commit(lambda uow: self._mark_allocating(uow, lease["id"])):
+                    return None
+                # Idempotent by operation identity: adopt before allocating.
+                found = backend.lookup(operation_id, compute) or backend.allocate(
+                    spec, operation_id
+                )
+            if found.get("status") == "terminated":
+                ctx.commit(
+                    lambda uow: self._lose_lease(
+                        uow, lease["id"], "allocation_terminated", confirmed=True
+                    )
+                )
+                raise DomainError(
+                    "executor_unavailable",
+                    "the allocation ended before binding; a new lease will be allocated",
+                    retryable=True,
+                )
+            handle = {k: v for k, v in found.items() if k != "status"}
+            if not lease["handle"]:
+                # Persist the handle before the runtime handshake so a crash or a
+                # concurrent release can always find and terminate this allocation.
+                if not ctx.commit(lambda uow: self._record_handle(uow, lease["id"], handle)):
+                    backend.terminate(handle, f"{lease['id']}:terminate", compute)
+                    return None
             ctx.renew()
             endpoint = backend.connect_runtime(handle, compute)
         except DomainError as exc:
             if exc.code in ("credential_invalid", "connection_revoked", "unsupported_capability"):
-                ctx.commit(
-                    lambda uow, e=exc: self._lose_lease(uow, lease["id"], e.code, confirmed=True)
-                )
+                ctx.commit(lambda uow, e=exc: self._lose_unbound(uow, lease["id"], e.code))
             raise
         bound = {**lease, "handle": {**handle, "endpoint": endpoint}}
         hello = self.connector.channel(bound).hello()
@@ -474,6 +509,47 @@ class ExecutionService:
             return row
 
         return ctx.commit(bind)
+
+    def _mark_allocating(self, uow: Any, lease_id: str) -> bool:
+        """Durable intent before any backend create; refused once a release fenced it."""
+        lease = uow.get("executor_leases", lease_id, lock=True)
+        if lease["state"] != "allocating":
+            return False
+        uow.update(
+            "executor_leases",
+            lease_id,
+            {"observed_status": "allocate_requested", "observed_at": uow.now()},
+        )
+        return True
+
+    def _record_handle(self, uow: Any, lease_id: str, handle: dict[str, Any]) -> bool:
+        lease = uow.get("executor_leases", lease_id, lock=True)
+        if lease["state"] not in LIVE_LEASE_STATES:
+            return False
+        # Recorded even when a release already fenced the lease, so it can terminate it.
+        uow.update(
+            "executor_leases",
+            lease_id,
+            {"handle": handle, "observed_status": "allocated", "observed_at": uow.now()},
+        )
+        return lease["state"] == "allocating"
+
+    def _lose_unbound(self, uow: Any, lease_id: str, reason: str) -> None:
+        """Permanent allocation failure: isolation is only confirmed if nothing was created."""
+        lease = uow.get("executor_leases", lease_id, lock=True)
+        never_requested = lease["handle"] is None and lease["observed_status"] is None
+        self._lose_lease(uow, lease_id, reason, confirmed=never_requested)
+        if not never_requested:
+            self._enqueue_release(uow, lease, "quarantine")
+
+    def _enqueue_release(self, uow: Any, lease: dict[str, Any], reason: str) -> None:
+        uow.enqueue_job(
+            workspace_id=lease["workspace_id"],
+            kind="executor.release",
+            target_id=lease["id"],
+            session_id=lease["session_id"],
+            input={"reason": reason},
+        )
 
     def _lose_lease(self, uow: Any, lease_id: str, reason: str, *, confirmed: bool) -> None:
         lease = uow.get("executor_leases", lease_id, lock=True)
@@ -931,12 +1007,8 @@ class ExecutionService:
                 execution_id=execution_id,
             )
         if not confirmed:
-            uow.enqueue_job(
-                workspace_id=session["workspace_id"],
-                kind="executor.release",
-                target_id=execution["executor_lease_id"],
-                session_id=session["id"],
-                input={"reason": "quarantine"},
+            self._enqueue_release(
+                uow, uow.get("executor_leases", execution["executor_lease_id"]), "quarantine"
             )
 
     # -------------------------------------------------------------- allocate/release
@@ -974,24 +1046,67 @@ class ExecutionService:
                 return Continue(delay=2.0)
             ctx.commit(lambda uow: self._quiesce(uow, lease_id))
             snapshot_ok = self._checkpoint(ctx, lease)
-        handle = lease["handle"] or {}
-        confirmed = True
-        if handle:
-            try:
-                confirmed = self._backend(lease).terminate(
-                    handle, f"{lease_id}:terminate", self._compute(session)
-                )
-            except Exception:
-                confirmed = False
+        # Fence an allocating lease first: no new backend create can start after this.
+        lease = ctx.commit(lambda uow: self._quiesce(uow, lease_id))
+        confirmed = self._confirm_stopped(lease, session)
+        if confirmed is None:
+            return Continue(delay=5.0)
         if not confirmed:
+            ctx.commit(lambda uow: self._quarantine(uow, lease_id, "termination_unconfirmed"))
             return Retry("executor_unavailable", "termination not confirmed")
         ctx.commit(lambda uow: self._released(uow, lease_id, snapshot_ok))
         return Succeeded({"checkpoint": snapshot_ok})
 
-    def _quiesce(self, uow: Any, lease_id: str) -> None:
+    def _confirm_stopped(self, lease: dict[str, Any], session: dict[str, Any]) -> bool | None:
+        """True only on confirmed termination or authoritative absence; None = wait.
+
+        A missing handle never implies cleanup: the allocation is resolved by its
+        operation identity, and lookup failures stay unconfirmed (quarantined).
+        """
+        try:
+            backend = self._backend(lease)
+            compute = self._compute(session)
+            handle = lease["handle"]
+            if not handle:
+                found = backend.lookup(lease["allocation_operation_id"], compute)
+                if found is None:
+                    observed = lease["observed_at"]
+                    in_flight = (
+                        lease["observed_status"] == "allocate_requested"
+                        and observed is not None
+                        and (self._now() - observed).total_seconds()
+                        < self.settings.allocation_window_seconds
+                    )
+                    return None if in_flight else True
+                if found.get("status") == "terminated":
+                    return True
+                handle = {k: v for k, v in found.items() if k != "status"}
+            return bool(backend.terminate(handle, f"{lease['id']}:terminate", compute))
+        except Exception:
+            return False
+
+    def _now(self) -> Any:
+        return self.tx.read(lambda uow: uow.now())
+
+    def _quarantine(self, uow: Any, lease_id: str, reason: str) -> None:
         lease = uow.get("executor_leases", lease_id, lock=True)
-        if lease["state"] == "ready":
-            uow.update("executor_leases", lease_id, {"state": "quiescing"})
+        if lease["quarantined"]:
+            return
+        uow.update("executor_leases", lease_id, {"quarantined": True, "state_reason": reason})
+        session = uow.get("sessions", lease["session_id"], lock=True)
+        uow.append_event(
+            session,
+            "executor.unavailable",
+            {"lease_id": lease_id, "reason": reason, "isolation_confirmed": False},
+            actor="application",
+            executor_lease_id=lease_id,
+            lease_generation=lease["generation"],
+        )
+
+    def _quiesce(self, uow: Any, lease_id: str) -> dict[str, Any]:
+        lease = uow.get("executor_leases", lease_id, lock=True)
+        if lease["state"] in ("ready", "allocating"):
+            lease = uow.update("executor_leases", lease_id, {"state": "quiescing"})
             session = uow.get("sessions", lease["session_id"], lock=True)
             uow.append_event(
                 session,
@@ -1001,6 +1116,7 @@ class ExecutionService:
                 executor_lease_id=lease_id,
                 lease_generation=lease["generation"],
             )
+        return lease
 
     def _checkpoint(self, ctx: Any, lease: dict[str, Any]) -> bool:
         """Barrier, drain/ack evidence, export secret-free files + native state, seal."""
