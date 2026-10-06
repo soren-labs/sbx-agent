@@ -230,7 +230,7 @@ credentials. There are four kinds, all added by manual input:
 | Kind | Fields | Used for | Validation probe |
 | --- | --- | --- | --- |
 | `modal` | `token_id`, `token_secret` | Creating and releasing sandboxes. Only the executor worker sees it; the sandbox gets a lease-scoped key. | `App.lookup` with the token |
-| `github` | `token` | Cloning repositories and Delivery (push, pull request, merge). | `GET /user`, plus repository permission for Project repos |
+| `github` | `token` (personal access token or GitHub App installation token) | Cloning repositories and Delivery (push, pull request, merge). | Repository access for Project repos (`GET /repos/…`); `GET /user` only supplies the identity, so installation tokens are accepted |
 | `opencode_zen` | `api_key` | Inference for the OpenCode Harness. Written to an isolated HOME and scrubbed after each Turn. | One minimal free-model chat request (this consumes quota and is recorded) |
 | `codex` (optional) | `auth_json` | The experimental Codex Harness, in an isolated `CODEX_HOME`. | Format check only |
 
@@ -354,8 +354,9 @@ be retried; otherwise the call returns `invalid_transition`.
 ## Unknown outcomes
 
 If SBX cannot prove how a Turn ended (for example the runtime restarted
-mid-operation), the Turn ends with reason `outcome_unknown`. SBX never relaunches
-it and never reports success.
+mid-operation), the Turn ends with reason `outcome_unknown` (state `interrupted`,
+or `failed` if it was still preparing). SBX never relaunches it and never reports
+success.
 
 1. The SDK raises `OutcomeUnknown` from `turns.wait` and `execute`.
 2. Inspect the Worktree and the Activity events to decide whether the work
@@ -391,8 +392,12 @@ A ChangeSet is an immutable snapshot of what changed in a Worktree.
   A capture whose source Turn failed, was cancelled or interrupted is recorded
   with origin `salvage` and is not eligible for automatic delivery.
 - The runtime writes the exact tree and reports a manifest, per-file SHA-256
-  digests, the patch and file blobs. Credential paths (`.env*`, `auth.json`,
-  `*.pem`) are excluded, and a known secret pattern fails the capture.
+  digests, the patch and file blobs. Credential files such as `.env`,
+  `auth.json` and private keys are excluded; templates such as `.env.example`
+  are preserved. Selected credentials and obvious secret patterns fail capture.
+- A Turn completes only after its managed CLI descendants stop. Capture and
+  checkpoint close managed terminals and stop services before copying state.
+  An unconfirmed writer stop blocks the operation.
 - Before sealing, the control plane rebuilds the manifest from its own pinned
   repository and base commit, recomputes `subject_digest` and re-verifies every
   blob. A failed capture is `failed`; there is never a fake ready subject.
@@ -428,8 +433,9 @@ proven yet.
 ## Merge gate
 
 Merge is a separate operation, `POST /api/deliveries/{id}/merge-requests`. The
-server evaluates the gate from stored rows plus a fresh remote observation. All
-of the following must hold:
+merge worker reloads the current Project policy and enforces it alongside the
+Delivery's pinned policy and a fresh remote observation. Tightening a policy
+also constrains existing Deliveries. All of the following must hold:
 
 - The ChangeSet is sealed, the Delivery is verified, and the remote head equals
   the mapped commit equals `expected_head_sha`.
@@ -582,11 +588,20 @@ Two methods resolve to the same principal and permissions:
 
 | Method | How | Extra requirements on mutations |
 | --- | --- | --- |
-| API key | `Authorization: Bearer sbx_key_…` | None |
+| API key | `Authorization: Bearer sbx_key_…` | The key's scope must allow the call (see below) |
 | Cookie session | `POST /api/auth/login` sets `sbx_session` (HttpOnly) and `sbx_csrf` | `X-CSRF-Token` header equal to the `sbx_csrf` cookie, and an allowed `Origin` |
 
 Create a key with `POST /api/api-keys` (cookie session). The plaintext is
-returned once and only a hash is stored. Login requires a verified email, is
+returned once and only a hash is stored. `scopes` is a non-empty subset of
+`["*", "write", "read"]` (default `["*"]`; anything else is `422`):
+
+| Scope | Allows |
+| --- | --- |
+| `read` | `GET` routes only; every mutation returns `403 forbidden` |
+| `write` | reads and all resource mutations |
+| `*` | everything, including minting/revoking API keys and changing the password |
+
+Cookie sessions are always full scope. Login requires a verified email, is
 rate limited to 10 failures per email per 15 minutes (`429 rate_limited`), and
 changing a password revokes cookie sessions.
 
@@ -959,6 +974,7 @@ The process exits at start-up if any of these is missing.
 | `SBX_COOKIE_SECURE` | `0` | Set to `1` to mark cookies `Secure` (use behind HTTPS). |
 | `SBX_EXECUTORS` | `local,modal` | Enabled executor backends. |
 | `SBX_RESEND_API_KEY` | unset | Send email through Resend. Without it, mail is written to `$SBX_DATA_DIR/mail/` (directory `0700`, files `0600`). |
+| `SBX_MAIL_FROM` | unset | Sender address for Resend email, on a domain verified in Resend. Required when `SBX_RESEND_API_KEY` is set; startup fails without it. |
 | `SBX_WORKER_THREADS` | `4` | In-process job worker threads. |
 
 Generate keys with `openssl rand -base64 32` for a vault key and
@@ -1021,16 +1037,23 @@ inheriting `os.environ`.
 | OpenCode Zen key | the CLI's isolated HOME, scrubbed after each Turn |
 | Codex `auth.json` | an isolated `CODEX_HOME`, scrubbed after each Turn |
 
-Checkpoints and environment snapshots exclude credential files, and the runtime
-refuses archives that escape their directory.
+ChangeSets and checkpoints exclude credential files, including `.env`,
+`auth.json` and private keys. Safe templates such as `.env.example` remain
+ordinary files. Checkpoints also exclude files containing selected credentials
+or obvious secret patterns; selected credentials in Git metadata refuse the
+checkpoint. Restore filters credential files and secret content from older
+archives, and rejects traversal or link escapes. Native state is checked for
+selected credential values so ordinary transcript examples remain usable.
 
 ## Redaction
 
 Known secrets and secret-looking structured fields are redacted before runtime
 evidence is spooled, and before public errors are emitted. Request validation
-errors never echo input. ChangeSet capture excludes credential paths and fails on
-known-secret patterns. Audit records store the target, version, purpose, actor
-and result, never secret material.
+errors never echo input. File reads refuse credential paths with `403 forbidden`
+and redact selected credentials and secret patterns in ordinary files. ChangeSet
+capture refuses selected credentials and secret patterns. Worker tracebacks,
+runtime output and stored fault messages are scrubbed before exposure. Audit
+records store the target, version, purpose, actor and result, never secret material.
 
 ## Runtime channel
 
