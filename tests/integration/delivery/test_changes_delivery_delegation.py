@@ -35,8 +35,9 @@ def env(db, tmp_path):
     stack.shutdown()
 
 
-def _session(stack, user, url, text):
+def _session(stack, user, url, text, *, project_id=None):
     body = {
+        "project_id": project_id,
         "harness": {"provider_id": "opencode"},
         "executor": {"backend": "local"},
         "repository": {"full_name": "acme/demo", "clone_url": url, "base_ref": "main"},
@@ -415,3 +416,86 @@ def test_parent_close_cancels_children_and_tool_gateway_scopes(env) -> None:
     assert tool("sbx.sessions.read", {}, op="op-9").status_code == 401, (
         "grant dies with the Session"
     )
+
+
+@pytest.mark.parametrize(
+    "tightening,reason",
+    [
+        ({"require_base_unchanged": True}, "unsupported_base_stability"),
+        ({"merge_methods": ["merge"]}, "merge_method_not_allowed"),
+        ({"merge_methods": []}, "merge_method_not_allowed"),
+        ({"required_checks": ["ship"]}, "check_not_passing:ship"),
+        (
+            {"required_results": [{"kind": "ReviewAssessment", "count": 1, "verdict": "approve"}]},
+            "missing_required_result:ReviewAssessment",
+        ),
+    ],
+)
+def test_old_delivery_obeys_current_mandatory_policy(env, tightening, reason) -> None:
+    stack, user, host, _, url = env
+    permissive = {"required_results": [], "merge_methods": ["squash", "merge"]}
+    spec = {"ship_policy": permissive}
+    project = user.post(
+        f"/api/workspaces/{user.workspace_id}/projects",
+        {"slug": "policy", "spec": spec},
+    ).json()
+    sid, _ = _session(stack, user, url, "build [write:feature.txt=done]", project_id=project["id"])
+    cs = _ready_changeset(stack, user, sid)
+    d = user.post(f"/api/changesets/{cs['id']}/deliveries", {}).json()["delivery"]
+    d = _delivered(stack, user, d["id"])
+    pinned = stack.db.read(lambda u: u.get("deliveries", d["id"]))["policy"]
+    assert pinned["required_results"] == [] and not pinned["require_base_unchanged"]
+    tightened = {"ship_policy": {**permissive, **tightening}}
+    updated = user.post(
+        f"/api/projects/{project['id']}/versions",
+        {"spec": tightened, "expected_version": project["version"]},
+    )
+    assert updated.status_code == 201, updated.text
+    pins = {
+        "expected_head_sha": d["commit_sha"],
+        "subject_digest": cs["subject_digest"],
+        "expected_version": d["version"],
+        "method": "squash",
+        "mark_ready": True,
+    }
+    response = user.post(f"/api/deliveries/{d['id']}/merge-requests", pins)
+    assert response.status_code == 202, response.text
+    stack.drain()
+    view = user.get(f"/api/deliveries/{d['id']}").json()
+    blocked = view["merge_requests"][0]
+    assert blocked["state"] == "blocked" and reason in blocked["gate"]["reasons"]
+    assert host.merges == [], "policy tightened after creation must still block the old Delivery"
+    assert stack.db.read(lambda u: u.get("deliveries", d["id"]))["policy"] == pinned
+
+    if "required_checks" in tightening:
+        host.check_runs[d["commit_sha"]] = [{"name": "ship", "conclusion": "success"}]
+    elif "required_results" in tightening:
+        review = json.dumps(
+            {
+                "kind": "ReviewAssessment",
+                "subject_digest": cs["subject_digest"],
+                "verdict": "approve",
+                "findings": [],
+            }
+        )
+        delegation = user.post(
+            f"/api/sessions/{sid}/delegations",
+            {"role": "review", "changeset_id": cs["id"], "instructions": f"[result:{review}]"},
+        ).json()
+        _delegation(stack, user, delegation["delegation_id"])
+    elif tightening.get("merge_methods"):
+        pins["method"] = "merge"
+    else:
+        # Base stability is unsupported: only removing that current requirement
+        # can permit merging. An empty method allowlist similarly permits none.
+        user.post(
+            f"/api/projects/{project['id']}/versions",
+            {"spec": spec, "expected_version": updated.json()["version"]},
+        ).raise_for_status()
+    pins["expected_version"] = user.get(f"/api/deliveries/{d['id']}").json()["version"]
+    response = user.post(f"/api/deliveries/{d['id']}/merge-requests", pins)
+    assert response.status_code == 202, response.text
+    stack.drain()
+    merged = user.get(f"/api/deliveries/{d['id']}").json()["merge_requests"][0]
+    assert merged["state"] == "succeeded", merged
+    assert host.merges == [{"number": 1, "sha": d["commit_sha"], "method": pins["method"]}]

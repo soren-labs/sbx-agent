@@ -63,7 +63,7 @@ def evaluate_merge_gate(
             reasons.append("stale_subject")
         if merge_request["expected_delivery_version"] != delivery.get("version"):
             reasons.append("version_conflict")
-        if merge_request["method"] not in (policy.get("merge_methods") or ["squash"]):
+        if merge_request["method"] not in (policy.get("merge_methods", ["squash"]) or []):
             reasons.append("merge_method_not_allowed")
         if delivery.get("pr_draft") and not merge_request.get("mark_ready"):
             reasons.append("pull_request_is_draft")

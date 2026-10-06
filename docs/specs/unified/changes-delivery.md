@@ -56,7 +56,9 @@ GitHub's error; nothing falls back to another credential.
 
 Merge is a separate `merge_requests` operation. The gate (`control/domain/delivery.py`) is evaluated
 from typed rows plus a fresh remote observation, using the pinned policy combined with the current
-Project policy, and requires all of:
+authoritative ProjectVersion policy loaded again by the merge worker. Both policies are
+evaluated intact: required checks/results, allowed merge methods and base-stability restrictions
+all remain mandatory. An empty method allowlist permits no merge. The gate requires all of:
 
 * the ChangeSet is sealed, the Delivery is verified, and the remote head equals the mapped commit
   equals `expected_head_sha`;

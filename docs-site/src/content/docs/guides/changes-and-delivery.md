@@ -54,8 +54,9 @@ proven yet.
 ## Merge gate
 
 Merge is a separate operation, `POST /api/deliveries/{id}/merge-requests`. The
-server evaluates the gate from stored rows plus a fresh remote observation. All
-of the following must hold:
+merge worker reloads the current Project policy and enforces it alongside the
+Delivery's pinned policy and a fresh remote observation. Tightening a policy
+also constrains existing Deliveries. All of the following must hold:
 
 - The ChangeSet is sealed, the Delivery is verified, and the remote head equals
   the mapped commit equals `expected_head_sha`.

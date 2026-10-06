@@ -678,30 +678,33 @@ class Deliveries:
             cs = uow.get("changesets", current["changeset_id"])
             # Effective gate: pinned intent policy AND current mandatory Project policy.
             session = uow.get("sessions", current["session_id"])
-            policy = dict(current["policy"])
+            policies = [current["policy"]]
             if session["project_id"]:
-                project = uow.get("projects", session["project_id"])
+                project = uow.get("projects", session["project_id"], lock=True)
                 latest = (
                     uow.get("project_versions", project["current_version_id"])["spec"].get(
                         "ship_policy"
                     )
                     or {}
                 )
-                policy["required_checks"] = sorted(
-                    set(policy.get("required_checks") or [])
-                    | set(latest.get("required_checks") or [])
+                policies.append(latest)
+            # Evaluate both policies intact: combining only checks/counts loses
+            # base stability, allowed methods and distinct verdict requirements.
+            results = self._results(uow, current)
+            gates = [
+                evaluate_merge_gate(
+                    changeset=cs,
+                    delivery=current,
+                    merge_request=mr,
+                    results=results,
+                    policy=policy,
+                    now=uow.now(),
                 )
-                policy["required_results"] = _stricter(
-                    policy.get("required_results") or [], latest.get("required_results") or []
-                )
-            result = evaluate_merge_gate(
-                changeset=cs,
-                delivery=current,
-                merge_request=mr,
-                results=self._results(uow, current),
-                policy=policy,
-                now=uow.now(),
-            )
+                for policy in policies
+            ]
+            result = gates[0]
+            result["reasons"] = sorted({reason for g in gates for reason in g["reasons"]})
+            result["eligible"] = not result["reasons"]
             state = "executing" if result["eligible"] else "blocked"
             uow.update(
                 "merge_requests", mr_id, {"state": state, "gate": result, "updated_at": uow.now()}
@@ -806,12 +809,3 @@ class Deliveries:
             and session["source_connection_id"]
         ):
             self.create_in(uow, "application", cs, {}, authorization="automatic")
-
-
-def _stricter(pinned: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged = {r["kind"]: dict(r) for r in pinned}
-    for r in current:
-        prior = merged.get(r["kind"])
-        if prior is None or int(r.get("count") or 1) > int(prior.get("count") or 1):
-            merged[r["kind"]] = dict(r)
-    return list(merged.values())
