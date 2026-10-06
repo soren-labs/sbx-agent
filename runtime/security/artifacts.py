@@ -13,6 +13,7 @@ back into, the runtime: ChangeSet capture, checkpoints, restore and file reads.
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 from collections.abc import Iterable
 from pathlib import PurePosixPath
@@ -99,7 +100,14 @@ def redact_bytes(data: bytes, known: Iterable[str] = ()) -> bytes:
 def collect_known(value: object) -> set[str]:
     """Every string leaf of a secrets bundle (the values the runtime may materialize)."""
     if isinstance(value, str):
-        return {value} if len(value) >= MIN_KNOWN else set()
+        values = {value} if len(value) >= MIN_KNOWN else set()
+        # Uploaded auth_json is a string on the wire; its token leaves are what
+        # the CLI may copy into files or output.
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return values
+        return values | collect_known(parsed) if isinstance(parsed, dict | list) else values
     if isinstance(value, dict):
         return {s for v in value.values() for s in collect_known(v)}
     if isinstance(value, list | tuple):

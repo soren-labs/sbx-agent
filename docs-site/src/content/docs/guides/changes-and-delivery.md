@@ -13,8 +13,9 @@ A ChangeSet is an immutable snapshot of what changed in a Worktree.
   A capture whose source Turn failed, was cancelled or interrupted is recorded
   with origin `salvage` and is not eligible for automatic delivery.
 - The runtime writes the exact tree and reports a manifest, per-file SHA-256
-  digests, the patch and file blobs. Credential paths (`.env*`, `auth.json`,
-  `*.pem`) are excluded, and a known secret pattern fails the capture.
+  digests, the patch and file blobs. Credential files such as `.env`,
+  `auth.json` and private keys are excluded; templates such as `.env.example`
+  are preserved. Selected credentials and obvious secret patterns fail capture.
 - Before sealing, the control plane rebuilds the manifest from its own pinned
   repository and base commit, recomputes `subject_digest` and re-verifies every
   blob. A failed capture is `failed`; there is never a fake ready subject.

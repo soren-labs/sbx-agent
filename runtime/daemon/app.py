@@ -284,7 +284,7 @@ class RuntimeDaemon:
                 {
                     "verdict": "failure",
                     "error_code": exc.code,
-                    "message": str(exc),
+                    "message": Redactor(self.known_secrets).text(str(exc)),
                     "credential_health": "ok",
                     "retry_advice": "none",
                 },
@@ -302,6 +302,7 @@ class RuntimeDaemon:
             )
             return {"operation_id": op_id, "status": "failed", "result": {"error_code": exc.code}}
         run = TurnRun(self.journal, op_id, harness, context, prepared, invocation)
+        run.redactor = Redactor([*prepared.secrets, *self.known_secrets])
         self.runs[op_id] = run
         run.start()
         return {"operation_id": op_id, "status": "accepted", "result": None}
@@ -336,7 +337,7 @@ class RuntimeDaemon:
             run.done.wait(timeout=15)
             return {"target_status": self.journal.op_get(target)["status"], "stopped": confirmed}
         if kind == "worktree.restore":
-            return self.worktree.restore(payload, secrets.get("git"))
+            return self.worktree.restore(payload, secrets.get("git"), self.known_secrets)
         if kind == "files.write":
             self._require_quiet()
             return self.worktree.write(
@@ -565,7 +566,8 @@ class RuntimeDaemon:
                 return 200, self.ack(body)
             raise Refused("not_found", "no such route", 404)
         except Refused as exc:
-            return exc.status, {"error": {"code": exc.code, "message": exc.message}}
+            message = Redactor(self.known_secrets).text(exc.message)
+            return exc.status, {"error": {"code": exc.code, "message": message}}
         except (WorktreeError, PathEscape) as exc:
             code = getattr(exc, "code", "validation_failed")
             status = {"not_found": 404, "forbidden": 403}.get(code, 409)

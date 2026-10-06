@@ -38,16 +38,23 @@ inheriting `os.environ`.
 | OpenCode Zen key | the CLI's isolated HOME, scrubbed after each Turn |
 | Codex `auth.json` | an isolated `CODEX_HOME`, scrubbed after each Turn |
 
-Checkpoints and environment snapshots exclude credential files, and the runtime
-refuses archives that escape their directory.
+ChangeSets and checkpoints exclude credential files, including `.env`,
+`auth.json` and private keys. Safe templates such as `.env.example` remain
+ordinary files. Checkpoints also exclude files containing selected credentials
+or obvious secret patterns; selected credentials in Git metadata refuse the
+checkpoint. Restore filters credential files and secret content from older
+archives, and rejects traversal or link escapes. Native state is checked for
+selected credential values so ordinary transcript examples remain usable.
 
 ## Redaction
 
 Known secrets and secret-looking structured fields are redacted before runtime
 evidence is spooled, and before public errors are emitted. Request validation
-errors never echo input. ChangeSet capture excludes credential paths and fails on
-known-secret patterns. Audit records store the target, version, purpose, actor
-and result, never secret material.
+errors never echo input. File reads refuse credential paths with `403 forbidden`
+and redact selected credentials and secret patterns in ordinary files. ChangeSet
+capture refuses selected credentials and secret patterns. Worker tracebacks,
+runtime output and stored fault messages are scrubbed before exposure. Audit
+records store the target, version, purpose, actor and result, never secret material.
 
 ## Runtime channel
 

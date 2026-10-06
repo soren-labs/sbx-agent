@@ -607,7 +607,7 @@ class ExecutionService:
         if worktree["availability"] == "live" and realized:
             return
         payload: dict[str, Any] = {"generation": worktree["generation"]}
-        secrets: dict[str, Any] = {}
+        secrets: dict[str, Any] = runtime_visible(self.credentials, session)
         repo = session["effective_spec"].get("repository")
         if snapshot is not None and snapshot["state"] == "ready":
             # A valid Session checkpoint takes precedence; wake never resets to main.

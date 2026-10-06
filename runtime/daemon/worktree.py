@@ -20,7 +20,6 @@ from runtime.security.paths import PathEscape, safe_join
 
 MAX_READ = 1_000_000
 MAX_CHECKPOINT = 200 * 1024 * 1024
-MAX_SCAN = 8 * 1024 * 1024  # larger files are path-checked only
 CHECKPOINT_INDEX = "sbx-checkpoint.json"
 GIT_ENV_BASE = {"GIT_TERMINAL_PROMPT": "0", "LANG": "C.UTF-8"}
 
@@ -70,7 +69,9 @@ class Worktree:
         os.chmod(script, 0o700)
         return {"GIT_ASKPASS": str(script)}, [secret, user, script]
 
-    def restore(self, payload: dict[str, Any], credential: dict[str, Any] | None) -> dict[str, Any]:
+    def restore(
+        self, payload: dict[str, Any], credential: dict[str, Any] | None, known: Iterable[str] = ()
+    ) -> dict[str, Any]:
         if self.path.exists() and payload.get("replace") is not True and any(self.path.iterdir()):
             raise WorktreeError("worktree_live", "worktree already realized on this lease")
         if self.path.exists():
@@ -78,7 +79,7 @@ class Worktree:
         checkpoint = payload.get("checkpoint_b64")
         native = None
         if checkpoint:
-            native = self._extract(base64.b64decode(checkpoint))
+            native = self._extract(base64.b64decode(checkpoint), known)
         elif payload.get("repository"):
             repo = payload["repository"]
             env, files = self._askpass(credential)
@@ -166,10 +167,8 @@ class Worktree:
         if is_secret_path(str(target.relative_to(os.path.realpath(self.path)))):
             raise WorktreeError("forbidden", "credential-bearing files are not readable")
         full = target.read_bytes()
-        data = full[:MAX_READ]
-        redacted = secret_reason(data, known) is not None
-        if redacted:
-            data = redact_bytes(data, known)
+        redacted = secret_reason(full, known) is not None
+        data = (redact_bytes(full, known) if redacted else full)[:MAX_READ]
         try:
             return {
                 "path": rel,
@@ -210,9 +209,38 @@ class Worktree:
     def _artifact_ok(self, path: Path, rel: str, known: Iterable[str], *, patterns: bool) -> bool:
         if is_secret_path(rel):
             return False
-        if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_SCAN:
+        if not path.is_file() or path.is_symlink():
             return True
         return secret_reason(path.read_bytes(), known, patterns=patterns) is None
+
+    def _check_git_secrets(self, known: Iterable[str]) -> None:
+        """Refuse selected credentials in compressed Git objects, including blobs
+        staged by a refused capture. Keep the existing repository metadata."""
+        known = tuple(known)
+        if not known:
+            return
+        proc = subprocess.Popen(
+            ["git", "cat-file", "--batch", "--batch-all-objects"],
+            cwd=self.path,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.state_dir)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert proc.stdout is not None
+            for header in iter(proc.stdout.readline, b""):
+                size = int(header.split()[-1])
+                data = proc.stdout.read(size)
+                proc.stdout.read(1)
+                if secret_reason(data, known, patterns=False):
+                    raise WorktreeError("capture_failed", "known_credential in Git metadata")
+            if proc.wait() != 0:
+                raise WorktreeError("capture_failed", "cannot inspect Git metadata")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            proc.stdout.close()
 
     def checkpoint(
         self, native: dict[str, list[Path]], known: Iterable[str] = ()
@@ -224,12 +252,17 @@ class Worktree:
         restored. Native state is checked for the lease's exact known credentials only.
         """
         known = tuple(known)
+        self._check_git_secrets(known)
         excluded: list[str] = []
         root = Path(os.path.realpath(self.path))
 
         def worktree_member(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
             rel = info.name.partition("/")[2]
-            if not rel or rel == ".git" or rel.startswith(".git/"):
+            if not rel:
+                return info
+            if rel == ".git" or rel.startswith(".git/"):
+                if not self._artifact_ok(root / rel, rel, known, patterns=False):
+                    raise WorktreeError("capture_failed", "known_credential in Git metadata")
                 return info
             if not self._artifact_ok(root / rel, rel, known, patterns=True):
                 excluded.append(rel)
@@ -279,7 +312,7 @@ class Worktree:
         if paths:
             git(self.path, "checkout", "HEAD", "--", *paths, check=False)
 
-    def _extract(self, data: bytes) -> dict[str, list[str]]:
+    def _extract(self, data: bytes, known: Iterable[str] = ()) -> dict[str, list[str]]:
         native: dict[str, list[str]] = {}
         staging = self.root / ".restore"
         if staging.exists():
@@ -305,9 +338,21 @@ class Worktree:
                 # Never materialize credential paths, even from an older archive.
                 if inner and is_secret_path(inner):
                     continue
+                if member.isfile():
+                    content = tar.extractfile(member).read()
+                    metadata = top == "worktree" and rel.startswith(".git/")
+                    if secret_reason(content, known, patterns=top == "worktree" and not metadata):
+                        if metadata:
+                            raise WorktreeError(
+                                "capture_failed", "known_credential in Git metadata"
+                            )
+                        if top == "worktree":
+                            excluded.append(rel)
+                        continue
                 members.append(member)
             tar.extractall(staging, members=members, filter="tar")
         shutil.move(str(staging / "worktree"), str(self.path))
+        self._check_git_secrets(known)
         self._restore_tracked(excluded)
         native_root = staging / "native"
         if native_root.exists():

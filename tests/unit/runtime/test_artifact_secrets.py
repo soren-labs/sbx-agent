@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import subprocess
 import tarfile
 import time
 from pathlib import Path
 
 import pytest
-from runtime.security.artifacts import is_secret_path, secret_reason
+from runtime.security.artifacts import collect_known, is_secret_path, secret_reason
 from tests.support.runtime import DaemonHarness
 
 KEY = "zen-selected-artifact-key-7f3a9c"  # fake selected credential
@@ -100,6 +101,10 @@ def test_secret_reason_never_returns_the_secret() -> None:
     assert secret_reason(b"just code") is None
 
 
+def test_uploaded_auth_json_registers_its_token_values() -> None:
+    assert KEY in collect_known({"codex": {"auth_json": json.dumps({"access_token": KEY})}})
+
+
 # ---------------------------------------------------------------------------- capture
 def test_capture_excludes_credential_files_but_keeps_templates(rt) -> None:
     put(rt, ".env", "API_KEY=local-dev-value\n")
@@ -168,6 +173,62 @@ def test_checkpoint_excludes_credential_paths_and_values(rt) -> None:
     assert KEY.encode() not in blob and b"local-dev-value" not in blob
     assert GH_LIKE.encode() not in blob
     assert not any(n.endswith("auth.json") for n in names)
+
+
+def test_checkpoint_scans_large_files_and_native_state(rt) -> None:
+    put(rt, "large.txt", "x" * (8 * 1024 * 1024) + KEY)
+    native = rt.base / "state" / "homes" / "sess_test" / ".local/share/opencode/opencode.db"
+    native.parent.mkdir(parents=True)
+    native.write_text(KEY)
+    snap = checkpoint(rt, secrets_={"redact": [KEY]})
+    names = members(snap)
+    assert "worktree/large.txt" not in names
+    assert not any(n.endswith("opencode.db") for n in names)
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_checkpoint_refuses_selected_credentials_in_git_objects(rt, packed) -> None:
+    put(rt, "copied.txt", KEY)
+    assert capture(rt, "op_cap", {"redact": [KEY]})["status"] == "failed"
+    put(rt, "copied.txt", "safe now")
+    if packed:
+        subprocess.run(["git", "add", "copied.txt"], cwd=wt(rt), check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "safe"],
+            cwd=wt(rt),
+            check=True,
+        )
+        subprocess.run(["git", "gc", "--prune=never"], cwd=wt(rt), check=True)
+    result = rt.op("snapshot.prepare", "op_snap", {}).json()
+    assert result["status"] == "failed" and KEY not in str(result)
+    assert result["result"]["error"]["code"] == "capture_failed"
+
+
+def test_restore_filters_selected_values_from_legacy_archive(rt, tmp_path) -> None:
+    put(rt, "copied.txt", KEY)
+    put(rt, ".env.example", "API_KEY=\n")
+    native = tmp_path / "native.txt"
+    native.write_text(KEY)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(wt(rt), arcname="worktree")
+        tar.add(native, arcname="native/sess_test/native.txt")
+    other = DaemonHarness(tmp_path / "legacy", lease_id="lease_legacy")
+    try:
+        result = other.op(
+            "worktree.restore",
+            "op_r",
+            {"checkpoint_b64": base64.b64encode(buf.getvalue()).decode()},
+            secrets_={"redact": [KEY]},
+        ).json()
+        assert result["status"] == "succeeded", result
+        assert not (wt(other) / "copied.txt").exists()
+        assert (wt(other) / ".env.example").exists()
+        assert KEY not in "".join(
+            p.read_text() for p in (other.base / "work/.restore").rglob("*.txt")
+        )
+    finally:
+        other.stop()
 
 
 def test_restore_never_materializes_credential_members(rt, tmp_path) -> None:
@@ -244,6 +305,14 @@ def test_reads_refuse_credential_paths_and_redact_known_values(rt) -> None:
     assert "REDACTED" in notes["content"]
     template = rt.post("/rt/query", {"kind": "files.read", "path": ".env.example"}).json()
     assert template["content"] == "API_KEY=\n" and template["redacted"] is False
+
+
+def test_reads_redact_before_truncation(rt) -> None:
+    put(rt, "large.txt", "x" * (1_000_000 - 4) + KEY)
+    rt.daemon.known_secrets.add(KEY)
+    result = rt.post("/rt/query", {"kind": "files.read", "path": "large.txt"}).json()
+    assert result["redacted"] and result["truncated"]
+    assert not result["content"].endswith(KEY[:4])
 
 
 def test_terminal_output_redacts_known_values(rt) -> None:

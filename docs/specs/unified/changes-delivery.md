@@ -10,8 +10,9 @@ Implements RFC 05 and the related RFC 04 tables (migration `0002_changes_deliver
   interrupted is recorded as `salvage`.
 * The runtime stages changes in a private index under the exclusive barrier and writes the exact
   tree. It reports the canonical manifest, per-file SHA-256 digests, the binary patch and file
-  blobs. Credential paths (`.env*`, `auth.json`, `*.pem`) are excluded, and known-secret patterns
-  fail the capture.
+  blobs. Credential paths (`.env`, `.env.local`, `auth.json`, private keys and credential
+  directories) are excluded; safe templates such as `.env.example` remain ordinary files.
+  Selected credential values and obvious token/private-key patterns fail the capture.
 * Before sealing, control rebuilds the manifest from its own pinned repository and base SHA,
   recomputes `subject_digest` (golden vectors in `manifests/vectors.json`), verifies every blob and
   the patch digest, and re-runs the secret guard. A failed capture becomes `failed`; there is no
