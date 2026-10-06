@@ -407,9 +407,12 @@ class RuntimeDaemon:
             self.worktree.bump()
             return {"accepted": True}
         if kind == "terminal.close":
-            term = self.terminals.pop(payload.get("terminal_id") or "", None)
+            term_id = payload.get("terminal_id") or ""
+            term = self.terminals.get(term_id)
             if term is not None:
-                term.close()
+                if not term.close():
+                    raise Refused("busy", "terminal writers have not confirmed stop")
+                self.terminals.pop(term_id)
             return {"closed": True}
         if kind == "service.ensure":
             if self.barrier:
@@ -423,8 +426,8 @@ class RuntimeDaemon:
                 raise Refused("busy", "exclusive service start refused during a Turn")
             svc = self.services.get(decl["name"])
             if svc is None or svc.decl != decl:
-                if svc is not None:
-                    svc.stop()
+                if svc is not None and not svc.stop():
+                    raise Refused("busy", "service writers have not confirmed stop")
                 svc = Service(
                     decl,
                     self.worktree.path,
@@ -437,8 +440,8 @@ class RuntimeDaemon:
             return svc.status()
         if kind == "service.stop":
             svc = self.services.get(payload.get("name") or "")
-            if svc is not None:
-                svc.stop()
+            if svc is not None and not svc.stop():
+                raise Refused("busy", "service writers have not confirmed stop")
             return {"name": payload.get("name"), "state": "stopped"}
         if kind == "lease.renew":
             self.authority_until = time.time() + float(payload.get("ttl_seconds") or self.lease_ttl)

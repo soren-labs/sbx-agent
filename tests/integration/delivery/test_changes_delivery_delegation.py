@@ -445,12 +445,6 @@ def test_old_delivery_obeys_current_mandatory_policy(env, tightening, reason) ->
     d = _delivered(stack, user, d["id"])
     pinned = stack.db.read(lambda u: u.get("deliveries", d["id"]))["policy"]
     assert pinned["required_results"] == [] and not pinned["require_base_unchanged"]
-    tightened = {"ship_policy": {**permissive, **tightening}}
-    updated = user.post(
-        f"/api/projects/{project['id']}/versions",
-        {"spec": tightened, "expected_version": project["version"]},
-    )
-    assert updated.status_code == 201, updated.text
     pins = {
         "expected_head_sha": d["commit_sha"],
         "subject_digest": cs["subject_digest"],
@@ -460,6 +454,13 @@ def test_old_delivery_obeys_current_mandatory_policy(env, tightening, reason) ->
     }
     response = user.post(f"/api/deliveries/{d['id']}/merge-requests", pins)
     assert response.status_code == 202, response.text
+    # Tighten after enqueueing: the worker must read authority at merge time.
+    tightened = {"ship_policy": {**permissive, **tightening}}
+    updated = user.post(
+        f"/api/projects/{project['id']}/versions",
+        {"spec": tightened, "expected_version": project["version"]},
+    )
+    assert updated.status_code == 201, updated.text
     stack.drain()
     view = user.get(f"/api/deliveries/{d['id']}").json()
     blocked = view["merge_requests"][0]

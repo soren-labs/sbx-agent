@@ -213,7 +213,7 @@ class Worktree:
             return True
         return secret_reason(path.read_bytes(), known, patterns=patterns) is None
 
-    def _check_git_secrets(self, known: Iterable[str]) -> None:
+    def _check_git_secrets(self, known: Iterable[str], path: Path | None = None) -> None:
         """Refuse selected credentials in compressed Git objects, including blobs
         staged by a refused capture. Keep the existing repository metadata."""
         known = tuple(known)
@@ -221,7 +221,7 @@ class Worktree:
             return
         proc = subprocess.Popen(
             ["git", "cat-file", "--batch", "--batch-all-objects"],
-            cwd=self.path,
+            cwd=path or self.path,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.state_dir)},
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -351,8 +351,12 @@ class Worktree:
                         continue
                 members.append(member)
             tar.extractall(staging, members=members, filter="tar")
+        try:
+            self._check_git_secrets(known, staging / "worktree")
+        except WorktreeError:
+            shutil.rmtree(staging)
+            raise
         shutil.move(str(staging / "worktree"), str(self.path))
-        self._check_git_secrets(known)
         self._restore_tracked(excluded)
         native_root = staging / "native"
         if native_root.exists():

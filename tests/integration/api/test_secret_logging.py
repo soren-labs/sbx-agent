@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 
 import pytest
 from control.jobs.model import Retry
 from control.jobs.worker import Worker
-from control.security.redaction import KNOWN_SECRETS, install_log_redaction
+from control.security.redaction import KNOWN_SECRETS, _KnownSecrets, install_log_redaction
 from tests.support.api import ApiStack, User
 
 ZEN_KEY = "zen-injected-fault-key-7a6b5c4d"  # fake selected credential
@@ -98,6 +99,12 @@ def test_root_log_handlers_redact_known_values_and_patterns() -> None:
         assert ZEN_KEY not in out and GH_LIKE not in out
     finally:
         logger.removeHandler(handler)
+
+
+def test_native_auth_json_registers_individual_tokens() -> None:
+    registry = _KnownSecrets()
+    registry.add({"auth_json": json.dumps({"access_token": ZEN_KEY})})
+    assert registry.redact(f"native fault: {ZEN_KEY}") == "native fault: REDACTED"
 
 
 def test_surfaced_fault_messages_are_redacted(stack) -> None:

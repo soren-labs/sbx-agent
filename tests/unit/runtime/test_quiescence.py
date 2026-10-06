@@ -196,3 +196,23 @@ def test_service_pending_restart_is_revoked_by_stop(tmp_path, monkeypatch):
     finally:
         release.set()
         service.stop()
+
+
+@pytest.mark.parametrize("writer_kind", ["terminal", "service"])
+def test_unconfirmed_stop_keeps_writer_managed(rt, monkeypatch, writer_kind):
+    if writer_kind == "terminal":
+        term_id = rt.op("terminal.create", "terminal", {}).json()["result"]["terminal_id"]
+        writer = rt.daemon.terminals[term_id]
+        monkeypatch.setattr(writer, "close", lambda: False)
+        result = rt.op("terminal.close", "close", {"terminal_id": term_id}).json()
+        assert rt.daemon.terminals[term_id] is writer
+    else:
+        writer = SimpleNamespace(decl={"name": "writer", "argv": ["old"]}, stop=lambda: False)
+        rt.daemon.services["writer"] = writer
+        result = rt.op(
+            "service.ensure", "replace", {"declaration": {"name": "writer", "argv": ["new"]}}
+        ).json()
+        assert rt.daemon.services["writer"] is writer
+    assert result["status"] == "failed" and result["result"]["error"]["code"] == "busy"
+    artifact = rt.op("snapshot.prepare", "artifact", {}).json()
+    assert artifact["status"] == "failed" and artifact["result"]["error"]["code"] == "busy"

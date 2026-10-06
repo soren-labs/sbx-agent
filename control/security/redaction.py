@@ -6,6 +6,7 @@ filtered by key name before anything reaches the journal, spool or logs.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -119,6 +120,14 @@ class _KnownSecrets:
                 self._values.move_to_end(value)
                 while len(self._values) > self.limit:
                     self._values.popitem(last=False)
+            # Native auth_json arrives as a string; exception text may contain
+            # an individual token rather than that entire uploaded document.
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return
+            if isinstance(parsed, dict | list):
+                self.add(parsed)
 
     def values(self) -> tuple[str, ...]:
         with self._lock:

@@ -109,7 +109,7 @@ def collect_known(value: object) -> set[str]:
             return values
         return values | collect_known(parsed) if isinstance(parsed, dict | list) else values
     if isinstance(value, dict):
-        return {s for v in value.values() for s in collect_known(v)}
+        return {s for k, v in value.items() if k != "username" for s in collect_known(v)}
     if isinstance(value, list | tuple):
         return {s for v in value for s in collect_known(v)}
     return set()

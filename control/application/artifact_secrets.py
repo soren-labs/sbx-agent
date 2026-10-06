@@ -16,7 +16,7 @@ def _leaves(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, dict):
-        return [s for v in value.values() for s in _leaves(v)]
+        return [s for k, v in value.items() if k != "username" for s in _leaves(v)]
     if isinstance(value, list | tuple):
         return [s for v in value for s in _leaves(v)]
     return []

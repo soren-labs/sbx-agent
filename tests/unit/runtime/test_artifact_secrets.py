@@ -105,6 +105,21 @@ def test_uploaded_auth_json_registers_its_token_values() -> None:
     assert KEY in collect_known({"codex": {"auth_json": json.dumps({"access_token": KEY})}})
 
 
+def test_git_username_is_not_treated_as_a_selected_secret(rt) -> None:
+    from control.application.artifact_secrets import runtime_visible
+
+    credential = {"username": "x-access-token", "password": KEY}
+    broker = type(
+        "Broker", (), {"inference": lambda _, s: ({}, {}), "source": lambda _, s: credential}
+    )()
+    assert runtime_visible(broker, {}) == {"redact": [KEY]}
+    assert collect_known({"git": credential}) == {KEY}
+    put(rt, "example.txt", "Git helpers use x-access-token as the username\n")
+    subprocess.run(["git", "add", "example.txt"], cwd=wt(rt), check=True)
+    snap = checkpoint(rt, secrets_={"git": credential})
+    assert "worktree/example.txt" in members(snap)
+
+
 # ---------------------------------------------------------------------------- capture
 def test_capture_excludes_credential_files_but_keeps_templates(rt) -> None:
     put(rt, ".env", "API_KEY=local-dev-value\n")
@@ -192,6 +207,7 @@ def test_checkpoint_refuses_selected_credentials_in_git_objects(rt, packed) -> N
     assert capture(rt, "op_cap", {"redact": [KEY]})["status"] == "failed"
     put(rt, "copied.txt", "safe now")
     if packed:
+        put(rt, "copied.txt", KEY)
         subprocess.run(["git", "add", "copied.txt"], cwd=wt(rt), check=True)
         subprocess.run(
             ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "safe"],
@@ -199,6 +215,7 @@ def test_checkpoint_refuses_selected_credentials_in_git_objects(rt, packed) -> N
             check=True,
         )
         subprocess.run(["git", "gc", "--prune=never"], cwd=wt(rt), check=True)
+        assert list((wt(rt) / ".git/objects/pack").glob("*.pack"))
     result = rt.op("snapshot.prepare", "op_snap", {}).json()
     assert result["status"] == "failed" and KEY not in str(result)
     assert result["result"]["error"]["code"] == "capture_failed"
@@ -229,6 +246,49 @@ def test_restore_filters_selected_values_from_legacy_archive(rt, tmp_path) -> No
         )
     finally:
         other.stop()
+
+
+def test_restore_refuses_git_credentials_before_realizing_worktree(rt, tmp_path) -> None:
+    put(rt, "copied.txt", KEY)
+    subprocess.run(["git", "add", "copied.txt"], cwd=wt(rt), check=True)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(wt(rt), arcname="worktree")
+    other = DaemonHarness(tmp_path / "refused", lease_id="lease_refused")
+    try:
+        result = other.op(
+            "worktree.restore",
+            "op_r",
+            {"checkpoint_b64": base64.b64encode(buf.getvalue()).decode()},
+            secrets_={"redact": [KEY]},
+        ).json()
+        assert result["status"] == "failed" and KEY not in str(result)
+        assert not wt(other).exists()
+        assert not (other.base / "work/.restore").exists()
+    finally:
+        other.stop()
+
+
+def test_prepare_fault_and_prior_selected_values_are_redacted(rt, monkeypatch) -> None:
+    from runtime.harnesses.protocol import HarnessError
+
+    harness = rt.daemon.harnesses["opencode"]
+
+    def fail(*_):
+        raise HarnessError("credential_invalid", f"rejected {KEY}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(harness, "prepare", fail)
+        rt.op("turn.start", "bad_prepare", start_payload("hi"), secrets_=ZEN)
+    assert KEY not in str(rt.events())
+    rt.op(
+        "turn.start",
+        "next_turn",
+        start_payload(KEY, "next_exec"),
+        secrets_={"opencode_zen": {"api_key": "REDACTED"}},
+    )
+    assert rt.wait_op("next_turn")["status"] == "succeeded"
+    assert KEY not in str(rt.events())
 
 
 def test_restore_never_materializes_credential_members(rt, tmp_path) -> None:
