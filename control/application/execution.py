@@ -53,8 +53,7 @@ class ExecutionSettings:
     poll_idle: float = 1.0
     unreachable_threshold: int = 5
     capacity_retry: float = 2.0
-    # Upper bound for an in-flight backend create; after it, "no allocation found for
-    # the operation" is authoritative even if an allocate was requested.
+    # Kept for configuration compatibility; elapsed time never proves allocation absence.
     allocation_window_seconds: float = 600.0
 
 
@@ -1051,6 +1050,7 @@ class ExecutionService:
         lease = ctx.commit(lambda uow: self._quiesce(uow, lease_id))
         confirmed = self._confirm_stopped(lease, session)
         if confirmed is None:
+            ctx.commit(lambda uow: self._quarantine(uow, lease_id, "allocation_unresolved"))
             return Continue(delay=5.0)
         if not confirmed:
             ctx.commit(lambda uow: self._quarantine(uow, lease_id, "termination_unconfirmed"))
@@ -1071,14 +1071,9 @@ class ExecutionService:
             if not handle:
                 found = backend.lookup(lease["allocation_operation_id"], compute)
                 if found is None:
-                    observed = lease["observed_at"]
-                    in_flight = (
-                        lease["observed_status"] == "allocate_requested"
-                        and observed is not None
-                        and (self._now() - observed).total_seconds()
-                        < self.settings.allocation_window_seconds
-                    )
-                    return None if in_flight else True
+                    # A requested external effect can still complete arbitrarily late.
+                    # Only a resolved allocation (or one never requested) proves absence.
+                    return None if lease["observed_status"] == "allocate_requested" else True
                 if found.get("status") == "terminated":
                     return True
                 handle = {k: v for k, v in found.items() if k != "status"}

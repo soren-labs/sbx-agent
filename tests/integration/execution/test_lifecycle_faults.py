@@ -289,7 +289,63 @@ def test_release_waits_while_a_requested_allocate_may_be_in_flight(stack, fake) 
         )
     )
     _run_due(stack)
+    row = _lease(stack, sid)
+    assert row["state"] == "quiescing" and row["quarantined"] is True
+    fake.seed(lease["allocation_operation_id"])
+    _run_due(stack)
     assert _lease(stack, sid)["state"] == "released"
+    assert not fake.allocations[lease["allocation_operation_id"]]["alive"]
+
+
+def test_release_quarantines_create_pending_beyond_allocation_window(stack, fake, monkeypatch):
+    principal, sid = _session(stack)
+    stack.execution.activate(principal, sid)
+    lease = _lease(stack, sid)
+    requested, finish = threading.Event(), threading.Event()
+    errors = []
+
+    def delayed_allocate(spec, operation_id):
+        requested.set()
+        assert finish.wait(15)
+        return (
+            fake._view(operation_id)
+            if operation_id in fake.allocations
+            else fake.seed(operation_id)
+        )
+
+    monkeypatch.setattr(fake, "allocate", delayed_allocate)
+
+    def allocate():
+        try:
+            stack.worker.run_once()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=allocate)
+    worker.start()
+    try:
+        assert requested.wait(10)
+        assert _lease(stack, sid)["observed_status"] == "allocate_requested"
+        _set_lease(stack, lease["id"], {"observed_at": stack.execution._now() - timedelta(hours=1)})
+        stack.execution.release(principal, sid)
+        _run_due(stack, rounds=3)
+        row = _lease(stack, sid)
+        assert row["state"] == "quiescing" and row["quarantined"] is True
+        with pytest.raises(DomainError, match="isolation"):
+            stack.db.run(lambda u: stack.execution._new_lease(u, u.get("sessions", sid)))
+        finish.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive() and not errors
+        _run_due(stack)
+        row = _lease(stack, sid)
+        assert row["state"] == "released" and row["quarantined"] is False
+        assert not fake.allocations[lease["allocation_operation_id"]]["alive"]
+        assert ("terminate", lease["allocation_operation_id"]) in fake.calls
+    finally:
+        finish.set()
+        worker.join(timeout=10)
+        if lease["allocation_operation_id"] in fake.allocations:
+            fake.allocations[lease["allocation_operation_id"]]["alive"] = False
 
 
 # -------------------------------------------------------------- Local executor (item 6)
