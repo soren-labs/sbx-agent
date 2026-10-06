@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import signal
@@ -14,12 +15,82 @@ from pathlib import Path
 import httpx
 import pytest
 from runtime.daemon import changes
-from runtime.daemon.startup import scope_dir, unconfirmed_startup
+from runtime.daemon.startup import open_receipt, receipt_key, scope_dir, unconfirmed_startup
 from runtime.daemon.supervisor import _alive, kill_group, managed_popen
 from tests.unit.runtime import test_quiescence
 from tests.unit.runtime.test_quiescence import wait_file
 
 rt = test_quiescence.rt
+
+
+def test_receipt_replacement_does_not_hide_live_startup(rt):
+    directory = rt.daemon._track_writer("replaced-startup")
+    fd = open_receipt(directory)
+    try:
+        receipt = next(directory.iterdir())
+        receipt.unlink()
+        receipt.write_bytes(b"done")
+        assert unconfirmed_startup(directory), "a replacement cannot carry the startup owner's lock"
+    finally:
+        os.close(fd)
+
+
+def test_spawn_state_is_checked_after_receipt_lock(rt, monkeypatch):
+    """Enumeration can race an anchor spawning and dying; lock then read state."""
+    import fcntl
+
+    directory = rt.daemon._track_writer("spawn-race")
+    fd = open_receipt(directory)
+    key = receipt_key(directory, fd)
+    original = fcntl.flock
+    closed = False
+
+    def spawn_and_die(stream, flags):
+        nonlocal closed
+        record = json.loads(rt.daemon.journal.meta(key))
+        record["state"] = "spawning"
+        rt.daemon.journal.set_meta(key, json.dumps(record))
+        os.close(fd)
+        closed = True
+        return original(stream, flags)
+
+    try:
+        monkeypatch.setattr(fcntl, "flock", spawn_and_die)
+        assert unconfirmed_startup(directory), "stale pre-spawn state cannot prove orphan absence"
+    finally:
+        if not closed:
+            os.close(fd)
+
+
+def test_journaled_reaping_confirms_stop_after_receipt_unlink(rt, tmp_path):
+    command = tmp_path / "unlink-and-exit.py"
+    command.write_text(
+        "import hashlib, os\nfrom pathlib import Path\n"
+        "state = Path(os.environ['HOME']).parents[1]\n"
+        "scope = hashlib.sha256(os.environ['SBX_MANAGED_PROCESS_SCOPE'].encode()).hexdigest()\n"
+        "for receipt in (state / 'launches' / scope).iterdir(): receipt.unlink()\n"
+    )
+    result = rt.op(
+        "service.ensure",
+        "reaped-service",
+        {
+            "declaration": {
+                "name": "writer",
+                "argv": [sys.executable, str(command)],
+                "restart": "never",
+            }
+        },
+    ).json()
+    assert result["status"] == "succeeded", result
+    proc = rt.daemon.services["writer"].proc
+    assert proc.wait(timeout=10) == 0
+    assert proc.anchor.wait(timeout=10) == 0
+    rt.stop()
+    rt.start()
+    assert not rt.daemon.pending_writers
+    for kind in ("changes.capture", "snapshot.prepare"):
+        result = rt.op(kind, kind, {"base_sha": rt.base_sha, "require_acked": False}).json()
+        assert result["status"] == "succeeded", result
 
 
 def suspended_interpreter(tmp_path):
@@ -317,6 +388,125 @@ def test_dead_anchor_after_spawn_keeps_startup_ambiguous(rt, tmp_path, repo_root
             assert scope in rt.daemon.pending_writers
             result = rt.op(kind, f"blocked-{restart}", {"require_acked": False}).json()
             assert result["status"] == "failed" and result["result"]["error"]["code"] == "busy"
+    finally:
+        if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait(timeout=10)
+        for pid in (writer_pid, anchor):
+            if pid and _alive(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("mutation", ["unlink", "empty", "done", "replace", "remove_directory"])
+@pytest.mark.parametrize("interrupted", [True, False])
+def test_service_receipt_mutation_cannot_confirm_orphan_stop(
+    rt, tmp_path, repo_root, monkeypatch, mutation, interrupted
+):
+    """Interrupted and successful ensures retain orphan writers after mutation."""
+    anchor_ready, writer_ready, mutate, mutated, release = (
+        tmp_path / name for name in ("anchor", "writer", "mutate", "mutated", "release")
+    )
+    changed = rt.daemon.worktree.path / "orphan-write.txt"
+    ensured = tmp_path / "ensured"
+    command = tmp_path / "receipt-writer.py"
+    command.write_text(
+        "import hashlib, os, signal, time\nfrom pathlib import Path\n"
+        f"ready = Path({str(writer_ready)!r})\n"
+        "ready.with_suffix('.tmp').write_text(str(os.getpid()))\n"
+        "ready.with_suffix('.tmp').replace(ready)\n"
+        f"while not Path({str(mutate)!r}).exists(): time.sleep(0.01)\n"
+        "state = Path(os.environ['HOME']).parents[1]\n"
+        "scope = hashlib.sha256(os.environ['SBX_MANAGED_PROCESS_SCOPE'].encode()).hexdigest()\n"
+        "directory = state / 'launches' / scope\n"
+        "for receipt in directory.iterdir():\n"
+        + {
+            "unlink": " receipt.unlink()\n",
+            "empty": " receipt.write_bytes(b'')\n",
+            "done": " receipt.write_bytes(b'done')\n",
+            "replace": " receipt.unlink()\n receipt.write_bytes(b'done')\n",
+            "remove_directory": " receipt.unlink()\n",
+        }[mutation]
+        + ("directory.rmdir()\n" if mutation == "remove_directory" else "")
+        + "os.kill(os.getppid(), signal.SIGKILL)\n"
+        f"Path({str(mutated)!r}).write_text('mutated')\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        f"Path({str(changed)!r}).write_text('orphan can still write')\n"
+    )
+    wrapper = tmp_path / "pause-after-spawn.py"
+    wrapper.write_text(
+        "import os, runpy, signal, subprocess, sys\nfrom pathlib import Path\n"
+        "original = subprocess.Popen\n"
+        "def spawn(*args, **kwargs):\n"
+        " child = original(*args, **kwargs)\n"
+        f" ready = Path({str(anchor_ready)!r})\n"
+        " ready.with_suffix('.tmp').write_text(str(os.getpid()))\n"
+        " ready.with_suffix('.tmp').replace(ready)\n"
+        " os.kill(os.getpid(), signal.SIGSTOP)\n"
+        " return child\n"
+        "subprocess.Popen = spawn\n"
+        "sys.argv = sys.argv[1:]\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+    )
+    declaration = {"name": "writer", "argv": [sys.executable, str(command)], "restart": "never"}
+    driver = tmp_path / "ensure-daemon.py"
+    driver.write_text(
+        "import subprocess, time\nfrom pathlib import Path\n"
+        "from tests.support.runtime import DaemonHarness\n"
+        "original = subprocess.Popen\n"
+        "def spawn(argv, **kwargs):\n"
+        f" if {interrupted!r} and len(argv) > 1 and str(argv[1]).endswith('/process_anchor.py'):\n"
+        f"  argv = [argv[0], {str(wrapper)!r}, *argv[1:]]\n"
+        " return original(argv, **kwargs)\n"
+        "subprocess.Popen = spawn\n"
+        f"daemon = DaemonHarness(Path({str(rt.base)!r}))\n"
+        f"daemon.op('service.ensure', 'receipt-ensure', {{'declaration': {declaration!r}}})\n"
+        f"Path({str(ensured)!r}).write_text('ensured')\n"
+        "time.sleep(60)\n"
+    )
+    rt.stop()
+    launcher = driver_process(driver, repo_root)
+    anchor = writer_pid = None
+    try:
+        if interrupted:
+            anchor = wait_suspended(anchor_ready)
+        else:
+            wait_file(ensured)
+        writer_pid = int(wait_file(writer_ready))
+        if not interrupted:
+            anchor = int(Path(f"/proc/{writer_pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        launcher.kill()
+        launcher.wait(timeout=10)
+        mutate.touch()
+        wait_file(mutated)
+        deadline = time.monotonic() + 10
+        while _alive(anchor) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _alive(anchor) and _alive(writer_pid)
+        for restart in range(2):
+            rt.start()
+            assert rt.daemon.journal.op_get("receipt-ensure")["status"] == (
+                "lost" if interrupted else "succeeded"
+            )
+            assert "receipt-ensure" in rt.daemon.pending_writers
+            assert "receipt-ensure" in rt.daemon.unconfirmed_launches
+            with monkeypatch.context() as patch:
+                for target, method in ((changes, "capture"), (rt.daemon.worktree, "checkpoint")):
+                    patch.setattr(
+                        target, method, lambda *a, **kw: pytest.fail("sealed over a live orphan")
+                    )
+                for kind in ("changes.capture", "snapshot.prepare"):
+                    result = rt.op(
+                        kind,
+                        f"{kind}-{restart}",
+                        {"base_sha": rt.base_sha, "require_acked": False},
+                    ).json()
+                    assert result["status"] == "failed", result
+                    assert result["result"]["error"]["code"] == "busy", result
+                    assert _alive(writer_pid)
+            if restart == 0:
+                rt.stop()
+        release.touch()
+        assert wait_file(changed) == "orphan can still write"
     finally:
         if launcher.poll() is None:
             launcher.kill()

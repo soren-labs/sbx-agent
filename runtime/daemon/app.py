@@ -173,7 +173,9 @@ class RuntimeDaemon:
         startup_dir = scope_dir(self.state_dir, scope)
         try:
             # Old journals without receipts retain their conservative presence rule.
-            tracked = startup_dir.exists()
+            tracked = (
+                startup_dir.exists() or self.journal.meta(f"startup:{startup_dir.name}") is not None
+            )
             ambiguous = (
                 unconfirmed_startup(startup_dir) if tracked else scope in self.unconfirmed_launches
             )

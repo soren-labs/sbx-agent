@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 
@@ -22,7 +23,7 @@ def scope_name(scope: str) -> str:
 
 
 def main() -> None:
-    scope, status_fd, receipt_fd, *argv = sys.argv[1:]
+    scope, status_fd, receipt_fd, journal_path, receipt_key, *argv = sys.argv[1:]
     fd = int(status_fd)
     receipt = int(receipt_fd)
 
@@ -32,6 +33,18 @@ def main() -> None:
             os.write(receipt, data)
             os.ftruncate(receipt, len(data))
             os.fsync(receipt)
+            # Commit spawn intent before Popen, and completion only after reaping.
+            # Receipt files are same-UID mutable and are never termination proof.
+            conn = sqlite3.connect(f"file:{journal_path}?mode=rw", uri=True)
+            try:
+                conn.execute("PRAGMA synchronous=FULL")
+                with conn:
+                    conn.execute(
+                        "UPDATE meta SET value = json_set(value, '$.state', ?) WHERE key = ?",
+                        (data.decode(), receipt_key),
+                    )
+            finally:
+                conn.close()
 
     def report(data: bytes) -> None:
         try:

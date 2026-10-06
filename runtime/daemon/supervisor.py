@@ -20,7 +20,7 @@ from typing import Any
 
 from runtime.daemon.journal import Journal, SpoolPressure
 from runtime.daemon.process_anchor import scope_name
-from runtime.daemon.startup import open_receipt, scope_dir
+from runtime.daemon.startup import open_receipt, receipt_key, scope_dir
 from runtime.harnesses.protocol import Harness, NativeInvocation, PreparedHarness, TurnContext
 from runtime.security.redaction import Redactor
 
@@ -88,6 +88,8 @@ def managed_popen(
                 scope,
                 str(write_fd),
                 str(receipt_fd) if receipt_fd is not None else "-1",
+                str(startup_dir.parents[1] / "journal.sqlite") if startup_dir is not None else "",
+                receipt_key(startup_dir, receipt_fd) if receipt_fd is not None else "",
                 *argv,
             ],
             env={**env, _PROCESS_SCOPE: scope},
