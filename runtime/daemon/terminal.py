@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import os
 import pty
-import signal
 import subprocess
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
+
+from runtime.daemon.supervisor import kill_group
 
 MAX_BUFFER = 512 * 1024
 
@@ -42,13 +43,14 @@ class Terminal:
         )
         os.close(slave)
         self.master = master
+        self.closed = False
         self.buffer = bytearray()
         self.base = 0  # absolute offset of buffer[0]
         self.lock = threading.Lock()
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self) -> None:
-        while True:
+        while not self.closed:
             try:
                 data = os.read(self.master, 4096)
             except OSError:
@@ -77,12 +79,16 @@ class Terminal:
     def write(self, data: str) -> None:
         os.write(self.master, data.encode()[:65536])
 
-    def close(self) -> None:
-        try:
-            os.killpg(self.proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    def close(self) -> bool:
+        if self.closed:
+            return True
+        stopped = kill_group(self.proc.pid)
+        if not stopped:
+            return False
+        self.proc.wait(timeout=2)
+        self.closed = True
         try:
             os.close(self.master)
         except OSError:
             pass
+        return True

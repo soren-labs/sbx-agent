@@ -16,6 +16,9 @@ A ChangeSet is an immutable snapshot of what changed in a Worktree.
   digests, the patch and file blobs. Credential files such as `.env`,
   `auth.json` and private keys are excluded; templates such as `.env.example`
   are preserved. Selected credentials and obvious secret patterns fail capture.
+- A Turn completes only after its managed CLI descendants stop. Capture and
+  checkpoint close managed terminals and stop services before copying state.
+  An unconfirmed writer stop blocks the operation.
 - Before sealing, the control plane rebuilds the manifest from its own pinned
   repository and base commit, recomputes `subject_digest` and re-verifies every
   blob. A failed capture is `failed`; there is never a fake ready subject.

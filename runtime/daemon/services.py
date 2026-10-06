@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import collections
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -12,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from runtime.daemon.supervisor import kill_group
 from runtime.security.paths import safe_join
 from runtime.security.redaction import Redactor
 
@@ -30,8 +30,10 @@ class Service:
         self.wanted = False
         self.lock = threading.Lock()
 
-    def start(self) -> None:
+    def start(self, *, restart: bool = False) -> None:
         with self.lock:
+            if restart and not self.wanted:
+                return
             self.wanted = True
             if self.proc is not None and self.proc.poll() is None:
                 return
@@ -62,7 +64,9 @@ class Service:
     def _pump(self, proc: subprocess.Popen[bytes]) -> None:
         assert proc.stdout is not None
         for raw in proc.stdout:
-            self.logs.append(Redactor(self.known).text(raw.decode("utf-8", "replace").rstrip("\n"))[:2000])
+            self.logs.append(
+                Redactor(self.known).text(raw.decode("utf-8", "replace").rstrip("\n"))[:2000]
+            )
         code = proc.wait()
         if (
             self.wanted
@@ -72,22 +76,17 @@ class Service:
         ):
             self.restarts += 1
             time.sleep(1.0)
-            self.start()
+            self.start(restart=True)
 
     def stop(self) -> bool:
         with self.lock:
             self.wanted = False
-            if self.proc is None or self.proc.poll() is not None:
+            if self.proc is None:
                 return True
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-                self.proc.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                try:
-                    os.killpg(self.proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            return True
+            stopped = kill_group(self.proc.pid)
+            if stopped:
+                self.proc.wait(timeout=2)
+            return stopped
 
     def status(self) -> dict[str, Any]:
         running = self.proc is not None and self.proc.poll() is None

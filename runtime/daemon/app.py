@@ -22,7 +22,7 @@ from protocol.runtime import (
 
 from runtime.daemon.journal import Journal, SpoolPressure
 from runtime.daemon.services import Service
-from runtime.daemon.supervisor import TurnRun, _alive, kill_group
+from runtime.daemon.supervisor import TurnRun, _live_groups, kill_group
 from runtime.daemon.terminal import Terminal
 from runtime.daemon.worktree import Worktree, WorktreeError, git
 from runtime.harnesses.protocol import Harness, HarnessError, TurnContext
@@ -90,8 +90,11 @@ class RuntimeDaemon:
                 )
                 continue
             pid = op.get("pid")
+            # Fence the old supervisor before stopping it. In-process restart
+            # tests keep its thread alive; it must not overwrite recovery evidence.
+            self.journal.op_update(op["operation_id"], status="lost")
             stopped = True
-            if pid and _alive(pid):
+            if pid and _live_groups(pid):
                 stopped = kill_group(pid)
             launch = "started" if pid else "ambiguous"
             execution_id = (op.get("result") or {}).get("execution_id") or op["operation_id"]
@@ -132,7 +135,7 @@ class RuntimeDaemon:
             if time.time() > self.authority_until:
                 # Lease expiry stops mediated writes and terminates active processes.
                 for run in list(self.runs.values()):
-                    if not run.done.is_set():
+                    if not run.done.is_set() or run.stop_confirmed is False:
                         run.stop()
 
     # -- authorization -------------------------------------------------------------------
@@ -217,20 +220,20 @@ class RuntimeDaemon:
             if kind == "turn.start":
                 return self._turn_start(op_id, frame, payload)
             self.journal.op_insert(op_id, kind, digest, frame.get("session_id"), self.generation)
-        try:
-            result = self._sync_operation(kind, op_id, payload, frame.get("secrets") or {})
-            self.journal.op_update(op_id, status="succeeded", result=result)
-            return {"operation_id": op_id, "status": "succeeded", "result": result}
-        except (WorktreeError, HarnessError, PathEscape, Refused) as exc:
-            code = getattr(exc, "code", "validation_failed")
-            message = Redactor(self.known_secrets).text(str(exc))[:500]
-            result = {"error": {"code": code, "message": message}}
-            self.journal.op_update(op_id, status="failed", result=result)
-            return {"operation_id": op_id, "status": "failed", "result": result}
+            try:
+                result = self._sync_operation(kind, op_id, payload, frame.get("secrets") or {})
+                self.journal.op_update(op_id, status="succeeded", result=result)
+                return {"operation_id": op_id, "status": "succeeded", "result": result}
+            except (WorktreeError, HarnessError, PathEscape, Refused) as exc:
+                code = getattr(exc, "code", "validation_failed")
+                message = Redactor(self.known_secrets).text(str(exc))[:500]
+                result = {"error": {"code": code, "message": message}}
+                self.journal.op_update(op_id, status="failed", result=result)
+                return {"operation_id": op_id, "status": "failed", "result": result}
 
     def _active_run(self) -> TurnRun | None:
         for run in self.runs.values():
-            if not run.done.is_set():
+            if not run.done.is_set() or run.stop_confirmed is False:
                 return run
         return None
 
@@ -251,6 +254,9 @@ class RuntimeDaemon:
             )
         if not self.worktree.path.exists():
             raise Refused("executor_unavailable", "worktree not realized")
+        for term in self.terminals.values():
+            if not term.close():
+                raise Refused("busy", "terminal writers have not confirmed stop")
         session_id = frame.get("session_id") or "session"
         context = TurnContext(
             session_id=session_id,
@@ -383,6 +389,7 @@ class RuntimeDaemon:
 
             return apply(self.worktree, payload)
         if kind == "terminal.create":
+            self._require_quiet()
             if not self.worktree.path.exists():
                 raise Refused("executor_unavailable", "worktree not realized")
             term = Terminal(self.worktree.path, self.state_dir / "terminal-home")
@@ -394,7 +401,7 @@ class RuntimeDaemon:
                     "busy", "terminal writer is revoked while a CLI Turn or barrier is active"
                 )
             term = self.terminals.get(payload.get("terminal_id") or "")
-            if term is None:
+            if term is None or term.closed:
                 raise Refused("not_found", "terminal not found", 404)
             term.write(str(payload.get("data") or ""))
             self.worktree.bump()
@@ -405,6 +412,8 @@ class RuntimeDaemon:
                 term.close()
             return {"closed": True}
         if kind == "service.ensure":
+            if self.barrier:
+                raise Refused("busy", "exclusive barrier is active")
             decl = payload.get("declaration") or {}
             if not decl.get("name") or not isinstance(decl.get("argv"), list):
                 raise Refused(
@@ -443,7 +452,11 @@ class RuntimeDaemon:
     def _quiesce_services(self) -> None:
         """Services that may write captured roots are stopped; desired state lives in control."""
         for svc in self.services.values():
-            svc.stop()
+            if not svc.stop():
+                raise Refused("busy", "service writers have not confirmed stop")
+        for term in self.terminals.values():
+            if not term.close():
+                raise Refused("busy", "terminal writers have not confirmed stop")
 
     def _require_quiet(self) -> None:
         if self._active_run() is not None:

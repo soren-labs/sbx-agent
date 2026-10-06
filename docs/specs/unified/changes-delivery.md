@@ -13,6 +13,9 @@ Implements RFC 05 and the related RFC 04 tables (migration `0002_changes_deliver
   blobs. Credential paths (`.env`, `.env.local`, `auth.json`, private keys and credential
   directories) are excluded; safe templates such as `.env.example` remain ordinary files.
   Selected credential values and obvious token/private-key patterns fail the capture.
+* CLI completion requires confirmed stop of managed descendants. Capture and checkpoint stop
+  managed terminal jobs and services before copying state; an unconfirmed writer stop refuses
+  the operation. Daemon mutations are serialized across the exclusive barrier.
 * Before sealing, control rebuilds the manifest from its own pinned repository and base SHA,
   recomputes `subject_digest` (golden vectors in `manifests/vectors.json`), verifies every blob and
   the patch digest, and re-runs the secret guard. A failed capture becomes `failed`; there is no
