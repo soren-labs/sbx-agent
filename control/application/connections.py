@@ -8,6 +8,7 @@ if (version, credential version, revocation epoch) are still current.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -16,6 +17,9 @@ from control.domain.errors import DomainError
 from control.domain.identity import Principal
 from control.domain.ids import new_id
 from control.jobs.model import Continue, Outcome, Retry, Succeeded
+from control.security.redaction import safe_traceback
+
+log = logging.getLogger("sbx.connections")
 
 KINDS = ("modal", "github", "opencode_zen", "codex")
 SLOT_DEFAULTS = {"modal": 4, "github": 8, "opencode_zen": 2, "codex": 1}
@@ -515,7 +519,13 @@ class Connections:
         material = self.decrypt(version, con)
         validate = self.validators.get(con["kind"]) or self.connectors[con["kind"]].validate
         kwargs = {"repositories": repos} if con["kind"] == "github" else {}
-        observation = validate(material, **kwargs)
+        try:
+            observation = validate(material, **kwargs)
+        except Exception as exc:
+            # Connector exception text can embed the credential under test: surface only
+            # its type; the redacted traceback goes to the log.
+            log.warning("validator for %s failed\n%s", con["kind"], safe_traceback(exc))
+            return Retry("validation_unavailable", f"validator raised {type(exc).__name__}")
         expected_epoch, expected_version = con["revocation_epoch"], con["version"]
 
         def commit(uow: Any) -> str:

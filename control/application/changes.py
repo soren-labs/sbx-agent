@@ -8,6 +8,7 @@ from typing import Any
 from protocol.manifests import canonical_manifest, content_digest, subject_digest
 
 from control.application import access
+from control.application.artifact_secrets import runtime_visible
 from control.application.ports import (
     BlobStore,
     RuntimeConnector,
@@ -18,7 +19,7 @@ from control.domain.errors import DomainError
 from control.domain.identity import Principal
 from control.domain.ids import new_id
 from control.jobs.model import Outcome, Retry, Succeeded
-from control.security.redaction import redact_text
+from control.security.redaction import redact_text, scrub
 
 AUTO_CAPTURE_ROLES = ("developer", "integration", "coordinator")
 
@@ -57,10 +58,13 @@ def changeset_view(cs: dict[str, Any], files: list[dict[str, Any]] | None = None
 
 
 class Changes:
-    def __init__(self, tx: Any, connector: RuntimeConnector, blobs: BlobStore) -> None:
+    def __init__(
+        self, tx: Any, connector: RuntimeConnector, blobs: BlobStore, credentials: Any = None
+    ) -> None:
         self.tx = tx
         self.connector = connector
         self.blobs = blobs
+        self.credentials = credentials
         self.ready_hooks: list[Any] = []
 
     # ---------------------------------------------------------------- commands
@@ -205,9 +209,14 @@ class Changes:
             )
             return Succeeded({"failed": "executor_unavailable"})
         payload = {"base_sha": worktree["base_sha"], "repository": worktree["repository"]}
+        session = ctx.db.read(lambda uow: uow.get("sessions", cs["session_id"]))
         try:
             response = self.connector.channel(lease).op(
-                "changes.capture", f"{cs_id}:capture", cs["session_id"], payload
+                "changes.capture",
+                f"{cs_id}:capture",
+                cs["session_id"],
+                payload,
+                secrets=runtime_visible(self.credentials, session),
             )
         except RuntimeUnavailable as exc:
             return Retry("executor_unavailable", str(exc)[:200])
@@ -370,6 +379,7 @@ class Changes:
         cs = uow.get("changesets", cs_id, lock=True)
         if cs["state"] != "capturing":
             return
+        error = scrub(error)
         uow.update("changesets", cs_id, {"state": "failed", "error": error[:500]})
         session = uow.get("sessions", cs["session_id"], lock=True)
         uow.append_event(

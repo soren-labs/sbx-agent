@@ -68,6 +68,24 @@ def test_files_read_write_with_content_precondition(env) -> None:
     assert "worktree.changed" in types
 
 
+def test_credential_files_are_not_readable_but_templates_are(env) -> None:
+    stack, user, sid = env
+    for i, (path, content) in enumerate(
+        ((".env", "API_KEY=local-dev-value\n"), (".env.example", "API_KEY=\n"))
+    ):
+        saved = user.http.put(
+            f"/api/sessions/{sid}/files",
+            json={"path": path, "content": content, "expected_digest": "absent"},
+            headers={"X-CSRF-Token": user.csrf, "Idempotency-Key": f"secret-{i}"},
+        )
+        assert saved.status_code == 200, saved.text
+    refused = user.get(f"/api/sessions/{sid}/files/content?path=.env")
+    assert refused.status_code == 403 and refused.json()["error"]["code"] == "forbidden"
+    assert "local-dev-value" not in refused.text
+    template = user.get(f"/api/sessions/{sid}/files/content?path=.env.example").json()
+    assert template["content"] == "API_KEY=\n" and template["redacted"] is False
+
+
 def test_terminal_roundtrip_and_services_lifecycle(env) -> None:
     stack, user, sid = env
     term = user.post(f"/api/sessions/{sid}/terminals", {}).json()["terminal_id"]

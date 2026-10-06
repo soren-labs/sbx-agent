@@ -18,6 +18,7 @@ from control.domain.errors import DomainError
 from control.domain.identity import Principal
 from control.domain.ids import new_id
 from control.jobs.claims import cancel_active
+from control.security.redaction import scrub
 
 
 def _content(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -206,7 +207,7 @@ def finish_turn(
             "state": state,
             "reason": reason,
             "error_code": error_code,
-            "error_message": (error_message or None) and error_message[:2000],
+            "error_message": (error_message or None) and scrub(error_message)[:2000],
             "evidence_complete": evidence_complete,
             "outcome": outcome,
             **({"usage": usage} if usage is not None else {}),

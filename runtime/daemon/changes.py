@@ -3,33 +3,25 @@
 Capture stages tracked/untracked/deleted/binary/symlink changes into a private
 index (never the user's index), writes the exact resulting tree, and reports a
 canonical manifest with per-file content digests plus a binary patch.
-Credential/runtime paths are excluded and known-secret patterns fail capture.
+Credential paths are excluded and credential values (the lease's known secrets and
+obvious token/private-key patterns) fail capture (``runtime.security.artifacts``).
 """
 
 from __future__ import annotations
 
 import base64
 import os
-import re
 import subprocess
+from collections.abc import Iterable
 from typing import Any
 
 from protocol.manifests import MANIFEST_VERSION, canonical_manifest, content_digest, subject_digest
 
 from runtime.daemon.worktree import Worktree, WorktreeError, git
+from runtime.security.artifacts import git_excludes, git_templates, is_secret_path, secret_reason
 
 MAX_PAYLOAD = 50 * 1024 * 1024
-EXCLUDES = (
-    ":(exclude).env",
-    ":(exclude).env.*",
-    ":(exclude,glob)**/auth.json",
-    ":(exclude,glob)**/*.pem",
-    ":(exclude).sbx",
-)
-_SECRET = re.compile(
-    rb"-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}"
-    rb"|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9]{32,}"
-)
+EXCLUDES = (*git_excludes(), ":(exclude).sbx")
 
 
 def _index_env(worktree: Worktree) -> dict[str, str]:
@@ -49,6 +41,22 @@ def working_tree(worktree: Worktree, base: str) -> str:
     env = _index_env(worktree)
     git(worktree.path, "read-tree", base, env=env)
     git(worktree.path, "add", "-A", "--", ".", *EXCLUDES, env=env)
+    # Templates such as .env.example are documentation, not credentials: stage them.
+    listed = git(
+        worktree.path,
+        "ls-files",
+        "-z",
+        "--others",
+        "--modified",
+        "--deleted",
+        "--exclude-standard",
+        "--",
+        *git_templates(),
+        env=env,
+    ).stdout.split("\0")
+    templates = sorted({p for p in listed if p and not is_secret_path(p)})
+    if templates:
+        git(worktree.path, "add", "-A", "--", *templates, env=env)
     return git(worktree.path, "write-tree", env=env).stdout.strip()
 
 
@@ -62,7 +70,9 @@ def _blob(worktree: Worktree, tree: str, path: str) -> tuple[str, bytes]:
     return mode, data
 
 
-def capture(worktree: Worktree, payload: dict[str, Any]) -> dict[str, Any]:
+def capture(
+    worktree: Worktree, payload: dict[str, Any], known: Iterable[str] = ()
+) -> dict[str, Any]:
     if not worktree.path.exists():
         raise WorktreeError("executor_unavailable", "worktree not realized")
     expected = payload.get("expected_generation")
@@ -81,14 +91,15 @@ def capture(worktree: Worktree, payload: dict[str, Any]) -> dict[str, Any]:
     for status, path in zip(raw[0::2], raw[1::2], strict=False):
         if not path:
             continue
+        if is_secret_path(path):
+            raise WorktreeError("capture_failed", f"credential path {path}; capture refused")
         if status == "D":
             files.append({"path": path, "type": "deleted"})
             continue
         mode, data = _blob(worktree, tree, path)
-        if _SECRET.search(data):
-            raise WorktreeError(
-                "capture_failed", f"known-secret pattern in {path}; capture refused"
-            )
+        reason = secret_reason(data, known)
+        if reason:
+            raise WorktreeError("capture_failed", f"{reason} in {path}; capture refused")
         digest = content_digest(data)
         total += len(data)
         if total > MAX_PAYLOAD:
@@ -103,8 +114,9 @@ def capture(worktree: Worktree, payload: dict[str, Any]) -> dict[str, Any]:
         check=True,
         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(worktree.state_dir)},
     ).stdout
-    if _SECRET.search(patch):
-        raise WorktreeError("capture_failed", "known-secret pattern in patch; capture refused")
+    reason = secret_reason(patch, known)
+    if reason:
+        raise WorktreeError("capture_failed", f"{reason} in patch; capture refused")
     manifest = canonical_manifest(
         repository=payload.get("repository"),
         base_sha=base_sha,

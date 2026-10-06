@@ -5,18 +5,23 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
 import tarfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from runtime.security.artifacts import is_secret_path, redact_bytes, secret_reason
 from runtime.security.credentials import scrub, write_secret_file
 from runtime.security.paths import PathEscape, safe_join
 
 MAX_READ = 1_000_000
 MAX_CHECKPOINT = 200 * 1024 * 1024
+MAX_SCAN = 8 * 1024 * 1024  # larger files are path-checked only
+CHECKPOINT_INDEX = "sbx-checkpoint.json"
 GIT_ENV_BASE = {"GIT_TERMINAL_PROMPT": "0", "LANG": "C.UTF-8"}
 
 
@@ -154,25 +159,33 @@ class Worktree:
             )
         return out[:1000]
 
-    def read(self, rel: str) -> dict[str, Any]:
+    def read(self, rel: str, known: Iterable[str] = ()) -> dict[str, Any]:
         target = safe_join(self.path, rel)
         if not target.is_file():
             raise WorktreeError("not_found", "file not found")
-        data = target.read_bytes()[:MAX_READ]
+        if is_secret_path(str(target.relative_to(os.path.realpath(self.path)))):
+            raise WorktreeError("forbidden", "credential-bearing files are not readable")
+        full = target.read_bytes()
+        data = full[:MAX_READ]
+        redacted = secret_reason(data, known) is not None
+        if redacted:
+            data = redact_bytes(data, known)
         try:
             return {
                 "path": rel,
                 "encoding": "utf-8",
                 "content": data.decode("utf-8"),
-                "truncated": target.stat().st_size > MAX_READ,
-                "digest": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest(),
+                "truncated": len(full) > MAX_READ,
+                "redacted": redacted,
+                "digest": "sha256:" + hashlib.sha256(full).hexdigest(),
             }
         except UnicodeDecodeError:
             return {
                 "path": rel,
                 "encoding": "base64",
                 "content": base64.b64encode(data).decode(),
-                "truncated": target.stat().st_size > MAX_READ,
+                "truncated": len(full) > MAX_READ,
+                "redacted": redacted,
             }
 
     def write(self, rel: str, content: str, expected_digest: str | None) -> dict[str, Any]:
@@ -194,14 +207,56 @@ class Worktree:
         }
 
     # -- checkpoint ----------------------------------------------------------------
-    def checkpoint(self, native: dict[str, list[Path]]) -> dict[str, Any]:
-        """Secret-free tar of the Worktree plus approved native state (no credentials)."""
+    def _artifact_ok(self, path: Path, rel: str, known: Iterable[str], *, patterns: bool) -> bool:
+        if is_secret_path(rel):
+            return False
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_SCAN:
+            return True
+        return secret_reason(path.read_bytes(), known, patterns=patterns) is None
+
+    def checkpoint(
+        self, native: dict[str, list[Path]], known: Iterable[str] = ()
+    ) -> dict[str, Any]:
+        """Secret-free tar of the Worktree plus approved native state.
+
+        Credential paths and files holding credential values are excluded (listed in
+        the archive index by path only); Git metadata is kept so tracked files can be
+        restored. Native state is checked for the lease's exact known credentials only.
+        """
+        known = tuple(known)
+        excluded: list[str] = []
+        root = Path(os.path.realpath(self.path))
+
+        def worktree_member(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+            rel = info.name.partition("/")[2]
+            if not rel or rel == ".git" or rel.startswith(".git/"):
+                return info
+            if not self._artifact_ok(root / rel, rel, known, patterns=True):
+                excluded.append(rel)
+                return None
+            return info
+
+        def native_member(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+            source = native_sources.get(info.name)
+            if source is None or not self._artifact_ok(source, source.name, known, patterns=False):
+                return None
+            return info
+
+        native_sources: dict[str, Path] = {}
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            tar.add(self.path, arcname="worktree")
+            tar.add(self.path, arcname="worktree", filter=worktree_member)
             for session_home, paths in native.items():
                 for p in paths:
-                    tar.add(p, arcname=f"native/{session_home}/{p.name}")
+                    arc = f"native/{session_home}/{p.name}"
+                    for found in [p, *p.rglob("*")] if p.is_dir() else [p]:
+                        rel = found.relative_to(p)
+                        native_sources[f"{arc}/{rel}" if str(rel) != "." else arc] = found
+                    tar.add(p, arcname=arc, filter=native_member)
+            index = json.dumps({"excluded": sorted(excluded)}).encode()
+            info = tarfile.TarInfo(CHECKPOINT_INDEX)
+            info.size = len(index)
+            tar.addfile(info, io.BytesIO(index))
         data = buf.getvalue()
         if len(data) > MAX_CHECKPOINT:
             raise WorktreeError("capture_failed", "checkpoint exceeds size limit")
@@ -210,7 +265,19 @@ class Worktree:
             "content_digest": "sha256:" + hashlib.sha256(data).hexdigest(),
             "size": len(data),
             "generation": self.generation,
+            "excluded": sorted(excluded),
         }
+
+    def _restore_tracked(self, excluded: list[str]) -> None:
+        """Files withheld from a checkpoint come back at their committed version (if any),
+        so a later capture never reports a phantom deletion."""
+        safe = [p for p in excluded if not is_secret_path(p)]
+        if not safe or not (self.path / ".git").exists():
+            return
+        tracked = git(self.path, "ls-files", "-z", "--", *safe, check=False).stdout
+        paths = [p for p in tracked.split("\0") if p]
+        if paths:
+            git(self.path, "checkout", "HEAD", "--", *paths, check=False)
 
     def _extract(self, data: bytes) -> dict[str, list[str]]:
         native: dict[str, list[str]] = {}
@@ -218,7 +285,9 @@ class Worktree:
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
+        excluded: list[str] = []
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            members = []
             for member in tar.getmembers():
                 if member.issym() or member.islnk():
                     try:
@@ -228,8 +297,18 @@ class Worktree:
                     except PathEscape as exc:
                         raise WorktreeError("capture_failed", "archive link escapes root") from exc
                 safe_join(staging, member.name)
-            tar.extractall(staging, filter="tar")
+                if member.name == CHECKPOINT_INDEX:
+                    excluded = json.loads(tar.extractfile(member).read()).get("excluded", [])
+                    continue
+                top, _, rel = member.name.partition("/")
+                inner = rel.partition("/")[2] if top == "native" else rel
+                # Never materialize credential paths, even from an older archive.
+                if inner and is_secret_path(inner):
+                    continue
+                members.append(member)
+            tar.extractall(staging, members=members, filter="tar")
         shutil.move(str(staging / "worktree"), str(self.path))
+        self._restore_tracked(excluded)
         native_root = staging / "native"
         if native_root.exists():
             for session_dir in native_root.iterdir():

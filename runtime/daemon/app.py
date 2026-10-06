@@ -26,6 +26,7 @@ from runtime.daemon.supervisor import TurnRun, _alive, kill_group
 from runtime.daemon.terminal import Terminal
 from runtime.daemon.worktree import Worktree, WorktreeError, git
 from runtime.harnesses.protocol import Harness, HarnessError, TurnContext
+from runtime.security.artifacts import collect_known
 from runtime.security.paths import PathEscape
 from runtime.security.redaction import Redactor
 
@@ -66,6 +67,9 @@ class RuntimeDaemon:
         self.services: dict[str, Service] = {}
         self.lock = threading.RLock()
         self.barrier: str | None = None
+        # Every credential value handed to this lease (memory only, never journaled):
+        # the artifact policy refuses/redacts them in captures, checkpoints, reads, logs.
+        self.known_secrets: set[str] = set()
         self.recovered_operations = self._recover()
         self._stop = threading.Event()
         threading.Thread(target=self._watchdog, daemon=True).start()
@@ -198,6 +202,7 @@ class RuntimeDaemon:
         digest = request_digest(kind, payload)
         if frame.get("request_digest") != digest:
             raise Refused("validation_failed", "request digest mismatch", 422)
+        self.known_secrets |= collect_known(frame.get("secrets") or {})
         with self.lock:
             existing = self.journal.op_get(op_id)
             if existing:
@@ -218,7 +223,8 @@ class RuntimeDaemon:
             return {"operation_id": op_id, "status": "succeeded", "result": result}
         except (WorktreeError, HarnessError, PathEscape, Refused) as exc:
             code = getattr(exc, "code", "validation_failed")
-            result = {"error": {"code": code, "message": Redactor().text(str(exc))[:500]}}
+            message = Redactor(self.known_secrets).text(str(exc))[:500]
+            result = {"error": {"code": code, "message": message}}
             self.journal.op_update(op_id, status="failed", result=result)
             return {"operation_id": op_id, "status": "failed", "result": result}
 
@@ -357,7 +363,7 @@ class RuntimeDaemon:
                         ]
                         if paths:
                             native[home.name] = paths
-                return self.worktree.checkpoint(native)
+                return self.worktree.checkpoint(native, self.known_secrets)
             finally:
                 self.barrier = None
         if kind == "changes.capture":
@@ -367,7 +373,7 @@ class RuntimeDaemon:
 
             self.barrier = op_id
             try:
-                return capture(self.worktree, payload)
+                return capture(self.worktree, payload, self.known_secrets)
             finally:
                 self.barrier = None
         if kind == "changes.apply":
@@ -410,7 +416,10 @@ class RuntimeDaemon:
                 if svc is not None:
                     svc.stop()
                 svc = Service(
-                    decl, self.worktree.path, self.state_dir / "service-home" / decl["name"]
+                    decl,
+                    self.worktree.path,
+                    self.state_dir / "service-home" / decl["name"],
+                    known=self.known_secrets,
                 )
                 self.services[decl["name"]] = svc
             svc.start()
@@ -468,7 +477,7 @@ class RuntimeDaemon:
             "name": payload.get("name"),
             "exit_code": code,
             "status": "passed" if code == 0 else ("unknown" if code is None else "failed"),
-            "output_tail": Redactor().text(out[-6000:]),
+            "output_tail": Redactor(self.known_secrets).text(out[-6000:]),
             "head": head,
             "generation": self.worktree.generation,
         }
@@ -500,11 +509,12 @@ class RuntimeDaemon:
             term = self.terminals.get(body.get("terminal_id") or "")
             if term is None:
                 raise Refused("not_found", "terminal not found", 404)
-            return term.read(int(body.get("after") or 0))
+            chunk = term.read(int(body.get("after") or 0))
+            return {**chunk, "data": Redactor(self.known_secrets).text(chunk["data"])}
         if kind == "files.list":
             return {"items": self.worktree.list(body.get("path") or "")}
         if kind == "files.read":
-            return self.worktree.read(body["path"])
+            return self.worktree.read(body["path"], self.known_secrets)
         raise Refused("unsupported_capability", f"{kind} not implemented", 422)
 
     def events(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -558,9 +568,9 @@ class RuntimeDaemon:
             return exc.status, {"error": {"code": exc.code, "message": exc.message}}
         except (WorktreeError, PathEscape) as exc:
             code = getattr(exc, "code", "validation_failed")
-            return (404 if code == "not_found" else 409), {
-                "error": {"code": code, "message": str(exc)[:300]}
-            }
+            status = {"not_found": 404, "forbidden": 403}.get(code, 409)
+            message = Redactor(self.known_secrets).text(str(exc))[:300]
+            return status, {"error": {"code": code, "message": message}}
         except SpoolPressure as exc:
             return 409, {"error": {"code": "spool_pressure", "message": str(exc)}}
 

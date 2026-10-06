@@ -14,6 +14,7 @@ from typing import Any
 from protocol.runtime import PROTOCOL_MAJOR, compatible
 
 from control.application import access
+from control.application.artifact_secrets import runtime_visible
 from control.application.ingest import IngestHooks, ingest
 from control.application.ports import (
     BlobStore,
@@ -1137,8 +1138,13 @@ class ExecutionService:
                     )
                 )
                 channel.ack(batch["runtime_epoch"], result.acked)
+            session = ctx.db.read(lambda uow: uow.get("sessions", lease["session_id"]))
             response = channel.op(
-                "snapshot.prepare", f"{lease['id']}:checkpoint", lease["session_id"], {}
+                "snapshot.prepare",
+                f"{lease['id']}:checkpoint",
+                lease["session_id"],
+                {},
+                secrets=runtime_visible(self.credentials, session),
             )
         except (RuntimeUnavailable, RuntimeRefused) as exc:
             ctx.commit(
@@ -1172,7 +1178,13 @@ class ExecutionService:
                     "worktree_generation": wt["generation"],
                     "content_digest": digest,
                     "backend_ref": key,
-                    "manifest": {"size": len(data), "native_state": True, "format": "tar.gz/v1"},
+                    "manifest": {
+                        "size": len(data),
+                        "native_state": True,
+                        "format": "tar.gz/v1",
+                        # Paths withheld by the artifact secret policy (names only).
+                        "secret_excluded": response["result"].get("excluded", []),
+                    },
                     "compatibility": {
                         "image_digest": lease["image_digest"],
                         "protocol": lease["protocol_version"],

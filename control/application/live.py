@@ -42,7 +42,7 @@ class LiveWorkspace:
         except RuntimeRefused as exc:
             code = (
                 exc.code
-                if exc.code in ("not_found", "version_conflict", "validation_failed")
+                if exc.code in ("not_found", "version_conflict", "validation_failed", "forbidden")
                 else "executor_unavailable"
             )
             raise DomainError(code, str(exc)) from exc

@@ -21,7 +21,7 @@ from control.domain.errors import DomainError
 from control.domain.ids import new_id
 from control.domain.jobs import ACTIVE_JOB_STATES, JOB_KINDS, PRIORITY, TARGET_COLUMNS
 from control.persistence import queries
-from control.security.redaction import find_secret_fields
+from control.security.redaction import find_secret_fields, scrub_value
 
 TABLES = frozenset(
     {
@@ -269,6 +269,8 @@ class UnitOfWork:
         leaked = find_secret_fields(payload)
         if leaked:
             raise ValueError(f"secret-looking payload fields rejected: {leaked}")
+        # Free text (errors, tool output) may embed selected credentials: redact values.
+        payload = scrub_value(payload)
         session_id = session if isinstance(session, str) else session["id"]
         if workspace_id is None:
             workspace_id = session["workspace_id"] if isinstance(session, dict) else None

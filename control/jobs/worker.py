@@ -18,6 +18,7 @@ from typing import Any
 from control.domain.errors import DomainError
 from control.jobs import claims
 from control.jobs.model import Claim, Failed, Outcome, Retry
+from control.security.redaction import safe_traceback
 
 log = logging.getLogger("sbx.jobs")
 
@@ -98,7 +99,8 @@ class Worker:
                 else Failed(exc.code, exc.message)
             )
         except Exception as exc:  # categorized, retried with backoff
-            log.exception("job %s (%s) failed", claim.job_id, claim.kind)
+            # Exception text can embed selected credentials: log only a redacted render.
+            log.error("job %s (%s) failed\n%s", claim.job_id, claim.kind, safe_traceback(exc))
             outcome = Retry("internal_error", type(exc).__name__)
         if not ctx.finished and outcome is not None:
             try:
@@ -125,6 +127,6 @@ class Worker:
             try:
                 if not self.run_once():
                     stop.wait(idle_sleep)
-            except Exception:
-                log.exception("worker loop error")
+            except Exception as exc:
+                log.error("worker loop error\n%s", safe_traceback(exc))
                 stop.wait(1.0)

@@ -17,8 +17,11 @@ from runtime.security.redaction import Redactor
 
 
 class Service:
-    def __init__(self, decl: dict[str, Any], root: Path, home: Path) -> None:
+    def __init__(
+        self, decl: dict[str, Any], root: Path, home: Path, *, known: set[str] | None = None
+    ) -> None:
         self.decl = decl
+        self.known = known if known is not None else set()
         self.root = root
         self.home = home
         self.logs: collections.deque[str] = collections.deque(maxlen=500)
@@ -58,9 +61,8 @@ class Service:
 
     def _pump(self, proc: subprocess.Popen[bytes]) -> None:
         assert proc.stdout is not None
-        redactor = Redactor()
         for raw in proc.stdout:
-            self.logs.append(redactor.text(raw.decode("utf-8", "replace").rstrip("\n"))[:2000])
+            self.logs.append(Redactor(self.known).text(raw.decode("utf-8", "replace").rstrip("\n"))[:2000])
         code = proc.wait()
         if (
             self.wanted

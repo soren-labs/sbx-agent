@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from control.domain.errors import DomainError
+from control.security.redaction import safe_traceback
 
 log = logging.getLogger("sbx.api")
 
@@ -51,6 +52,6 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unexpected(request: Request, exc: Exception) -> JSONResponse:
-        log.exception("unhandled error %s", request_id(request))
+        log.error("unhandled error %s\n%s", request_id(request), safe_traceback(exc))
         err = DomainError("internal_error", "internal error")
         return JSONResponse(err.to_dict(request_id(request)), status_code=500)

@@ -19,6 +19,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from control.domain.digests import canonical_json
+from control.security.redaction import KNOWN_SECRETS
 
 
 class VaultError(Exception):
@@ -71,6 +72,7 @@ class Vault:
         )
 
     def seal(self, plaintext: dict[str, Any], aad: bytes) -> Sealed:
+        KNOWN_SECRETS.add(plaintext)
         nonce = os.urandom(12)
         data = json.dumps(plaintext, separators=(",", ":")).encode()
         return Sealed(
@@ -82,11 +84,13 @@ class Vault:
         if key is None:
             raise VaultError("ciphertext key is not in the keyring")
         try:
-            return json.loads(
+            plaintext = json.loads(
                 AESGCM(key).decrypt(bytes(sealed.nonce), bytes(sealed.ciphertext), aad)
             )
         except InvalidTag as exc:
             raise VaultError("ciphertext authentication failed") from exc
+        KNOWN_SECRETS.add(plaintext)
+        return plaintext
 
     def fingerprint(self, material: str) -> str:
         """Keyed, non-reversible identifier for change detection; never exposed by the API."""

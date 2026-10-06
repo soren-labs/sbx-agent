@@ -13,6 +13,7 @@ from control.domain.errors import DomainError
 from control.domain.ids import new_id
 from control.jobs.backoff import delay_for
 from control.jobs.model import Cancelled, Claim, Continue, Failed, Outcome, Retry, Succeeded
+from control.security.redaction import scrub
 
 
 class StaleClaim(DomainError):
@@ -118,7 +119,7 @@ def finish(uow: Any, claim: Claim, outcome: Outcome) -> None:
         error_code = outcome.code
         exhausted = row["attempts"] >= row["max_attempts"]
         past_deadline = row["deadline_at"] is not None and row["deadline_at"] <= now
-        values.update(last_error_code=outcome.code, last_error=outcome.message[:500])
+        values.update(last_error_code=outcome.code, last_error=scrub(outcome.message)[:500])
         if exhausted or past_deadline:
             values.update(state="failed", finished_at=now)
             attempt_outcome = "exhausted"
@@ -133,10 +134,10 @@ def finish(uow: Any, claim: Claim, outcome: Outcome) -> None:
             state="failed",
             finished_at=now,
             last_error_code=outcome.code,
-            last_error=outcome.message[:500],
+            last_error=scrub(outcome.message)[:500],
         )
     elif isinstance(outcome, Cancelled):
-        values.update(state="cancelled", finished_at=now, last_error=outcome.reason[:500])
+        values.update(state="cancelled", finished_at=now, last_error=scrub(outcome.reason)[:500])
     else:  # pragma: no cover
         raise TypeError(outcome)
     uow.update("jobs", claim.job_id, values)

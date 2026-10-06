@@ -40,6 +40,7 @@ from control.jobs.worker import Worker
 from control.persistence.database import Database
 from control.runtime_client.client import HttpRuntimeConnector
 from control.security.credential_leases import VaultCredentialBroker
+from control.security.redaction import install_log_redaction
 from control.security.vault import Vault
 from control.storage.local import LocalBlobStore
 
@@ -156,7 +157,7 @@ def build_services(
     connections = Connections(db, vault, CONNECTORS, validators=validators)
     sessions = Sessions(db, ProjectResolver(catalog), catalog)
     queries = Queries(db)
-    changes = Changes(db, connector, blobs)
+    changes = Changes(db, connector, blobs, broker)
     deliveries = Deliveries(
         db, broker, git or GitTransport(config.data_dir / "git"), host or GitHubHost(), blobs
     )
@@ -249,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8800)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    install_log_redaction()
     config = UnifiedConfig.from_env()
     db = Database(config.database_url)
     db.migrate()
