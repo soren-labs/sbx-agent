@@ -458,10 +458,10 @@ class ExecutionService:
         bound = {**lease, "handle": {**handle, "endpoint": endpoint}}
         hello = self.connector.channel(bound).hello()
         if not compatible(int(hello["protocol"]["major"])) or hello["lease_id"] != lease["id"]:
-            backend.terminate(handle, f"{lease['id']}:terminate", compute)
+            confirmed = self._confirm_stopped(bound, session)
             ctx.commit(
                 lambda uow: self._lose_lease(
-                    uow, lease["id"], "runtime_incompatible", confirmed=True
+                    uow, lease["id"], "runtime_incompatible", confirmed=bool(confirmed)
                 )
             )
             raise DomainError(

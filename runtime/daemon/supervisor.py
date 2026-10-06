@@ -7,9 +7,11 @@ watermark. The supervisor never relaunches an ambiguous operation.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from runtime.daemon.journal import Journal, SpoolPressure
+from runtime.daemon.process_anchor import scope_name
 from runtime.harnesses.protocol import Harness, NativeInvocation, PreparedHarness, TurnContext
 from runtime.security.redaction import Redactor
 
@@ -25,19 +28,83 @@ _PROCESS_SCOPE = "SBX_MANAGED_PROCESS_SCOPE"
 _scopes: dict[int, str] = {}
 
 
+class ManagedProcess:
+    """Popen streams/pid belong to the anchor; poll/wait report the command exit."""
+
+    def __init__(self, anchor: subprocess.Popen[bytes], status_fd: int) -> None:
+        self.anchor = anchor
+        self.status_fd = status_fd
+        self.returncode: int | None = None
+        self.buffer = b""
+        self.lock = threading.Lock()
+        os.set_blocking(status_fd, False)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.anchor, name)
+
+    def poll(self) -> int | None:
+        with self.lock:
+            anchor_code = self.anchor.poll()  # reap the anchor once it has finished
+            if self.returncode is None:
+                try:
+                    self.buffer += os.read(self.status_fd, 128)
+                except BlockingIOError:
+                    pass
+                if b"\n" in self.buffer:
+                    self.returncode = int(self.buffer.split(b"\n", 1)[0])
+                elif anchor_code is not None:
+                    self.returncode = anchor_code
+                if self.returncode is not None:
+                    os.close(self.status_fd)
+            return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while (code := self.poll()) is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.anchor.args, timeout)
+            time.sleep(0.01)
+        return code
+
+
 def managed_popen(
     argv: list[str], *, env: dict[str, str], scope: str | None = None, **kwargs: Any
-) -> subprocess.Popen[bytes]:
-    """Attribute descendants even when they leave the leader's process session.
-
-    The non-secret scope is inherited across exec/setsid, including children whose
-    leader exits before we can observe their ancestry. Turns reuse their journaled
-    operation identity so recovery can find them after a daemon restart.
-    """
+) -> ManagedProcess:
+    """Retain kernel ancestry independently of descendant environments/dumpability."""
     scope = scope or uuid.uuid4().hex
-    proc = subprocess.Popen(argv, env={**env, _PROCESS_SCOPE: scope}, **kwargs)
+    read_fd, write_fd = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("process_anchor.py")),
+                scope,
+                str(write_fd),
+                *argv,
+            ],
+            env={**env, _PROCESS_SCOPE: scope},
+            pass_fds=(write_fd,),
+            **kwargs,
+        )
+    except BaseException:
+        os.close(read_fd)
+        raise
+    finally:
+        os.close(write_fd)
+    # The anchor establishes subreaping before it launches any untrusted command.
+    launched = b""
+    while not launched.endswith(b"\n"):
+        part = os.read(read_fd, 1)
+        if not part:
+            break
+        launched += part
+    status = json.loads(launched or b'{"errno": 5}')
+    if status:
+        os.close(read_fd)
+        proc.wait()
+        raise OSError(status["errno"], "managed command launch failed")
     _scopes[proc.pid] = scope
-    return proc
+    return ManagedProcess(proc, read_fd)
 
 
 def kill_group(pid: int, grace: float = STOP_GRACE_SECONDS, *, scope: str | None = None) -> bool:
@@ -48,7 +115,9 @@ def kill_group(pid: int, grace: float = STOP_GRACE_SECONDS, *, scope: str | None
     scope = scope or _scopes.get(pid)
     try:
         for sig, timeout in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
-            for group in _live_groups(pid, scope=scope):
+            # The anchor is in a separate session and exits only after reaping
+            # every descendant. Never kill it and lose ancestry during escalation.
+            for group in _live_groups(pid, scope=scope, signal_targets=True):
                 try:
                     os.killpg(group, sig)
                 except ProcessLookupError:
@@ -56,34 +125,51 @@ def kill_group(pid: int, grace: float = STOP_GRACE_SECONDS, *, scope: str | None
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if not _live_groups(pid, scope=scope):
+                    if pid:
+                        try:
+                            os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            pass  # after a daemon restart, the anchor is not our child
                     _scopes.pop(pid, None)
                     return True
                 time.sleep(0.05)
         return False
-    except PermissionError:
+    except OSError:
         return False  # inability to inspect or signal cannot confirm stop
 
 
-def _live_groups(pid: int, *, scope: str | None = None) -> set[int]:
+def _live_groups(pid: int, *, scope: str | None = None, signal_targets: bool = False) -> set[int]:
     """Live members of a managed session, excluding zombies that cannot write."""
-    groups = set()
     scope = scope or _scopes.get(pid)
-    marker = f"{_PROCESS_SCOPE}={scope}".encode() if scope else None
+    name = scope_name(scope) if scope else None
+    processes = {}
+    anchors = set()
+    owned = {pid} if pid else set()
     for stat in Path("/proc").glob("[0-9]*/stat"):
         try:
-            fields = stat.read_text().rsplit(")", 1)[1].split()
-            group, session = int(fields[2]), int(fields[3])
-            if fields[0] == "Z":
-                continue
-            belongs = group == pid or session == pid
-            if marker and not belongs and stat.stat().st_uid == os.getuid():
-                # Inspect only the public scope; never decode or retain credential fields.
-                belongs = marker in stat.with_name("environ").read_bytes().split(b"\0")
-            if belongs:
-                groups.add(group)
-        except (OSError, ValueError, IndexError):
-            continue  # processes can exit while /proc is being read
-    return groups
+            comm, tail = stat.read_text().rsplit(")", 1)
+            fields = tail.split()
+            member = int(stat.parent.name)
+            parent, group, session = map(int, fields[1:4])
+            processes[member] = (parent, group, fields[0])
+            if name and comm.split("(", 1)[1] == name and stat.stat().st_uid == os.getuid():
+                anchors.add(member)
+            if (pid and (group == pid or session == pid)) or (
+                name and comm.split("(", 1)[1] == name and stat.stat().st_uid == os.getuid()
+            ):
+                owned.add(member)
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # confirmed disappearance during the scan
+    while True:
+        descendants = {p for p, (parent, _, _) in processes.items() if parent in owned}
+        if descendants <= owned:
+            break
+        owned |= descendants
+    return {
+        group
+        for p, (_, group, state) in processes.items()
+        if p in owned and state != "Z" and not (signal_targets and group in anchors)
+    }
 
 
 def _alive(pid: int) -> bool:
@@ -119,7 +205,7 @@ class TurnRun(threading.Thread):
         self.invocation = invocation
         self.redactor = Redactor(prepared.secrets)
         self.state = harness.new_state(context)
-        self.proc: subprocess.Popen[bytes] | None = None
+        self.proc: ManagedProcess | None = None
         self.cancel_requested = False
         self.timed_out = False
         self.pressure = False

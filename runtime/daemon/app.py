@@ -67,6 +67,8 @@ class RuntimeDaemon:
         self.services: dict[str, Service] = {}
         self.lock = threading.RLock()
         self.barrier: str | None = None
+        self.writer_scopes: set[str] = set(json.loads(self.journal.meta("writer_scopes") or "[]"))
+        self.pending_writers: set[str] = set()
         # Every credential value handed to this lease (memory only, never journaled):
         # the artifact policy refuses/redacts them in captures, checkpoints, reads, logs.
         self.known_secrets: set[str] = set()
@@ -82,7 +84,17 @@ class RuntimeDaemon:
         reported as ambiguous so control reconciles to unknown/interrupted.
         """
         recovered = []
-        for op in self.journal.ops_open():
+        open_ops = self.journal.ops_open()
+        for op in open_ops:
+            if op["kind"] == "turn.start":
+                # Fence old in-process supervisors before any recovery signals.
+                self.journal.op_update(op["operation_id"], status="lost")
+        # Launch scopes are durable before spawn, including successful services
+        # and terminals whose process objects are unavailable after a restart.
+        for scope in self.writer_scopes:
+            if not kill_group(0, scope=scope):
+                self.pending_writers.add(scope)
+        for op in open_ops:
             recovered.append(op["operation_id"])
             if op["kind"] != "turn.start":
                 self.journal.op_update(
@@ -90,12 +102,10 @@ class RuntimeDaemon:
                 )
                 continue
             pid = op.get("pid")
-            # Fence the old supervisor before stopping it. In-process restart
-            # tests keep its thread alive; it must not overwrite recovery evidence.
-            self.journal.op_update(op["operation_id"], status="lost")
-            stopped = True
-            if pid:
-                stopped = kill_group(pid, scope=op["operation_id"])
+            stopped = kill_group(pid or 0, scope=op["operation_id"])
+            if not stopped:
+                self.writer_scopes.add(op["operation_id"])
+                self.pending_writers.add(op["operation_id"])
             launch = "started" if pid else "ambiguous"
             execution_id = (op.get("result") or {}).get("execution_id") or op["operation_id"]
             self.journal.append(
@@ -128,7 +138,19 @@ class RuntimeDaemon:
                 status="lost",
                 result={"verdict": "unknown", "launch": launch, "stopped": stopped},
             )
+        self.journal.set_meta("writer_scopes", json.dumps(sorted(self.writer_scopes)))
         return recovered
+
+    def _track_writer(self, scope: str) -> None:
+        self.writer_scopes.add(scope)
+        self.journal.set_meta("writer_scopes", json.dumps(sorted(self.writer_scopes)))
+
+    def _require_recovered_quiet(self) -> None:
+        for scope in list(self.pending_writers):
+            if kill_group(0, scope=scope):
+                self.pending_writers.remove(scope)
+        if self.pending_writers:
+            raise Refused("busy", "recovered writers have not confirmed stop")
 
     def _watchdog(self) -> None:
         while not self._stop.wait(5.0):
@@ -240,6 +262,7 @@ class RuntimeDaemon:
     def _turn_start(
         self, op_id: str, frame: dict[str, Any], payload: dict[str, Any]
     ) -> dict[str, Any]:
+        self._require_recovered_quiet()
         if self._active_run() is not None or self.barrier:
             raise Refused("busy", "another mutating CLI or barrier is active")
         if time.time() > self.authority_until:
@@ -274,6 +297,7 @@ class RuntimeDaemon:
         )
         digest = request_digest("turn.start", payload)
         self.journal.op_insert(op_id, "turn.start", digest, session_id, self.generation)
+        self._track_writer(op_id)
         self.journal.op_update(op_id, result={"execution_id": context.execution_id})
         try:
             self._place_native_state(session_id)
@@ -338,11 +362,15 @@ class RuntimeDaemon:
             run = self.runs.get(target or "")
             if run is None:
                 op = self.journal.op_get(target or "")
-                return {"target_status": op["status"] if op else "unknown", "stopped": True}
+                stopped = kill_group((op or {}).get("pid") or 0, scope=target) if op else True
+                if stopped:
+                    self.pending_writers.discard(target)
+                return {"target_status": op["status"] if op else "unknown", "stopped": stopped}
             confirmed = run.stop()
             run.done.wait(timeout=15)
             return {"target_status": self.journal.op_get(target)["status"], "stopped": confirmed}
         if kind == "worktree.restore":
+            self._require_quiet()
             return self.worktree.restore(payload, secrets.get("git"), self.known_secrets)
         if kind == "files.write":
             self._require_quiet()
@@ -392,10 +420,12 @@ class RuntimeDaemon:
             self._require_quiet()
             if not self.worktree.path.exists():
                 raise Refused("executor_unavailable", "worktree not realized")
-            term = Terminal(self.worktree.path, self.state_dir / "terminal-home")
+            self._track_writer(op_id)
+            term = Terminal(self.worktree.path, self.state_dir / "terminal-home", scope=op_id)
             self.terminals[term.id] = term
             return {"terminal_id": term.id}
         if kind == "terminal.input":
+            self._require_recovered_quiet()
             if self._active_run() is not None or self.barrier:
                 raise Refused(
                     "busy", "terminal writer is revoked while a CLI Turn or barrier is active"
@@ -407,6 +437,7 @@ class RuntimeDaemon:
             self.worktree.bump()
             return {"accepted": True}
         if kind == "terminal.close":
+            self._require_recovered_quiet()
             term_id = payload.get("terminal_id") or ""
             term = self.terminals.get(term_id)
             if term is not None:
@@ -415,6 +446,7 @@ class RuntimeDaemon:
                 self.terminals.pop(term_id)
             return {"closed": True}
         if kind == "service.ensure":
+            self._require_recovered_quiet()
             if self.barrier:
                 raise Refused("busy", "exclusive barrier is active")
             decl = payload.get("declaration") or {}
@@ -428,17 +460,20 @@ class RuntimeDaemon:
             if svc is None or svc.decl != decl:
                 if svc is not None and not svc.stop():
                     raise Refused("busy", "service writers have not confirmed stop")
+                self._track_writer(op_id)
                 svc = Service(
                     decl,
                     self.worktree.path,
                     self.state_dir / "service-home" / decl["name"],
                     known=self.known_secrets,
+                    scope=op_id,
                 )
                 self.services[decl["name"]] = svc
             svc.start()
             time.sleep(0.2)
             return svc.status()
         if kind == "service.stop":
+            self._require_recovered_quiet()
             svc = self.services.get(payload.get("name") or "")
             if svc is not None and not svc.stop():
                 raise Refused("busy", "service writers have not confirmed stop")
@@ -462,6 +497,7 @@ class RuntimeDaemon:
                 raise Refused("busy", "terminal writers have not confirmed stop")
 
     def _require_quiet(self) -> None:
+        self._require_recovered_quiet()
         if self._active_run() is not None:
             raise Refused("busy", "a CLI Turn is active; exclusive operation refused")
 

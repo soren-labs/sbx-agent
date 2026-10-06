@@ -11,22 +11,29 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from runtime.daemon.supervisor import kill_group, managed_popen
+from runtime.daemon.supervisor import ManagedProcess, kill_group, managed_popen
 from runtime.security.paths import safe_join
 from runtime.security.redaction import Redactor
 
 
 class Service:
     def __init__(
-        self, decl: dict[str, Any], root: Path, home: Path, *, known: set[str] | None = None
+        self,
+        decl: dict[str, Any],
+        root: Path,
+        home: Path,
+        *,
+        known: set[str] | None = None,
+        scope: str | None = None,
     ) -> None:
         self.decl = decl
+        self.scope = scope
         self.known = known if known is not None else set()
         self.root = root
         self.home = home
         self.logs: collections.deque[str] = collections.deque(maxlen=500)
-        self.proc: subprocess.Popen[bytes] | None = None
-        self.generations: list[subprocess.Popen[bytes]] = []
+        self.proc: ManagedProcess | None = None
+        self.generations: list[ManagedProcess] = []
         self.restarts = 0
         self.wanted = False
         self.lock = threading.Lock()
@@ -55,6 +62,7 @@ class Service:
                 self.decl["argv"],
                 cwd=str(cwd),
                 env=env,
+                scope=self.scope,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -63,7 +71,7 @@ class Service:
             self.generations.append(self.proc)
             threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
 
-    def _pump(self, proc: subprocess.Popen[bytes]) -> None:
+    def _pump(self, proc: ManagedProcess) -> None:
         assert proc.stdout is not None
         for raw in proc.stdout:
             self.logs.append(

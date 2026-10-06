@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -122,6 +123,79 @@ def _run_due(stack, rounds: int = 20) -> None:
 
 def _jobs(stack, kind: str) -> list[dict[str, Any]]:
     return stack.db.read(lambda u: u.find("jobs", {"kind": kind}, order="created_at"))
+
+
+@pytest.mark.parametrize("failure", ["false", "exception"])
+def test_incompatible_runtime_retains_capacity_until_termination(stack, fake, monkeypatch, failure):
+    principal, sid = _session(stack)
+    monkeypatch.setattr(fake, "connect_runtime", lambda *a: "http://unused")
+    monkeypatch.setattr(
+        stack.execution.connector,
+        "channel",
+        lambda lease: SimpleNamespace(
+            hello=lambda: {"protocol": {"major": 999}, "lease_id": lease["id"]},
+        ),
+    )
+    fake.terminate_confirms = False
+    if failure == "exception":
+
+        def unavailable(*a):
+            raise DomainError("executor_unavailable", "termination unavailable", retryable=True)
+
+        monkeypatch.setattr(fake, "terminate", unavailable)
+    stack.execution.activate(principal, sid)
+    initial = _lease(stack, sid)
+    connection_id = new_id("connection")
+    stack.db.run(
+        lambda u: u.insert(
+            "connections",
+            {
+                "id": connection_id,
+                "workspace_id": principal.default_workspace_id,
+                "kind": "modal",
+                "label": "capacity-test",
+                "created_by": principal.user_id,
+            },
+        )
+    )
+    reservation_id = new_id("reservation")
+    stack.db.run(
+        lambda u: u.insert(
+            "capacity_reservations",
+            {
+                "id": reservation_id,
+                "workspace_id": principal.default_workspace_id,
+                "connection_id": connection_id,
+                "lease_id": initial["id"],
+                "slot_ordinal": 0,
+            },
+        )
+    )
+    _run_due(stack, rounds=1)
+    row = _lease(stack, sid)
+    assert row["quarantined"] and row["released_at"] is None
+    assert row["state_reason"] == "runtime_incompatible"
+    assert fake.allocations[row["allocation_operation_id"]]["alive"]
+    assert (
+        stack.db.read(lambda u: u.get("capacity_reservations", reservation_id))["state"]
+        == "quarantined"
+    )
+    with pytest.raises(DomainError, match="isolation"):
+        stack.db.run(lambda u: stack.execution._new_lease(u, u.get("sessions", sid)))
+    assert enqueue_quarantine_releases(stack.db) == 1
+    _run_due(stack, rounds=1)
+    assert _lease(stack, sid)["quarantined"]
+    assert _jobs(stack, "executor.release")[-1]["state"] == "retry_wait"
+    # The retained cleanup job must eventually release both compute and capacity.
+    monkeypatch.setattr(fake, "terminate", FakeBackend.terminate.__get__(fake))
+    fake.terminate_confirms = True
+    _run_due(stack)
+    assert not _lease(stack, sid)["quarantined"]
+    assert not fake.allocations[row["allocation_operation_id"]]["alive"]
+    assert (
+        stack.db.read(lambda u: u.get("capacity_reservations", reservation_id))["state"]
+        == "released"
+    )
 
 
 def _set_lease(stack, lease_id: str, values: dict[str, Any]) -> None:
