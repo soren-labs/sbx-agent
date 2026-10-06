@@ -37,8 +37,9 @@ Steps are append-only evidence with the credential version used. `delivery_targe
 platform writes per repository/ref.
 
 **GitHub token permissions.** Delivery and merge run with the user's `github` Connection token. The
-connector's validation only probes `GET /user`, so it does not prove that these permissions are
-granted. A fine-grained token scoped to the Project repositories needs:
+connector's validation probes repository reachability (`GET /repos/{repo}`, and
+`GET /installation/repositories` for GitHub App installation tokens, which `GET /user` rejects),
+so it does not prove that these write permissions are granted. A fine-grained token scoped to the Project repositories needs:
 
 | Permission | Used for |
 | --- | --- |

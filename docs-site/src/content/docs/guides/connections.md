@@ -9,7 +9,7 @@ credentials. There are four kinds, all added by manual input:
 | Kind | Fields | Used for | Validation probe |
 | --- | --- | --- | --- |
 | `modal` | `token_id`, `token_secret` | Creating and releasing sandboxes. Only the executor worker sees it; the sandbox gets a lease-scoped key. | `App.lookup` with the token |
-| `github` | `token` | Cloning repositories and Delivery (push, pull request, merge). | `GET /user`, plus repository permission for Project repos |
+| `github` | `token` (personal access token or GitHub App installation token) | Cloning repositories and Delivery (push, pull request, merge). | Repository access for Project repos (`GET /repos/…`); `GET /user` only supplies the identity, so installation tokens are accepted |
 | `opencode_zen` | `api_key` | Inference for the OpenCode Harness. Written to an isolated HOME and scrubbed after each Turn. | One minimal free-model chat request (this consumes quota and is recorded) |
 | `codex` (optional) | `auth_json` | The experimental Codex Harness, in an isolated `CODEX_HOME`. | Format check only |
 

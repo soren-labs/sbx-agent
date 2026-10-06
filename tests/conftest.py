@@ -45,7 +45,14 @@ _CLOUD_KEYS = frozenset(
 )
 
 
+# Explicit, credential-free test configuration that survives the scrub: an admin DSN for a
+# throwaway PostgreSQL used by tests/support/postgres.py instead of an embedded cluster.
+_SAFE_TEST_KEYS = frozenset({"SBX_TEST_DATABASE_URL"})
+
+
 def _is_cloud_key(key: str) -> bool:
+    if key in _SAFE_TEST_KEYS:
+        return False
     return key in _CLOUD_KEYS or key.startswith(_CLOUD_PREFIXES)
 
 

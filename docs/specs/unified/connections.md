@@ -50,7 +50,7 @@ fingerprints. Request validation errors never echo input.
 | Kind | Manual input | Validation probe (Job) | Plaintext destination |
 | --- | --- | --- | --- |
 | `modal` | `token_id`, `token_secret` | `App.lookup` with the token | executor worker only (sandbox gets a lease-scoped key) |
-| `github` | `token` | `GET /user` (+ repo-scoped permission for Project repos) | Delivery worker; runtime clone helper via askpass file, never URL/argv |
+| `github` | `token` (PAT or App installation `ghs_` token) | capability probe: `GET /repos/{repo}` for Project repos (+ `GET /installation/repositories` when `GET /user` gives no identity); only `401` or no reachable repository is `reauth_required` | Delivery worker; runtime clone helper via askpass file, never URL/argv |
 | `opencode_zen` | `api_key` | one minimal free-model chat request: 401 = rejected, free-tier gate = authenticated (quota-consuming, recorded) | OpenCode `auth.json` in isolated HOME, scrubbed after each Turn |
 | `codex` | `auth_json` (allowlisted shape) | format only | Codex isolated `CODEX_HOME` |
 
