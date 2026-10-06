@@ -14,11 +14,20 @@ Two methods resolve to the same principal and permissions:
 
 | Method | How | Extra requirements on mutations |
 | --- | --- | --- |
-| API key | `Authorization: Bearer sbx_key_…` | None |
+| API key | `Authorization: Bearer sbx_key_…` | The key's scope must allow the call (see below) |
 | Cookie session | `POST /api/auth/login` sets `sbx_session` (HttpOnly) and `sbx_csrf` | `X-CSRF-Token` header equal to the `sbx_csrf` cookie, and an allowed `Origin` |
 
 Create a key with `POST /api/api-keys` (cookie session). The plaintext is
-returned once and only a hash is stored. Login requires a verified email, is
+returned once and only a hash is stored. `scopes` is a non-empty subset of
+`["*", "write", "read"]` (default `["*"]`; anything else is `422`):
+
+| Scope | Allows |
+| --- | --- |
+| `read` | `GET` routes only; every mutation returns `403 forbidden` |
+| `write` | reads and all resource mutations |
+| `*` | everything, including minting/revoking API keys and changing the password |
+
+Cookie sessions are always full scope. Login requires a verified email, is
 rate limited to 10 failures per email per 15 minutes (`429 rate_limited`), and
 changing a password revokes cookie sessions.
 

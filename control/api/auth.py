@@ -91,7 +91,7 @@ async def password_reset(request: Request) -> dict[str, Any]:
 
 @router.post("/api/auth/password-changes")
 async def password_change(request: Request) -> dict[str, Any]:
-    who = mutating_principal(request)
+    who = mutating_principal(request, scope="*")
     body = await json_body(request)
     return services(request).identity.change_password(
         who, body.get("current_password", ""), body.get("new_password", "")
@@ -110,13 +110,13 @@ def list_keys(request: Request) -> dict[str, Any]:
 
 @router.post("/api/api-keys", status_code=201)
 async def create_key(request: Request) -> dict[str, Any]:
-    who = mutating_principal(request)
+    who = mutating_principal(request, scope="*")
     return services(request).identity.create_api_key(who, await json_body(request))
 
 
 @router.delete("/api/api-keys/{key_id}")
 def revoke_key(request: Request, key_id: str) -> dict[str, Any]:
-    return services(request).identity.revoke_api_key(mutating_principal(request), key_id)
+    return services(request).identity.revoke_api_key(mutating_principal(request, scope="*"), key_id)
 
 
 @router.get("/api/workspaces")

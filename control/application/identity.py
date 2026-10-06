@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 from control.application import access
 from control.domain.errors import DomainError
-from control.domain.identity import Principal, check_password, normalize_email
+from control.domain.identity import API_KEY_SCOPES, Principal, check_password, normalize_email
 from control.domain.ids import new_id
 from control.security.passwords import (
     ALGORITHM,
@@ -376,9 +376,20 @@ class Identity:
         name = str(body.get("name") or "").strip()[:80]
         if not name:
             raise DomainError("validation_failed", "name is required", details={"field": "name"})
-        scopes = body.get("scopes") or ["*"]
+        scopes = ["*"] if body.get("scopes") is None else body["scopes"]
+        if (
+            not isinstance(scopes, list)
+            or not scopes
+            or any(not isinstance(s, str) or s not in API_KEY_SCOPES for s in scopes)
+        ):
+            raise DomainError(
+                "validation_failed",
+                f"scopes must be a non-empty subset of {sorted(API_KEY_SCOPES)}",
+                details={"field": "scopes"},
+            )
         if not principal.can("*"):
             raise DomainError("forbidden", "only full-scope principals can mint API keys")
+        scopes = sorted(set(scopes))
         key = new_token(API_KEY_PREFIX)
 
         def fn(uow: Any) -> dict[str, Any]:
@@ -391,7 +402,7 @@ class Identity:
                     "name": name,
                     "key_hash": token_hash(key),
                     "display_prefix": key[:14],
-                    "scopes": [str(s) for s in scopes],
+                    "scopes": scopes,
                 },
             )
             uow.audit(

@@ -10,6 +10,9 @@ from control.domain.errors import DomainError
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD_LENGTH = 10
 MAX_PASSWORD_LENGTH = 512
+# API key scopes: "*" (full, may manage keys/password) > "write" (mutations) > "read".
+API_KEY_SCOPES = frozenset({"*", "write", "read"})
+_IMPLIES = {"*": frozenset({"*", "write", "read"}), "write": frozenset({"write", "read"})}
 
 
 @dataclass(frozen=True)
@@ -24,7 +27,8 @@ class Principal:
     credential_id: str | None = None
 
     def can(self, scope: str) -> bool:
-        return "*" in self.scopes or scope in self.scopes
+        """Scope check with the "*" > "write" > "read" hierarchy; unknown scopes grant nothing."""
+        return any(scope in _IMPLIES.get(s, frozenset({s})) for s in self.scopes)
 
     def owns(self, workspace_id: str) -> bool:
         return workspace_id in self.workspace_ids

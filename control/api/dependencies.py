@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import Request
 
+from control.application.access import require_scope
 from control.domain.errors import DomainError
 from control.domain.identity import Principal
 
@@ -32,8 +33,10 @@ def _resolve(request: Request) -> tuple[Principal, str | None]:
     return resolved
 
 
-def principal(request: Request) -> Principal:
-    return _resolve(request)[0]
+def principal(request: Request, *, scope: str = "read") -> Principal:
+    found = _resolve(request)[0]
+    require_scope(found, scope)
+    return found
 
 
 def check_origin(request: Request) -> None:
@@ -43,7 +46,8 @@ def check_origin(request: Request) -> None:
         raise DomainError("csrf_failed", "origin not allowed")
 
 
-def mutating_principal(request: Request) -> Principal:
+def mutating_principal(request: Request, *, scope: str = "write") -> Principal:
+    """Every mutation needs CSRF (cookie) and the route's scope (API keys need "write")."""
     found, csrf_hash = _resolve(request)
     if found.via == "cookie":
         check_origin(request)
@@ -55,6 +59,7 @@ def mutating_principal(request: Request) -> Principal:
             or not svc.identity.csrf_ok(csrf_hash, header)
         ):
             raise DomainError("csrf_failed", "missing or invalid CSRF token")
+    require_scope(found, scope)
     return found
 
 

@@ -35,6 +35,10 @@ Losing every vault key makes stored CredentialVersions undecryptable.
 * Cookie mutations require a valid CSRF token and an allowed `Origin`. API keys (`sbx_key_…`,
   plaintext returned once, stored hashed) need neither. Both resolve the same
   `Principal(user, workspaces, scopes, auth_epoch)`.
+* API key scopes are `*` > `write` > `read` (validated at mint; unknown stored scopes grant
+  nothing). Every mutating route requires `write` (`*` for API-key management and password
+  changes) and every read requires `read`; a missing scope is `403 forbidden` before any effect.
+  Cookie sessions are full scope.
 * Changing or resetting a password bumps `auth_epoch`, which revokes cookie sessions.
 
 ## Connections
