@@ -10,7 +10,12 @@ export function HomePage() {
   useDocumentTitle("");
   const recent = useSessionList({ lifecycle: "open", role: "" }, 5);
   return (
-    <div className="narrow">
+    <div className="narrow home-page">
+      <header className="home-heading">
+        <p className="eyebrow">{t("auth.workspace")}</p>
+        <h1>{t("home.heading")}</h1>
+        <p className="muted">{t("home.subtitle")}</p>
+      </header>
       <SetupChecklist />
       <NewSession />
       {recent.items.length ? (

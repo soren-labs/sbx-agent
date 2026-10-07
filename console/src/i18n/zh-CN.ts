@@ -2,6 +2,23 @@ import type { I18nKey } from "./en";
 
 /** Partial: missing keys fall back to English. */
 export const zhCN: Partial<Record<I18nKey, string>> = {
+  "auth.workspace": "你的工作空间",
+  "auth.hero": "让想法成为值得交付的改变。",
+  "auth.hero_body": "专为编程智能体打造的工作空间。启动 Session，跟进工作，审查成果。",
+  "auth.benefit_sessions": "保留每段对话的上下文",
+  "auth.benefit_changes": "交付前审查变更",
+  "auth.benefit_connections": "连接你的工具与模型服务",
+  "auth.tagline": "你的工具、工作空间与下一个想法。",
+  "auth.welcome": "欢迎来到 SBX Agent",
+  "auth.subtitle": "下一个精彩想法，从这里开始。",
+  "auth.security_note": "模型服务凭据以加密方式存储，不会返回浏览器。",
+  "home.heading": "你想构建什么？",
+  "home.subtitle": "从一个任务开始，给智能体所需的上下文。",
+  "projects.intro": "管理 Session 的仓库上下文与可复用默认设置。",
+  "settings.intro": "定制工作空间的外观，管理账户安全。",
+  "settings.account": "账户",
+  "sessions.intro": "跟进正在进行的工作，继续未完成的任务。",
+
   "app.name": "SBX Agent 控制台",
   "nav.home": "首页",
   "nav.new": "新建会话",
@@ -45,6 +62,7 @@ export const zhCN: Partial<Record<I18nKey, string>> = {
   "conn.validate": "验证",
   "conn.retry_validation": "重试验证",
   "conn.disconnect": "断开连接",
+  "composer.options": "会话选项",
   "composer.heading": "新建会话",
   "composer.start": "开始会话",
   "composer.model": "模型",

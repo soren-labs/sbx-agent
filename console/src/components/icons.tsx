@@ -4,6 +4,8 @@ interface IconProps {
 }
 
 const paths: Record<string, string> = {
+  terminal: "M4 5h16v14H4zM7 9l3 3-3 3M13 15h4",
+  sparkles: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3z",
   plus: "M12 5v14M5 12h14",
   list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
   plug: "M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5",

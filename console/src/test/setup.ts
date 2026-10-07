@@ -8,6 +8,7 @@ afterEach(() => {
 });
 
 beforeAll(() => {
+  window.scrollTo = vi.fn();
   if (!window.matchMedia) {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: false,

@@ -1,28 +1,28 @@
-/* V2 Session Console — design tokens + layout. Mobile-first. */
+/* Unified Console — design tokens + layout. Mobile-first. */
 
 :root {
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+  --font: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Noto Sans SC", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --radius: 10px;
-  --radius-sm: 7px;
+  --radius: 14px;
+  --radius-sm: 8px;
   --gap: 16px;
   --content-max: 1200px;
   --nav-h: 56px;
   --bnav-h: 52px;
 }
 
-:root[data-theme="light"] {
-  --bg: #f6f7f9;
+:root, :root[data-theme="light"] {
+  --bg: #fcfcfc;
   --bg-elev: #ffffff;
-  --bg-sunk: #eef0f3;
-  --fg: #1b1f26;
-  --fg-dim: #5b6472;
-  --fg-faint: #8b93a1;
-  --border: #e2e6ec;
-  --accent: #3468d8;
+  --bg-sunk: #f2f2f1;
+  --fg: #191919;
+  --fg-dim: #626269;
+  --fg-faint: #73737c;
+  --border: #e7e7e9;
+  --accent: #4f5bd5;
   --accent-fg: #ffffff;
-  --accent-soft: #e8effc;
+  --accent-soft: #eeeeff;
   --ok: #1a8a4a;
   --ok-soft: #e2f4ea;
   --warn: #b06000;
@@ -31,19 +31,19 @@
   --err-soft: #fbe7e7;
   --run: #7a4fd0;
   --run-soft: #f0eafc;
-  --shadow: 0 1px 2px rgba(20, 25, 35, 0.06), 0 4px 16px rgba(20, 25, 35, 0.06);
+  --shadow: 0 1px 3px rgba(20, 25, 35, 0.03);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #101317;
-  --bg-elev: #191e25;
-  --bg-sunk: #0b0e12;
+  --bg: #111214;
+  --bg-elev: #191a1d;
+  --bg-sunk: #0d0e10;
   --fg: #e6e9ee;
   --fg-dim: #a3acb9;
-  --fg-faint: #6d7684;
-  --border: #2a313b;
-  --accent: #5b8af0;
+  --fg-faint: #9699a4;
+  --border: #2b2c31;
+  --accent: #a5adff;
   --accent-fg: #0d1117;
   --accent-soft: #1d2a45;
   --ok: #4cc38a;

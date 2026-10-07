@@ -117,6 +117,7 @@ export function SettingsPage() {
   return (
     <div className="narrow">
       <h1>{t("nav.settings")}</h1>
+      <p className="page-lead muted">{t("settings.intro")}</p>
       <section className="card">
         <h2>{t("settings.appearance")}</h2>
         <div className="controls">

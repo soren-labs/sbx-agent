@@ -64,53 +64,56 @@ export function NewSession() {
           }}
         />
       </Field>
-      <div className="controls">
-        <Field id="new-project" label={t("composer.project")}>
-          <select id="new-project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-            <option value="">{t("composer.no_project")}</option>
-            {(projects.data?.items ?? []).map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {!projectId ? (
-          <>
-            <Field id="new-repo" label={t("composer.repo")}>
-              <input id="new-repo" placeholder="owner/repo" value={repo} onChange={(e) => setRepo(e.target.value)} />
-            </Field>
-            <Field id="new-ref" label={t("composer.base_ref")}>
-              <input id="new-ref" value={baseRef} onChange={(e) => setBaseRef(e.target.value)} />
-            </Field>
-          </>
-        ) : null}
-      </div>
-      <div className="controls">
-        <Field id="new-harness" label={t("composer.harness")}>
-          <select id="new-harness" value="opencode" disabled>
-            <option value="opencode">opencode</option>
-          </select>
-        </Field>
-        <Field id="new-model" label={t("composer.model")}>
-          <select id="new-model" value={model} onChange={(e) => setModelOverride(e.target.value)}>
-            {model === "" ? <option value="">{t("composer.model_server")}</option> : null}
-            {model !== "" && !options.some((o) => o.id === model) ? <option value={model}>{model}</option> : null}
-            {options.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.id}
-                {o.free ? ` (${t("conn.free")})` : ""}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field id="new-backend" label={t("composer.executor")}>
-          <select id="new-backend" value={backend} onChange={(e) => setBackendOverride(e.target.value)}>
-            <option value="modal">Modal</option>
-            <option value="local">Local</option>
-          </select>
-        </Field>
-      </div>
+      <details className="adv-toggle session-options">
+        <summary>{t("composer.options")} <span className="faint"> · {model || "opencode"} · {backend}</span></summary>
+        <div className="controls">
+          <Field id="new-project" label={t("composer.project")}>
+            <select id="new-project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">{t("composer.no_project")}</option>
+              {(projects.data?.items ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {!projectId ? (
+            <>
+              <Field id="new-repo" label={t("composer.repo")}>
+                <input id="new-repo" placeholder="owner/repo" value={repo} onChange={(e) => setRepo(e.target.value)} />
+              </Field>
+              <Field id="new-ref" label={t("composer.base_ref")}>
+                <input id="new-ref" value={baseRef} onChange={(e) => setBaseRef(e.target.value)} />
+              </Field>
+            </>
+          ) : null}
+        </div>
+        <div className="controls">
+          <Field id="new-harness" label={t("composer.harness")}>
+            <select id="new-harness" value="opencode" disabled>
+              <option value="opencode">opencode</option>
+            </select>
+          </Field>
+          <Field id="new-model" label={t("composer.model")}>
+            <select id="new-model" value={model} onChange={(e) => setModelOverride(e.target.value)}>
+              {model === "" ? <option value="">{t("composer.model_server")}</option> : null}
+              {model !== "" && !options.some((o) => o.id === model) ? <option value={model}>{model}</option> : null}
+              {options.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.id}
+                  {o.free ? ` (${t("conn.free")})` : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id="new-backend" label={t("composer.executor")}>
+            <select id="new-backend" value={backend} onChange={(e) => setBackendOverride(e.target.value)}>
+              <option value="modal">Modal</option>
+              <option value="local">Local</option>
+            </select>
+          </Field>
+        </div>
+      </details>
       <ErrorNotice error={create.error} onRetry={() => void create.run()} retryLabel={t("composer.retry_create")} />
       <div className="send-row">
         <span className="faint small kbd-hint">{t("composer.send_hint")}</span>

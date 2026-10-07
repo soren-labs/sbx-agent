@@ -1,8 +1,10 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { useLayoutEffect } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useI18n } from "../i18n";
 import type { I18nKey } from "../i18n/en";
 import { useAuth } from "../state/auth";
 import { useTheme } from "../theme";
+import { Brand } from "./Brand";
 import { Icon } from "./icons";
 
 const NAV: { to: string; key: I18nKey; icon: string; end: boolean }[] = [
@@ -16,8 +18,12 @@ const NAV: { to: string; key: I18nKey; icon: string; end: boolean }[] = [
 /** Sidebar on desktop; top bar + bottom nav on mobile. */
 export function AppShell() {
   const { t } = useI18n();
-  const { me, logout } = useAuth();
+  const { me, workspace, logout } = useAuth();
   useTheme(); // applies data-theme on <html>
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
   const links = (size: number) =>
     NAV.map((n) => (
       <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? "active" : "")}>
@@ -31,17 +37,28 @@ export function AppShell() {
         {t("common.skip")}
       </a>
       <nav className="side-nav" aria-label={t("nav.primary")}>
-        <div className="brand">{t("app.name")}</div>
+        <Brand />
+        <div className="workspace-label">
+          <span className="workspace-dot" aria-hidden="true" />
+          {workspace?.name}
+        </div>
+        <div className="nav-label">{t("auth.workspace")}</div>
         {links(17)}
         <div className="grow" />
-        <div className="faint small account">{me?.user.email}</div>
+        <div className="account">
+          <span className="account-avatar" aria-hidden="true">{me?.user.email[0]?.toUpperCase()}</span>
+          <div>
+            <strong>{t("settings.account")}</strong>
+            <span title={me?.user.email}>{me?.user.email}</span>
+          </div>
+        </div>
         <button type="button" className="btn btn-sm btn-ghost" onClick={() => void logout()}>
           {t("auth.logout")}
         </button>
       </nav>
       <div className="grow" style={{ display: "flex", flexDirection: "column", minHeight: "100dvh", minWidth: 0 }}>
         <header className="top-bar">
-          <span className="brand">{t("app.name")}</span>
+          <Brand />
           <span className="grow" />
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => void logout()}>
             {t("auth.logout")}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Connection, ConnectionCredential } from "../../api/types";
+import { Icon } from "../../components/icons";
 import { ErrorNotice, Loading, Pill, healthTone, useAction, when } from "../../components/ui";
 import { useI18n } from "../../i18n";
 import type { I18nKey } from "../../i18n/en";
@@ -138,8 +139,9 @@ function KindSection({ meta, items, onChanged }: { meta: KindMeta; items: Connec
     onChanged();
   });
   return (
-    <section className="card" aria-labelledby={`kind-${meta.kind}`}>
+    <section className="card provider-section" aria-labelledby={`kind-${meta.kind}`}>
       <div className="row wrap">
+        <span className="provider-icon" aria-hidden="true"><Icon name={meta.kind === "github" ? "github" : meta.kind === "modal" ? "terminal" : "sparkles"} size={20} /></span>
         <h2 id={`kind-${meta.kind}`} className="grow">
           {t(meta.title)}
         </h2>

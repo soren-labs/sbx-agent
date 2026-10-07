@@ -119,6 +119,7 @@ export function ProjectsPage() {
   return (
     <div className="narrow">
       <h1>{t("nav.projects")}</h1>
+      <p className="page-lead muted">{t("projects.intro")}</p>
       {q.loading && !q.data ? <Loading /> : null}
       <ErrorNotice error={q.error} onRetry={q.refetch} />
       {q.data && !q.data.items.length ? <Empty>{t("projects.none")}</Empty> : null}

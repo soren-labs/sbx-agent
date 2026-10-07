@@ -4,16 +4,39 @@ import { isApiError } from "../../api/errors";
 import { ErrorNotice, Field, Loading, useAction } from "../../components/ui";
 import { useI18n } from "../../i18n";
 import { useApi } from "../../state/context";
+import { Brand } from "../../components/Brand";
+import { Icon } from "../../components/icons";
+import { useTheme } from "../../theme";
 import { useAuth } from "../../state/auth";
 
 function AuthCard({ title, children }: { title: string; children: ReactNode }) {
   const { t } = useI18n();
+  useTheme();
   return (
     <main className="auth-page" id="main">
-      <div className="card auth-card">
-        <div className="brand">{t("app.name")}</div>
-        <h1>{title}</h1>
-        {children}
+      <aside className="auth-story" aria-label={t("auth.workspace")}>
+        <Brand />
+        <div className="auth-story-body">
+          <p className="eyebrow">{t("auth.workspace")}</p>
+          <h2>{t("auth.hero")}</h2>
+          <p className="auth-lead">{t("auth.hero_body")}</p>
+          <ul className="auth-benefits">
+            <li><Icon name="list" size={18} />{t("auth.benefit_sessions")}</li>
+            <li><Icon name="github" size={18} />{t("auth.benefit_changes")}</li>
+            <li><Icon name="plug" size={18} />{t("auth.benefit_connections")}</li>
+          </ul>
+        </div>
+        <p className="auth-story-footer">{t("auth.tagline")}</p>
+      </aside>
+      <div className="auth-panel">
+        <div className="auth-card">
+          <div className="auth-mobile-brand"><Brand /></div>
+          <p className="eyebrow">{t("auth.welcome")}</p>
+          <h1>{title}</h1>
+          <p className="auth-subtitle">{t("auth.subtitle")}</p>
+          {children}
+        </div>
+        <p className="auth-note">{t("auth.security_note")}</p>
       </div>
     </main>
   );

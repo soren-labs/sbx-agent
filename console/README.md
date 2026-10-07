@@ -40,3 +40,19 @@ npm run typecheck && npm test && npm run build
 - Compute is never started implicitly; `executor_unavailable` renders a diagnosis.
 - Session composer defaults to harness `opencode`, the preferred free model from
   `/api/models`, and Modal when a Modal connection exists. Codex is optional.
+
+## Console presentation and browser evidence
+
+The unified Console uses Inter typography, neutral light/dark surfaces, a desktop
+workspace sidebar and mobile bottom navigation. Login, registration and email
+verification share a responsive auth layout. Auth pages honor the same saved or
+system theme as the workspace. Home keeps the task prominent; expand **Session
+options** for project/repository, model and compute settings. Collapsing those
+options retains their values. Ctrl/⌘+Enter still starts the Session. Navigating to
+a new page resets scroll so mobile headings remain visible.
+
+All features continue to use the single typed `/api` client, auth provider and
+query/event state. UI restoration evidence and reproduction instructions are in
+[docs/ui-restoration/notes.md](docs/ui-restoration/notes.md). The browser capture
+script intercepts unified API requests in an isolated browser context only; it is
+not imported into the product and does not require cloud credentials.
