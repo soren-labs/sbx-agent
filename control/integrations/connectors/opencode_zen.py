@@ -26,7 +26,7 @@ PREFERRED_FREE = (
     "nemotron-3.5-lightning-free",
     "ling-3.1-flash-free",
 )
-HEADERS = {"User-Agent": "sbx-browser/0.2 (+official opencode harness)"}
+HEADERS = {"User-Agent": "sbx-agent/0.2 (+official opencode harness)"}
 
 
 def normalize(credential: dict[str, Any]) -> dict[str, Any]:

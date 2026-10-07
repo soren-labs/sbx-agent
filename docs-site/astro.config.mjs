@@ -22,16 +22,16 @@ export default defineConfig({
 	},
 	integrations: [
 		starlight({
-			title: 'SBX',
+			title: 'SBX Agent',
 			description:
 				'Durable Sessions that run official coding-agent CLIs in isolated executors, with immutable ChangeSets and exact-subject delivery.',
 			logo: { src: './src/assets/logo.svg', replacesTitle: false },
 			favicon: '/favicon.svg',
 			social: [
-				{ icon: 'github', label: 'GitHub', href: 'https://github.com/soren-labs/sbx-browser' },
+				{ icon: 'github', label: 'GitHub', href: 'https://github.com/soren-labs/sbx-agent' },
 			],
 			editLink: {
-				baseUrl: 'https://github.com/soren-labs/sbx-browser/edit/main/docs-site/',
+				baseUrl: 'https://github.com/soren-labs/sbx-agent/edit/main/docs-site/',
 			},
 			customCss: ['./src/styles/theme.css'],
 			lastUpdated: true,

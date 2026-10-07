@@ -1,4 +1,4 @@
-# sbx-browser
+# sbx-agent
 
 SBX runs coding agents as durable **Sessions**. Each Session owns a logical
 Worktree; every Turn runs the provider's official CLI (OpenCode, Codex) inside

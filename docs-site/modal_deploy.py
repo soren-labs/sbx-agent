@@ -1,4 +1,4 @@
-"""Modal deployment of the sbx-browser documentation site.
+"""Modal deployment of the sbx-agent documentation site.
 
 Build the static site first (``make docs-build`` or
 ``npm --prefix docs-site run build``), then deploy with::

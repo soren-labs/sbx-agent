@@ -22,7 +22,7 @@ def _headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
-        "User-Agent": "sbx-browser",
+        "User-Agent": "sbx-agent",
     }
 
 

@@ -1,5 +1,5 @@
 export const en = {
-  "app.name": "SBX Console",
+  "app.name": "SBX Agent Console",
   "nav.home": "Home",
   "nav.new": "New Session",
   "nav.sessions": "Sessions",

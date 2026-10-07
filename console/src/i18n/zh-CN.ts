@@ -2,7 +2,7 @@ import type { I18nKey } from "./en";
 
 /** Partial: missing keys fall back to English. */
 export const zhCN: Partial<Record<I18nKey, string>> = {
-  "app.name": "SBX 控制台",
+  "app.name": "SBX Agent 控制台",
   "nav.home": "首页",
   "nav.new": "新建会话",
   "nav.sessions": "会话",

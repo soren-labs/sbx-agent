@@ -2,7 +2,7 @@
 
 **Canonical index · NORMATIVE · final consolidated design · pending human architecture review.**
 
-This is the single target architecture for `soren-labs/sbx-browser`. It synthesizes [PR #165](https://github.com/soren-labs/sbx-browser/pull/165) at `638621b81e8ab52c2c72cfa177076334db23b9a0` and [PR #166](https://github.com/soren-labs/sbx-browser/pull/166) at `9a6918bb7023f9009b0bb710775092a9d74c091d`, against main at `83317cd8b90b487a01a534ac7c440154efac2d03`. All three refs matched on 2026-10-05. The proposals remain research artifacts; neither is an alternative implementation blueprint after this RFC is accepted.
+This is the single target architecture for `soren-labs/sbx-agent`. It synthesizes [PR #165](https://github.com/soren-labs/sbx-agent/pull/165) at `638621b81e8ab52c2c72cfa177076334db23b9a0` and [PR #166](https://github.com/soren-labs/sbx-agent/pull/166) at `9a6918bb7023f9009b0bb710775092a9d74c091d`, against main at `83317cd8b90b487a01a534ac7c440154efac2d03`. All three refs matched on 2026-10-05. The proposals remain research artifacts; neither is an alternative implementation blueprint after this RFC is accepted.
 
 SBX runs **official provider CLIs**. Its durable product identity is **Session**; its replaceable execution location is **ExecutorLease**; its provider boundary is **Harness**, a thin adapter to an official CLI. SBX MUST NOT implement a model reasoning/tool-selection loop, substitute Amp SDK for the provider CLI, or hide a proprietary agent harness behind the runtime.
 

@@ -1,9 +1,9 @@
 {
-  "name": "sbx-browser-docs",
+  "name": "sbx-agent-docs",
   "type": "module",
   "version": "0.1.1",
   "private": true,
-  "description": "sbx-browser documentation website (Astro Starlight)",
+  "description": "sbx-agent documentation website (Astro Starlight)",
   "scripts": {
     "prepare-openapi": "node scripts/prepare-openapi.mjs",
     "dev": "npm run prepare-docs && astro dev",
