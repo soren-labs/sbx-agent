@@ -1,0 +1,52 @@
+name: sbx-agent
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sbx
+      POSTGRES_USER: sbx
+      POSTGRES_PASSWORD: ${SBX_POSTGRES_PASSWORD:?SBX_POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sbx -d sbx"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sbx:
+    image: ${SBX_IMAGE:?SBX_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SBX_DATABASE_URL: postgresql://sbx:${SBX_POSTGRES_PASSWORD}@postgres:5432/sbx
+      SBX_VAULT_KEYS: ${SBX_VAULT_KEYS:?SBX_VAULT_KEYS is required}
+      SBX_RUNTIME_MASTER_KEY: ${SBX_RUNTIME_MASTER_KEY:?SBX_RUNTIME_MASTER_KEY is required}
+      SBX_PUBLIC_URL: ${SBX_PUBLIC_URL:-https://sbx-agent.com}
+      SBX_ALLOWED_ORIGINS: ${SBX_ALLOWED_ORIGINS:-https://sbx-agent.com}
+      SBX_COOKIE_SECURE: ${SBX_COOKIE_SECURE:-1}
+      SBX_EXECUTORS: ${SBX_EXECUTORS:-modal}
+      SBX_DATA_DIR: /var/lib/sbx
+      SBX_WORKER_THREADS: ${SBX_WORKER_THREADS:-4}
+      SBX_RESEND_API_KEY: ${SBX_RESEND_API_KEY:-}
+      SBX_MAIL_FROM: ${SBX_MAIL_FROM:-}
+    volumes:
+      - sbx_data:/var/lib/sbx
+    ports:
+      # The existing Cloudflare Tunnel forwards api.sbx-agent.com to this
+      # loopback listener. Do not expose the control plane on a public EC2 port.
+      - "127.0.0.1:8000:8800"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8800/readyz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+
+volumes:
+  postgres_data:
+  sbx_data:

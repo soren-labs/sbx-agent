@@ -7,6 +7,7 @@ source for release notes.
 ## [Unreleased]
 
 - Renamed the project from `sbx-browser` to `sbx-agent`; the CLI command, Python import package, `SBX_*` environment variables, and `sbx-runtime` names remain stable.
+- Added the production container/release pipeline: GHCR image publishing, VPS Compose deployment, Cloudflare Pages deployment for Console and Docs, release manifests, readiness checks, and image rollback.
 
 ### Changed — unified architecture (RFC 167, breaking)
 

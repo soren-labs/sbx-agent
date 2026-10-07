@@ -57,3 +57,24 @@ jobs:
         working-directory: console
       - run: npm run build
         working-directory: console
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Validate production Compose
+        env:
+          SBX_IMAGE: sbx-agent:ci
+          SBX_POSTGRES_PASSWORD: REDACTED-ci-password
+          SBX_VAULT_KEYS: k1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          SBX_RUNTIME_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+        run: docker compose -f deploy/production/compose.yml config --quiet
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: sbx-agent:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
