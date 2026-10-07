@@ -67,5 +67,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
 [SECURITY.md](SECURITY.md) for vulnerability reporting. Pre-unification
 contracts and design notes are kept read-only under [`docs/archive/`](docs/archive/).
 
+## Production releases
+
+Production is containerized and release-driven. A published GitHub Release runs
+the release gate, publishes an immutable image to GHCR, deploys the control plane
+to the production VPS, and deploys the Console and Docs from the same Git SHA to
+Cloudflare Pages. Coding agents do not deploy production directly.
+
+See [`docs/operations/production-release.md`](docs/operations/production-release.md)
+and [`deploy/production/`](deploy/production/) for the production contract.
+
 License selection is pending owner decision; [LICENSE](LICENSE) is currently
 a placeholder, not a grant.

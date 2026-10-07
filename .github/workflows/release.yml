@@ -1,0 +1,414 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: soren-labs/sbx-agent
+  CONSOLE_PROJECT: sbx-agent
+  DOCS_PROJECT: sbx-agent-docs
+
+jobs:
+  gate:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          case "$TAG" in
+            v*) ;;
+            *)
+              echo "Production releases must use v* tags" >&2
+              exit 1
+              ;;
+          esac
+          PROJECT_VERSION="$(python3 - <<'PY'
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          PY
+          )"
+          DOCS_VERSION="$(python3 - <<'PY'
+          import json
+          with open('docs-site/package.json') as f:
+              print(json.load(f)['version'])
+          PY
+          )"
+          test "$TAG" = "v$PROJECT_VERSION" || {
+            echo "Release tag $TAG does not match pyproject version $PROJECT_VERSION" >&2
+            exit 1
+          }
+          test "$DOCS_VERSION" = "$PROJECT_VERSION" || {
+            echo "docs-site version $DOCS_VERSION does not match project version $PROJECT_VERSION" >&2
+            exit 1
+          }
+          git fetch origin main
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main || {
+            echo "Release commit must already be contained in main" >&2
+            exit 1
+          }
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            console/package-lock.json
+            docs-site/package-lock.json
+
+      - run: uv sync --frozen
+      - run: make lint
+      - run: make test
+
+      - name: Build Console
+        env:
+          VITE_BUILD_SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          npm --prefix console ci
+          npm --prefix console run typecheck
+          npm --prefix console test
+          npm --prefix console run build
+
+      - name: Build Docs
+        env:
+          DOCS_SITE_URL: https://docs.sbx-agent.com
+          SBX_BUILD_SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          npm --prefix docs-site ci
+          npm --prefix docs-site run check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-dist
+          path: docs-site/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  image:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: docker-meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.gate.outputs.version }}
+            type=sha,format=long
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          labels: ${{ steps.docker-meta.outputs.labels }}
+          build-args: |
+            SBX_VERSION=${{ needs.gate.outputs.version }}
+            SBX_GIT_SHA=${{ needs.gate.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [gate, image]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      deployments: write
+      packages: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VPS_HOST: ${{ vars.VPS_HOST }}
+      VPS_USER: ${{ vars.VPS_USER }}
+      VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.actor }}
+      RELEASE_SHA: ${{ needs.gate.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.gate.outputs.version }}
+      IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-dist
+          path: docs-site/dist
+
+      - name: Validate production deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_ACCOUNT_ID:?production variable CLOUDFLARE_ACCOUNT_ID is required}"
+          : "${CLOUDFLARE_API_TOKEN:?production secret CLOUDFLARE_API_TOKEN is required}"
+          : "${VPS_HOST:?production variable VPS_HOST is required}"
+          : "${VPS_USER:?production variable VPS_USER is required}"
+          : "${VPS_SSH_KEY:?production secret VPS_SSH_KEY is required}"
+
+      - name: Preflight public domains
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Do not require a 2xx here: before cutover the API can legitimately
+          # return an old-stack error. We only require DNS/TLS reachability so
+          # a broken custom domain cannot be discovered after backend mutation.
+          curl --silent --show-error --max-time 10 --output /dev/null https://sbx-agent.com/
+          curl --silent --show-error --max-time 10 --output /dev/null https://docs.sbx-agent.com/
+          curl --silent --show-error --max-time 10 --output /dev/null https://api.sbx-agent.com/healthz
+
+      - name: Configure production SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Preflight production host
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          command -v docker >/dev/null
+          docker compose version >/dev/null
+          command -v openssl >/dev/null
+          systemctl is-active --quiet sbx-cloudflared.service || {
+            echo "sbx-cloudflared.service must be active before container cutover" >&2
+            exit 1
+          }
+          REMOTE
+
+      - name: Prepare immutable release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          cat > release.env <<EOF
+          SBX_IMAGE=$IMAGE
+          SBX_RELEASE_VERSION=$RELEASE_VERSION
+          SBX_GIT_SHA=$RELEASE_SHA
+          EOF
+          cat > release-manifest.json <<EOF
+          {
+            "version": "$RELEASE_VERSION",
+            "git_sha": "$RELEASE_SHA",
+            "backend": {
+              "image": "ghcr.io/${IMAGE_NAME}",
+              "digest": "$IMAGE_DIGEST"
+            },
+            "console": {
+              "cloudflare_project": "${CONSOLE_PROJECT}",
+              "git_sha": "$RELEASE_SHA"
+            },
+            "docs": {
+              "cloudflare_project": "${DOCS_PROJECT}",
+              "git_sha": "$RELEASE_SHA"
+            }
+          }
+          EOF
+
+      - name: Upload production definition
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp -P "$VPS_PORT" \
+            deploy/production/compose.yml \
+            deploy/production/bootstrap.sh \
+            release.env \
+            "$VPS_USER@$VPS_HOST:/tmp/"
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "sudo install -d -m 0755 /opt/sbx-agent && \
+             sudo install -m 0644 /tmp/compose.yml /opt/sbx-agent/compose.yml && \
+             sudo install -m 0755 /tmp/bootstrap.sh /opt/sbx-agent/bootstrap.sh && \
+             sudo install -m 0644 /tmp/release.env /opt/sbx-agent/release.env && \
+             sudo /opt/sbx-agent/bootstrap.sh"
+
+      - name: Authenticate VPS to GHCR for this deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "sudo docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null"
+
+      - name: Deploy backend to VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" 'sudo bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd /opt/sbx-agent
+
+          set -a
+          . ./release.env
+          set +a
+
+          if [ -f release.env.last-good ]; then
+            cp release.env.last-good release.env.previous
+          else
+            rm -f release.env.previous
+          fi
+
+          legacy_active=0
+          if systemctl is-active --quiet sbx-hosted.service; then
+            legacy_active=1
+            mkdir -p legacy-backups
+            sudo -u postgres pg_dump sbx | gzip > "legacy-backups/pre-container.sql.gz" || true
+          fi
+
+          compose() {
+            docker compose --env-file .env --env-file release.env -f compose.yml "$@"
+          }
+
+          if compose ps -q postgres | grep -q .; then
+            mkdir -p backups
+            compose exec -T postgres pg_dump -U sbx sbx | gzip > "backups/pre-${SBX_GIT_SHA}.sql.gz"
+          fi
+
+          compose pull
+          compose up -d postgres
+
+          for _ in $(seq 1 30); do
+            if compose exec -T postgres pg_isready -U sbx -d sbx >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          compose run --rm --no-deps sbx python -m control.composition migrate
+          if [ "$legacy_active" -eq 1 ]; then
+            systemctl stop sbx-hosted.service
+          fi
+          compose up -d sbx
+
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/readyz >/dev/null; then
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$healthy" -ne 1 ]; then
+            compose logs --tail=150 sbx >&2 || true
+            if [ -f release.env.previous ]; then
+              cp release.env.previous release.env
+              compose pull sbx || true
+              compose up -d sbx || true
+            elif [ "$legacy_active" -eq 1 ]; then
+              compose stop sbx || true
+              systemctl start sbx-hosted.service || true
+            fi
+            exit 1
+          fi
+
+          cp release.env release.env.last-good
+          if [ "$legacy_active" -eq 1 ]; then
+            systemctl disable sbx-hosted.service >/dev/null 2>&1 || true
+          fi
+          docker image prune -f >/dev/null || true
+          REMOTE
+
+      - name: Verify public API
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 https://api.sbx-agent.com/readyz
+
+      - name: Deploy Console to Cloudflare Pages
+        working-directory: console
+        run: |
+          npx --yes wrangler@4.147.0 pages deploy dist \
+            --project-name="$CONSOLE_PROJECT" \
+            --branch=main \
+            --commit-hash="$RELEASE_SHA" \
+            --commit-message="SBX Agent $RELEASE_VERSION"
+
+      - name: Deploy Docs to Cloudflare Pages
+        working-directory: docs-site
+        run: |
+          npx --yes wrangler@4.147.0 pages deploy dist \
+            --project-name="$DOCS_PROJECT" \
+            --branch=main \
+            --commit-hash="$RELEASE_SHA" \
+            --commit-message="SBX Agent docs $RELEASE_VERSION"
+
+      - name: Verify public surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          page=$(curl --fail --silent --show-error --retry 10 --retry-delay 3 https://sbx-agent.com/)
+          grep -F "content=\"$RELEASE_SHA\"" <<<"$page" >/dev/null
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 https://docs.sbx-agent.com/build.json \
+            | jq -e --arg sha "$RELEASE_SHA" '.git_sha == $sha' >/dev/null
+
+      - name: Remove transient GHCR credential from VPS
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${VPS_HOST:-}" ] && [ -n "${VPS_USER:-}" ]; then
+            ssh -p "${VPS_PORT:-22}" "$VPS_USER@$VPS_HOST" "sudo docker logout ghcr.io >/dev/null 2>&1 || true" || true
+          fi
+
+      - name: Attach release manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_VERSION" release-manifest.json --clobber
