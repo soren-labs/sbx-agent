@@ -78,8 +78,10 @@ internal port `8800` only as `127.0.0.1:8000`, so no new public EC2 port is open
 
 On the first container release the workflow backs up the legacy `sbx` database,
 stops `sbx-hosted.service` only after the new database migration succeeds, and starts
-the new container on port 8000. If readiness fails it restarts the legacy service.
-Once the container is healthy the legacy service is disabled but retained.
+the new container on port 8000. Both loopback readiness and the public
+`https://api.sbx-agent.com/readyz` path must pass before the cutover is committed.
+If either fails it restarts the previous container or legacy service. Once both are
+healthy the legacy service is disabled but retained.
 
 The pre-unification database is preserved as rollback/archive evidence but is not
 automatically imported into the incompatible unified schema. This first cutover is

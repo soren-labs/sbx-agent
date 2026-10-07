@@ -23,6 +23,16 @@ from tests.unit.runtime.test_quiescence import wait_file
 rt = test_quiescence.rt
 
 
+def _kill_if_alive_for_cleanup(pid: int | None) -> None:
+    """Best-effort teardown for a process that may exit after the liveness probe."""
+    if not pid or not _alive(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def test_receipt_replacement_does_not_hide_live_startup(rt):
     directory = rt.daemon._track_writer("replaced-startup")
     fd = open_receipt(directory)
@@ -252,8 +262,7 @@ def test_service_relaunch_receipt_blocks_unnamed_anchor(
             request.join(timeout=10)
         kill_group(0, grace=0.1, scope="first-ensure")
         for pid in (writer_pid, anchor):
-            if pid and _alive(pid):
-                os.kill(pid, signal.SIGKILL)
+            _kill_if_alive_for_cleanup(pid)
 
 
 @pytest.mark.parametrize(
@@ -393,8 +402,7 @@ def test_dead_anchor_after_spawn_keeps_startup_ambiguous(rt, tmp_path, repo_root
             launcher.kill()
             launcher.wait(timeout=10)
         for pid in (writer_pid, anchor):
-            if pid and _alive(pid):
-                os.kill(pid, signal.SIGKILL)
+            _kill_if_alive_for_cleanup(pid)
 
 
 @pytest.mark.parametrize("mutation", ["unlink", "empty", "done", "replace", "remove_directory"])
@@ -512,5 +520,4 @@ def test_service_receipt_mutation_cannot_confirm_orphan_stop(
             launcher.kill()
             launcher.wait(timeout=10)
         for pid in (writer_pid, anchor):
-            if pid and _alive(pid):
-                os.kill(pid, signal.SIGKILL)
+            _kill_if_alive_for_cleanup(pid)
