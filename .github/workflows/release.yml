@@ -363,6 +363,28 @@ jobs:
             exit 1
           fi
 
+          public_healthy=0
+          for _ in $(seq 1 10); do
+            if curl -fsS https://api.sbx-agent.com/readyz >/dev/null; then
+              public_healthy=1
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$public_healthy" -ne 1 ]; then
+            echo "Public API did not become ready after backend cutover" >&2
+            if [ -f release.env.previous ]; then
+              cp release.env.previous release.env
+              compose pull sbx || true
+              compose up -d sbx || true
+            elif [ "$legacy_active" -eq 1 ]; then
+              compose stop sbx || true
+              systemctl start sbx-hosted.service || true
+            fi
+            exit 1
+          fi
+
           cp release.env release.env.last-good
           if [ "$legacy_active" -eq 1 ]; then
             systemctl disable sbx-hosted.service >/dev/null 2>&1 || true
