@@ -398,7 +398,7 @@ jobs:
       - name: Deploy Console to Cloudflare Pages
         working-directory: console
         run: |
-          npx --yes wrangler@4.147.0 pages deploy dist \
+          npx --yes wrangler@4.148.0 pages deploy dist \
             --project-name="$CONSOLE_PROJECT" \
             --branch=main \
             --commit-hash="$RELEASE_SHA" \
@@ -407,7 +407,7 @@ jobs:
       - name: Deploy Docs to Cloudflare Pages
         working-directory: docs-site
         run: |
-          npx --yes wrangler@4.147.0 pages deploy dist \
+          npx --yes wrangler@4.148.0 pages deploy dist \
             --project-name="$DOCS_PROJECT" \
             --branch=main \
             --commit-hash="$RELEASE_SHA" \
@@ -419,6 +419,8 @@ jobs:
           set -euo pipefail
           page=$(curl --fail --silent --show-error --retry 10 --retry-delay 3 https://sbx-agent.com/)
           grep -F "content=\"$RELEASE_SHA\"" <<<"$page" >/dev/null
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 https://sbx-agent.com/api/readyz \
+            | jq -e '.ok == true' >/dev/null
           curl --fail --silent --show-error --retry 10 --retry-delay 3 https://docs.sbx-agent.com/build.json \
             | jq -e --arg sha "$RELEASE_SHA" '.git_sha == $sha' >/dev/null
 

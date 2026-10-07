@@ -3,7 +3,13 @@ const DEFAULT_API_ORIGIN = "https://api.sbx-agent.com";
 export async function onRequest({ request, env }) {
   const upstreamOrigin = env.SBX_API_ORIGIN || DEFAULT_API_ORIGIN;
   const incoming = new URL(request.url);
-  const upstream = new URL(`${incoming.pathname}${incoming.search}`, upstreamOrigin);
+  const upstreamPath =
+    incoming.pathname === "/api/readyz"
+      ? "/readyz"
+      : incoming.pathname === "/api/healthz"
+        ? "/healthz"
+        : incoming.pathname;
+  const upstream = new URL(`${upstreamPath}${incoming.search}`, upstreamOrigin);
 
   const headers = new Headers(request.headers);
   headers.delete("host");
