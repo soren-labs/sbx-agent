@@ -1,5 +1,5 @@
 [project]
-name = "sbx-browser"
+name = "sbx-agent"
 version = "0.1.1"
 description = "Durable coding-agent Sessions running official provider CLIs (control plane + sbx-runtime + Console)"
 readme = "README.md"

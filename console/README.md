@@ -1,4 +1,4 @@
-# SBX Console
+# SBX Agent Console
 
 React 18 / TypeScript / Vite web Console for the unified `/api/...` business API
 (see `docs/architecture/unified/08-api-console-sdk.md`). It talks only to `/api`;

@@ -6,6 +6,8 @@ source for release notes.
 
 ## [Unreleased]
 
+- Renamed the project from `sbx-browser` to `sbx-agent`; the CLI command, Python import package, `SBX_*` environment variables, and `sbx-runtime` names remain stable.
+
 ### Changed — unified architecture (RFC 167, breaking)
 
 - One durable domain: Projects/ProjectVersions, Sessions with logical Worktrees, Turns,

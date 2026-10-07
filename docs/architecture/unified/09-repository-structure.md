@@ -7,7 +7,7 @@
 The tree fixes responsibility boundaries and canonical module names. Slash-separated sibling filenames are individual files, not required classes/services. Deferred modules marked `(later)` MUST NOT become empty execution engines needed by the rewrite. Existing license/build/release files remain repository support, not domain owners.
 
 ```text
-sbx-browser/
+sbx-agent/
 ├── AGENTS.md                         # later reviewed unified ownership/protocol update
 ├── README.md / LICENSE / CHANGELOG.md / SECURITY.md
 ├── pyproject.toml / uv.lock / Makefile
