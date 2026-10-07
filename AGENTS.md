@@ -1,78 +1,204 @@
 # AGENTS.md
 
-本文件是仓库内 Agent 的规范来源。任务拆分与状态仍以 Linear 项目 **sbx-browser**（团队 Sorenforge，Issue 前缀 `SOR-`）为准。执行/评审协议：**P2 任务编排与 SWE 执行计划 v4**（独立评审通过即合并）。
+This file defines the repository-wide working rules for coding and review agents.
+The task prompt is the source of scope and intent. Do not depend on an external issue
+tracker to discover requirements.
 
-## 0. 开工必读
+## 0. Core principles
 
-1. 任务说明书是分配给你的 Linear Issue。开工前完整阅读它、「P2 任务编排与 SWE 执行计划 v4」§0 / §5，以及「设计方案 v2」中被该 Issue 引用的章节。
-2. 只修改 Issue 中标明属于你的目录（§1 表）。
-3. 契约（§2）变更需在 **自己的 Issue 评论** 提出「契约变更请求」，经独立 SWE 审阅后实施；编排者只负责顺序与合并。
-4. 提 PR 前 `make lint` 与 `make test` 必须全绿，且不依赖任何云凭证。
-5. 禁止把任何凭证、token、密码写入代码、fixture、日志、PR 或 Linear 评论。fixture 里的 token 字段一律用 `REDACTED` 占位。
-6. v4 职责：作者（SWE）= 实现 + 自测 + PR 准备；独立评审（SWE，干净环境）= 对当前提交 PASS/退回；编排者 = 派发、状态跟踪、Linear 沟通、PASS 后机械合并。**编排者不实现、不评审、不测试**；旧 Cursor/Bugbot 与「编排者技术把关」规则不再适用。
-7. 发现超出本包范围的缺陷：在本项目下新建子 Issue（父 = 当前 Issue），不顺手修。
-8. 隔离要求：开发/测试使用独立 HOME/XDG 与剥离的凭证环境（见 `tests/conftest.py`）；不读取、不打印真实凭证；不使用其他 worktree。
+1. Read the task prompt, this file, and the relevant architecture/specification documents before editing.
+2. Change only the files and modules needed to complete the requested behavior. Cross-cutting work is allowed when the task genuinely requires it, but unrelated cleanup and opportunistic refactors should be avoided.
+3. Preserve repository boundaries and existing contracts unless the task explicitly requires a contract change.
+4. Update tests when behavior changes or a regression needs to be prevented. Update specifications and user documentation when externally visible behavior, routes, commands, configuration, or supported workflows change.
+5. Before opening a PR, run the checks relevant to the touched areas. At minimum, backend changes should run `make lint` and `make test`; frontend changes should also run `make console-check`; documentation changes should run `make docs-check` when applicable.
+6. Never place credentials, tokens, passwords, production secrets, or real account data in source, fixtures, logs, PRs, or documentation. Secret-shaped fixture values must use `REDACTED`.
+7. Development and tests must use isolated HOME/XDG state and stripped credentials as provided by `tests/conftest.py`. Do not rely on another worktree or ambient developer credentials.
+8. Coding agents may modify deployment definitions when the task requires it, but ordinary development work must not mutate production infrastructure or use production credentials.
 
-## 1. 目录结构与所有权（统一架构 RFC 167）
+## 1. Repository boundaries
 
-目标结构以 `docs/architecture/unified/09-repository-structure.md` 为准；实际行为以 `docs/specs/unified/` 为准。一个 Issue 只改其标明的目录。
+The target structure is defined by `docs/architecture/unified/09-repository-structure.md`.
+Implemented behavior is described by `docs/specs/unified/`.
 
-| 路径 | 职责 |
+| Path | Responsibility |
 | --- | --- |
-| `protocol/` | runtime 与控制面共享的线协议/数据类型（不依赖 `control`） |
-| `control/domain/` | 纯领域模型与不变量（不依赖基础设施） |
-| `control/application/` | 用例与端口；唯一写者规则见 `docs/specs/unified/authority.md` |
-| `control/persistence/` | PostgreSQL schema/migrations、UoW、仓储（唯一业务权威） |
-| `control/jobs/` | Job、claim/fence、定时器与 handler |
-| `control/api/` | 唯一 HTTP 面 `/api`（OpenAPI 由 `make openapi` 生成） |
-| `control/executors/`、`control/runtime_client/` | Executor 端口（local / Modal）与 sbx-runtime 客户端 |
-| `control/integrations/`、`control/security/` | Git/GitHub、邮件、Connection 校验器；vault、密码、脱敏 |
-| `runtime/` | `sbx-runtime` daemon 与官方 CLI Harness（不依赖 `control`） |
-| `console/` | 唯一前端 |
-| `src/sbx/` | SDK 与 CLI |
-| `docs/specs/unified/`、`docs-site/` | 实现规格与公开文档 |
-| `docs/archive/` | 已退役的旧契约与历史资料（只读，不再规范） |
+| `protocol/` | Wire/data types shared by the runtime and control plane; must not depend on `control` |
+| `control/domain/` | Pure domain models and invariants; no infrastructure dependencies |
+| `control/application/` | Use cases, orchestration, and application ports |
+| `control/persistence/` | PostgreSQL schema/migrations, unit of work, repositories, durable business authority |
+| `control/jobs/` | Durable jobs, claims/fences, timers, and handlers |
+| `control/api/` | The single business HTTP surface under `/api` |
+| `control/executors/`, `control/runtime_client/` | Local/Modal executor implementations and the sbx-runtime client boundary |
+| `control/integrations/`, `control/security/` | Git/GitHub/email/connectors, vault, credentials, authentication, redaction |
+| `runtime/` | `sbx-runtime` daemon and official CLI Harness implementations; must not depend on `control` |
+| `console/` | The single product frontend |
+| `src/sbx/` | Python SDK and CLI |
+| `docs/specs/unified/` | Implemented contracts and specifications |
+| `docs-site/` | Public product documentation site |
+| `docs/archive/` | Historical material only; do not treat it as an active specification |
 
-依赖方向由 `tests/unit/test_layer_boundaries.py` 强制。发现超出本 Issue 范围的缺陷：新建子 Issue，不顺手修。
+Dependency direction is enforced by `tests/unit/test_layer_boundaries.py`.
 
-## 2. 契约
+### Change-scope rule
 
-跨包接口：`docs/specs/unified/openapi.yaml`（生成物，`tests/unit/test_openapi_drift.py` 检查漂移）、`protocol/runtime.py` 与 `docs/specs/unified/runtime.md`、`runtime/harnesses/protocol.py`（`Harness` Protocol）与 `docs/specs/unified/harnesses/manifests.json`、`control/persistence/migrations/*.sql`（只追加）。变更这些接口须在 Issue 中提出并经独立评审；旧 `docs/contracts/**` 已归档至 `docs/archive/contracts/`，不再生效。
+A task may legitimately span several areas, especially for large features or refactors.
+The developer should still keep the implementation focused on the requested behavior:
 
-## 3. 测试与本地环境
+- touch only modules whose behavior or contracts are actually affected;
+- do not rewrite neighboring systems merely because they could be improved;
+- if an unrelated defect is discovered, report it separately rather than silently expanding the task;
+- prefer coherent functional boundaries over arbitrary directory-only splits.
+
+## 2. Contracts and durable interfaces
+
+The following interfaces have a wider blast radius and require deliberate changes:
+
+- `docs/specs/unified/openapi.yaml` (generated; drift checked by `tests/unit/test_openapi_drift.py`);
+- `protocol/runtime.py` and `docs/specs/unified/runtime.md`;
+- `runtime/harnesses/protocol.py` and `docs/specs/unified/harnesses/manifests.json`;
+- `control/persistence/migrations/*.sql` (append-only migrations).
+
+When a task changes one of these contracts, update all affected implementations, tests,
+SDK/CLI/Console surfaces, and specifications required to keep the repository internally
+consistent. Do not preserve obsolete behavior merely for compatibility unless the task or
+active specification requires it.
+
+## 3. Developer role
+
+The developer owns implementation quality and a reviewable handoff.
+
+### Developer responsibilities
+
+1. Understand the requested behavior and identify the smallest coherent change surface.
+2. Inspect existing abstractions before adding new ones; reuse the established domain, application, runtime, and client boundaries.
+3. Implement the feature or fix completely across the layers that are actually affected.
+4. Add or update regression tests for changed behavior and important defects found during development.
+5. Update specifications and public documentation when the user-visible contract changes.
+6. Run relevant local checks and fix failures caused by the change.
+7. Review the final diff for accidental files, secrets, unrelated edits, stale generated artifacts, and incomplete migrations/spec updates.
+8. Deliver a branch/PR with a concise summary, validation results, important compatibility notes, and known non-blocking limitations.
+
+Large tasks may be implemented in one strong-agent session and split into multiple coherent
+PRs. Those PRs should be understandable and mechanically mergeable, but the overall feature
+or refactor may be reviewed as a stack from its original base to its final head.
+
+The developer should not spend model capacity on unrelated polishing after the requested
+behavior is correct and the applicable review blockers are resolved.
+
+## 4. Reviewer role
+
+The reviewer is independent from the developer and evaluates whether the requested change is
+safe and correct enough to merge. Review is a release-quality gate, not an unlimited search
+for any imaginable failure.
+
+### Reviewer responsibilities
+
+1. Review the requested behavior, the changed code, affected contracts, tests, and the final integrated state.
+2. Prefer concrete, reproducible findings. A blocking finding should identify the affected path, preconditions, impact, and a plausible reproduction or execution sequence.
+3. Distinguish product-breaking defects from hardening suggestions, theoretical edge cases, style preferences, and speculative risks.
+4. For a large stacked change, review the cumulative diff from the original base to the final stack head first. Individual PRs may then be checked for ordering, dependency, and merge hygiene.
+5. Batch blocking findings whenever practical. Avoid a review loop where one small issue is reported, fixed, and re-reviewed in isolation while other material issues remain undiscovered.
+6. After fixes, verify that reported P0/P1 findings are resolved and that the fixes did not introduce material regressions. Do not restart an unbounded adversarial search from scratch on every round.
+7. PASS the change when required CI/checks are green and no reproducible P0 or P1 findings remain.
+
+## 5. Review severity and merge policy
+
+Only **P0** and **P1** findings block merge.
+
+### P0 — critical blocker
+
+A P0 is a critical security, data-integrity, or system-safety failure, or a catastrophic
+logic defect with unacceptable impact. Examples include:
+
+- authentication or authorization bypass;
+- cross-user or cross-workspace data access;
+- credential/secret disclosure;
+- attacker-triggerable remote code execution or equivalent trust-boundary compromise;
+- unrecoverable corruption or loss of authoritative data;
+- a wrong irreversible external effect, such as mutating or merging the wrong repository/subject;
+- a fundamental logic failure that makes the product broadly unsafe to operate.
+
+P0 severity is driven by impact and exploitability. A security flaw does not become
+non-blocking merely because an ordinary user would be unlikely to trigger it accidentally.
+
+### P1 — material product blocker
+
+A P1 is a reproducible defect that materially breaks a supported product workflow for a
+normal user, or under reasonably expected operating conditions such as ordinary retries,
+cancellation, restart, transient network failure, or supported concurrency.
+
+Examples include:
+
+- a normal Session/Turn/Delivery workflow producing the wrong durable result;
+- a supported retry or cancellation path causing a duplicate or incorrect effect;
+- a common restart/recovery path leaving the product persistently unusable or incorrect;
+- an API/Console/CLI mismatch that prevents a supported feature from working;
+- a major functional regression that a normal user is reasonably likely to encounter.
+
+A finding should **not** be classified as P1 merely because an arbitrarily contrived,
+multi-failure sequence can make some function fail. Rare, highly artificial combinations
+that are non-security-sensitive, do not corrupt authoritative data, do not cause a wrong
+irreversible external effect, and are recoverable should normally be P2/P3 or a follow-up
+hardening item rather than a merge blocker.
+
+### P2/P3 — non-blocking findings
+
+P2/P3 findings may include:
+
+- rare recoverable edge cases outside normal supported usage;
+- hardening opportunities;
+- maintainability or observability improvements;
+- minor UX defects;
+- performance improvements that do not break the supported flow;
+- speculative issues without a concrete reachable path.
+
+Record useful P2/P3 findings, but do not keep a change in an endless review/fix cycle solely
+to eliminate every possible edge case.
+
+### Merge stop condition
+
+A change is ready to merge when:
+
+- required checks are green;
+- there are no known reproducible P0 findings;
+- there are no known reproducible P1 findings within supported/normal product behavior;
+- previously reported P0/P1 fixes have appropriate regression coverage where practical.
+
+The goal of review is to establish that normal users can use the affected product behavior
+reliably and that no major security or integrity issue is known. The goal is **not** to prove
+that a sufficiently creative reviewer can never construct any sequence that produces a
+recoverable failure.
+
+## 6. Tests and local environment
 
 ```bash
 make lint           # ruff check + ruff format --check
-make test           # pytest tests/unit tests/integration（嵌入式 PostgreSQL，禁止云凭证）
-make console-check  # Console typecheck + vitest + build
-make docs-check     # docs-site 构建与链接检查
+make test           # unit + integration tests with embedded PostgreSQL and no cloud credentials
+make console-check  # Console typecheck + Vitest + production build
+make docs-check     # documentation site build and link checks
 ```
 
-| 变量 | 含义 |
+| Variable | Meaning |
 | --- | --- |
-| `SBX_DATABASE_URL` | PostgreSQL 连接串（唯一业务权威） |
-| `SBX_VAULT_KEYS` | `kid:base64key[,...]`，首个为活动密钥；CredentialVersion 信封加密 |
-| `SBX_RUNTIME_MASTER_KEY` | 十六进制；派生 sbx-runtime 每个 lease 的认证密钥 |
-| `SBX_EXECUTORS` | 启用的 Executor，默认 `local,modal` |
-| `SBX_PUBLIC_URL` / `SBX_ALLOWED_ORIGINS` / `SBX_COOKIE_SECURE` | Console 来源与 cookie 策略 |
-| `SBX_RESEND_API_KEY` | 可选；邮件发送（缺省时使用本地 outbox） |
-| `SBX_MAIL_FROM` | 启用 Resend 时必填；发件人须在 Resend 已验证的域名下 |
+| `SBX_DATABASE_URL` | PostgreSQL connection string; PostgreSQL is the business authority |
+| `SBX_VAULT_KEYS` | `kid:base64key[,...]`; first key is active for CredentialVersion envelope encryption |
+| `SBX_RUNTIME_MASTER_KEY` | Hex key used to derive per-lease sbx-runtime authentication keys |
+| `SBX_EXECUTORS` | Enabled executors; default `local,modal` |
+| `SBX_PUBLIC_URL` / `SBX_ALLOWED_ORIGINS` / `SBX_COOKIE_SECURE` | Console origin and cookie policy |
+| `SBX_RESEND_API_KEY` | Optional email provider credential; local outbox is used when absent |
+| `SBX_MAIL_FROM` | Required when Resend is enabled; must use a verified sender domain |
 
-`tests/conftest.py` 剥离宿主凭证（含 `SBX_TEST_*`、`SBX_BENCHMARK_*`）并隔离 HOME/XDG；测试所需变量一律显式传入。`import modal` 只允许出现在 `control/executors/modal.py` 与 `control/integrations/connectors/modal.py`，`make test` 不得触发真实 Modal 连接。真实凭证的检查（`make smoke-modal`、`make check-connectors`）是显式 opt-in，不打印凭证，并且必须回收所建 sandbox。
+`tests/conftest.py` strips host credentials (including `SBX_TEST_*` and
+`SBX_BENCHMARK_*`) and isolates HOME/XDG. Tests must receive required configuration
+explicitly. `import modal` is restricted to `control/executors/modal.py` and
+`control/integrations/connectors/modal.py`; `make test` must never contact a real Modal
+account. Live checks such as `make smoke-modal`, `make check-connectors`, and
+`make mvp-acceptance` are explicit opt-in operations and must clean up resources they create.
 
-## 4. 密钥与脱敏
+## 7. Secrets and production boundaries
 
-- 禁止提交 `.env`、`auth.json`、`.modal.toml`、真实 token。
-- fixture、stub、mock、日志、PR、Linear 评论中的 token / password / secret 字段一律 `REDACTED`。
-- 凭证只以加密 CredentialVersion 存储，经 lease 范围的 grant 投递给 sbx-runtime；API 从不返回明文，不打印、不记录、不写入事件。
-
-## 5. 交付协议（v4）
-
-| 时机 | 执行者 | 动作 |
-| --- | --- | --- |
-| 开工 | 编排者 | Issue 置 **In Progress** |
-| 实现完成 | 作者（SWE） | 提交分支 + 自测（`make lint` / `make test` + 针对性检查）+ 开 PR；向编排者交接：分支、HEAD SHA、PR 链接、测试输出、契约符合性自检、已知限制 |
-| 评审 | 独立 SWE | 干净环境对当前提交 PASS / 退回；只有影响既有功能的实际 bug 才退回；优化、风格、假设性风险不阻断 |
-| 合并 | 编排者 | SWE PASS + 必需 CI 绿后机械合并；Issue 置 Done；冲突/失败测试由 SWE 修复 |
-
-作者不改 Linear 状态与评论；一切状态流转、沟通、合并由编排者执行。发现契约设计问题：在自己 Issue 评论「契约变更请求」+ 理由，**代码仍按 §1 表格实现**。
+- Never commit `.env`, `auth.json`, `.modal.toml`, API tokens, passwords, private keys, or production credentials.
+- Fixtures, stubs, mocks, logs, PR descriptions, and documentation must use `REDACTED` for secret-shaped values.
+- User credentials are stored as encrypted CredentialVersions and delivered to runtimes only through scoped grants; plaintext credentials must not be returned by the API or written to logs/events.
+- Ordinary coding and review agents must not be given production mutation credentials.
+- Production deployment, DNS changes, production database mutation, secret rotation, and similar privileged actions should occur through the protected release/operations path rather than as an incidental step of feature development.
