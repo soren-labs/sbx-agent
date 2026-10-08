@@ -322,7 +322,10 @@ jobs:
 
           if compose ps -q postgres | grep -q .; then
             mkdir -p backups
-            compose exec -T postgres pg_dump -U sbx sbx | gzip > "backups/pre-${SBX_GIT_SHA}.sql.gz"
+            # The remote release script itself is delivered over SSH stdin.
+            # Compose exec/run must not inherit that stdin or they can consume
+            # the remaining script body and make the step falsely exit 0 early.
+            compose exec -T postgres pg_dump -U sbx sbx </dev/null | gzip > "backups/pre-${SBX_GIT_SHA}.sql.gz"
           fi
 
           compose pull
@@ -335,11 +338,11 @@ jobs:
             sleep 2
           done
 
-          compose run --rm --no-deps sbx python -m control.composition migrate
+          compose run --rm --no-deps -T sbx python -m control.composition migrate </dev/null
           if [ "$legacy_active" -eq 1 ]; then
             systemctl stop sbx-hosted.service
           fi
-          compose up -d sbx
+          compose up -d --force-recreate sbx
 
           healthy=0
           for _ in $(seq 1 30); do
@@ -355,7 +358,21 @@ jobs:
             if [ -f release.env.previous ]; then
               cp release.env.previous release.env
               compose pull sbx || true
-              compose up -d sbx || true
+              compose up -d --force-recreate sbx || true
+            elif [ "$legacy_active" -eq 1 ]; then
+              compose stop sbx || true
+              systemctl start sbx-hosted.service || true
+            fi
+            exit 1
+          fi
+
+          actual_image="$(docker inspect sbx-agent-sbx-1 --format '{{.Config.Image}}')"
+          if [ "$actual_image" != "$SBX_IMAGE" ]; then
+            echo "Backend image mismatch after rollout: expected=$SBX_IMAGE actual=$actual_image" >&2
+            if [ -f release.env.previous ]; then
+              cp release.env.previous release.env
+              compose pull sbx || true
+              compose up -d --force-recreate sbx || true
             elif [ "$legacy_active" -eq 1 ]; then
               compose stop sbx || true
               systemctl start sbx-hosted.service || true
@@ -377,7 +394,7 @@ jobs:
             if [ -f release.env.previous ]; then
               cp release.env.previous release.env
               compose pull sbx || true
-              compose up -d sbx || true
+              compose up -d --force-recreate sbx || true
             elif [ "$legacy_active" -eq 1 ]; then
               compose stop sbx || true
               systemctl start sbx-hosted.service || true
@@ -417,12 +434,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          page=$(curl --fail --silent --show-error --retry 10 --retry-delay 3 https://sbx-agent.com/)
-          grep -F "content=\"$RELEASE_SHA\"" <<<"$page" >/dev/null
-          curl --fail --silent --show-error --retry 10 --retry-delay 3 https://sbx-agent.com/api/readyz \
-            | jq -e '.ok == true' >/dev/null
-          curl --fail --silent --show-error --retry 10 --retry-delay 3 https://docs.sbx-agent.com/build.json \
-            | jq -e --arg sha "$RELEASE_SHA" '.git_sha == $sha' >/dev/null
+          verified=0
+          for _ in $(seq 1 20); do
+            page=$(curl --fail --silent --show-error https://sbx-agent.com/ || true)
+            console_ok=0
+            api_ok=0
+            docs_ok=0
+            grep -F "content=\"$RELEASE_SHA\"" <<<"$page" >/dev/null && console_ok=1 || true
+            curl --fail --silent --show-error https://sbx-agent.com/api/readyz \
+              | jq -e '.ok == true' >/dev/null && api_ok=1 || true
+            curl --fail --silent --show-error https://docs.sbx-agent.com/build.json \
+              | jq -e --arg sha "$RELEASE_SHA" '.git_sha == $sha' >/dev/null && docs_ok=1 || true
+            if [ "$console_ok" -eq 1 ] && [ "$api_ok" -eq 1 ] && [ "$docs_ok" -eq 1 ]; then
+              verified=1
+              break
+            fi
+            sleep 3
+          done
+          test "$verified" -eq 1 || {
+            echo "Public surfaces did not converge to release SHA $RELEASE_SHA" >&2
+            exit 1
+          }
 
       - name: Remove transient GHCR credential from VPS
         if: always()
