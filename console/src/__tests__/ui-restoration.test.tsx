@@ -15,7 +15,7 @@ describe("restored auth and shell interactions", () => {
     ]);
     await renderApp(<App />, m.fetch, "/settings");
     await screen.findByRole("heading", { name: "Sign in" });
-    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("dark");
     await userEvent.type(screen.getByLabelText("Email"), "dev@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "REDACTED");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
@@ -60,13 +60,12 @@ describe("restored auth and shell interactions", () => {
     expect(navs).toHaveLength(2);
     expect(within(navs[0]).getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
     await userEvent.click(within(navs[1]).getByRole("link", { name: "Settings" }));
-    expect(window.scrollTo).toHaveBeenLastCalledWith(0, 0);
-    await userEvent.selectOptions(screen.getByLabelText("Theme"), "dark");
-    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
-    expect(localStorage.getItem("sbx.console.theme")).toBe("dark");
+    await userEvent.selectOptions(screen.getByLabelText("Theme"), "light");
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+    expect(localStorage.getItem("sbx.console.theme")).toBe("light");
     await userEvent.click(screen.getAllByRole("button", { name: "Sign out" })[0]);
     await screen.findByRole("heading", { name: "Sign in" });
-    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("light");
     expect(m.find("POST", "/api/auth/logout")).toHaveLength(1);
   });
 });

@@ -4,22 +4,56 @@ interface IconProps {
 }
 
 const paths: Record<string, string> = {
-  terminal: "M4 5h16v14H4zM7 9l3 3-3 3M13 15h4",
-  sparkles: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3z",
   plus: "M12 5v14M5 12h14",
-  list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
-  plug: "M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5",
-  gear: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.24.6.86 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.65 0-1.27.4-1.51 1z",
-  send: "M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z",
-  stop: "M6 6h12v12H6z",
-  refresh: "M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6",
-  warn: "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
-  x: "M18 6 6 18M6 6l12 12",
-  check: "M20 6 9 17l-5-5",
-  chev: "M9 18l6-6-6-6",
+  arrow: "M12 19V5m-5 5 5-5 5 5",
+  arrowRight: "M5 12h14m-6-6 6 6-6 6",
+  chevron: "m9 5 7 7-7 7",
+  chev: "m9 5 7 7-7 7",
+  down: "m6 9 6 6 6-6",
   back: "M15 18l-6-6 6-6",
-  clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2",
-  github: "M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22",
+  sessions: "M5 3h14v18H5zM8 7h8M8 11h8M8 15h5",
+  list: "M5 3h14v18H5zM8 7h8M8 11h8M8 15h5",
+  search: "M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+  settings: "M4 7h16M4 17h16M8 4v6M16 14v6",
+  gear: "M4 7h16M4 17h16M8 4v6M16 14v6",
+  plug: "M9 3v4m6-4v4M6 7h12v4a6 6 0 0 1-12 0zM12 17v4",
+  check: "m5 12 4 4L19 6",
+  clock: "M12 8v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0",
+  code: "m8 6-6 6 6 6m8-12 6 6-6 6m-3-14-2 16",
+  terminal: "m5 7 5 5-5 5m8 0h6",
+  branch:
+    "M6 6v12m0-6h8a4 4 0 0 0 4-4M9 3a3 3 0 1 1-6 0 3 3 0 0 1 6 0M9 21a3 3 0 1 1-6 0 3 3 0 0 1 6 0M21 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+  pr: "M6 8v8M9 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0M9 19a3 3 0 1 1-6 0 3 3 0 0 1 6 0m6-15h3a3 3 0 0 1 3 3v9m-6-12 3-3m-3 3 3 3M21 19a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+  sun: "M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1",
+  file: "M5 3h9l5 5v13H5zM14 3v6h5",
+  globe:
+    "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M3 12h18M12 3a20 20 0 0 1 0 18 20 20 0 0 1 0-18",
+  external: "M14 3h7v7m0-7-11 11M10 3H3v18h18v-7",
+  x: "m6 6 12 12M6 18 18 6",
+  stop: "M6 6h12v12H6z",
+  refresh: "M20 7a9 9 0 1 0 1 8M20 2v6h-6",
+  pin: "m9 3 6 0-1 6 4 5H6l4-5-1-6m3 11v7",
+  moon: "M21 13a9 9 0 1 1-10-10 7 7 0 0 0 10 10",
+  menu: "M4 6h16M4 12h16M4 18h16",
+  more: "M4 12h.01M12 12h.01M20 12h.01",
+  shield: "m12 2 9 4v6c0 6-9 10-9 10S3 18 3 12V6zM8 12l3 3 5-6",
+  eye: "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+  eyeOff:
+    "M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.2M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2",
+  logout: "M15 4h4v16h-4M10 8l-4 4 4 4M6 12h11",
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  sparkle:
+    "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z",
+  sparkles:
+    "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z",
+  key: "M8 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8M12 12h9m-3 0v3m-3-3v2",
+  cpu: "M7 7h10v10H7zM10 10h4v4h-4zM10 3v4m4-4v4m-4 10v4m4-4v4M3 10h4m-4 4h4m10-4h4m-4 4h4",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0",
+  send: "M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z",
+  github:
+    "M9 19c-5 1-5-3-7-3m14 6v-4c0-1-.4-2-1-3 4 0 6-2 6-6 0-2-1-3-2-4 0-1 0-3-1-4l-4 2H9L5 1c-1 1-1 3-1 4-1 1-2 2-2 4 0 4 2 6 6 6-1 1-1 2-1 3v4",
+  info: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01",
+  warn: "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
 };
 
 export function Icon({
@@ -34,17 +68,35 @@ export function Icon({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
       aria-hidden="true"
     >
-      <path d={paths[name] ?? paths.info ?? ""} />
+      <path d={paths[name] ?? paths.code} />
     </svg>
   );
 }
-paths.info = "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01";
+
+export function Mark({ small = false, className = "" }: { small?: boolean; className?: string }) {
+  return (
+    <span className={`sbx-mark ${small ? "small" : ""} ${className}`} aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none">
+        <path
+          d="m16 3 12 7v13l-12 7L4 23V10l12-7Z"
+          stroke="currentColor"
+          strokeWidth="2"
+        />
+        <path
+          d="m4 10 12 7 12-7M16 17v13m-6-23 12 7"
+          stroke="currentColor"
+          strokeWidth="2"
+        />
+      </svg>
+    </span>
+  );
+}
 
 export function Spinner({ size = 16 }: { size?: number }) {
   return (

@@ -12,9 +12,11 @@ import { ApiProvider } from "./state/context";
 
 const savedTheme = localStorage.getItem("sbx.console.theme");
 document.documentElement.dataset.theme =
-  savedTheme === "light" || savedTheme === "dark"
-    ? savedTheme
-    : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  savedTheme === "light"
+    ? "light"
+    : savedTheme === "dark"
+      ? "dark"
+      : window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

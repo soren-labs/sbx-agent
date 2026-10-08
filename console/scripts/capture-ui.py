@@ -7,8 +7,13 @@ No product mock mode, cloud account, or backend credentials are used.
 
 import argparse
 import json
+import os
 from pathlib import Path
 from urllib.parse import urlparse
+
+os.environ.setdefault(
+    "PLAYWRIGHT_BROWSERS_PATH", "/home/zheng/.local/state/sbx-review-163/browsers"
+)
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -90,11 +95,11 @@ def run():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(
-            viewport={"width": 1440, "height": 1000},
-            color_scheme="light",
+            viewport={"width": 1540, "height": 960},
+            color_scheme="dark",
             locale="en-US",
             record_video_dir=str(OUTPUT / "video"),
-            record_video_size={"width": 1440, "height": 1000},
+            record_video_size={"width": 1540, "height": 960},
         )
         authenticated = False
 
@@ -212,6 +217,7 @@ def run():
         def capture(name):
             page.evaluate("document.fonts.ready")
             page.evaluate("window.scrollTo(0, 0)")
+            page.evaluate("document.querySelector('#workspace-main')?.scrollTo(0, 0)")
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), name
             page.screenshot(
                 path=str(OUTPUT / name),
@@ -231,16 +237,16 @@ def run():
         expect(page.get_by_role("status")).to_contain_text("verified")
         capture("04-verify-mobile.png")
         page.goto(BASE + "/login")
-        page.set_viewport_size({"width": 1440, "height": 1000})
+        page.set_viewport_size({"width": 1540, "height": 960})
         page.get_by_label("Email", exact=True).fill("alex@example.com")
         page.get_by_label("Password", exact=True).fill("REDACTED")
         page.get_by_role("button", name="Sign in", exact=True).click()
-        expect(page.get_by_role("heading", name="What would you like to build?")).to_be_visible()
-        expect(page.get_by_role("link", name=SESSION["title"])).to_be_visible()
+        expect(page.locator(".home-hero h1")).to_be_visible()
+        expect(page.get_by_role("link", name=SESSION["title"]).first).to_be_visible()
         capture("05-home-desktop.png")
         page.locator(".side-nav").get_by_role("link", name="Sessions", exact=True).click()
         capture("06-sessions-desktop.png")
-        page.get_by_role("link", name=SESSION["title"]).click()
+        page.get_by_role("link", name=SESSION["title"]).first.click()
         expect(page.get_by_role("log")).to_contain_text("Ready for review")
         capture("07-session-desktop.png")
         page.get_by_role("button", name="Activity", exact=True).click()
@@ -248,7 +254,7 @@ def run():
         page.get_by_role("button", name="Conversation", exact=True).click()
         page.set_viewport_size({"width": 390, "height": 844})
         capture("08-session-mobile.png")
-        page.locator(".bottom-nav").get_by_role("link", name="Home", exact=True).click()
+        page.locator(".bottom-nav").get_by_role("link", name="New Session", exact=True).click()
         capture("09-home-mobile.png")
         page.locator(".session-options > summary").click()
         expect(page.get_by_label("Model", exact=True)).to_be_visible()
@@ -257,19 +263,21 @@ def run():
         page.locator(".bottom-nav").get_by_role("link", name="Connections", exact=True).click()
         expect(page.get_by_role("group", name="My Modal workspace")).to_be_visible()
         capture("10-connections-mobile.png")
-        page.set_viewport_size({"width": 1440, "height": 1000})
+        page.set_viewport_size({"width": 1540, "height": 960})
         capture("11-connections-desktop.png")
-        page.locator(".side-nav").get_by_role("link", name="Projects", exact=True).click()
+        page.goto(BASE + "/projects")
         expect(page.get_by_text("Workspace application", exact=True)).to_be_visible()
         capture("12-projects-desktop.png")
         page.locator(".side-nav").get_by_role("link", name="Settings", exact=True).click()
         capture("13-settings-desktop.png")
+        page.get_by_label("Theme", exact=True).select_option("light")
+        expect(page.locator("html")).to_have_attribute("data-theme", "light")
         page.get_by_label("Theme", exact=True).select_option("dark")
         expect(page.locator("html")).to_have_attribute("data-theme", "dark")
         page.reload()
         expect(page.locator("html")).to_have_attribute("data-theme", "dark")
         capture("14-settings-dark.png")
-        page.locator(".side-nav").get_by_role("link", name="Home", exact=True).click()
+        page.locator(".new-session-button").click()
         capture("15-home-dark.png")
         for width in [320, 768, 899, 900, 1024]:
             page.set_viewport_size({"width": width, "height": 900})
