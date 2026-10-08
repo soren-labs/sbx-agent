@@ -60,6 +60,10 @@ describe("new Session composer", () => {
       </Routes>,
       m.fetch,
     );
+    const optionsToggle = screen.getByText("Session options");
+    expect(optionsToggle.closest("details")).not.toHaveAttribute("open");
+    await userEvent.click(optionsToggle);
+    expect(optionsToggle.closest("details")).toHaveAttribute("open");
     const model = (await screen.findByLabelText("Model")) as HTMLSelectElement;
     await waitFor(() => expect(model.value).toBe("big-pickle"));
     expect((screen.getByLabelText("Compute") as HTMLSelectElement).value).toBe("modal");
@@ -68,7 +72,10 @@ describe("new Session composer", () => {
 
     await userEvent.type(screen.getByLabelText("Task"), "Fix the failing check");
     await userEvent.type(screen.getByLabelText("Repository"), "acme/app");
-    await userEvent.click(screen.getByRole("button", { name: "Start Session" }));
+    await userEvent.click(optionsToggle);
+    expect(optionsToggle.closest("details")).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByLabelText("Task"));
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
 
     await screen.findByText("opened session");
     const post = m.find("POST", "/api/workspaces/w1/sessions")[0];

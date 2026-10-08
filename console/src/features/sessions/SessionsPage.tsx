@@ -82,6 +82,7 @@ export function SessionsPage() {
           {t("nav.new")}
         </Link>
       </div>
+      <p className="page-lead muted">{t("sessions.intro")}</p>
       <div className="filter-chips" role="group" aria-label={t("sessions.filter_lifecycle")}>
         {LIFECYCLES.map((l) => (
           <button key={l || "all"} type="button" className={`chip${lifecycle === l ? " active" : ""}`} aria-pressed={lifecycle === l} onClick={() => setLifecycle(l)}>

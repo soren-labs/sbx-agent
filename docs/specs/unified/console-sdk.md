@@ -22,3 +22,17 @@
   0600 config file. `connections add/replace` read secrets from stdin or a file, never argv. Also
   provides `sessions …`, `execute`, `changesets`, `deliveries`, `delegations`, `operations`, and the
   operator commands `serve` and `migrate`.
+
+## Console presentation
+
+The Console shares typography and surface tokens across Home, Projects, Sessions,
+Connections, Settings and auth. It supports saved light/dark themes and system
+preference on both anonymous and authenticated pages, a desktop workspace sidebar,
+and mobile top bar/bottom navigation. Route changes reset page scroll. Home's
+**Session options** disclosure retains project/repository, model and executor
+selections while collapsed; task submission and Ctrl/⌘+Enter use the existing
+Session creation command. This presentation does not change routes, request
+schemas, server action eligibility, identity, or the query/event store.
+
+Current browser evidence is documented in
+[Console UI restoration notes](../../../console/docs/ui-restoration/notes.md).

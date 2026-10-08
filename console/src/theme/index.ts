@@ -4,10 +4,9 @@ export type Theme = "light" | "dark" | "system";
 const KEY = "sbx.console.theme";
 
 function resolve(theme: Theme): "light" | "dark" {
-  if (theme !== "system") return theme;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  if (theme === "light") return "light";
+  if (theme === "dark") return "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
 function apply(theme: Theme) {
