@@ -113,7 +113,7 @@ export function ConnectionsPage() {
             </li>
           </ol>
           <p className="hs-meta">
-            Runtime: <code>0.1.1</code>
+            Runtime: <code>0.1.2</code>
           </p>
 
           {modalConn && (

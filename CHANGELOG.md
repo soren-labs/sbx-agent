@@ -6,6 +6,9 @@ source for release notes.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-08
+
+- Restored the polished Opus 5.5 Console experience on top of the unified API/state architecture, including the split-screen auth flow, session-rich dark workspace shell, prompt-first Home, provider-card Integrations, responsive mobile views, real-browser screenshots, and interaction video evidence.
 - Renamed the project from `sbx-browser` to `sbx-agent`; the CLI command, Python import package, `SBX_*` environment variables, and `sbx-runtime` names remain stable.
 - Added the production container/release pipeline: GHCR image publishing, VPS Compose deployment, Cloudflare Pages deployment for Console and Docs, release manifests, readiness checks, and image rollback.
 
