@@ -78,20 +78,28 @@ describe("Session page", () => {
     expect(panel).toHaveTextContent("Compute: ready");
     expect(panel).toHaveTextContent("Worktree: live");
     expect(screen.getByTestId("recovery-point")).toHaveTextContent("Generation 2");
-    expect(screen.getAllByText("running").length).toBeGreaterThan(0);
-
-    // retry/cancel labels name the Turn; replay never POSTs
-    expect(screen.getByRole("button", { name: "Cancel Turn" })).toBeInTheDocument();
+    // One status, from the live Turn, in words; the Stop action names what it does.
+    expect(screen.getByTestId("session-status")).toHaveTextContent("Working");
+    const status = within(log).getByTestId("turn-status");
+    expect(status).toHaveAttribute("data-state", "running");
+    expect(status).toHaveTextContent("Working on your request");
+    expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
     // The running Turn has reported no usage: nothing is invented, and no cost is guessed.
     const usage = screen.getByRole("region", { name: "Usage" });
     expect(usage).toHaveTextContent("The CLI has not reported token usage yet.");
     expect(document.body.innerHTML).not.toMatch(/20,604|\$0\.003|Effort: low/);
     expect(screen.getByRole("region", { name: "Details" })).toHaveTextContent("OpenCode");
     expect(m.calls.filter((c) => c.method === "POST")).toHaveLength(0);
-    for (const tab of ["Conversation", "Activity", "Changes", "Files", "Terminal", "Services", "Child Sessions"]) {
+    // The conversation stays put while workspace panels switch beside it.
+    for (const tab of ["Overview", "Changes", "Files", "Terminal", "Services", "Child Sessions", "Activity"]) {
       expect(screen.getByRole("button", { name: tab })).toBeInTheDocument();
     }
     await userEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(await screen.findAllByText("message.part_updated", { selector: "code" })).toHaveLength(2);
+    expect(screen.getByRole("log", { name: "Conversation" })).toBeInTheDocument();
+    // The timeline speaks in words; per-chunk text updates are hidden until asked for.
+    const timeline = await screen.findByRole("list", { name: "Events" });
+    expect(timeline).not.toHaveTextContent("message.part_updated");
+    await userEvent.click(screen.getByLabelText("Show streaming updates"));
+    expect(within(screen.getByRole("list", { name: "Events" })).getAllByText("Reply text updated")).toHaveLength(2);
   });
 });

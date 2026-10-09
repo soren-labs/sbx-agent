@@ -272,6 +272,7 @@ export interface Turn {
   actions: string[];
   version: number;
   created_at?: string;
+  started_at?: string | null;
   finished_at?: string | null;
 }
 export interface Accepted {
