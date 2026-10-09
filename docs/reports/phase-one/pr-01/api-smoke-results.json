@@ -1,0 +1,153 @@
+{
+ "local": {
+  "opencode": {
+   "turn1": "succeeded",
+   "secs1": 17,
+   "tools": [
+    "bash",
+    "write"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "1.18.35",
+   "turn2": "succeeded",
+   "secs2": 10,
+   "resumed": true,
+   "recall": true
+  },
+  "codex": {
+   "turn1": "succeeded",
+   "secs1": 8,
+   "tools": [
+    "shell"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "codex-cli 0.162.0",
+   "turn2": "succeeded",
+   "secs2": 2,
+   "resumed": true,
+   "recall": true
+  },
+  "claude": {
+   "turn1": "succeeded",
+   "secs1": 10,
+   "tools": [
+    "Bash",
+    "Write"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "2.1.295 (Claude Code)",
+   "turn2": "succeeded",
+   "secs2": 3,
+   "resumed": true,
+   "recall": true
+  },
+  "grok": {
+   "turn1": "succeeded",
+   "secs1": 11,
+   "tools": [
+    "run_terminal_command"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "grok 1.0.50 (c58f321264ba)",
+   "turn2": "succeeded",
+   "secs2": 3,
+   "resumed": true,
+   "recall": true
+  },
+  "commandcode": {
+   "turn1": "succeeded",
+   "secs1": 12,
+   "tools": [
+    "shell_command",
+    "write_file"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "1.79.2",
+   "turn2": "succeeded",
+   "secs2": 5,
+   "resumed": true,
+   "recall": true
+  }
+ },
+ "modal": {
+  "opencode": {
+   "turn1": "succeeded",
+   "secs1": 90,
+   "tools": [
+    "bash",
+    "write"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "1.18.35",
+   "turn2": "succeeded",
+   "secs2": 5,
+   "resumed": true,
+   "recall": true
+  },
+  "codex": {
+   "turn1": "succeeded",
+   "secs1": 11,
+   "tools": [
+    "shell"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "codex-cli 0.162.0",
+   "turn2": "succeeded",
+   "secs2": 3,
+   "resumed": true,
+   "recall": true
+  },
+  "claude": {
+   "turn1": "succeeded",
+   "secs1": 16,
+   "tools": [
+    "Bash",
+    "Write"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "2.1.295 (Claude Code)",
+   "turn2": "succeeded",
+   "secs2": 3,
+   "resumed": true,
+   "recall": true
+  },
+  "grok": {
+   "turn1": "succeeded",
+   "secs1": 15,
+   "tools": [
+    "run_terminal_command",
+    "write"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "grok 1.0.50 (c58f321264ba)",
+   "turn2": "succeeded",
+   "secs2": 3,
+   "resumed": true,
+   "recall": true
+  },
+  "commandcode": {
+   "turn1": "succeeded",
+   "secs1": 13,
+   "tools": [
+    "shell_command",
+    "write_file"
+   ],
+   "native_bound": true,
+   "usage": true,
+   "cli": "1.79.2",
+   "turn2": "succeeded",
+   "secs2": 5,
+   "resumed": true,
+   "recall": true
+  }
+ }
+}
