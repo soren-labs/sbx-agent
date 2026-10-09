@@ -1,0 +1,105 @@
+{
+ "run": "20261009120844",
+ "repo": "soren-labs/sbx-e2e-test",
+ "harness": "Claude Code",
+ "steps": [
+  {
+   "name": "alice_registered_verified_logged_in",
+   "ok": true
+  },
+  {
+   "name": "alice_bound_inference_modal_github",
+   "ok": true
+  },
+  {
+   "name": "alice_real_session",
+   "ok": true,
+   "session": "sess_01a1209144fd758499fd91a3bb6a3dbd",
+   "turns": [
+    "succeeded",
+    "succeeded"
+   ],
+   "executor": "modal"
+  },
+  {
+   "name": "alice_delivery_pull_request",
+   "ok": true,
+   "number": 43,
+   "url": "https://github.com/soren-labs/sbx-e2e-test/pull/43",
+   "branch": "sbx/sess_01a1209144fd758499fd91a3bb6a3dbd/cs_01a12091db997042a64dcf9519d52aaf",
+   "state": "succeeded"
+  },
+  {
+   "name": "alice_api_key_python_sdk_client",
+   "ok": true,
+   "auth_via": "api_key",
+   "harnesses": [
+    "claude",
+    "codex",
+    "commandcode",
+    "grok",
+    "opencode"
+   ],
+   "sessions": 1,
+   "turn": "succeeded",
+   "reply_has_marker": true
+  },
+  {
+   "name": "alice_api_key_calls",
+   "ok": true,
+   "me": 200,
+   "via": "api_key",
+   "sessions": 200,
+   "session_count": 1,
+   "connections": 200,
+   "connection_kinds": [
+    "github",
+    "inference_api",
+    "modal"
+   ],
+   "secrets_in_response": false,
+   "send_message": 202,
+   "api_turn": "succeeded",
+   "reply_ok": true,
+   "without_key": 401,
+   "invalid_key": 401
+  },
+  {
+   "name": "bob_isolation",
+   "ok": true,
+   "session": 404,
+   "events": 404,
+   "messages": 404,
+   "files": 404,
+   "changesets": 404,
+   "alice_workspace_sessions": 404,
+   "alice_workspace_connections": 404,
+   "alice_models": 404,
+   "connection_reads": [
+    404,
+    404,
+    404
+   ],
+   "post_message": 404,
+   "use_alice_connection": 404,
+   "delete_alice_connection": 404,
+   "own_sessions": 0,
+   "own_connections": 0,
+   "alice_key_sees_bob_workspace": 404
+  }
+ ],
+ "statuses_seen": [
+  "Starting",
+  "Working",
+  "Waiting for you"
+ ],
+ "pr": {
+  "number": 43,
+  "branch": "sbx/sess_01a1209144fd758499fd91a3bb6a3dbd/cs_01a12091db997042a64dcf9519d52aaf"
+ },
+ "cleanup": {
+  "release_executor": 202,
+  "revoke_api_key": 200,
+  "key_after_revoke": 401
+ }
+}
