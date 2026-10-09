@@ -30,6 +30,8 @@ class HarnessManifest:
     capabilities: dict[str, Capability]
     native_state_versions: list[str] = field(default_factory=list)
     credential_methods: list[str] = field(default_factory=list)
+    # Wire protocols the official CLI can be pointed at, in preference order.
+    inference_protocols: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -52,6 +54,8 @@ class TurnContext:
     native_binding: dict[str, Any] | None = None
     deadline_seconds: float = 3600.0
     result_contract: dict[str, Any] | None = None
+    # Non-secret BYOK endpoint for this Turn: {"protocol", "base_url", "model"}.
+    inference: dict[str, Any] | None = None
 
 
 @dataclass
@@ -60,6 +64,8 @@ class PreparedHarness:
     env: dict[str, str]
     secrets: list[str] = field(default_factory=list, repr=False)
     credential_files: list[Path] = field(default_factory=list)
+    # CLI-facing model argument when it differs from the Turn's model id.
+    model: str | None = None
 
 
 @dataclass
@@ -117,6 +123,69 @@ class Harness(Protocol):
 
 def obs(type: str, **payload: Any) -> dict[str, Any]:
     return {"type": type, "payload": payload}
+
+
+# Environment variable every Harness reads the BYOK key from. CLI config files only
+# ever reference it by name, so no credential is written to disk for generic inference.
+INFERENCE_KEY_ENV = "SBX_INFERENCE_API_KEY"
+# Provider/alias name the generic endpoint is registered under inside each CLI's config.
+INFERENCE_ALIAS = "sbx"
+
+
+@dataclass(frozen=True)
+class Inference:
+    protocol: str
+    base_url: str
+    model: str
+    api_key: str = field(repr=False)
+
+
+def resolve_inference(
+    context: TurnContext, credentials: dict[str, Any], accepted: tuple[str, ...]
+) -> Inference:
+    """The Turn's BYOK endpoint, or a HarnessError naming what is missing."""
+    endpoint = context.inference or {}
+    key = (credentials.get("inference") or {}).get("api_key")
+    if not key or not endpoint.get("base_url"):
+        raise HarnessError("connection_required", "no inference connection was provided")
+    if endpoint.get("protocol") not in accepted:
+        raise HarnessError(
+            "unsupported_capability",
+            f"this harness accepts {', '.join(accepted)} endpoints, not {endpoint.get('protocol')}",
+        )
+    model = context.model or endpoint.get("model")
+    if not model:
+        raise HarnessError("validation_failed", "no model was selected for this Turn")
+    return Inference(endpoint["protocol"], endpoint["base_url"].rstrip("/"), model, key)
+
+
+def cli_bin(env_name: str, default: str) -> list[str]:
+    """Official CLI argv prefix; ``<NAME>_BIN`` overrides it (tests point it at a stand-in)."""
+    import os
+    import shlex
+    import sys
+
+    tokens = shlex.split(os.environ.get(env_name, default)) or [default]
+    if len(tokens) == 1 and tokens[0].endswith(".py"):
+        return [sys.executable, tokens[0]]
+    return tokens
+
+
+def base_env(home: Path, **extra: str) -> dict[str, str]:
+    """Minimal isolated environment: nothing from the host but PATH."""
+    import os
+
+    return {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+        **extra,
+    }
+
+
+def argv_text(prompt: str) -> str:
+    """A prompt passed as an option value must not look like another option."""
+    return prompt if not prompt.startswith("-") else "\n" + prompt
 
 
 AUTH_NEEDLES = (

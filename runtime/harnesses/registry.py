@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Any
 
+from runtime.harnesses import claude, codex, commandcode, grok, opencode
+from runtime.harnesses.claude import ClaudeHarness
 from runtime.harnesses.codex import CodexHarness
-from runtime.harnesses.codex import _bin as codex_bin
+from runtime.harnesses.commandcode import CommandCodeHarness
 from runtime.harnesses.disabled import disabled_manifests
+from runtime.harnesses.grok import GrokHarness
 from runtime.harnesses.opencode import OpenCodeHarness
-from runtime.harnesses.opencode import _bin as opencode_bin
 from runtime.harnesses.protocol import Harness
 
 
@@ -20,7 +23,7 @@ def _version(argv: list[str]) -> str:
             capture_output=True,
             text=True,
             timeout=20,
-            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp"},
+            env={"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": "/tmp"},
         )
         text = (out.stdout or out.stderr).strip().splitlines()
         return text[-1][:80] if out.returncode == 0 and text else "not_installed"
@@ -29,9 +32,15 @@ def _version(argv: list[str]) -> str:
 
 
 def installed(probe: bool = True) -> dict[str, Harness]:
+    def version(module: Any) -> str:
+        return _version(module._bin()) if probe else "unverified"
+
     return {
-        "opencode": OpenCodeHarness(_version(opencode_bin()) if probe else "unverified"),
-        "codex": CodexHarness(_version(codex_bin()) if probe else "unverified"),
+        "opencode": OpenCodeHarness(version(opencode)),
+        "codex": CodexHarness(version(codex)),
+        "claude": ClaudeHarness(version(claude)),
+        "grok": GrokHarness(version(grok)),
+        "commandcode": CommandCodeHarness(version(commandcode)),
     }
 
 

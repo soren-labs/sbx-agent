@@ -17,37 +17,37 @@ from fastapi.testclient import TestClient
 
 from tests.support.runtime import FAKE_OPENCODE
 
-ZEN_CATALOG = {
-    "models": [
-        {
-            "id": "opencode/big-pickle",
-            "provider_model": "big-pickle",
-            "free": True,
-            "usable_via": "official_opencode_cli",
-            "pricing_known": True,
-        },
-        {
-            "id": "opencode/gpt-5.4-mini",
-            "provider_model": "gpt-5.4-mini",
-            "free": False,
-            "usable_via": "official_opencode_cli",
-            "pricing_known": True,
-        },
-    ],
-    "preferred_model": "opencode/big-pickle",
+INFERENCE_URL = "https://inference.example.test/v1"
+INFERENCE_MODEL = "test-model"
+INFERENCE_CATALOG = {
+    "models": [{"id": INFERENCE_MODEL}, {"id": "test-model-large"}],
+    "preferred_model": INFERENCE_MODEL,
+    "protocols": ["openai_chat"],
     "source": "test",
 }
 
 
+def inference(api_key: str, **overrides: Any) -> dict[str, Any]:
+    """A generic BYOK inference credential as a user submits it."""
+    return {
+        "api_key": api_key,
+        "base_url": INFERENCE_URL,
+        "protocol": "openai_chat",
+        "model": INFERENCE_MODEL,
+        **overrides,
+    }
+
+
 def fake_validators(log: list[str] | None = None) -> dict[str, Any]:
-    def zen(material: dict[str, Any], **_: Any) -> Observation:
-        (log or []).append("zen")
+    def inference_api(material: dict[str, Any], **_: Any) -> Observation:
+        (log or []).append("inference_api")
         if material["api_key"].startswith("invalid"):
             return Observation(
-                "invalid", details={"reason": "zen_rejected_key"}, quota_consuming=True
+                "invalid", details={"reason": "inference_rejected_key"}, quota_consuming=True
             )
+        catalog = {**INFERENCE_CATALOG, "protocols": list(material["endpoints"])}
         return Observation(
-            "ready", details={"auth": "accepted"}, catalog=ZEN_CATALOG, quota_consuming=True
+            "ready", details={"auth": "accepted"}, catalog=catalog, quota_consuming=True
         )
 
     def modal(material: dict[str, Any], **_: Any) -> Observation:
@@ -58,10 +58,7 @@ def fake_validators(log: list[str] | None = None) -> dict[str, Any]:
     def github(material: dict[str, Any], **_: Any) -> Observation:
         return Observation("ready", external_identity="octo-test", details={"scopes": ["repo"]})
 
-    def codex(material: dict[str, Any], **_: Any) -> Observation:
-        return Observation("ready", details={"probe": "format_only"})
-
-    return {"opencode_zen": zen, "modal": modal, "github": github, "codex": codex}
+    return {"inference_api": inference_api, "modal": modal, "github": github}
 
 
 def make_config(

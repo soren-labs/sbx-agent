@@ -143,8 +143,13 @@ def models(
     request: Request, workspace_id: str | None = None, provider_id: str = "opencode"
 ) -> dict[str, Any]:
     who = principal(request)
-    return services(request).connections.models(
-        who, workspace_id or who.default_workspace_id, provider_id=provider_id
+    svc = services(request)
+    manifest = svc.catalog.manifest(provider_id) or {}
+    return svc.connections.models(
+        who,
+        workspace_id or who.default_workspace_id,
+        provider_id=provider_id,
+        accepted=manifest.get("inference_protocols") or [],
     )
 
 

@@ -27,7 +27,7 @@ from tests.support.runtime import FAKE_OPENCODE
 class StaticBroker:
     """Phase-2 stand-in for the vault broker: fixed inference bundle, no ambient env."""
 
-    def __init__(self, api_key: str = "zen-static-test-key-123456") -> None:
+    def __init__(self, api_key: str = "inference-static-test-key-123456") -> None:
         self.api_key = api_key
         self.health: list[str] = []
 
@@ -37,7 +37,12 @@ class StaticBroker:
         return {"credential_version_id": None}
 
     def inference(self, session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        return {"opencode_zen": {"api_key": self.api_key}}, {}
+        endpoint = {
+            "protocol": "openai_chat",
+            "base_url": "https://inference.example.test/v1",
+            "model": "test-model",
+        }
+        return {"inference": {"api_key": self.api_key}}, {"inference": endpoint}
 
     def compute(self, session: dict[str, Any]) -> dict[str, Any] | None:
         return None

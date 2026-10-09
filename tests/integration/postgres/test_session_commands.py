@@ -26,7 +26,7 @@ def test_disabled_harness_is_rejected(db) -> None:
         sessions_app(db).create(
             principal,
             principal.default_workspace_id,
-            session_body(harness={"provider_id": "claude"}),
+            session_body(harness={"provider_id": "devin"}),
         )
     assert err.value.code == "unsupported_capability"
 

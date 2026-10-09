@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 from runtime.security.artifacts import collect_known, is_secret_path, secret_reason
-from tests.support.runtime import DaemonHarness
+from tests.support.runtime import INFERENCE_ENDPOINT, DaemonHarness, inference_secrets
 
-KEY = "zen-selected-artifact-key-7f3a9c"  # fake selected credential
-ZEN = {"opencode_zen": {"api_key": KEY}}
+KEY = "inference-selected-artifact-key-7f3a9c"  # fake selected credential
+ZEN = inference_secrets(KEY)
 GH_LIKE = "ghp_" + "Q" * 36
 PRIVATE_KEY = "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
 
@@ -26,9 +26,10 @@ def start_payload(prompt: str, execution_id: str = "exec_1") -> dict:
         "turn_id": "turn_1",
         "execution_id": execution_id,
         "prompt": prompt,
-        "model": "opencode/big-pickle",
+        "model": "test-model",
         "native_binding": None,
         "deadline_seconds": 30,
+        "inference": INFERENCE_ENDPOINT,
     }
 
 
@@ -125,7 +126,7 @@ def test_git_username_is_not_treated_as_a_selected_secret(rt) -> None:
 def test_historical_credential_is_filtered_after_runtime_restart(rt, db, tmp_path, slot, change):
     from control.application.artifact_secrets import runtime_visible
     from control.domain.ids import new_id
-    from tests.support.api import ApiStack, User
+    from tests.support.api import ApiStack, User, inference
 
     stack = ApiStack(db, tmp_path / "control")
     user = User(stack)
@@ -134,12 +135,17 @@ def test_historical_credential_is_filtered_after_runtime_restart(rt, db, tmp_pat
         "REDACTED_B_HISTORY_000",
         "REDACTED_UNRELATED_000",
     )
-    kind, field = ("opencode_zen", "api_key") if slot == "inference" else ("github", "token")
-    zen = user.connect("opencode_zen", {"api_key": old if slot == "inference" else "REDACTED_ZEN"})
+
+    def credential(value: str) -> tuple[str, dict]:
+        if slot == "inference":
+            return "inference_api", inference(value)
+        return "github", {"token": value}
+
+    zen = user.connect("inference_api", inference(old if slot == "inference" else "REDACTED_ZEN"))
     selected = zen if slot == "inference" else user.connect("github", {"token": old})
-    user.connect(kind, {field: unrelated})
+    user.connect(*credential(unrelated))
     other = User(stack)
-    other.connect(kind, {field: "REDACTED_OTHER_OWNER"})
+    other.connect(*credential("REDACTED_OTHER_OWNER"))
     stack.drain()
     body = {
         "harness": {"provider_id": "opencode"},
@@ -172,7 +178,7 @@ def test_historical_credential_is_filtered_after_runtime_restart(rt, db, tmp_pat
         if change == "replace":
             replaced = user.post(
                 f"/api/connections/{selected['id']}/credential-versions",
-                {"credential": {field: new}, "expected_version": selected["version"]},
+                {"credential": credential(new)[1], "expected_version": selected["version"]},
             )
             assert replaced.status_code == 201, replaced.text
         else:
@@ -406,7 +412,7 @@ def test_prepare_fault_and_prior_selected_values_are_redacted(rt, monkeypatch) -
         "turn.start",
         "next_turn",
         start_payload(KEY, "next_exec"),
-        secrets_={"opencode_zen": {"api_key": "REDACTED"}},
+        secrets_=inference_secrets("REDACTED"),
     )
     assert rt.wait_op("next_turn")["status"] == "succeeded"
     assert KEY not in str(rt.events())

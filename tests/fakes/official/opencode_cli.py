@@ -7,7 +7,9 @@ error + exit 1 · ``[write:path=text]`` write a file under --dir · ``[recall]``
 all earlier prompts of the native session · ``[flood:N]`` emit N text frames ·
 ``[result:{json}]`` reply with a fenced JSON result block.
 Native sessions persist in ``$XDG_DATA_HOME/opencode/opencode.db`` (JSON here).
-An ``auth.json`` key of ``invalid`` yields the real 401-style error frame.
+The key comes from ``$SBX_INFERENCE_API_KEY`` (custom provider config named by
+``$OPENCODE_CONFIG``) or, for the legacy Zen lane, ``auth.json``; a key starting with
+``invalid`` yields the real 401-style error frame.
 """
 
 from __future__ import annotations
@@ -50,7 +52,9 @@ def main() -> int:
         return 1
     sid = requested or f"ses_{uuid.uuid4().hex[:20]}"
     msg = f"msg_{uuid.uuid4().hex[:12]}"
-    key = json.loads(auth.read_text())["opencode"]["key"] if auth.exists() else None
+    key = os.environ.get("SBX_INFERENCE_API_KEY") if os.environ.get("OPENCODE_CONFIG") else None
+    if key is None and auth.exists():
+        key = json.loads(auth.read_text())["opencode"]["key"]
     if not key or key.startswith("invalid"):
         emit(
             {

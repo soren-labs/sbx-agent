@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.support.api import ApiStack, User
+from tests.support.api import ApiStack, User, inference
 
 ZEN = "zen-api-key-for-turns-0001"
 
@@ -24,7 +24,7 @@ SPEC = {
 
 def test_project_versions_are_immutable_and_sessions_pin(stack) -> None:
     user = User(stack)
-    user.connect("opencode_zen", {"api_key": ZEN})
+    user.connect("inference_api", inference(ZEN))
     stack.drain()
     created = user.post(
         f"/api/workspaces/{user.workspace_id}/projects",
@@ -42,9 +42,7 @@ def test_project_versions_are_immutable_and_sessions_pin(stack) -> None:
         f"/api/workspaces/{user.workspace_id}/sessions", {"project_id": project["id"]}
     ).json()["session"]
     assert session["project_version_id"] == project["current_version"]["id"]
-    assert session["harness"]["model"] == "opencode/big-pickle", (
-        "defaults to the preferred free model"
-    )
+    assert session["harness"]["model"] == "test-model", "defaults to the preferred free model"
     conflict = user.post(
         f"/api/projects/{project['id']}/versions", {"spec": SPEC, "expected_version": 99}
     )
@@ -61,7 +59,7 @@ def test_project_versions_are_immutable_and_sessions_pin(stack) -> None:
 
 def test_api_turn_with_manual_zen_connection_and_replayable_events(stack) -> None:
     user = User(stack)
-    zen = user.connect("opencode_zen", {"api_key": ZEN})
+    zen = user.connect("inference_api", inference(ZEN))
     stack.drain()
     body = {
         "harness": {"provider_id": "opencode"},

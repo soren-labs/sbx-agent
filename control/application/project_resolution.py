@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from protocol.capabilities import INFERENCE_CONNECTION_KIND
+from protocol.capabilities import INFERENCE_KIND, select_endpoint
 
 from control.application.projects import DEFAULT_SHIP_POLICY
 from control.application.resolution import ExplicitResolver
@@ -51,20 +51,39 @@ class ProjectResolver(ExplicitResolver):
             "base_branch": (spec.get("repository") or {}).get("base_ref"),
         }
         spec["connections"] = self._select(uow, workspace_id, spec)
-        if (
-            not spec["harness"].get("model")
-            and spec["harness"]["provider_id"] == "opencode"
-            and spec["connections"].get("inference")
-        ):
-            spec["harness"]["model"] = self._preferred_model(uow, spec["connections"]["inference"])
+        if not spec["harness"].get("model") and spec["connections"].get("inference"):
+            spec["harness"]["model"] = self._config(uow, spec["connections"]["inference"]).get(
+                "model"
+            )
         return spec
 
+    def _accepted(self, provider_id: str) -> list[str]:
+        return list((self.catalog.manifest(provider_id) or {}).get("inference_protocols") or [])
+
+    def _config(self, uow: Any, connection_id: str) -> dict[str, Any]:
+        con = uow.get("connections", connection_id)
+        version = (
+            uow.get("credential_versions", con["current_credential_version_id"])
+            if con and con["current_credential_version_id"]
+            else None
+        )
+        return (version or {}).get("public_config") or {}
+
     def _select(self, uow: Any, workspace_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+        provider_id = spec["harness"]["provider_id"]
+        accepted = self._accepted(provider_id)
         wanted: dict[str, tuple[str | None, bool]] = {
-            "inference": (INFERENCE_CONNECTION_KIND.get(spec["harness"]["provider_id"]), True),
+            "inference": (INFERENCE_KIND, True),
             "compute": ("modal" if spec["executor"]["backend"] == "modal" else None, True),
             "source": ("github" if spec.get("repository") else None, False),
         }
+
+        def usable(con: dict[str, Any]) -> bool:
+            if con["kind"] != INFERENCE_KIND:
+                return True
+            endpoints = self._config(uow, con["id"]).get("endpoints")
+            return select_endpoint(endpoints, accepted) is not None
+
         out: dict[str, Any] = {}
         for slot, (kind, required) in wanted.items():
             explicit = spec["connections"].get(slot)
@@ -85,9 +104,20 @@ class ProjectResolver(ExplicitResolver):
                     raise DomainError(
                         "connection_revoked", f"{slot} connection is {con['config_state']}"
                     )
+                if not usable(con):
+                    raise DomainError(
+                        "validation_failed",
+                        f"the {provider_id} harness needs an inference connection offering "
+                        f"one of: {', '.join(accepted) or 'no protocol'}",
+                        details={
+                            "field": f"connections.{slot}",
+                            "provider_id": provider_id,
+                            "inference_protocols": accepted,
+                        },
+                    )
                 out[slot] = con["id"]
                 continue
-            candidates = [
+            configured = [
                 c
                 for c in uow.find(
                     "connections",
@@ -96,7 +126,21 @@ class ProjectResolver(ExplicitResolver):
                 )
                 if c["health"] != "reauth_required"
             ]
+            candidates = [c for c in configured if usable(c)]
             if not candidates and required:
+                if configured:
+                    raise DomainError(
+                        "connection_required",
+                        f"no inference connection offers a protocol the {provider_id} harness "
+                        f"accepts ({', '.join(accepted) or 'none'})",
+                        details={
+                            "kind": kind,
+                            "slot": slot,
+                            "provider_id": provider_id,
+                            "inference_protocols": accepted,
+                        },
+                        action="add_connection",
+                    )
                 raise DomainError(
                     "connection_required",
                     f"add a {kind} Connection first",
@@ -105,15 +149,3 @@ class ProjectResolver(ExplicitResolver):
                 )
             out[slot] = candidates[0]["id"] if candidates else None
         return out
-
-    def _preferred_model(self, uow: Any, connection_id: str) -> str | None:
-        con = uow.get("connections", connection_id)
-        if not con["current_credential_version_id"]:
-            return None
-        latest = uow.query(
-            "observations.latest",
-            connection_id=connection_id,
-            credential_version_id=con["current_credential_version_id"],
-        )
-        catalog = next((o for o in latest if o["kind"] == "catalog"), None)
-        return (catalog or {}).get("safe_details", {}).get("preferred_model")

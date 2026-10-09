@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from tests.support.api import ApiStack, User
+from tests.support.api import ApiStack, User, inference
 
 SPEC = {
     "defaults": {"harness": {"provider_id": "opencode"}, "executor": {"backend": "local"}},
@@ -24,7 +24,7 @@ SPEC = {
 def env(db, tmp_path):
     stack = ApiStack(db, tmp_path)
     user = User(stack)
-    user.connect("opencode_zen", {"api_key": "zen-key-live-000000"})
+    user.connect("inference_api", inference("zen-key-live-000000"))
     stack.drain()
     project = user.post(
         f"/api/workspaces/{user.workspace_id}/projects", {"slug": "live", "spec": SPEC}

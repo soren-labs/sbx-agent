@@ -1,20 +1,24 @@
-"""Codex official CLI Harness (``codex exec --json``). Optional, experimental lane.
+"""Codex official CLI Harness (``codex exec --json``).
 
-Never required for onboarding. Credential is an uploaded native ``auth.json``
-materialized into an isolated ``CODEX_HOME``; native threads live alongside it,
-so only ``sessions/`` is native state.
+Inference is bring-your-own-key: the Turn's endpoint is written to ``config.toml`` as
+the model provider ``sbx`` with ``env_key`` naming the variable that holds the key, so
+no credential reaches disk. Codex 0.162 speaks only the OpenAI Responses wire API
+(``wire_api = "chat"`` was removed upstream), verified with DeepSeek ``/responses``.
+Native threads live in ``CODEX_HOME/sessions``, the only native state.
+
+Sessions created before generic inference keep their uploaded ``auth.json`` lane;
+subscription credential management is not offered to new Sessions.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import shlex
-import sys
 from pathlib import Path
 from typing import Any
 
 from runtime.harnesses.protocol import (
+    INFERENCE_ALIAS,
+    INFERENCE_KEY_ENV,
     Capability,
     HarnessError,
     HarnessManifest,
@@ -22,20 +26,22 @@ from runtime.harnesses.protocol import (
     NativeInvocation,
     PreparedHarness,
     TurnContext,
+    argv_text,
+    base_env,
     bounded,
     classify_text,
+    cli_bin,
     obs,
+    resolve_inference,
 )
 from runtime.security.credentials import private_dir, scrub, write_secret_file
 
-ADAPTER_VERSION = "codex-harness/1"
+ADAPTER_VERSION = "codex-harness/2"
+PROTOCOLS = ("openai_responses",)
 
 
 def _bin() -> list[str]:
-    tokens = shlex.split(os.environ.get("CODEX_BIN", "codex")) or ["codex"]
-    if len(tokens) == 1 and tokens[0].endswith(".py"):
-        return [sys.executable, tokens[0]]
-    return tokens
+    return cli_bin("CODEX_BIN", "codex")
 
 
 class CodexHarness:
@@ -51,8 +57,9 @@ class CodexHarness:
             cli_version=self.cli_version,
             distribution="npm:@openai/codex",
             transport="jsonl",
-            support_tier="experimental",
-            credential_methods=["codex native auth.json upload"],
+            support_tier="supported",
+            credential_methods=["inference_api key via model_providers env_key"],
+            inference_protocols=list(PROTOCOLS),
             native_state_versions=["codex-sessions-1"],
             capabilities={
                 "native_resume": Capability("supported", "codex exec resume <thread>"),
@@ -66,9 +73,11 @@ class CodexHarness:
                 "skills": Capability("unknown"),
                 "attachments": Capability("unknown"),
                 "structured_output": Capability("unsupported", "", "prompt-only", "prompt_only"),
-                "model_discovery": Capability("unknown"),
-                "effort_settings": Capability("unknown"),
-                "credential_writeback": Capability("unknown", "", "refresh writeback not enabled"),
+                "model_discovery": Capability(
+                    "unsupported", "", "models come from the inference connection catalog"
+                ),
+                "effort_settings": Capability("unknown", "", "model_reasoning_effort not wired"),
+                "credential_writeback": Capability("unsupported", "", "static API key"),
                 "usage": Capability("supported", "turn.completed.usage"),
             },
         )
@@ -76,37 +85,51 @@ class CodexHarness:
     def prepare(self, context: TurnContext, credentials: dict[str, Any]) -> PreparedHarness:
         home = private_dir(context.home)
         codex_home = private_dir(home / ".codex")
+        env = base_env(home, CODEX_HOME=str(codex_home))
         bundle = (credentials.get("codex") or {}).get("auth_json")
-        files, secrets = [], []
-        if bundle:
-            files.append(write_secret_file(codex_home / "auth.json", bundle))
+        if bundle and not context.inference:
+            files, secrets = [write_secret_file(codex_home / "auth.json", bundle)], []
             try:
-                parsed = json.loads(bundle)
-                secrets += [v for v in _strings(parsed) if len(v) >= 12]
+                secrets += [v for v in _strings(json.loads(bundle)) if len(v) >= 12]
             except ValueError:
                 pass
-        env = {
-            "HOME": str(home),
-            "CODEX_HOME": str(codex_home),
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "LANG": "C.UTF-8",
-        }
-        return PreparedHarness(home=home, env=env, secrets=secrets, credential_files=files)
+            return PreparedHarness(home=home, env=env, secrets=secrets, credential_files=files)
+        inference = resolve_inference(context, credentials, PROTOCOLS)
+        # JSON string syntax is valid TOML basic-string syntax for these values.
+        config = "\n".join(
+            [
+                f"model = {json.dumps(inference.model)}",
+                f"model_provider = {json.dumps(INFERENCE_ALIAS)}",
+                "",
+                f"[model_providers.{INFERENCE_ALIAS}]",
+                'name = "Custom inference"',
+                f"base_url = {json.dumps(inference.base_url)}",
+                f"env_key = {json.dumps(INFERENCE_KEY_ENV)}",
+                'wire_api = "responses"',
+                "",
+            ]
+        )
+        (codex_home / "config.toml").write_text(config)
+        env[INFERENCE_KEY_ENV] = inference.api_key
+        return PreparedHarness(
+            home=home, env=env, secrets=[inference.api_key], model=inference.model
+        )
 
-    def _common(self, context: TurnContext) -> list[str]:
+    def _common(self, context: TurnContext, prepared: PreparedHarness) -> list[str]:
         flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"]
-        if context.model:
-            flags += ["-m", context.model]
+        model = prepared.model or context.model
+        if model:
+            flags += ["-m", model]
         return flags
 
     def start_turn(self, context: TurnContext, prepared: PreparedHarness) -> NativeInvocation:
         argv = [
             *_bin(),
             "exec",
-            *self._common(context),
+            *self._common(context, prepared),
             "-C",
             str(context.worktree),
-            context.prompt,
+            argv_text(context.prompt),
         ]
         return NativeInvocation(argv, context.worktree, prepared.env)
 
@@ -119,9 +142,9 @@ class CodexHarness:
             *_bin(),
             "exec",
             "resume",
-            *self._common(context),
+            *self._common(context, prepared),
             binding["native_id"],
-            context.prompt,
+            argv_text(context.prompt),
         ]
         return NativeInvocation(argv, context.worktree, prepared.env)
 
@@ -172,7 +195,17 @@ class CodexHarness:
             item = frame.get("item") if isinstance(frame.get("item"), dict) else {}
             item_id = str(item.get("id") or len(state["items"]))
             item_type = item.get("type")
-            if item_type in ("agent_message", "reasoning"):
+            if item_type == "error":
+                # A CLI notice (e.g. unknown model metadata), not a provider failure.
+                if kind == "item.completed":
+                    out.append(
+                        obs(
+                            "diagnostic.reported",
+                            category="cli_notice",
+                            message=bounded(str(item.get("message") or ""), 1000),
+                        )
+                    )
+            elif item_type in ("agent_message", "reasoning"):
                 revision = state["items"].get(item_id, 0) + 1
                 state["items"][item_id] = revision
                 out.append(

@@ -14,9 +14,10 @@ from sbx.sdk import SBXClient, SBXError
 CREDENTIAL_FIELDS = {
     "modal": ("token_id", "token_secret"),
     "github": ("token",),
-    "opencode_zen": ("api_key",),
-    "codex": ("auth_json",),
+    "inference_api": ("api_key",),
 }
+INFERENCE_PROTOCOLS = ("openai_chat", "openai_responses", "anthropic_messages")
+HARNESSES = ("opencode", "codex", "claude", "grok", "commandcode")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
         "login", help="email/password sign-in; password read from stdin or prompt"
     )
     login.add_argument("--email", required=True)
+
+    sub.add_parser("harnesses", help="official CLI Harnesses and the protocols they accept")
 
     projects = sub.add_parser("projects", help="Projects and versions").add_subparsers(
         dest="action", required=True
@@ -53,6 +56,17 @@ def build_parser() -> argparse.ArgumentParser:
     rep = cons.add_parser("replace")
     rep.add_argument("connection_id")
     rep.add_argument("--credential-file")
+    for command in (add, rep):
+        # inference_api settings are not secret; only the API key comes from stdin/file.
+        command.add_argument(
+            "--endpoint",
+            action="append",
+            default=[],
+            metavar="PROTOCOL=BASE_URL",
+            help=f"inference_api endpoint; PROTOCOL is one of {', '.join(INFERENCE_PROTOCOLS)}"
+            " (repeat for providers that speak several protocols)",
+        )
+        command.add_argument("--model", help="inference_api default model id")
     for name in ("validate", "disconnect", "show"):
         cons.add_parser(name).add_argument("connection_id")
 
@@ -62,7 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sessions.add_parser("create")
     sc.add_argument("--project")
     sc.add_argument("--backend", default=None, choices=["modal", "local"])
-    sc.add_argument("--model")
+    sc.add_argument("--harness", default="opencode", choices=HARNESSES, help="official CLI")
+    sc.add_argument("--model", help="model id (default: the inference connection's model)")
     sc.add_argument("--repo", help="owner/name for projectless Sessions")
     sc.add_argument("--message")
     sessions.add_parser("list")
@@ -125,15 +140,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_credential(kind: str, path: str | None, stdin: Any) -> dict[str, Any]:
+def _read_credential(
+    kind: str, path: str | None, stdin: Any, args: argparse.Namespace | None = None
+) -> dict[str, Any]:
     raw = open(path).read() if path else stdin.read()
     try:
         data = json.loads(raw)
     except ValueError:
-        fields = CREDENTIAL_FIELDS[kind]
+        data = None
+    if not isinstance(data, dict):
+        fields = CREDENTIAL_FIELDS.get(kind, ())
         if len(fields) != 1:
             raise SystemExit(f"{kind} needs a JSON object with {fields}") from None
         data = {fields[0]: raw.strip()}
+    if kind == "inference_api" and args is not None:
+        endpoints = {}
+        for item in args.endpoint:
+            protocol, _, base_url = item.partition("=")
+            if protocol not in INFERENCE_PROTOCOLS or not base_url:
+                raise SystemExit(f"--endpoint must be PROTOCOL=BASE_URL, got {item!r}")
+            endpoints[protocol] = base_url
+        if endpoints:
+            data["endpoints"] = endpoints
+        if args.model:
+            data["model"] = args.model
     return data
 
 
@@ -152,6 +182,8 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
         cfg = ClientConfig.load()
         cfg.base_url, cfg.api_key = client.base_url, key["key"]
         return {"signed_in": args.email, "api_key_prefix": key["prefix"], "config": str(cfg.save())}
+    if cmd == "harnesses":
+        return client.harnesses()
     if cmd == "projects":
         return (
             client.projects.list()
@@ -163,13 +195,15 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             return client.connections.list()
         if action == "add":
             return client.connections.add(
-                args.kind, _read_credential(args.kind, args.credential_file, stdin), args.label
+                args.kind,
+                _read_credential(args.kind, args.credential_file, stdin, args),
+                args.label,
             )
         if action == "replace":
             view = client.connections.get(args.connection_id)
             return client.connections.replace(
                 args.connection_id,
-                _read_credential(view["kind"], args.credential_file, stdin),
+                _read_credential(view["kind"], args.credential_file, stdin, args),
                 view["version"],
             )
         return {
@@ -185,7 +219,7 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             if args.backend:
                 body["executor"] = {"backend": args.backend}
             body["harness"] = {
-                "provider_id": "opencode",
+                "provider_id": args.harness,
                 **({"model": args.model} if args.model else {}),
             }
             if args.repo:

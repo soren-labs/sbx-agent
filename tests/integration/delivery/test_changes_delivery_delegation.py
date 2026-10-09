@@ -9,7 +9,7 @@ import pytest
 from control.domain.errors import DomainError
 from control.integrations.git import GitTransport
 from protocol.manifests import canonical_manifest, subject_digest
-from tests.support.api import ApiStack, User
+from tests.support.api import ApiStack, User, inference
 from tests.support.git_host import FakeHost, git, make_repo
 
 CHECK = {
@@ -28,7 +28,7 @@ def env(db, tmp_path):
     host = FakeHost(bare)
     stack = ApiStack(db, tmp_path, git=GitTransport(tmp_path / "git"), host=host)
     user = User(stack)
-    user.connect("opencode_zen", {"api_key": "zen-key-delivery-0000"})
+    user.connect("inference_api", inference("zen-key-delivery-0000"))
     user.connect("github", {"token": "ghp_" + "a" * 36})
     stack.drain()
     yield stack, user, host, bare, url
@@ -390,7 +390,7 @@ def test_parent_close_cancels_children_and_tool_gateway_scopes(env) -> None:
     assert tool("sbx.deliveries.request", {"changeset_id": cs["id"]}).status_code == 403
     assert tool("sbx.sessions.read", {"session_id": first["child_session_id"]}).status_code == 200
     other = User(stack)
-    other.connect("opencode_zen", {"api_key": "zen-key-other-0000"})
+    other.connect("inference_api", inference("zen-key-other-0000"))
     stack.drain()
     stranger = other.post(
         f"/api/workspaces/{other.workspace_id}/sessions",

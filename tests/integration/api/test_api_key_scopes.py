@@ -7,7 +7,7 @@ import uuid
 import pytest
 from control.domain.ids import new_id
 from control.security.passwords import new_token, token_hash
-from tests.support.api import ApiStack, User
+from tests.support.api import ApiStack, User, inference
 
 SPEC = {
     "repository": None,
@@ -80,7 +80,7 @@ def _mutations(user: User, project_id: str, session_id: str, connection_id: str)
 
 
 def _fixtures(stack: ApiStack, user: User) -> tuple[str, str, str]:
-    con = user.connect("opencode_zen", {"api_key": "zen-api-key-for-scopes-0001"})
+    con = user.connect("inference_api", inference("zen-api-key-for-scopes-0001"))
     stack.drain()
     project = user.post(
         f"/api/workspaces/{user.workspace_id}/projects", {"slug": "demo", "name": "D", "spec": SPEC}
