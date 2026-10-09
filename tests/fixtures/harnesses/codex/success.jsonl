@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"01a11f67-902c-70c0-9308-7cbcb57e799f"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `deepseek-flash` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I'll create the file and list the directory contents."}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/bash -lc 'echo alpha > hello.txt && ls'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/bash -lc 'echo alpha > hello.txt && ls'","aggregated_output":"README.md\nhello.txt\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Done. Created `hello.txt` containing `alpha`, and `ls` shows:\n\n- `README.md`\n- `hello.txt`"}}
+{"type":"turn.completed","usage":{"input_tokens":17241,"cached_input_tokens":8448,"cache_write_input_tokens":0,"output_tokens":140,"reasoning_output_tokens":35}}

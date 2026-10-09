@@ -60,7 +60,7 @@ Session with pinned inputs and a ResultContract. The validated, immutable
 ## Credentials and infrastructure
 
 **Connection** (`con_`). One external authority of kind `modal`, `github`,
-`opencode_zen` or `codex`. Its secret material lives in encrypted
+`inference_api`. Its secret material lives in encrypted
 **CredentialVersions**; replacing a credential appends a version.
 
 **Job** (`job_`). A durable internal continuation or effect, claimed by a worker

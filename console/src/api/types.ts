@@ -49,7 +49,23 @@ export interface CreatedApiKey extends ApiKey {
 }
 
 // ---- connections ----------------------------------------------------------
-export type ConnectionKind = "modal" | "github" | "opencode_zen" | "codex";
+/** Kinds a user can create. Inference is harness-neutral bring-your-own-key. */
+export type ConnectionKind = "modal" | "github" | "inference_api";
+/** Vendor-specific kinds retired from new flows; stored ones are listed read-only. */
+export type LegacyConnectionKind = "opencode_zen" | "codex";
+export type InferenceProtocol = "openai_chat" | "openai_responses" | "anthropic_messages";
+export interface InferenceCredential {
+  api_key: string;
+  model: string;
+  endpoints: Partial<Record<InferenceProtocol, string>>;
+  models?: string[];
+}
+/** Non-secret settings of an inference Connection (never includes the key). */
+export interface InferenceConfig {
+  endpoints?: Partial<Record<InferenceProtocol, string>>;
+  model?: string;
+  models?: string[];
+}
 export type ConnectionHealth =
   | "unverified"
   | "verifying"
@@ -62,7 +78,7 @@ export type ConnectionCredential =
   | { token_id: string; token_secret: string }
   | { token: string }
   | { api_key: string }
-  | { auth_json: string };
+  | InferenceCredential;
 
 export interface CatalogModel {
   id: string;
@@ -72,8 +88,11 @@ export interface CatalogModel {
 export interface Connection {
   id: string;
   workspace_id?: string;
-  kind: ConnectionKind;
+  kind: ConnectionKind | LegacyConnectionKind;
   label: string;
+  /** True for retired vendor-specific kinds: disconnect only. */
+  legacy?: boolean;
+  config?: InferenceConfig;
   state: ConnectionState;
   health: ConnectionHealth;
   health_reason: string | null;
@@ -90,6 +109,8 @@ export interface Connection {
     observed_at?: string;
     preferred_model?: string | null;
     models?: CatalogModel[];
+    protocols?: InferenceProtocol[];
+    source?: string;
   } | null;
   created_at?: string;
   updated_at?: string;
@@ -99,10 +120,15 @@ export interface Connection {
 export interface Harness {
   provider_id: string;
   support_tier: string;
-  capabilities: Record<string, { status: string }>;
+  cli_version?: string;
+  distribution?: string;
+  /** Wire protocols the official CLI can be pointed at, in preference order. */
+  inference_protocols?: InferenceProtocol[];
+  capabilities: Record<string, { status: string; evidence?: string; limitation?: string }>;
 }
 export interface ModelsView {
   provider_id: string;
+  inference_protocols?: InferenceProtocol[];
   preferred_model: string | null;
   connections: {
     connection_id: string;
@@ -110,7 +136,11 @@ export interface ModelsView {
     health: ConnectionHealth;
     preferred_model?: string | null;
     observed_at?: string | null;
-    models: { id: string; free?: boolean }[];
+    models: { id: string }[];
+    protocols?: InferenceProtocol[];
+    /** Endpoint the selected Harness would use; null when it offers none. */
+    protocol?: InferenceProtocol | null;
+    compatible?: boolean;
   }[];
 }
 export interface ExecutorBackend {
@@ -236,6 +266,8 @@ export interface Turn {
   retry_of_turn_id: string | null;
   error: { code: string; message: string } | null;
   outcome: unknown;
+  /** Token usage the CLI reported for this Turn; absent when it reported none. */
+  usage?: Record<string, unknown> | null;
   evidence_complete?: boolean;
   actions: string[];
   version: number;

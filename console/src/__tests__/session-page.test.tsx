@@ -82,6 +82,11 @@ describe("Session page", () => {
 
     // retry/cancel labels name the Turn; replay never POSTs
     expect(screen.getByRole("button", { name: "Cancel Turn" })).toBeInTheDocument();
+    // The running Turn has reported no usage: nothing is invented, and no cost is guessed.
+    const usage = screen.getByRole("region", { name: "Usage" });
+    expect(usage).toHaveTextContent("The CLI has not reported token usage yet.");
+    expect(document.body.innerHTML).not.toMatch(/20,604|\$0\.003|Effort: low/);
+    expect(screen.getByRole("region", { name: "Details" })).toHaveTextContent("OpenCode");
     expect(m.calls.filter((c) => c.method === "POST")).toHaveLength(0);
     for (const tab of ["Conversation", "Activity", "Changes", "Files", "Terminal", "Services", "Child Sessions"]) {
       expect(screen.getByRole("button", { name: tab })).toBeInTheDocument();

@@ -9,4 +9,4 @@ SBX_BASE_URL=http://127.0.0.1:8800 SBX_API_KEY=... python examples/unified_mvp.p
 ```
 
 The API key comes from `sbx auth login` (stored by the CLI) or **Settings → API keys** in the
-Console. Modal, OpenCode Zen and GitHub Connections must already be configured for the account.
+Console. Inference API key, Modal and GitHub Connections must already be configured for the account.

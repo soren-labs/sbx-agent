@@ -5,9 +5,10 @@ from __future__ import annotations
 import time
 
 import pytest
-from tests.support.runtime import DaemonHarness
+from tests.support.runtime import INFERENCE_ENDPOINT, DaemonHarness, inference_secrets
 
-ZEN = {"opencode_zen": {"api_key": "zen-test-key-1234567890"}}
+KEY = "inference-test-key-1234567890"
+KEYS = inference_secrets(KEY)
 
 
 def start_payload(prompt: str, execution_id: str = "exec_1", binding=None) -> dict:
@@ -16,9 +17,10 @@ def start_payload(prompt: str, execution_id: str = "exec_1", binding=None) -> di
         "turn_id": "turn_1",
         "execution_id": execution_id,
         "prompt": prompt,
-        "model": "opencode/big-pickle",
+        "model": "test-model",
         "native_binding": binding,
         "deadline_seconds": 30,
+        "inference": INFERENCE_ENDPOINT,
     }
 
 
@@ -64,8 +66,8 @@ def test_turn_streams_redacted_evidence_and_native_resume(rt) -> None:
     first = rt.op(
         "turn.start",
         "exec_1",
-        start_payload("remember ALPHA [write:notes.txt=alpha] key zen-test-key-1234567890"),
-        secrets_=ZEN,
+        start_payload("remember ALPHA [write:notes.txt=alpha] key inference-test-key-1234567890"),
+        secrets_=KEYS,
     )
     assert first.json()["status"] == "accepted"
     assert rt.wait_op("exec_1")["status"] == "succeeded"
@@ -73,7 +75,7 @@ def test_turn_streams_redacted_evidence_and_native_resume(rt) -> None:
     assert types(events)[0] == "execution.started"
     assert types(events)[-2:] == ["execution.observed_terminal", "execution.stopped"]
     assert events[-1]["payload"]["final_local_seq"] == events[-1]["local_seq"]
-    assert "zen-test-key-1234567890" not in str(events), "known secret must be redacted"
+    assert "inference-test-key-1234567890" not in str(events), "known secret must be redacted"
     native = next(e for e in events if e["type"] == "execution.native_bound")["payload"][
         "native_id"
     ]
@@ -82,8 +84,11 @@ def test_turn_streams_redacted_evidence_and_native_resume(rt) -> None:
         "mode"
     ] == "replace"
     assert any(e["type"] == "usage.observed" for e in events)
-    auth = rt.base / "state" / "homes" / "sess_test" / ".local" / "share" / "opencode" / "auth.json"
-    assert not auth.exists(), "credential scrubbed after the Turn"
+    home = rt.base / "state" / "homes" / "sess_test"
+    config = (home / ".config" / "opencode" / "sbx-inference.json").read_text()
+    assert INFERENCE_ENDPOINT["base_url"] in config and "{env:SBX_INFERENCE_API_KEY}" in config
+    assert KEY not in config, "the CLI config names the key variable; it never holds the key"
+    assert not list(home.rglob("auth.json"))
     assert (rt.base / "work" / "worktree" / "notes.txt").read_text() == "alpha\n"
     last = events[-1]["local_seq"]
     rt.op(
@@ -92,7 +97,7 @@ def test_turn_streams_redacted_evidence_and_native_resume(rt) -> None:
         start_payload(
             "what did I say? [recall]", "exec_2", {"provider_id": "opencode", "native_id": native}
         ),
-        secrets_=ZEN,
+        secrets_=KEYS,
     )
     assert rt.wait_op("exec_2")["status"] == "succeeded"
     second = rt.events(after=last)
@@ -106,10 +111,10 @@ def test_turn_streams_redacted_evidence_and_native_resume(rt) -> None:
 
 def test_operation_dedupe_conflict_and_lost_start_response(rt) -> None:
     payload = start_payload("hello")
-    rt.op("turn.start", "exec_1", payload, secrets_=ZEN)
-    replay = rt.op("turn.start", "exec_1", payload, secrets_=ZEN).json()
+    rt.op("turn.start", "exec_1", payload, secrets_=KEYS)
+    replay = rt.op("turn.start", "exec_1", payload, secrets_=KEYS).json()
     assert replay["replayed"] is True, "lost response: same id returns durable status, no relaunch"
-    conflict = rt.op("turn.start", "exec_1", start_payload("different"), secrets_=ZEN)
+    conflict = rt.op("turn.start", "exec_1", start_payload("different"), secrets_=KEYS)
     assert conflict.json()["error"]["code"] == "operation_conflict"
     rt.wait_op("exec_1")
     assert types(rt.events()).count("execution.started") == 1
@@ -118,9 +123,9 @@ def test_operation_dedupe_conflict_and_lost_start_response(rt) -> None:
 
 
 def test_single_mutating_cli_and_cancel_confirms_stop(rt) -> None:
-    rt.op("turn.start", "exec_1", start_payload("[hang]"), secrets_=ZEN)
+    rt.op("turn.start", "exec_1", start_payload("[hang]"), secrets_=KEYS)
     time.sleep(0.3)
-    busy = rt.op("turn.start", "exec_2", start_payload("other", "exec_2"), secrets_=ZEN)
+    busy = rt.op("turn.start", "exec_2", start_payload("other", "exec_2"), secrets_=KEYS)
     assert busy.json()["error"]["code"] == "busy"
     assert (
         rt.op("files.write", "op_w", {"path": "a.txt", "content": "x"}).json()["result"]["error"][
@@ -141,7 +146,7 @@ def test_invalid_credential_classified(rt) -> None:
         "turn.start",
         "exec_1",
         start_payload("hi"),
-        secrets_={"opencode_zen": {"api_key": "invalid-zen-key-000"}},
+        secrets_=inference_secrets("invalid-inference-key-000"),
     )
     rt.wait_op("exec_1")
     terminal = next(e for e in rt.events() if e["type"] == "execution.observed_terminal")["payload"]
@@ -149,12 +154,42 @@ def test_invalid_credential_classified(rt) -> None:
     assert terminal["error_code"] == "credential_invalid"
 
 
+def test_turn_without_an_inference_connection_fails_before_launch(rt) -> None:
+    rt.op("turn.start", "exec_1", start_payload("hi"))
+    rt.wait_op("exec_1")
+    events = rt.events()
+    terminal = next(e for e in events if e["type"] == "execution.observed_terminal")["payload"]
+    assert terminal["error_code"] == "connection_required"
+    assert events[-1]["payload"]["launched"] is False
+
+
+def test_harness_refuses_a_protocol_it_cannot_speak(rt) -> None:
+    payload = start_payload("hi")
+    payload["provider_id"] = "codex"  # Codex speaks only the Responses wire API
+    rt.op("turn.start", "exec_1", payload, secrets_=KEYS)
+    rt.wait_op("exec_1")
+    terminal = next(e for e in rt.events() if e["type"] == "execution.observed_terminal")["payload"]
+    assert terminal["error_code"] == "unsupported_capability"
+
+
+def test_legacy_zen_session_keeps_its_auth_json_lane(rt) -> None:
+    """Sessions pinned to a retired opencode_zen Connection still run and scrub the key."""
+    payload = {k: v for k, v in start_payload("hello").items() if k != "inference"}
+    payload["model"] = "opencode/big-pickle"
+    legacy = "zen-legacy-key-1234567890"
+    rt.op("turn.start", "exec_1", payload, secrets_={"opencode_zen": {"api_key": legacy}})
+    assert rt.wait_op("exec_1")["status"] == "succeeded"
+    auth = rt.base / "state" / "homes" / "sess_test" / ".local" / "share" / "opencode" / "auth.json"
+    assert not auth.exists(), "credential scrubbed after the Turn"
+    assert legacy not in str(rt.events())
+
+
 def test_missing_native_session_is_refused_not_forked(rt) -> None:
     rt.op(
         "turn.start",
         "exec_1",
         start_payload("x", binding={"provider_id": "opencode", "native_id": "ses_missing"}),
-        secrets_=ZEN,
+        secrets_=KEYS,
     )
     rt.wait_op("exec_1")
     terminal = next(e for e in rt.events() if e["type"] == "execution.observed_terminal")["payload"]
@@ -166,7 +201,7 @@ def test_restart_preserves_epoch_and_never_relaunches(tmp_path) -> None:
     rt = DaemonHarness(tmp_path)
     rt.op("worktree.restore", "op_restore", {"generation": 0})
     epoch = rt.post("/rt/hello", {}).json()["runtime_epoch"]
-    rt.op("turn.start", "exec_1", start_payload("[hang]"), secrets_=ZEN)
+    rt.op("turn.start", "exec_1", start_payload("[hang]"), secrets_=KEYS)
     time.sleep(0.4)
     pid = rt.daemon.journal.op_get("exec_1")["pid"]
     rt.stop()  # simulate daemon death; child keeps running
@@ -200,13 +235,13 @@ def test_spool_pressure_stops_cli_without_dropping_terminal_evidence(tmp_path) -
     """A15: bounded spool -> CLI stopped, terminal evidence still recorded."""
     rt = DaemonHarness(tmp_path, max_unacked=20)
     rt.op("worktree.restore", "op_restore", {"generation": 0})
-    rt.op("turn.start", "exec_1", start_payload("[flood:200]"), secrets_=ZEN)
+    rt.op("turn.start", "exec_1", start_payload("[flood:200]"), secrets_=KEYS)
     rt.wait_op("exec_1")
     events = rt.events()
     terminal = next(e for e in events if e["type"] == "execution.observed_terminal")["payload"]
     assert terminal["verdict"] == "unknown" and terminal["error_code"] == "spool_pressure"
     assert events[-1]["type"] == "execution.stopped"
-    refused = rt.op("turn.start", "exec_2", start_payload("x", "exec_2"), secrets_=ZEN)
+    refused = rt.op("turn.start", "exec_2", start_payload("x", "exec_2"), secrets_=KEYS)
     assert refused.json()["error"]["code"] == "spool_pressure"
     ack = rt.post(
         "/rt/ack", {"runtime_epoch": rt.daemon.journal.epoch, "through": events[-1]["local_seq"]}
@@ -228,7 +263,7 @@ def test_files_paths_cannot_escape(rt) -> None:
 
 
 def test_checkpoint_excludes_credentials_and_restores_native_state(rt, tmp_path) -> None:
-    rt.op("turn.start", "exec_1", start_payload("remember BETA [write:b.txt=beta]"), secrets_=ZEN)
+    rt.op("turn.start", "exec_1", start_payload("remember BETA [write:b.txt=beta]"), secrets_=KEYS)
     rt.wait_op("exec_1")
     events = rt.events()
     native = next(e for e in events if e["type"] == "execution.native_bound")["payload"][
@@ -257,7 +292,7 @@ def test_checkpoint_excludes_credentials_and_restores_native_state(rt, tmp_path)
         start_payload(
             "recall [recall]", "exec_9", {"provider_id": "opencode", "native_id": native}
         ),
-        secrets_=ZEN,
+        secrets_=KEYS,
     )
     assert other.wait_op("exec_9")["status"] == "succeeded"
     text = [e for e in other.events() if e["type"] == "message.part_updated"][-1]["payload"][

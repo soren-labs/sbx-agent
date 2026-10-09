@@ -1,21 +1,23 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ErrorNotice, useAction } from "../../components/ui";
 import { Icon } from "../../components/icons";
 import { useI18n } from "../../i18n";
+import type { I18nKey } from "../../i18n/en";
 import { useAuth } from "../../state/auth";
 import { useApi, useQueryClient } from "../../state/context";
 import { useQuery } from "../../state/query";
 import { useConnections } from "../connections/ConnectionsPage";
-import { modelOptions, pickBackend, pickDefaultModel } from "./defaults";
+import { knownRepositories, modelOptions, pickBackend, pickDefaultModel, pickHarness, usableConnections } from "./defaults";
+import { harnessName, PROTOCOL_NAMES, selectable } from "./harnesses";
 
 const shortcutModifier = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 
-export const suggestions = [
-  { icon: "code", label: "Fix a bug", prompt: "Find and fix the bug where " },
-  { icon: "check", label: "Add tests", prompt: "Add regression tests covering " },
-  { icon: "refresh", label: "Refactor", prompt: "Refactor the following module for readability without changing behaviour: " },
-  { icon: "file", label: "Update docs", prompt: "Update the README to document " },
+export const suggestions: { icon: string; label: I18nKey; prompt: I18nKey }[] = [
+  { icon: "code", label: "composer.suggest.bug", prompt: "composer.suggest.bug_prompt" },
+  { icon: "check", label: "composer.suggest.tests", prompt: "composer.suggest.tests_prompt" },
+  { icon: "refresh", label: "composer.suggest.refactor", prompt: "composer.suggest.refactor_prompt" },
+  { icon: "file", label: "composer.suggest.docs", prompt: "composer.suggest.docs_prompt" },
 ];
 
 export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: string) => void }) {
@@ -26,28 +28,45 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
   const { workspace } = useAuth();
   const w = workspace?.id ?? null;
   const connections = useConnections();
-  const models = useQuery(w ? ["models", w, "opencode"] : null, () => api.catalog.models(w!, "opencode"));
+  const harnesses = useQuery(["harnesses"], () => api.catalog.harnesses());
+  const backends = useQuery(["executor-backends"], () => api.catalog.executorBackends());
   const projects = useQuery(w ? ["projects", w] : null, () => api.projects.list(w!));
 
   const [prompt, setPrompt] = useState("");
   const [projectId, setProjectId] = useState("");
   const [repo, setRepo] = useState("");
   const [baseRef, setBaseRef] = useState("main");
+  const [harnessOverride, setHarnessOverride] = useState<string | null>(null);
+  const [connectionId, setConnectionId] = useState("");
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [backendOverride, setBackendOverride] = useState<string | null>(null);
-  const [effort, setEffort] = useState("High Effort · Draft PR");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
-  const options = modelOptions(models.data);
-  const model = modelOverride ?? pickDefaultModel(models.data) ?? "";
-  const backend = backendOverride ?? pickBackend(connections.data?.items);
+  const offered = selectable(harnesses.data?.items);
+  const harness = harnessOverride ?? pickHarness(harnesses.data?.items, connections.data?.items);
+  const manifest = offered.find((h) => h.provider_id === harness);
+  // Models and compatibility are scoped to the selected Harness: the same key may
+  // serve one CLI and not another, depending on the protocols it offers.
+  const models = useQuery(w ? ["models", w, harness] : null, () => api.catalog.models(w!, harness));
+  const usable = usableConnections(models.data);
+  const pinned = usable.some((c) => c.connection_id === connectionId) ? connectionId : "";
+  const options = modelOptions(models.data, pinned || undefined);
+  const model = modelOverride ?? pickDefaultModel(models.data, pinned || undefined) ?? "";
+  const backendKinds = (backends.data?.items ?? []).map((b) => b.kind);
+  const backend = backendOverride ?? pickBackend(connections.data?.items, backends.data?.items);
+  const repos = knownRepositories(
+    connections.data?.items,
+    (projects.data?.items ?? []).flatMap((p) => (p.current_version ? [p.current_version.spec.repository.full_name] : [])),
+  );
+  const blocked = models.data !== undefined && usable.length === 0;
 
   const create = useAction(async (key) => {
     const body = {
-      harness: { provider_id: "opencode", ...(model ? { model } : {}) },
+      harness: { provider_id: harness, ...(model ? { model } : {}) },
       executor: { backend },
+      ...(pinned ? { connections: { inference: pinned } } : {}),
       ...(projectId
         ? { project_id: projectId }
         : repo.trim()
@@ -66,46 +85,44 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
     void create.run();
   };
 
+  const closePickers = () => {
+    formRef.current?.querySelectorAll("details[open]").forEach((d) => d.removeAttribute("open"));
+  };
+
   useEffect(() => {
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        formRef.current?.querySelectorAll("details[open]").forEach((d) => {
-          d.removeAttribute("open");
-        });
-      }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closePickers();
     };
-    document.addEventListener("keydown", close);
+    // A click outside an open popover dismisses it, like any menu.
+    const onPointer = (event: MouseEvent) => {
+      formRef.current?.querySelectorAll("details[open]").forEach((d) => {
+        if (!d.contains(event.target as Node)) d.removeAttribute("open");
+      });
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointer);
     return () => {
-      document.removeEventListener("keydown", close);
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointer);
     };
   }, []);
 
-  const closePickers = () => {
-    formRef.current?.querySelectorAll("details[open]").forEach((d) => {
-      d.removeAttribute("open");
-    });
+  const chooseHarness = (next: string) => {
+    setHarnessOverride(next);
+    // The model list belongs to the Harness's compatible Connections.
+    setModelOverride(null);
+    setConnectionId("");
   };
-
-  const modelDisplayName = model
-    ? model === "big-pickle"
-      ? "GPT-6.1 Sol"
-      : model
-    : "GPT-6.1 Sol";
 
   return (
     <>
-      <form
-        ref={formRef}
-        className="card composer session-composer"
-        onSubmit={submit}
-        aria-label={t("composer.heading")}
-      >
+      <form ref={formRef} className="card composer session-composer" onSubmit={submit} aria-label={t("composer.heading")}>
         <textarea
           ref={textareaRef}
           id="new-prompt"
-          aria-label="Task"
+          aria-label={t("composer.task")}
           rows={4}
-          placeholder="Describe the work you want to hand off…"
+          placeholder={t("composer.task_ph")}
           value={prompt}
           onChange={(e) => {
             setPrompt(e.target.value);
@@ -120,58 +137,122 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
         />
 
         <div className="composer-tools">
-          {/* Repo selector dropdown */}
           <details className="composer-picker">
-            <summary title="Select repository" className={`repo-chip ${repo ? "selected" : ""}`}>
+            <summary title={t("composer.select_repo")} className={`repo-chip ${repo ? "selected" : ""}`}>
               <Icon name="github" size={14} />
-              <span className="repo-chip-label">{repo || "Select repository"}</span>
+              <span className="repo-chip-label">{repo || t("composer.select_repo")}</span>
               <Icon name="down" size={11} />
             </summary>
             <div className="picker-popover">
-              <h2>Select repository</h2>
-              <div className="picker-options">
-                {["soren-labs/sbx-agent", "soren-labs/docs", "soren-labs/website"].map((r) => (
-                  <button
-                    type="button"
-                    className="picker-option"
-                    key={r}
-                    onClick={() => {
-                      setRepo(r);
-                      closePickers();
-                    }}
-                  >
-                    <Icon name="github" size={13} />
-                    <span>{r}</span>
-                    {repo === r && <Icon name="check" size={12} />}
+              <h2>{t("composer.select_repo")}</h2>
+              <input
+                aria-label={t("composer.select_repo")}
+                placeholder={t("composer.repo_ph")}
+                spellCheck={false}
+                value={repo}
+                onChange={(e) => setRepo(e.target.value)}
+              />
+              {repos.length ? (
+                <>
+                  <p className="faint small">{t("composer.repo_known")}</p>
+                  <div className="picker-options">
+                    {repos.map((r) => (
+                      <button
+                        type="button"
+                        className="picker-option"
+                        key={r}
+                        onClick={() => {
+                          setRepo(r);
+                          closePickers();
+                        }}
+                      >
+                        <Icon name="github" size={13} />
+                        <span>{r}</span>
+                        {repo === r && <Icon name="check" size={12} />}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+              <div className="picker-actions">
+                {repo ? (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRepo("")}>
+                    {t("composer.repo_none")}
                   </button>
-                ))}
+                ) : null}
+                <button type="button" className="btn btn-sm btn-ghost" onClick={closePickers}>
+                  {t("composer.done")}
+                </button>
               </div>
-              <button type="button" className="btn btn-sm btn-ghost" onClick={closePickers}>
-                Done
-              </button>
             </div>
           </details>
 
-          {/* Session configuration / Options popover */}
           <details className="composer-picker adv-toggle session-options">
-            <summary title="Session options" className="config-chip">
+            <summary title={t("composer.options")} className="config-chip">
               <Icon name="settings" size={13} />
               <span className="composer-configuration-label">
-                <span>Session options</span> <span className="faint">· {effort}</span>
+                <span>{t("composer.options")}</span>{" "}
+                <span className="faint">· {t(`composer.backend.${backend}` as I18nKey)}</span>
               </span>
             </summary>
             <div className="picker-popover config-picker">
-              <h2>Session configuration</h2>
+              <h2>{t("composer.configuration")}</h2>
 
-              <label className="form-label" htmlFor="new-repo">
-                Repository
-                <input
-                  id="new-repo"
-                  aria-label="Repository"
-                  placeholder="owner/repository"
-                  value={repo}
-                  onChange={(e) => setRepo(e.target.value)}
-                />
+              <label className="form-label" htmlFor="new-harness">
+                {t("composer.harness")}
+                <select id="new-harness" value={harness} onChange={(e) => chooseHarness(e.target.value)}>
+                  {!offered.some((h) => h.provider_id === harness) && <option value={harness}>{harnessName(harness)}</option>}
+                  {offered.map((h) => (
+                    <option key={h.provider_id} value={h.provider_id}>
+                      {harnessName(h.provider_id)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {usable.length > 1 ? (
+                <label className="form-label" htmlFor="new-connection">
+                  {t("composer.connection")}
+                  <select
+                    id="new-connection"
+                    value={pinned}
+                    onChange={(e) => {
+                      setConnectionId(e.target.value);
+                      setModelOverride(null);
+                    }}
+                  >
+                    <option value="">{t("composer.connection_auto")}</option>
+                    {usable.map((c) => (
+                      <option key={c.connection_id} value={c.connection_id}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              <label className="form-label" htmlFor="new-model">
+                {t("composer.model")}
+                <select id="new-model" value={model} onChange={(e) => setModelOverride(e.target.value)}>
+                  {model === "" && <option value="">{t("composer.model_server")}</option>}
+                  {model !== "" && !options.includes(model) && <option value={model}>{model}</option>}
+                  {options.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="form-label" htmlFor="new-backend">
+                {t("composer.executor")}
+                <select id="new-backend" value={backend} onChange={(e) => setBackendOverride(e.target.value)}>
+                  {(backendKinds.length ? backendKinds : ["modal", "local"]).map((kind) => (
+                    <option key={kind} value={kind}>
+                      {kind === "modal" || kind === "local" ? t(`composer.backend.${kind}` as I18nKey) : kind}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label className="form-label" htmlFor="new-project">
@@ -186,109 +267,97 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                 </select>
               </label>
 
-              <label className="form-label" htmlFor="new-effort">
-                Reasoning effort & delivery
-                <select
-                  id="new-effort"
-                  value={effort}
-                  onChange={(e) => setEffort(e.target.value)}
-                >
-                  <option value="High Effort · Draft PR">High Effort · Draft PR</option>
-                  <option value="Medium Effort · PR">Medium Effort · PR</option>
-                  <option value="Low Effort · Branch">Low Effort · Branch</option>
-                  <option value="Auto Effort · Draft PR">Auto Effort · Draft PR</option>
-                </select>
+              <label className="form-label" htmlFor="new-repo">
+                {t("composer.repo")}
+                <input
+                  id="new-repo"
+                  placeholder={t("composer.repo_ph")}
+                  spellCheck={false}
+                  disabled={projectId !== ""}
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                />
               </label>
 
               <label className="form-label" htmlFor="new-ref">
                 {t("composer.base_ref")}
-                <input id="new-ref" aria-label="Base branch" value={baseRef} onChange={(e) => setBaseRef(e.target.value)} />
-              </label>
-
-              <label className="form-label" htmlFor="new-harness">
-                Harness
-                <select id="new-harness" aria-label="Harness" value="opencode" disabled>
-                  <option value="opencode">opencode</option>
-                </select>
-              </label>
-
-              <label className="form-label" htmlFor="new-model">
-                Model
-                <select
-                  id="new-model"
-                  aria-label="Model"
-                  value={model}
-                  onChange={(e) => {
-                    setModelOverride(e.target.value);
-                  }}
-                >
-                  {model === "" && <option value="">{t("composer.model_server")}</option>}
-                  {model !== "" && !options.some((o) => o.id === model) && (
-                    <option value={model}>{model}</option>
-                  )}
-                  {options.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.id}
-                      {o.free ? ` (${t("conn.free")})` : ""}
-                    </option>
-                  ))}
-                  {options.length === 0 && (
-                    <option value="big-pickle">big-pickle (free)</option>
-                  )}
-                </select>
-              </label>
-
-              <label className="form-label" htmlFor="new-backend">
-                Compute
-                <select id="new-backend" aria-label="Compute" value={backend} onChange={(e) => setBackendOverride(e.target.value)}>
-                  <option value="modal">modal</option>
-                  <option value="local">local</option>
-                </select>
+                <input
+                  id="new-ref"
+                  spellCheck={false}
+                  disabled={projectId !== ""}
+                  value={baseRef}
+                  onChange={(e) => setBaseRef(e.target.value)}
+                />
               </label>
 
               <button type="button" className="btn btn-sm btn-ghost" onClick={closePickers}>
-                Done
+                {t("composer.done")}
               </button>
             </div>
           </details>
 
-          {/* Model picker popover */}
           <details className="composer-picker model-picker">
-            <summary title="Select model">
-              <span>{modelDisplayName}</span>
+            <summary title={t("composer.agent_model")} data-testid="agent-model-chip">
+              <span>
+                {harnessName(harness)}
+                <span className="faint"> · {model || t("composer.no_model")}</span>
+              </span>
               <Icon name="down" size={11} />
             </summary>
             <div className="picker-popover model-popover">
-              <h2>Agent & model</h2>
+              <h2>{t("composer.harness_label")}</h2>
               <div className="picker-options">
-                {["GPT-6.1 Sol", "Claude 3.7 Sonnet", "o3-mini"].map((mName) => (
+                {offered.map((h) => (
                   <button
                     type="button"
                     className="picker-option"
-                    key={mName}
+                    key={h.provider_id}
+                    aria-pressed={h.provider_id === harness}
+                    onClick={() => chooseHarness(h.provider_id)}
+                  >
+                    <Icon name="terminal" size={13} />
+                    <span>{harnessName(h.provider_id)}</span>
+                    {h.provider_id === harness && <Icon name="check" size={12} />}
+                  </button>
+                ))}
+              </div>
+              <h2>{t("composer.model")}</h2>
+              <div className="picker-options">
+                {options.map((id) => (
+                  <button
+                    type="button"
+                    className="picker-option"
+                    key={id}
+                    aria-pressed={id === model}
                     onClick={() => {
-                      setModelOverride(mName);
+                      setModelOverride(id);
                       closePickers();
                     }}
                   >
                     <Icon name="sparkle" size={13} />
-                    <span>{mName}</span>
-                    {modelDisplayName === mName && <Icon name="check" size={12} />}
+                    <span>{id}</span>
+                    {id === model && <Icon name="check" size={12} />}
                   </button>
                 ))}
               </div>
+              <input
+                aria-label={t("composer.custom_model")}
+                placeholder={t("composer.custom_model")}
+                spellCheck={false}
+                value={modelOverride ?? ""}
+                onChange={(e) => setModelOverride(e.target.value.trim() === "" ? null : e.target.value.trim())}
+              />
               <button type="button" className="btn btn-sm btn-ghost" onClick={closePickers}>
-                Done
+                {t("composer.done")}
               </button>
             </div>
           </details>
 
-          {/* Circular send affordance button matching image(9) */}
           <button
             type="submit"
             className="start-session-button"
-            aria-label="Start session"
-            title="Start session · Ctrl/⌘ Enter"
+            aria-label={t("composer.start")}
+            title={t("composer.start_title")}
             disabled={!prompt.trim() || create.pending || !w}
           >
             <Icon name={create.pending ? "clock" : "arrow"} size={16} />
@@ -296,35 +365,46 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
         </div>
       </form>
 
+      {blocked ? (
+        <p className="hs-note warn composer-hint" role="status">
+          {t("composer.needs_inference", {
+            harness: harnessName(harness),
+            protocols: (manifest?.inference_protocols ?? []).map((p) => PROTOCOL_NAMES[p]).join(" / "),
+          })}{" "}
+          <Link to="/connections">{t("composer.add_inference")}</Link>
+        </p>
+      ) : null}
+
       <ErrorNotice error={create.error} onRetry={() => void create.run()} retryLabel={t("composer.retry_create")} />
 
       <div className="composer-footnote">
         <span>
           <kbd>{shortcutModifier}</kbd>
-          <kbd>Enter</kbd> to start
+          <kbd>Enter</kbd> {t("composer.to_start")}
         </span>
-        <span>Agents work in an isolated sandbox and never push without your delivery choice.</span>
+        <span>{t("composer.footnote")}</span>
       </div>
 
       {!prompt && (
-        <div className="suggestion-row" aria-label="Suggestions">
+        <div className="suggestion-row" aria-label={t("composer.suggestions")}>
           {suggestions.map((sug) => (
             <button
               type="button"
               key={sug.label}
               className="suggestion-chip"
               onClick={() => {
-                setPrompt(sug.prompt);
-                onPromptChange?.(sug.prompt);
+                const text = t(sug.prompt);
+                setPrompt(text);
+                onPromptChange?.(text);
                 requestAnimationFrame(() => {
                   const el = textareaRef.current;
                   el?.focus();
-                  el?.setSelectionRange(sug.prompt.length, sug.prompt.length);
+                  el?.setSelectionRange(text.length, text.length);
                 });
               }}
             >
               <Icon name={sug.icon} size={13} />
-              <span>{sug.label}</span>
+              <span>{t(sug.label)}</span>
             </button>
           ))}
         </div>

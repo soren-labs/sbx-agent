@@ -146,7 +146,13 @@ class SBXClient:
         return self._workspace_id
 
     def models(self, provider_id: str = "opencode") -> dict[str, Any]:
+        """Models offered by the workspace's inference Connections, and whether each
+        Connection speaks a protocol the given Harness accepts."""
         return self.get("/api/models", workspace_id=self.workspace_id, provider_id=provider_id)
+
+    def harnesses(self) -> list[dict[str, Any]]:
+        """Harness manifests: support tier, capabilities and accepted inference protocols."""
+        return self.get("/api/harnesses")["items"]
 
     # -------------------------------------------------------------------- execute
     def execute(
@@ -233,6 +239,32 @@ class Connections(_Namespace):
             f"/api/workspaces/{self.c.workspace_id}/connections",
             {"kind": kind, "label": label or kind, "credential": credential},
         )
+
+    def add_inference(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        base_url: str | None = None,
+        protocol: str = "openai_chat",
+        endpoints: dict[str, str] | None = None,
+        models: list[str] | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a bring-your-own-key inference Connection.
+
+        Give one ``base_url`` + ``protocol``, or ``endpoints`` mapping each protocol the
+        provider speaks (``openai_chat``, ``openai_responses``, ``anthropic_messages``)
+        to its base URL so every Harness can use the same key.
+        """
+        credential: dict[str, Any] = {"api_key": api_key, "model": model}
+        if endpoints:
+            credential["endpoints"] = endpoints
+        else:
+            credential.update({"base_url": base_url, "protocol": protocol})
+        if models:
+            credential["models"] = models
+        return self.add("inference_api", credential, label or "inference")
 
     def get(self, connection_id: str) -> dict[str, Any]:
         return self.c.get(f"/api/connections/{connection_id}")

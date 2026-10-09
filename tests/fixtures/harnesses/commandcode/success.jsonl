@@ -1,0 +1,61 @@
+{"type":"event","event":{"type":"run_start","sessionId":"35d63a0e-2c53-4b80-b5da-ef572b3143fa"}}
+{"type":"event","event":{"type":"turn_start","turnNumber":1}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"sbx/deepseek-flash"}}
+{"type":"event","event":{"type":"thinking_start"}}
+{"type":"event","event":{"type":"thinking_end","text":"Simple task. Create file, run ls."}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then list"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then list the"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then list the directory"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then list the directory."}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then list the directory."},{"type":"tool_use","id":"call_00_gGqTSU7p0WRFzDFlt3fk3115","name":"write_file","input":{"file_path":"/work/worktree/hello.txt","content":"alpha\n"}}]}}
+{"type":"event","event":{"type":"model_request_end","model":"sbx/deepseek-flash","usage":{"inputTokens":14772,"outputTokens":82,"cacheReadTokens":0,"cacheWriteTokens":0},"stopReason":"tool_calls"}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"thinking","thinking":"Simple task. Create file, run ls.","signature":""},{"type":"text","text":"I'll create the file then list the directory."},{"type":"tool_use","id":"call_00_gGqTSU7p0WRFzDFlt3fk3115","name":"write_file","input":{"file_path":"/work/worktree/hello.txt","content":"alpha\n"}}]}}
+{"type":"event","event":{"type":"tool_queued","toolCallId":"call_00_gGqTSU7p0WRFzDFlt3fk3115","toolName":"write_file","input":{"file_path":"/work/worktree/hello.txt","content":"alpha\n"}}}
+{"type":"event","event":{"type":"tool_running","toolCallId":"call_00_gGqTSU7p0WRFzDFlt3fk3115","toolName":"write_file","description":null}}
+{"type":"event","event":{"type":"tool_completed","toolCallId":"call_00_gGqTSU7p0WRFzDFlt3fk3115","toolName":"write_file","result":[{"type":"text","text":"File created successfully at: /work/worktree/hello.txt"}],"deferred":false}}
+{"type":"event","event":{"type":"turn_end","turnNumber":1,"hadToolCalls":true,"usage":{"inputTokens":14772,"outputTokens":82,"cacheReadTokens":0,"cacheWriteTokens":0}}}
+{"type":"event","event":{"type":"turn_start","turnNumber":2}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"sbx/deepseek-flash"}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"tool_use","id":"call_00_ET_MFkGTHEE8aWypzx3qUtf1822","name":"shell_command","input":{"command":"ls","description":"List files in current directory"}}]}}
+{"type":"event","event":{"type":"model_request_end","model":"sbx/deepseek-flash","usage":{"inputTokens":14880,"outputTokens":58,"cacheReadTokens":14720,"cacheWriteTokens":0},"stopReason":"tool_calls"}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"tool_use","id":"call_00_ET_MFkGTHEE8aWypzx3qUtf1822","name":"shell_command","input":{"command":"ls","description":"List files in current directory"}}]}}
+{"type":"event","event":{"type":"tool_queued","toolCallId":"call_00_ET_MFkGTHEE8aWypzx3qUtf1822","toolName":"shell_command","input":{"command":"ls","description":"List files in current directory"}}}
+{"type":"event","event":{"type":"tool_running","toolCallId":"call_00_ET_MFkGTHEE8aWypzx3qUtf1822","toolName":"shell_command","description":null}}
+{"type":"event","event":{"type":"tool_update","toolCallId":"call_00_ET_MFkGTHEE8aWypzx3qUtf1822","toolName":"shell_command","partial":[{"type":"text","text":"README.md\nhello.txt\n"}]}}
+{"type":"event","event":{"type":"tool_completed","toolCallId":"call_00_ET_MFkGTHEE8aWypzx3qUtf1822","toolName":"shell_command","result":[{"type":"text","text":"README.md\nhello.txt\n"}],"deferred":false}}
+{"type":"event","event":{"type":"turn_end","turnNumber":2,"hadToolCalls":true,"usage":{"inputTokens":14880,"outputTokens":58,"cacheReadTokens":14720,"cacheWriteTokens":0}}}
+{"type":"event","event":{"type":"turn_start","turnNumber":3}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"sbx/deepseek-flash"}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \""}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\"."}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents:"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md`,"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `hello"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `hello.txt"}]}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `hello.txt`."}]}}
+{"type":"event","event":{"type":"model_request_end","model":"sbx/deepseek-flash","usage":{"inputTokens":14956,"outputTokens":19,"cacheReadTokens":14720,"cacheWriteTokens":0},"stopReason":"stop"}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"text","text":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `hello.txt`."}]}}
+{"type":"event","event":{"type":"turn_end","turnNumber":3,"hadToolCalls":false,"usage":{"inputTokens":14956,"outputTokens":19,"cacheReadTokens":14720,"cacheWriteTokens":0}}}
+{"type":"event","event":{"type":"run_end","result":{"finalText":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `hello.txt`.","stopReason":"end_turn","turnCount":3,"usage":{"inputTokens":44608,"outputTokens":159,"cacheReadTokens":29440,"cacheWriteTokens":0},"systemPromptTokens":null}}}
+{"type":"result","subtype":"success","sessionId":"35d63a0e-2c53-4b80-b5da-ef572b3143fa","stopReason":"end_turn","usage":{"inputTokens":44608,"outputTokens":159,"cacheReadTokens":29440,"cacheWriteTokens":0},"durationMs":4009,"finalText":"Created hello.txt with \"alpha\". Directory contents: `README.md`, `hello.txt`."}

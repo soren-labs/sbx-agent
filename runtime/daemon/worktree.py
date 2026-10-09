@@ -13,6 +13,7 @@ import tarfile
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from runtime.security.artifacts import is_secret_path, redact_bytes, secret_reason
 from runtime.security.credentials import scrub, write_secret_file
@@ -280,8 +281,11 @@ class Worktree:
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             tar.add(self.path, arcname="worktree", filter=worktree_member)
             for session_home, paths in native.items():
+                home = self.state_dir / "homes" / session_home
                 for p in paths:
-                    arc = f"native/{session_home}/{p.name}"
+                    # Home-relative path, percent-encoded into one archive segment, so
+                    # every Harness's state returns to where its CLI expects it.
+                    arc = f"native/{session_home}/{quote(str(p.relative_to(home)), safe='')}"
                     for found in [p, *p.rglob("*")] if p.is_dir() else [p]:
                         rel = found.relative_to(p)
                         native_sources[f"{arc}/{rel}" if str(rel) != "." else arc] = found

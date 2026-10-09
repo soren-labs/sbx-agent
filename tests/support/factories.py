@@ -13,6 +13,7 @@ TEST_MANIFESTS: list[dict[str, Any]] = [
     {
         "provider_id": "opencode",
         "support_tier": "supported",
+        "inference_protocols": ["openai_chat", "anthropic_messages", "openai_responses"],
         "capabilities": {
             "native_resume": {"status": "supported"},
             "steer": {"status": "unsupported"},
@@ -20,7 +21,7 @@ TEST_MANIFESTS: list[dict[str, Any]] = [
             "model_discovery": {"status": "supported"},
         },
     },
-    {"provider_id": "claude", "support_tier": "disabled", "capabilities": {}},
+    {"provider_id": "devin", "support_tier": "disabled", "capabilities": {}},
 ]
 
 
@@ -50,7 +51,7 @@ def sessions_app(db: Any) -> Sessions:
 
 def session_body(**extra: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
-        "harness": {"provider_id": "opencode", "model": "opencode/big-pickle"},
+        "harness": {"provider_id": "opencode", "model": "test-model"},
         "executor": {"backend": "local"},
         "title": "test session",
     }

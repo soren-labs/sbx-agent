@@ -1,6 +1,6 @@
 """Real MVP acceptance: email/password + Modal + GitHub token + OpenCode Zen only.
 
-Opt-in. Reads SBX_BENCHMARK_EMAIL/PASSWORD, OPENCODE_ZEN_API_KEY, SBX_TEST_MODAL_TOKEN_ID/SECRET,
+Opt-in. Reads SBX_BENCHMARK_EMAIL/PASSWORD, SBX_TEST_INFERENCE_API_KEY, SBX_TEST_MODAL_TOKEN_ID/SECRET,
 SBX_TEST_GITHUB_TOKEN, SBX_BENCHMARK_GITHUB_REPO from the environment and never prints them.
 Runs a real PostgreSQL, a separate control-plane process (restartable), real Modal sandboxes
 through the user's stored Modal Connection, the official OpenCode CLI with the user's Zen key,
@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from sbx.sdk import SBXClient, SBXError  # noqa: E402
+from tests.e2e_modal.inference import inference_credential  # noqa: E402
 from tests.support.postgres import _pg_bin  # noqa: E402
 
 RUN = time.strftime("%Y%m%d%H%M%S")
@@ -38,7 +39,7 @@ assert REPO.endswith("/sbx-e2e-test"), "destructive GitHub testing is restricted
 SECRETS = {
     name: os.environ[name]
     for name in (
-        "OPENCODE_ZEN_API_KEY",
+        "SBX_TEST_INFERENCE_API_KEY",
         "SBX_TEST_MODAL_TOKEN_SECRET",
         "SBX_TEST_GITHUB_TOKEN",
         "SBX_BENCHMARK_PASSWORD",
@@ -246,11 +247,15 @@ def run() -> None:
         verified=c.me()["user"]["email_verified"],
     )
 
-    zen = c.connections.add(
-        "opencode_zen", {"api_key": os.environ["OPENCODE_ZEN_API_KEY"]}, "Zen (benchmark)"
-    )
+    zen = c.connections.add("inference_api", inference_credential(), "Inference (benchmark)")
     zen = c.connections.wait_health(zen["id"], deadline=180)
-    step("02_zen_connection", id=zen["id"], health=zen["health"], validation=zen["validation"])
+    step(
+        "02_inference_connection",
+        id=zen["id"],
+        health=zen["health"],
+        validation=zen["validation"],
+        config=zen["config"],
+    )
     modal = c.connections.add(
         "modal",
         {
@@ -502,7 +507,7 @@ def run() -> None:
         turns=[t["state"] for t in c2.turns.list(sid)],
         changesets=len(c2.changesets.list(sid)),
         delivery_state=c2.deliveries.get(delivery["id"])["state"],
-        zen_after_restart=revalidated["health"],
+        inference_after_restart=revalidated["health"],
     )
     c = c2
 

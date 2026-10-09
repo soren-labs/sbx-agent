@@ -12,6 +12,8 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from protocol.capabilities import INFERENCE_KIND, select_endpoint
+
 from control.application import access
 from control.domain.errors import DomainError
 from control.domain.identity import Principal
@@ -21,8 +23,10 @@ from control.security.redaction import safe_traceback
 
 log = logging.getLogger("sbx.connections")
 
-KINDS = ("modal", "github", "opencode_zen", "codex")
-SLOT_DEFAULTS = {"modal": 4, "github": 8, "opencode_zen": 2, "codex": 1}
+KINDS = ("modal", "github", "inference_api")
+# Vendor-specific inference kinds are retired: stored rows stay usable, new ones are refused.
+LEGACY_KINDS = ("opencode_zen", "codex")
+SLOT_DEFAULTS = {"modal": 4, "github": 8, "inference_api": 4}
 
 
 def _iso(v: Any) -> Any:
@@ -85,6 +89,9 @@ class Connections:
             }
             if version and con["config_state"] != "revoked"
             else None,
+            # Non-secret settings of the current CredentialVersion (never key material).
+            "config": (version or {}).get("public_config") or {},
+            "legacy": con["kind"] in LEGACY_KINDS,
             "validation": {
                 "status": validation["status"],
                 "observed_at": _iso(validation["observed_at"]),
@@ -112,6 +119,12 @@ class Connections:
     ) -> dict[str, Any]:
         access.require_workspace(principal, workspace_id)
         kind = body.get("kind")
+        if kind in LEGACY_KINDS:
+            raise DomainError(
+                "validation_failed",
+                f"{kind} connections are retired; add an inference_api connection instead",
+                details={"field": "kind", "replacement": INFERENCE_KIND},
+            )
         if kind not in KINDS:
             raise DomainError(
                 "validation_failed", "unknown connection kind", details={"field": "kind"}
@@ -201,6 +214,7 @@ class Connections:
                 "nonce": sealed.nonce,
                 "ciphertext": sealed.ciphertext,
                 "fingerprint": self.vault.fingerprint(str(sorted(material.items()))),
+                "public_config": getattr(connector, "public_config", lambda _m: {})(material),
                 "created_by": principal.user_id,
             },
         )
@@ -217,7 +231,23 @@ class Connections:
             con = access.owned(
                 uow, principal, "connections", connection_id, lock=True, what="connection"
             )
-            material = self.connectors[con["kind"]].normalize(body.get("credential") or {})
+            if con["kind"] in LEGACY_KINDS:
+                raise DomainError(
+                    "validation_failed",
+                    f"{con['kind']} connections are retired; add an inference_api connection",
+                    details={"field": "kind", "replacement": INFERENCE_KIND},
+                )
+            submitted = dict(body.get("credential") or {})
+            if hasattr(self.connectors[con["kind"]], "public_config"):
+                # Rotating only the key keeps the current endpoints and model.
+                current = uow.get("credential_versions", con["current_credential_version_id"])
+                kept = dict((current or {}).get("public_config") or {})
+                if "base_url" in submitted:
+                    kept.pop("endpoints", None)
+                if "model" in submitted:
+                    kept.pop("models", None)
+                submitted = {**kept, **submitted}
+            material = self.connectors[con["kind"]].normalize(submitted)
             request = {
                 "expected_version": body.get("expected_version"),
                 "material_fingerprint": self.vault.fingerprint(str(sorted(material.items()))),
@@ -463,31 +493,53 @@ class Connections:
         }
 
     def models(
-        self, principal: Principal, workspace_id: str, *, provider_id: str = "opencode"
+        self,
+        principal: Principal,
+        workspace_id: str,
+        *,
+        provider_id: str = "opencode",
+        accepted: Any = None,
     ) -> dict[str, Any]:
-        """Connection-scoped model availability from the latest catalog observation (pure)."""
+        """Connection-scoped model availability from the latest catalog observation (pure).
+
+        ``accepted`` is the Harness's ``inference_protocols``; each Connection reports the
+        endpoint that Harness would use, or ``compatible: false`` when it offers none.
+        """
         listing = self.list(principal, workspace_id)
-        kind = {"opencode": "opencode_zen", "codex": "codex"}.get(provider_id)
         out = []
         for con in listing["items"]:
-            if con["kind"] != kind or con["state"] != "configured":
+            if con["kind"] != INFERENCE_KIND or con["state"] != "configured":
                 continue
-            catalog = con["catalog"] or {}
+            catalog, config = con["catalog"] or {}, con["config"]
+            endpoint = select_endpoint(config.get("endpoints"), accepted)
             out.append(
                 {
                     "connection_id": con["id"],
                     "label": con["label"],
                     "health": con["health"],
                     "observed_at": catalog.get("observed_at"),
-                    "preferred_model": catalog.get("preferred_model"),
-                    "models": catalog.get("models", []),
+                    "preferred_model": config.get("model"),
+                    "models": catalog.get("models")
+                    or [{"id": m} for m in config.get("models") or []],
+                    "protocols": list(config.get("endpoints") or {}),
+                    "protocol": endpoint[0] if endpoint else None,
+                    "compatible": endpoint is not None,
                 }
             )
         preferred = next(
-            (c["preferred_model"] for c in out if c["health"] == "ready" and c["preferred_model"]),
+            (
+                c["preferred_model"]
+                for c in out
+                if c["compatible"] and c["health"] != "reauth_required" and c["preferred_model"]
+            ),
             None,
         )
-        return {"provider_id": provider_id, "preferred_model": preferred, "connections": out}
+        return {
+            "provider_id": provider_id,
+            "inference_protocols": list(accepted or ()),
+            "preferred_model": preferred,
+            "connections": out,
+        }
 
     # --------------------------------------------------------------------- jobs/hooks
     def handle_validate(self, ctx: Any) -> Outcome:

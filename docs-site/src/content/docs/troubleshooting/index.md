@@ -12,7 +12,7 @@ description: Common first-run failures and what to do about them.
 | `csrf_failed` in the Console | The browser origin is not in `SBX_ALLOWED_ORIGINS`, or the CSRF token is missing. Set the public URL and origins to the Console address. |
 | `validation_failed` mentioning `Idempotency-Key` | Every mutation needs the header. The SDK and CLI add it. |
 | Connection stays `unverified` | Validation is a background Job; make sure workers run (`serve` runs them). `reauth_required` means the provider rejected the credential: replace it. |
-| Turn waits with `connection_required` or `credential_invalid` | Add or replace the Modal, GitHub or OpenCode Zen Connection. |
+| Turn waits with `connection_required` or `credential_invalid` | Add or replace the inference API key, Modal or GitHub Connection. For `connection_required` with `inference_protocols`, add an endpoint for one of the listed protocols. |
 | Turn waits with `waiting_capacity` | Connection capacity is in use; the Turn continues when a slot frees. |
 | `executor_unavailable` on Files, Terminal or Services | No live executor. Reads never wake compute; activate it from the Session. |
 | Turn ended `outcome_unknown` | SBX could not prove the result. Inspect the Worktree, then acknowledge the Turn before retrying. See [Sessions and Turns](/guides/sessions-and-turns/). |

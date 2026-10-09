@@ -8,9 +8,7 @@ from protocol.capabilities import CAPABILITY_NAMES
 from runtime.harnesses.protocol import Capability, HarnessManifest
 
 _DISABLED = {
-    "claude": ("npm:@anthropic-ai/claude-code", "jsonl", "distribution/auth not verified"),
     "devin": ("static.devin.ai", "acp", "proprietary distribution; ACP resume not verified"),
-    "grok": ("host binary", "jsonl", "host-binary distribution not reproducible"),
     "antigravity": ("host binary", "jsonl", "host-binary distribution not reproducible"),
 }
 

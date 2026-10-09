@@ -10,20 +10,38 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from protocol.capabilities import INFERENCE_CONNECTION_KIND
+from protocol.capabilities import INFERENCE_KIND, LEGACY_INFERENCE_KIND, select_endpoint
 
 from control.application.ports import SealedRef
 from control.domain.errors import DomainError
 
 
 class VaultCredentialBroker:
-    def __init__(self, tx: Any, vault: Any) -> None:
+    def __init__(self, tx: Any, vault: Any, catalog: Any = None) -> None:
         self.tx = tx
         self.vault = vault
+        self.catalog = catalog
+
+    def _inference_kinds(self, session: dict[str, Any]) -> tuple[str, ...]:
+        """The generic kind, plus the retired kind a pre-existing Session may be pinned to."""
+        legacy = LEGACY_INFERENCE_KIND.get(session["harness_provider"])
+        return (INFERENCE_KIND, legacy) if legacy else (INFERENCE_KIND,)
+
+    def _accepted(self, session: dict[str, Any]) -> list[str]:
+        manifest = self.catalog.manifest(session["harness_provider"]) if self.catalog else None
+        return list((manifest or {}).get("inference_protocols") or [])
 
     def _connection(
-        self, uow: Any, session: dict[str, Any], slot: str, kind: str, *, purpose: str
+        self,
+        uow: Any,
+        session: dict[str, Any],
+        slot: str,
+        kind: str | tuple[str, ...],
+        *,
+        purpose: str,
     ) -> dict[str, Any]:
+        kinds = (kind,) if isinstance(kind, str) else kind
+        kind = kinds[0]
         con_id = session.get(f"{slot}_connection_id")
         if not con_id:
             raise DomainError(
@@ -33,7 +51,11 @@ class VaultCredentialBroker:
                 action="add_connection",
             )
         con = uow.get("connections", con_id)
-        if con is None or con["workspace_id"] != session["workspace_id"] or con["kind"] != kind:
+        if (
+            con is None
+            or con["workspace_id"] != session["workspace_id"]
+            or con["kind"] not in kinds
+        ):
             raise DomainError(
                 "connection_required",
                 f"pinned {kind} Connection is unavailable",
@@ -55,7 +77,7 @@ class VaultCredentialBroker:
         return con
 
     def _decrypt(
-        self, slot: str, kind: str, session: dict[str, Any], purpose: str
+        self, slot: str, kind: str | tuple[str, ...], session: dict[str, Any], purpose: str
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         def fn(uow: Any) -> tuple[dict[str, Any], dict[str, Any]]:
             current = uow.get("sessions", session["id"])
@@ -70,24 +92,50 @@ class VaultCredentialBroker:
         material = self.vault.open(
             SealedRef(version["key_id"], version["nonce"], version["ciphertext"]), aad
         )
-        return material, {"connection_id": con["id"], "credential_version_id": version["id"]}
+        return material, {
+            "connection_id": con["id"],
+            "credential_version_id": version["id"],
+            "kind": con["kind"],
+        }
 
     def check_inference(self, uow: Any, session: dict[str, Any]) -> dict[str, Any]:
-        kind = INFERENCE_CONNECTION_KIND.get(session["harness_provider"])
-        if kind is None:
-            return {}
-        con = self._connection(uow, session, "inference", kind, purpose="inference")
+        con = self._connection(
+            uow, session, "inference", self._inference_kinds(session), purpose="inference"
+        )
         return {
             "connection_id": con["id"],
             "credential_version_id": con["current_credential_version_id"],
         }
 
     def inference(self, session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        kind = INFERENCE_CONNECTION_KIND.get(session["harness_provider"])
-        if kind is None:
-            return {}, {}
-        material, meta = self._decrypt("inference", kind, session, "inference")
-        return {kind: material}, meta
+        """``(secrets, meta)`` for one Turn.
+
+        Only the API key is secret. The endpoint the Harness will use and the default
+        model travel as ``meta["inference"]`` in the operation payload, so they are never
+        treated (or redacted) as credential values.
+        """
+        material, meta = self._decrypt(
+            "inference", self._inference_kinds(session), session, "inference"
+        )
+        kind = meta.pop("kind")
+        if kind != INFERENCE_KIND:
+            return {kind: material}, meta
+        accepted = self._accepted(session)
+        endpoint = select_endpoint(material.get("endpoints"), accepted)
+        if endpoint is None:
+            raise DomainError(
+                "connection_required",
+                f"the pinned inference connection offers no protocol the "
+                f"{session['harness_provider']} harness accepts",
+                details={"kind": INFERENCE_KIND, "inference_protocols": accepted},
+                action="replace_credential",
+            )
+        meta["inference"] = {
+            "protocol": endpoint[0],
+            "base_url": endpoint[1],
+            "model": material.get("model"),
+        }
+        return {"inference": {"api_key": material["api_key"]}}, meta
 
     def compute(self, session: dict[str, Any]) -> dict[str, Any] | None:
         if session["executor_backend"] != "modal":
@@ -131,8 +179,9 @@ class VaultCredentialBroker:
                     )
             return versions
 
-        return [
-            self.vault.open(
+        out = []
+        for version in self.tx.read(read):
+            material = self.vault.open(
                 SealedRef(version["key_id"], version["nonce"], version["ciphertext"]),
                 self.vault.aad(
                     version["workspace_id"],
@@ -141,8 +190,11 @@ class VaultCredentialBroker:
                     version["format"],
                 ),
             )
-            for version in self.tx.read(read)
-        ]
+            # Base URLs and model ids are settings, not credentials: redacting them would
+            # mangle ordinary output and withhold files that merely mention a model.
+            public = set(version["public_config"] or {})
+            out.append({k: v for k, v in material.items() if k not in public})
+        return out
 
     def source_token(self, workspace_id: str, connection_id: str) -> tuple[str, dict[str, Any]]:
         """Delivery boundary: resolve the selected GitHub Connection under current authority."""

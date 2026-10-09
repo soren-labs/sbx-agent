@@ -6,6 +6,32 @@ source for release notes.
 
 ## [Unreleased]
 
+### Added
+- Generic bring-your-own-key inference Connections (`inference_api`): an API key, a default
+  model and one base URL per wire protocol (`openai_chat`, `openai_responses`,
+  `anthropic_messages`). The Harness is decoupled from the model provider; DeepSeek is the
+  Console preset and any compatible provider works. Outbound base URLs must be public HTTPS.
+- Five official CLI Harnesses, each verified with real tool-using Turns and native session
+  resume on DeepSeek, locally and in Modal sandboxes: OpenCode, Codex, Claude Code, Grok Build
+  and Command Code. Manifests declare `inference_protocols`; pinned CLI versions are baked into
+  the executor image.
+- Console: inference key form with per-protocol base URLs and validation error states,
+  Harness and model selection scoped to compatible Connections, real per-Turn token usage.
+- SDK/CLI: `connections.add_inference()`, `harnesses()`, `sbx connections add inference_api
+  --endpoint … --model …`, `sbx sessions create --harness …`, `sbx harnesses`.
+
+### Changed
+- OpenCode Zen keys and uploaded Codex `auth.json` credentials are retired from new flows.
+  Stored Connections are preserved (migration `0004` only widens the kind constraint), listed
+  as retired, and keep serving the Sessions already pinned to them.
+- Native CLI state in checkpoints is stored by home-relative path so every Harness resumes
+  after a restore; older checkpoints still restore.
+
+### Fixed
+- Console workspace ignored the light theme (always dark, with unreadable light inputs);
+  composer popovers opened under the top bar; the Connections page, model picker, repository
+  picker and Session usage panel showed placeholder data instead of server state.
+
 ## [0.1.2] - 2026-10-08
 
 - Restored the polished Opus 5.5 Console experience on top of the unified API/state architecture, including the split-screen auth flow, session-rich dark workspace shell, prompt-first Home, provider-card Integrations, responsive mobile views, real-browser screenshots, and interaction video evidence.

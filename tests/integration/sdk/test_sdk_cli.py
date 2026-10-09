@@ -15,7 +15,7 @@ from tests.support.api import ApiStack
 from sbx.cli import main as cli_main
 from sbx.sdk import SBXClient, SBXError
 
-ZEN = "zen-sdk-key-000000000001"
+ZEN = "byok-sdk-key-000000000001"
 
 
 @pytest.fixture
@@ -39,9 +39,17 @@ def env(db, tmp_path):
 
 def test_sdk_execute_follow_up_and_events(env) -> None:
     stack, client, *_ = env
-    zen = client.connections.add("opencode_zen", {"api_key": ZEN}, "zen")
+    zen = client.connections.add_inference(
+        ZEN, model="test-model", base_url="https://inference.example.test/v1", label="byok"
+    )
+    assert zen["kind"] == "inference_api" and zen["config"]["model"] == "test-model"
     assert client.connections.wait_health(zen["id"])["health"] == "ready"
-    assert client.models()["preferred_model"] == "opencode/big-pickle"
+    assert client.models()["preferred_model"] == "test-model"
+    assert client.models("claude")["connections"][0]["compatible"] is False
+    tiers = {h["provider_id"]: h["support_tier"] for h in client.harnesses()}
+    assert {"opencode", "codex", "claude", "grok", "commandcode"} <= {
+        p for p, tier in tiers.items() if tier == "supported"
+    }
     seen: list[str] = []
     first = client.execute(
         "remember KIWI",
@@ -83,7 +91,9 @@ class _DropFirstResponse(httpx.Client):
 
 def test_transport_retry_reuses_idempotency_key(env) -> None:
     stack, client, *_ = env
-    client.connections.add("opencode_zen", {"api_key": ZEN})
+    client.connections.add_inference(
+        ZEN, model="test-model", base_url="https://inference.example.test/v1"
+    )
     flaky = _DropFirstResponse(client.http)
     retrying = SBXClient("http://testserver", http=flaky, workspace_id=client.workspace_id)
     retrying.csrf = client.csrf
@@ -101,14 +111,41 @@ def test_cli_reads_secrets_from_stdin_and_never_prints_them(
     stack, client, email, password = env
     assert (
         cli_main(
-            ["connections", "add", "opencode_zen", "--label", "cli-zen"],
+            [
+                "connections",
+                "add",
+                "inference_api",
+                "--label",
+                "cli-byok",
+                "--endpoint",
+                "openai_chat=https://inference.example.test/v1",
+                "--endpoint",
+                "anthropic_messages=https://inference.example.test/anthropic",
+                "--model",
+                "test-model",
+            ],
             client=client,
             stdin=io.StringIO(ZEN),
         )
         == 0
     )
     out = capsys.readouterr().out
-    assert ZEN not in out and json.loads(out)["label"] == "cli-zen"
+    added = json.loads(out)
+    assert ZEN not in out and added["label"] == "cli-byok"
+    assert set(added["config"]["endpoints"]) == {"openai_chat", "anthropic_messages"}
+    # Rotating the key from stdin keeps the endpoints and model.
+    assert (
+        cli_main(
+            ["connections", "replace", added["id"]],
+            client=client,
+            stdin=io.StringIO("rotated-sdk-key-000000000002"),
+        )
+        == 0
+    )
+    rotated = json.loads(capsys.readouterr().out)
+    assert rotated["config"] == added["config"] and rotated["credential"]["ordinal"] == 2
+    assert cli_main(["harnesses"], client=client) == 0
+    assert "inference_protocols" in capsys.readouterr().out
     assert cli_main(["connections", "list"], client=client) == 0
     assert ZEN not in capsys.readouterr().out
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))

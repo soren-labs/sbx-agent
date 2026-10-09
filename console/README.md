@@ -39,7 +39,7 @@ npm run typecheck && npm test && npm run build
   outcome. Retry buttons name what is retried (Turn, Delivery, validation).
 - Compute is never started implicitly; `executor_unavailable` renders a diagnosis.
 - Session composer defaults to harness `opencode`, the preferred free model from
-  `/api/models`, and Modal when a Modal connection exists. Codex is optional.
+  `/api/models`, and Modal when a Modal connection exists. The Harness and model pickers list only what `/api/harnesses` and `/api/models` report.
 
 ## Console presentation and browser evidence
 

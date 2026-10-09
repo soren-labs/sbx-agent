@@ -10,6 +10,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from protocol.runtime import (
     OPERATION_KINDS,
@@ -28,7 +29,7 @@ from runtime.daemon.terminal import Terminal
 from runtime.daemon.worktree import Worktree, WorktreeError, git
 from runtime.harnesses.protocol import Harness, HarnessError, TurnContext
 from runtime.security.artifacts import collect_known
-from runtime.security.paths import PathEscape
+from runtime.security.paths import PathEscape, safe_join
 from runtime.security.redaction import Redactor
 
 MAX_BODY = 300 * 1024 * 1024
@@ -349,6 +350,7 @@ class RuntimeDaemon:
             effort=payload.get("effort"),
             native_binding=payload.get("native_binding"),
             deadline_seconds=float(payload.get("deadline_seconds") or 3600),
+            inference=payload.get("inference"),
         )
         digest = request_digest("turn.start", payload)
         self.journal.op_insert(op_id, "turn.start", digest, session_id, self.generation)
@@ -398,16 +400,30 @@ class RuntimeDaemon:
             return
         source = Path(staging) / session_id
         if source.exists():
-            target = self.state_dir / "homes" / session_id / ".local" / "share" / "opencode"
-            codex_target = self.state_dir / "homes" / session_id / ".codex"
-            target.mkdir(parents=True, exist_ok=True)
+            home = self.state_dir / "homes" / session_id
             for item in source.iterdir():
-                dest = (codex_target if item.name == "sessions" else target) / item.name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if dest.exists():
+                dest = self._native_destination(home, item.name)
+                if dest is None or dest.exists():
                     continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(item), str(dest))
         self.worktree._native_staging = None
+
+    @staticmethod
+    def _native_destination(home: Path, name: str) -> Path | None:
+        """Where a checkpointed native-state entry belongs under the Session home.
+
+        Entries are named by their percent-encoded home-relative path. Checkpoints
+        written before that carried bare names: ``sessions`` was Codex, anything else
+        OpenCode's data directory.
+        """
+        if "%2F" not in name:
+            legacy = ".codex" if name == "sessions" else ".local/share/opencode"
+            return home / legacy / name
+        try:
+            return safe_join(home, unquote(name))
+        except PathEscape:
+            return None
 
     def _sync_operation(
         self, kind: str, op_id: str, payload: dict[str, Any], secrets: dict[str, Any]

@@ -10,7 +10,7 @@ import pytest
 from control.jobs.model import Retry
 from control.jobs.worker import Worker
 from control.security.redaction import KNOWN_SECRETS, _KnownSecrets, install_log_redaction
-from tests.support.api import ApiStack, User
+from tests.support.api import ApiStack, User, inference
 
 ZEN_KEY = "zen-injected-fault-key-7a6b5c4d"  # fake selected credential
 GH_LIKE = "ghp_" + "x" * 36
@@ -38,10 +38,10 @@ def test_injected_connector_exception_never_reaches_logs(stack, caplog) -> None:
     def exploding(material, **_):
         raise RuntimeError(f"upstream rejected key {material['api_key']} (Bearer {GH_LIKE})")
 
-    stack.services.connections.validators["opencode_zen"] = exploding
+    stack.services.connections.validators["inference_api"] = exploding
     user = User(stack)
     caplog.set_level(logging.DEBUG)
-    con = user.connect("opencode_zen", {"api_key": ZEN_KEY})
+    con = user.connect("inference_api", inference(ZEN_KEY))
     stack.drain(rounds=3)
     assert ZEN_KEY not in caplog.text and GH_LIKE not in caplog.text
     assert "RuntimeError" in caplog.text, "the failure itself is still diagnosable"
@@ -56,7 +56,7 @@ def test_injected_connector_exception_never_reaches_logs(stack, caplog) -> None:
 
 def test_worker_scrubs_raw_handler_exceptions(stack, caplog) -> None:
     user = User(stack)
-    con = user.connect("opencode_zen", {"api_key": ZEN_KEY})  # sealed => registered
+    con = user.connect("inference_api", inference(ZEN_KEY))  # sealed => registered
     stack.drain()
 
     def handler(ctx):
@@ -110,7 +110,7 @@ def test_native_auth_json_registers_individual_tokens() -> None:
 def test_surfaced_fault_messages_are_redacted(stack) -> None:
     KNOWN_SECRETS.add(ZEN_KEY)
     user = User(stack)
-    con = user.connect("opencode_zen", {"api_key": "zen-other-key-for-session-0001"})
+    con = user.connect("inference_api", inference("zen-other-key-for-session-0001"))
     stack.drain()
     body = {"harness": {"provider_id": "opencode"}, "executor": {"backend": "local"}}
     created = user.post(f"/api/workspaces/{user.workspace_id}/sessions", body)

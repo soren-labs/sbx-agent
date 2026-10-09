@@ -1,5 +1,11 @@
 """OpenCode official CLI Harness (``opencode run --format json``).
 
+Inference is bring-your-own-key: the Turn's endpoint is registered as the custom
+provider ``sbx`` in an ``opencode.json`` that references the key by environment
+variable name only (verified against opencode-ai 1.18.35 with DeepSeek over all three
+protocols). Sessions created before generic inference keep their OpenCode Zen
+``auth.json`` lane.
+
 Verified against opencode-ai 1.18.34: ``run [message] --format json -m
 provider/model --dir <worktree> --auto [-s <session>]``. Every frame carries
 ``sessionID``; ``text``/``reasoning`` parts are cumulative snapshots keyed by
@@ -12,13 +18,12 @@ are native state.
 from __future__ import annotations
 
 import json
-import os
-import shlex
-import sys
 from pathlib import Path
 from typing import Any
 
 from runtime.harnesses.protocol import (
+    INFERENCE_ALIAS,
+    INFERENCE_KEY_ENV,
     Capability,
     HarnessError,
     HarnessManifest,
@@ -26,26 +31,35 @@ from runtime.harnesses.protocol import (
     NativeInvocation,
     PreparedHarness,
     TurnContext,
+    argv_text,
+    base_env,
     bounded,
     classify_text,
+    cli_bin,
     obs,
+    resolve_inference,
 )
 from runtime.security.credentials import private_dir, scrub, write_secret_file
 
-ADAPTER_VERSION = "opencode-harness/1"
+ADAPTER_VERSION = "opencode-harness/2"
+PROTOCOLS = ("openai_chat", "anthropic_messages", "openai_responses")
+# AI SDK package OpenCode loads per protocol, and the path its base URL must end with.
+_SDK = {
+    "openai_chat": ("@ai-sdk/openai-compatible", ""),
+    "openai_responses": ("@ai-sdk/openai", ""),
+    "anthropic_messages": ("@ai-sdk/anthropic", "/v1"),
+}
 DATA_REL = Path(".local/share/opencode")
 AUTH_FILE = "auth.json"
 _NOT_NATIVE_STATE = {AUTH_FILE, "log"}
 
 
 def _bin() -> list[str]:
-    tokens = shlex.split(os.environ.get("OPENCODE_BIN", "opencode")) or ["opencode"]
-    if len(tokens) == 1 and tokens[0].endswith(".py"):
-        return [sys.executable, tokens[0]]
-    return tokens
+    return cli_bin("OPENCODE_BIN", "opencode")
 
 
 def qualify_model(model: str | None) -> str | None:
+    """Legacy Zen lane only: bare ids belong to the built-in ``opencode`` provider."""
     if not model:
         return None
     return model if "/" in model else f"opencode/{model}"
@@ -66,13 +80,14 @@ class OpenCodeHarness:
             distribution="npm:opencode-ai",
             transport="jsonl",
             support_tier="supported",
-            credential_methods=["opencode_zen api key"],
+            credential_methods=["inference_api key via custom provider config"],
+            inference_protocols=list(PROTOCOLS),
             native_state_versions=["opencode-sqlite-1"],
             capabilities={
                 "native_resume": Capability("supported", f"{ev}: run --session <id>"),
                 "native_state_export": Capability("supported", "opencode.db + snapshot dir"),
                 "account_portable_resume": Capability(
-                    "unknown", "", "not verified across Zen keys"
+                    "unknown", "", "not verified across inference connections"
                 ),
                 "event_stream": Capability("supported", "--format json"),
                 "interrupt": Capability("unsupported", "", "supervisor process-group stop only"),
@@ -82,7 +97,9 @@ class OpenCodeHarness:
                 "skills": Capability("unknown"),
                 "attachments": Capability("unknown", "", "-f not wired"),
                 "structured_output": Capability("unsupported", "", "prompt-only", "prompt_only"),
-                "model_discovery": Capability("supported", "opencode models opencode"),
+                "model_discovery": Capability(
+                    "unsupported", "", "models come from the inference connection catalog"
+                ),
                 "effort_settings": Capability("unknown", "", "--variant not wired"),
                 "credential_writeback": Capability("unsupported", "", "static API key"),
                 "usage": Capability("supported", "step_finish.tokens"),
@@ -95,29 +112,51 @@ class OpenCodeHarness:
     def prepare(self, context: TurnContext, credentials: dict[str, Any]) -> PreparedHarness:
         home = private_dir(context.home)
         data = private_dir(self._data_dir(home))
-        private_dir(home / ".config" / "opencode")
-        key = (credentials.get("opencode_zen") or {}).get("api_key")
+        config_dir = private_dir(home / ".config" / "opencode")
+        env = base_env(
+            home,
+            XDG_DATA_HOME=str(home / ".local" / "share"),
+            XDG_CONFIG_HOME=str(home / ".config"),
+            XDG_CACHE_HOME=str(home / ".cache"),
+            XDG_STATE_HOME=str(home / ".local" / "state"),
+            OPENCODE_DISABLE_AUTOUPDATE="1",
+        )
         files: list[Path] = []
-        secrets: list[str] = []
-        if key:
-            payload = json.dumps({"opencode": {"type": "api", "key": key}})
+        legacy = (credentials.get("opencode_zen") or {}).get("api_key")
+        if legacy and not context.inference:
+            payload = json.dumps({"opencode": {"type": "api", "key": legacy}})
             files.append(write_secret_file(data / AUTH_FILE, payload))
-            secrets.append(key)
-        env = {
-            "HOME": str(home),
-            "XDG_DATA_HOME": str(home / ".local" / "share"),
-            "XDG_CONFIG_HOME": str(home / ".config"),
-            "XDG_CACHE_HOME": str(home / ".cache"),
-            "XDG_STATE_HOME": str(home / ".local" / "state"),
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "LANG": "C.UTF-8",
-            "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            return PreparedHarness(home=home, env=env, secrets=[legacy], credential_files=files)
+        inference = resolve_inference(context, credentials, PROTOCOLS)
+        package, suffix = _SDK[inference.protocol]
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            "autoupdate": False,
+            "share": "disabled",
+            "provider": {
+                INFERENCE_ALIAS: {
+                    "npm": package,
+                    "name": "Custom inference",
+                    "options": {
+                        "baseURL": inference.base_url + suffix,
+                        "apiKey": f"{{env:{INFERENCE_KEY_ENV}}}",
+                    },
+                    "models": {inference.model: {"name": inference.model}},
+                }
+            },
         }
-        return PreparedHarness(home=home, env=env, secrets=secrets, credential_files=files)
+        path = config_dir / "sbx-inference.json"
+        path.write_text(json.dumps(config, indent=2))
+        env.update({"OPENCODE_CONFIG": str(path), INFERENCE_KEY_ENV: inference.api_key})
+        prepared = PreparedHarness(home=home, env=env, secrets=[inference.api_key])
+        prepared.model = f"{INFERENCE_ALIAS}/{inference.model}"
+        return prepared
 
-    def _argv(self, context: TurnContext, session: str | None) -> list[str]:
-        argv = [*_bin(), "run", context.prompt, "--format", "json"]
-        model = qualify_model(context.model)
+    def _argv(
+        self, context: TurnContext, prepared: PreparedHarness, session: str | None
+    ) -> list[str]:
+        argv = [*_bin(), "run", argv_text(context.prompt), "--format", "json"]
+        model = prepared.model or qualify_model(context.model)
         if model:
             argv += ["-m", model]
         if session:
@@ -125,7 +164,7 @@ class OpenCodeHarness:
         return argv + ["--dir", str(context.worktree), "--auto"]
 
     def start_turn(self, context: TurnContext, prepared: PreparedHarness) -> NativeInvocation:
-        return NativeInvocation(self._argv(context, None), context.worktree, prepared.env)
+        return NativeInvocation(self._argv(context, prepared, None), context.worktree, prepared.env)
 
     def resume_turn(
         self, context: TurnContext, prepared: PreparedHarness, binding: dict[str, Any]
@@ -133,7 +172,9 @@ class OpenCodeHarness:
         native_id = binding.get("native_id")
         if not native_id or binding.get("provider_id") != "opencode":
             raise HarnessError("context_unavailable", "no compatible OpenCode native session")
-        return NativeInvocation(self._argv(context, native_id), context.worktree, prepared.env)
+        return NativeInvocation(
+            self._argv(context, prepared, native_id), context.worktree, prepared.env
+        )
 
     def new_state(self, context: TurnContext) -> dict[str, Any]:
         expected = (context.native_binding or {}).get("native_id")
@@ -308,7 +349,7 @@ class OpenCodeHarness:
         )
 
     def discover(self, prepared: PreparedHarness) -> NativeInvocation | None:
-        return NativeInvocation([*_bin(), "models", "opencode"], prepared.home, prepared.env)
+        return None
 
     def native_state_paths(self, home: Path) -> list[Path]:
         data = self._data_dir(home)

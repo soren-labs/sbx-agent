@@ -134,7 +134,7 @@ def build_services(
         if config.resend_api_key
         else FileMailSink(config.data_dir / "mail")
     )
-    broker = VaultCredentialBroker(db, vault)
+    broker = VaultCredentialBroker(db, vault, catalog)
     if executors is None:
         executors = {}
         if "local" in config.executors:

@@ -1,7 +1,8 @@
 # sbx-agent
 
 SBX runs coding agents as durable **Sessions**. Each Session owns a logical
-Worktree; every Turn runs the provider's official CLI (OpenCode, Codex) inside
+Worktree; every Turn runs an official coding CLI (OpenCode, Codex, Claude Code, Grok Build
+or Command Code) with your own inference API key inside
 `sbx-runtime` on a local or Modal Executor. Finished work is captured as an
 immutable **ChangeSet**, shipped by an exact-subject **Delivery** (GitHub pull
 request and gated merge), and can be reviewed by child-Session **Delegations**.
@@ -24,9 +25,11 @@ make console-dev                                  # Console on :5174, proxies /a
 ```
 
 Sign up with email and password, then add Connections in **Settings →
-Connections** (or `sbx connections add`): a Modal token for compute, an
-OpenCode Zen key (or Codex `auth.json`) for the agent, and a GitHub token for
-repositories and pull requests. Secrets are stored encrypted as
+Connections** (or `sbx connections add`): an inference API key (API key, base URL
+per protocol and model — DeepSeek or any OpenAI/Anthropic-compatible provider) for
+the agent, a Modal token for compute, and a GitHub token for repositories and pull
+requests. The inference key is not tied to a CLI: any Harness that speaks one of
+its protocols can use it. Secrets are stored encrypted as
 CredentialVersions and are never returned by the API.
 
 ## SDK and CLI
@@ -46,7 +49,10 @@ delivery = client.deliveries.wait(client.deliveries.request(changeset["id"])["id
 
 ```bash
 sbx auth login --email you@example.com          # password from stdin or prompt
-sbx connections add opencode_zen < key.txt
+sbx connections add inference_api --model deepseek-flash \
+  --endpoint openai_chat=https://api.deepseek.com \
+  --endpoint anthropic_messages=https://api.deepseek.com/anthropic < key.txt
+sbx sessions create --harness claude --message "Fix the flaky test"
 sbx execute "Fix the flaky test" --project my-project
 ```
 

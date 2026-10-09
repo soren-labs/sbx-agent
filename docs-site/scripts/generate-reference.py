@@ -30,6 +30,7 @@ def provider_reference() -> list[dict[str, Any]]:
             "support": m["support_tier"],
             "transport": m["transport"],
             "distribution": m["distribution"],
+            "inference_protocols": m.get("inference_protocols", []),
             "capabilities": {k: v["status"] for k, v in m["capabilities"].items()},
         }
         for m in manifests

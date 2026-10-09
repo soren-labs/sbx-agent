@@ -785,7 +785,9 @@ class ExecutionService:
         accepted = False
         refused: RuntimeRefused | None = None
         try:
-            bundle, _meta = self.credentials.inference(session)
+            bundle, meta = self.credentials.inference(session)
+            if meta.get("inference"):
+                payload["inference"] = meta["inference"]
             response = self.connector.channel(lease).op(
                 "turn.start", execution["operation_id"], session["id"], payload, secrets=bundle
             )

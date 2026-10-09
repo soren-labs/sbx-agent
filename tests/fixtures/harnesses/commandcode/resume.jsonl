@@ -1,0 +1,10 @@
+{"type":"event","event":{"type":"run_start","sessionId":"35d63a0e-2c53-4b80-b5da-ef572b3143fa"}}
+{"type":"event","event":{"type":"turn_start","turnNumber":1}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"sbx/deepseek-flash"}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"alpha"}]}}
+{"type":"event","event":{"type":"model_request_end","model":"sbx/deepseek-flash","usage":{"inputTokens":14996,"outputTokens":2,"cacheReadTokens":7040,"cacheWriteTokens":0},"stopReason":"stop"}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"text","text":"alpha"}]}}
+{"type":"event","event":{"type":"turn_end","turnNumber":1,"hadToolCalls":false,"usage":{"inputTokens":14996,"outputTokens":2,"cacheReadTokens":7040,"cacheWriteTokens":0}}}
+{"type":"event","event":{"type":"run_end","result":{"finalText":"alpha","stopReason":"end_turn","turnCount":1,"usage":{"inputTokens":14996,"outputTokens":2,"cacheReadTokens":7040,"cacheWriteTokens":0},"systemPromptTokens":null}}}
+{"type":"result","subtype":"success","sessionId":"35d63a0e-2c53-4b80-b5da-ef572b3143fa","stopReason":"end_turn","usage":{"inputTokens":14996,"outputTokens":2,"cacheReadTokens":7040,"cacheWriteTokens":0},"durationMs":1750,"finalText":"alpha"}

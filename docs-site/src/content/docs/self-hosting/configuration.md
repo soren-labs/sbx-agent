@@ -35,6 +35,7 @@ The process exits at start-up if any of these is missing.
 | `SBX_ALLOWED_ORIGINS` | the public URL | Comma-separated origins allowed for cookie mutations. |
 | `SBX_COOKIE_SECURE` | `0` | Set to `1` to mark cookies `Secure` (use behind HTTPS). |
 | `SBX_EXECUTORS` | `local,modal` | Enabled executor backends. |
+| `SBX_INFERENCE_ALLOW_PRIVATE_URLS` | unset | `1` lets inference Connections use private-network or plain-`http` base URLs (self-hosted gateways). Leave unset on multi-user deployments. |
 | `SBX_RESEND_API_KEY` | unset | Send email through Resend. Without it, mail is written to `$SBX_DATA_DIR/mail/` (directory `0700`, files `0600`). |
 | `SBX_MAIL_FROM` | unset | Sender address for Resend email, on a domain verified in Resend. Required when `SBX_RESEND_API_KEY` is set; startup fails without it. |
 | `SBX_WORKER_THREADS` | `4` | In-process job worker threads. |

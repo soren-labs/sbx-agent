@@ -16,6 +16,16 @@ from runtime.harnesses.codex import CodexHarness
 from runtime.harnesses.opencode import OpenCodeHarness
 
 FAKE_OPENCODE = str(Path(__file__).resolve().parents[1] / "fakes" / "official" / "opencode_cli.py")
+# Non-secret BYOK endpoint a turn.start payload carries; the key travels in frame secrets.
+INFERENCE_ENDPOINT = {
+    "protocol": "openai_chat",
+    "base_url": "https://inference.example.test/v1",
+    "model": "test-model",
+}
+
+
+def inference_secrets(api_key: str) -> dict[str, Any]:
+    return {"inference": {"api_key": api_key}}
 
 
 class DaemonHarness:

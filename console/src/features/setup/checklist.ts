@@ -13,13 +13,13 @@ export interface SetupItem {
 
 export interface SetupSummary {
   items: SetupItem[];
-  /** All required items are ready. Codex is never required. */
+  /** All required items are ready. */
   complete: boolean;
   next: SetupItem | null;
 }
 
-const REQUIRED: SetupId[] = ["account", "modal", "github", "opencode_zen"];
-const ORDER: SetupId[] = [...REQUIRED, "codex"];
+/** Inference is bring-your-own-key and harness-neutral: one key serves every coding CLI. */
+const ORDER: SetupId[] = ["account", "inference_api", "modal", "github"];
 
 function statusOf(conns: Connection[]): { status: SetupStatus; connection?: Connection } {
   const live = conns.filter((c) => c.state === "configured");
@@ -34,11 +34,10 @@ function statusOf(conns: Connection[]): { status: SetupStatus; connection?: Conn
 /** Pure projection of server-provided identity/connection fields; makes no readiness decisions. */
 export function computeSetup(me: Me | null, connections: Connection[]): SetupSummary {
   const items: SetupItem[] = ORDER.map((id) => {
-    const required = REQUIRED.includes(id);
     if (id === "account") {
-      return { id, required, status: me?.user.email_verified ? "ready" : "attention" };
+      return { id, required: true, status: me?.user.email_verified ? "ready" : "attention" };
     }
-    return { id, required, ...statusOf(connections.filter((c) => c.kind === id)) };
+    return { id, required: true, ...statusOf(connections.filter((c) => c.kind === id)) };
   });
   const next = items.find((i) => i.required && i.status !== "ready") ?? null;
   return { items, complete: next === null, next };

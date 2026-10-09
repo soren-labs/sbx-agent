@@ -69,8 +69,7 @@ Modal.
 | Email and password account | Product sign-in. Self-hosted verification mail lands in a local directory unless you configure Resend. |
 | Modal token (`token_id`, `token_secret`) | Creates and tears down sandboxes. |
 | GitHub token | Clones repositories and delivers pull requests. |
-| OpenCode Zen API key | Inference for the OpenCode Harness (free models run only through the official OpenCode CLI). |
-| Codex `auth.json` (optional) | Only if you want the experimental Codex Harness. |
+| Inference API key | Your own model provider: API key, base URL and model (for example DeepSeek, or any OpenAI- or Anthropic-compatible endpoint). One key serves every coding CLI that speaks its protocol; a second key is optional. |
 
 ## 1. Configure and start the control plane
 
@@ -111,8 +110,9 @@ a JSON file under `$SBX_DATA_DIR/mail/`; open the link it contains
 ## 4. Add Connections
 
 The Console's setup checklist (home page) lists what is missing. Open
-**Connections** and add, in any order: Modal, GitHub, OpenCode Zen, and
-optionally Codex. Secret fields are write-only; after submit SBX validates each
+**Connections** and add, in any order: an inference API key, Modal and GitHub.
+OpenCode, Codex, Claude Code, Grok Build and Command Code all run on that key;
+nothing vendor-specific is required. Secret fields are write-only; after submit SBX validates each
 Connection in the background and shows its health.
 
 From the CLI the same inputs are read from stdin or a file, never argv:
@@ -203,7 +203,7 @@ Session with pinned inputs and a ResultContract. The validated, immutable
 ## Credentials and infrastructure
 
 **Connection** (`con_`). One external authority of kind `modal`, `github`,
-`opencode_zen` or `codex`. Its secret material lives in encrypted
+`inference_api`. Its secret material lives in encrypted
 **CredentialVersions**; replacing a credential appends a version.
 
 **Job** (`job_`). A durable internal continuation or effect, claimed by a worker
@@ -225,14 +225,56 @@ journal explains history; typed relational projections decide current state.
 Source: /guides/connections/
 
 Every external account is a **Connection** with encrypted, versioned
-credentials. There are four kinds, all added by manual input:
+credentials. There are three kinds, all added by manual input:
 
 | Kind | Fields | Used for | Validation probe |
 | --- | --- | --- | --- |
 | `modal` | `token_id`, `token_secret` | Creating and releasing sandboxes. Only the executor worker sees it; the sandbox gets a lease-scoped key. | `App.lookup` with the token |
 | `github` | `token` (personal access token or GitHub App installation token) | Cloning repositories and Delivery (push, pull request, merge). | Repository access for Project repos (`GET /repos/…`); `GET /user` only supplies the identity, so installation tokens are accepted |
-| `opencode_zen` | `api_key` | Inference for the OpenCode Harness. Written to an isolated HOME and scrubbed after each Turn. | One minimal free-model chat request (this consumes quota and is recorded) |
-| `codex` (optional) | `auth_json` | The experimental Codex Harness, in an isolated `CODEX_HOME`. | Format check only |
+| `inference_api` | `api_key`, `model`, `endpoints` | Inference for every Harness, with your own provider key. Passed to the CLI as an environment variable; never written to disk. | One minimal generation request per endpoint (this consumes a little quota and is recorded) |
+
+## Inference API keys
+
+Inference is bring-your-own-key. A Connection is not a vendor integration: it is
+an API key, a default model, and a base URL for each protocol the provider
+speaks. DeepSeek is a built-in preset in the Console; any compatible provider or
+gateway works the same way.
+
+| Protocol | Request path | Typical base URL | Harnesses that can use it |
+| --- | --- | --- | --- |
+| `openai_chat` | `{base_url}/chat/completions` | `https://api.deepseek.com` | OpenCode, Grok Build, Command Code |
+| `openai_responses` | `{base_url}/responses` | `https://api.deepseek.com` | Codex, OpenCode, Command Code |
+| `anthropic_messages` | `{base_url}/v1/messages` | `https://api.deepseek.com/anthropic` | Claude Code, OpenCode, Command Code |
+
+Fill in every protocol your provider offers so the same key can drive any CLI.
+A Session is refused with `connection_required` when no Connection offers a
+protocol its Harness accepts.
+
+```python
+conn = client.connections.add_inference(
+    api_key,
+    model="deepseek-flash",
+    endpoints={
+        "openai_chat": "https://api.deepseek.com",
+        "openai_responses": "https://api.deepseek.com",
+        "anthropic_messages": "https://api.deepseek.com/anthropic",
+    },
+    label="DeepSeek",
+)
+print(client.connections.wait_health(conn["id"])["health"])
+```
+
+Base URLs must be public `https` addresses; private, loopback and redirecting
+targets are refused. Self-hosters with a gateway on a private network can set
+`SBX_INFERENCE_ALLOW_PRIVATE_URLS=1`.
+
+Validation failures set `health_reason`: `inference_rejected_key` (the provider
+refused the key) or `inference_endpoint_or_model_rejected` (the base URL does not
+match the protocol, or the model id is unknown).
+
+OpenCode Zen keys and uploaded Codex `auth.json` credentials from earlier
+versions can no longer be added. Existing ones are kept, listed as retired, and
+keep serving the Sessions that already use them.
 
 ## Secrets are write-only
 
@@ -276,14 +318,17 @@ credentials are never consulted. A missing one surfaces as
 
 ## Models
 
-`GET /api/models` crosses the Zen model list with public pricing. Free models
-are marked `usable_via: official_opencode_cli`, and the first free model in a
-fixed preference order is the `preferred_model`, used when a Session sets none.
+`GET /api/models?provider_id=HARNESS` lists, per inference Connection, its
+models, the `protocol` that Harness would use and whether it is `compatible`.
+The Connection's default `model` is used when a Session sets none; any model id
+you pass explicitly is pinned as given.
 
 ## CLI
 
 ```bash
 printf '%s' "$TOKEN" | sbx connections add github --label work
+printf '%s' "$KEY" | sbx connections add inference_api --label DeepSeek \
+  --model deepseek-flash --endpoint openai_chat=https://api.deepseek.com
 sbx connections list
 sbx connections validate CONNECTION_ID
 sbx connections replace CONNECTION_ID --credential-file new.json
@@ -546,9 +591,11 @@ rejected with `csrf_failed`.
 
 ## Pages
 
-- **Home**: the setup checklist (account, Modal, GitHub, OpenCode Zen; Codex
-  optional) and the composer for a new Session. It defaults to the OpenCode
-  Harness, the preferred free model and Modal once a Modal Connection exists.
+- **Home**: the setup checklist (account, inference API key, Modal, GitHub)
+  and the composer for a new Session. Pick the coding CLI (OpenCode, Codex,
+  Claude Code, Grok Build, Command Code) and a model from the inference
+  Connections that CLI can use; it defaults to the first CLI your key can drive,
+  that Connection's default model, and Modal once a Modal Connection exists.
 - **Sessions**: the list and the Session view with Conversation, Activity,
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
   Services and Child Sessions tabs.
@@ -891,7 +938,7 @@ mode `0600`. Environment variables override the file.
 | --- | --- |
 | `auth login` | Sign in and store an API key. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
-| `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `opencode_zen`, `codex`. Secrets come from stdin or `--credential-file`, never argv. |
+| `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
 | `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
@@ -915,20 +962,36 @@ Source: /reference/providers/
 Harness support is declared in pinned manifests. The machine-readable table is
 [provider-reference.json](/provider-reference.json).
 
-| Provider | Support tier | Credentials |
-| --- | --- | --- |
-| `opencode` | supported | `opencode_zen` Connection |
-| `codex` | experimental | optional `codex` Connection |
-| `claude` | disabled | n/a |
-| `devin` | disabled | n/a |
-| `grok` | disabled | n/a |
-| `antigravity` | disabled | n/a |
+| Provider | Official CLI (pinned) | Support tier | Inference protocols accepted |
+| --- | --- | --- | --- |
+| `opencode` | OpenCode — `opencode-ai` 1.18.35 | supported | `openai_chat`, `anthropic_messages`, `openai_responses` |
+| `codex` | Codex — `@openai/codex` 0.162.0 | supported | `openai_responses` |
+| `claude` | Claude Code — `@anthropic-ai/claude-code` 2.1.295 | supported | `anthropic_messages` |
+| `grok` | Grok Build — `@xai-official/grok` 1.0.50 | supported | `openai_chat` |
+| `commandcode` | Command Code — `command-code` 1.79.2 | supported | `openai_chat`, `anthropic_messages`, `openai_responses` |
+| `devin` | — | disabled | n/a |
+| `antigravity` | — | disabled | n/a |
+
+Every supported Harness runs the vendor's own CLI with an `inference_api`
+Connection (bring your own key); the Harness and the model provider are
+independent. Vendor subscription logins are not used.
 
 A disabled provider cannot be selected. Capability values are `supported`,
-`unsupported` or `unknown`, and `unknown` is never treated as supported. For
-OpenCode, `event_stream`, `model_discovery`, `native_resume`, `native_state_export`
-and `usage` are supported; `interrupt`, `steer`, `interactive_approval` and
-`credential_writeback` are not.
+`unsupported` or `unknown`, and `unknown` is never treated as supported. For all
+five supported Harnesses `event_stream`, `native_resume`, `native_state_export`
+and `usage` are supported and verified with real Turns; `interrupt`, `steer`,
+`interactive_approval`, `model_discovery` (models come from the Connection) and
+`credential_writeback` are not. `mcp`, `skills`, `attachments` and
+`effort_settings` are `unknown`: the CLIs have them, SBX does not wire them yet.
+
+Notes per CLI:
+
+- **Codex** speaks only the OpenAI Responses API, so the Connection needs an
+  `openai_responses` endpoint.
+- **Claude Code** speaks only Anthropic Messages (`ANTHROPIC_BASE_URL`); no
+  Claude subscription login is involved.
+- **Command Code** runs in its documented local-only BYOK mode
+  (`--local-only`): no Command Code account or backend traffic.
 
 Use `GET /api/harnesses` for the installed catalog, `GET /api/models` for
 Connection-scoped model availability and `GET /api/executor-backends` for
@@ -973,6 +1036,7 @@ The process exits at start-up if any of these is missing.
 | `SBX_ALLOWED_ORIGINS` | the public URL | Comma-separated origins allowed for cookie mutations. |
 | `SBX_COOKIE_SECURE` | `0` | Set to `1` to mark cookies `Secure` (use behind HTTPS). |
 | `SBX_EXECUTORS` | `local,modal` | Enabled executor backends. |
+| `SBX_INFERENCE_ALLOW_PRIVATE_URLS` | unset | `1` lets inference Connections use private-network or plain-`http` base URLs (self-hosted gateways). Leave unset on multi-user deployments. |
 | `SBX_RESEND_API_KEY` | unset | Send email through Resend. Without it, mail is written to `$SBX_DATA_DIR/mail/` (directory `0700`, files `0600`). |
 | `SBX_MAIL_FROM` | unset | Sender address for Resend email, on a domain verified in Resend. Required when `SBX_RESEND_API_KEY` is set; startup fails without it. |
 | `SBX_WORKER_THREADS` | `4` | In-process job worker threads. |
@@ -1034,8 +1098,7 @@ inheriting `os.environ`.
 | --- | --- |
 | Modal token | the executor worker only |
 | GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
-| OpenCode Zen key | the CLI's isolated HOME, scrubbed after each Turn |
-| Codex `auth.json` | an isolated `CODEX_HOME`, scrubbed after each Turn |
+| Inference API key | the CLI process environment for one Turn; CLI config files reference it by variable name only, so it is never written to disk |
 
 ChangeSets and checkpoints exclude credential files, including `.env`,
 `auth.json` and private keys. Safe templates such as `.env.example` remain
@@ -1082,7 +1145,7 @@ Source: /troubleshooting/
 | `csrf_failed` in the Console | The browser origin is not in `SBX_ALLOWED_ORIGINS`, or the CSRF token is missing. Set the public URL and origins to the Console address. |
 | `validation_failed` mentioning `Idempotency-Key` | Every mutation needs the header. The SDK and CLI add it. |
 | Connection stays `unverified` | Validation is a background Job; make sure workers run (`serve` runs them). `reauth_required` means the provider rejected the credential: replace it. |
-| Turn waits with `connection_required` or `credential_invalid` | Add or replace the Modal, GitHub or OpenCode Zen Connection. |
+| Turn waits with `connection_required` or `credential_invalid` | Add or replace the inference API key, Modal or GitHub Connection. For `connection_required` with `inference_protocols`, add an endpoint for one of the listed protocols. |
 | Turn waits with `waiting_capacity` | Connection capacity is in use; the Turn continues when a slot frees. |
 | `executor_unavailable` on Files, Terminal or Services | No live executor. Reads never wake compute; activate it from the Session. |
 | Turn ended `outcome_unknown` | SBX could not prove the result. Inspect the Worktree, then acknowledge the Turn before retrying. See [Sessions and Turns](/guides/sessions-and-turns/). |

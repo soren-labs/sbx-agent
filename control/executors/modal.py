@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from protocol.capabilities import HARNESS_CLI_PACKAGES
 
 from control.domain.digests import sha256_hex
 from control.domain.errors import DomainError
@@ -25,7 +26,6 @@ from control.domain.errors import DomainError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_NAME = "sbx-executor"
 RUNTIME_PORT = 8790
-DEFAULT_OPENCODE_VERSION = "1.18.34"
 RESOURCE_CLASSES = {"standard": (2.0, 4096), "small": (1.0, 2048), "large": (4.0, 8192)}
 
 
@@ -42,11 +42,12 @@ class ModalExecutor:
         self,
         *,
         sdk: Any = None,
-        opencode_version: str = DEFAULT_OPENCODE_VERSION,
+        cli_packages: dict[str, tuple[str, str]] | None = None,
         sandbox_timeout: int = 3600 * 6,
     ) -> None:
         self._sdk = sdk
-        self.opencode_version = opencode_version
+        # Official CLI npm distributions baked into the executor image (pinned versions).
+        self.cli_packages = dict(cli_packages or HARNESS_CLI_PACKAGES)
         self.sandbox_timeout = sandbox_timeout
         self._images: dict[tuple[str, str], Any] = {}
 
@@ -55,7 +56,8 @@ class ModalExecutor:
         return self._sdk or _sdk()
 
     def recipe_digest(self) -> str:
-        parts = [self.opencode_version, str(RUNTIME_PORT)]
+        parts = [f"{name}@{version}" for name, version in sorted(self.cli_packages.values())]
+        parts.append(str(RUNTIME_PORT))
         for pkg in ("runtime/daemon", "runtime/harnesses", "runtime/security", "protocol"):
             for path in sorted((REPO_ROOT / pkg).rglob("*.py")):
                 parts.append(sha256_hex(path.read_bytes()))
@@ -87,8 +89,10 @@ class ModalExecutor:
             .run_commands(
                 "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -",
                 "apt-get install -y nodejs",
-                f"npm install -g opencode-ai@{self.opencode_version}",
-                "opencode --version",
+                "npm install -g "
+                + " ".join(f"{name}@{version}" for name, version in self.cli_packages.values()),
+                "opencode --version && codex --version && claude --version"
+                " && grok --version && cmd --version",
                 "git config --system user.name sbx && git config --system user.email sbx@localhost",
             )
             .add_local_python_source("runtime", "protocol", copy=True)

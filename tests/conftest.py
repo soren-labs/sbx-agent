@@ -15,12 +15,20 @@ _CLOUD_PREFIXES = (
     "CODEX_",
     "OPENCODE_",
     "ANTHROPIC_",
+    "CLAUDE_",
+    "DEEPSEEK_",
+    "XAI_",
+    "GROK_",
+    "COMMAND_CODE_",
+    "COMMANDCODE_",
+    # BYOK key/variables the Harnesses read, and the private-URL operator opt-in.
+    "SBX_INFERENCE_",
     "GEMINI_",
     "GOOGLE_",
     "AWS_",
     "AZURE_",
     "CLOUDFLARE_",
-    # Opt-in live/benchmark inputs (Modal, GitHub, OpenCode Zen, account password).
+    # Opt-in live/benchmark inputs (Modal, GitHub, inference key, account password).
     "SBX_TEST_",
     "SBX_BENCHMARK_",
 )
