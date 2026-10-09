@@ -335,7 +335,7 @@
   font-size: 14.5px;
   font-weight: 600;
   color: var(--ui-invert-fg) !important;
-  background: #ffffff !important;
+  background: var(--ui-invert-bg) !important;
   cursor: pointer;
   transition: opacity 0.15s, transform 0.08s;
 }
@@ -2075,4 +2075,110 @@
 
 .composer-picker > summary::-webkit-details-marker {
   display: none;
+}
+
+/* ==========================================================================
+   8. PAGE FRAMES, CARDS AND THE SESSIONS INDEX
+   ========================================================================== */
+/* Pages rendered inside the workspace need their own gutters: <main> has none. */
+.narrow,
+.page-wide {
+  width: min(840px, 100%);
+  max-width: none;
+  margin: 0 auto;
+  padding: 40px 24px 60px;
+}
+
+.page-wide {
+  width: min(1080px, 100%);
+}
+
+.narrow h1,
+.page-wide h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ui-text);
+}
+
+.narrow .card,
+.page-wide .card,
+.pane-body > .card,
+.pane-body section.card {
+  padding: 18px 20px;
+}
+
+.narrow .card > h2:first-child,
+.narrow .card > h3:first-child {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.narrow .plain-list,
+.page-wide .session-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+}
+
+.session-row {
+  border-color: var(--ui-border);
+  background: var(--ui-card);
+  padding: 12px 14px;
+}
+
+.session-row .sr-main > .faint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row .sr-side {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.key-once {
+  display: block;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-sunk);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+@media (max-width: 640px) {
+  .narrow,
+  .page-wide {
+    padding: 24px 16px 40px;
+  }
+
+  .session-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .session-row .sr-side {
+    justify-content: flex-start;
+  }
+
+  .narrow .controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

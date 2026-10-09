@@ -48,10 +48,13 @@ export function ErrorNotice({
   error,
   onRetry,
   retryLabel,
+  title,
 }: {
   error: unknown;
   onRetry?: () => void;
   retryLabel?: string;
+  /** Overrides the code-derived heading where the generic one would mislead. */
+  title?: string;
 }) {
   const { t } = useI18n();
   if (!error) return null;
@@ -63,7 +66,7 @@ export function ErrorNotice({
     <div className="notice" role="alert">
       <Icon name="warn" />
       <div className="grow">
-        <div className="n-title">{known ? t(known) : (api?.code ?? t("error.generic"))}</div>
+        <div className="n-title">{title ?? (known ? t(known) : (api?.code ?? t("error.generic")))}</div>
         <div className="n-body">{message}</div>
         {diagnostic ? <div className="n-body mono small">{diagnostic}</div> : null}
         {api?.requestId ? (

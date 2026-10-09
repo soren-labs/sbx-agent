@@ -148,6 +148,7 @@ describe("new Session composer", () => {
     await screen.findByText("opened session");
     const post = m.find("POST", "/api/workspaces/w1/sessions")[0];
     expect(post.body).toEqual({
+      title: "Fix the failing check",
       harness: { provider_id: "opencode", model: "flash" },
       executor: { backend: "modal" },
       repository: { full_name: "acme/app", base_ref: "main" },
@@ -176,6 +177,7 @@ describe("new Session composer", () => {
     await userEvent.click(screen.getByRole("button", { name: "Start Session" }));
     await screen.findByText("opened session");
     expect(m.find("POST", "/api/workspaces/w1/sessions")[0].body).toEqual({
+      title: "hello",
       harness: { provider_id: "claude", model: "sonnet-like" },
       executor: { backend: "modal" },
       message: { content: "hello" },

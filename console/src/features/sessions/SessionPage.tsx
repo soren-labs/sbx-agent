@@ -128,17 +128,15 @@ export function SessionPage() {
     );
   }
 
-  const active = s.lifecycle === "open" && s.activity === "running";
-  const failed = s.activity === "failed";
-  const statusLabel = t(
-    active
-      ? "home.status.working"
-      : failed
-        ? "home.status.attention"
-        : s.lifecycle === "closed"
-          ? "session.status.closed"
-          : "home.status.idle",
-  );
+  const active = s.lifecycle === "open" && (s.activity === "running" || s.activity === "queued");
+  const failed = s.activity === "attention";
+  const activityKey = `activity.${s.activity}` as I18nKey;
+  const statusLabel =
+    s.lifecycle === "closed"
+      ? t("session.status.closed")
+      : t(activityKey) === activityKey
+        ? s.activity.replaceAll("_", " ")
+        : t(activityKey);
   const statusTone = active ? "ok" : failed ? "warn" : "idle";
   // Only what the CLI reported: Turns without usage contribute nothing and no cost is guessed.
   const reported = state.turns.filter((turn) => turn.usage);

@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { App } from "../App";
-import { identityRoutes, ME, mockFetch, renderApp } from "../test/helpers";
+import { identityRoutes, ME, mockFetch, renderApp, session } from "../test/helpers";
 
 const anonymous = { status: 401, json: { error: { code: "unauthenticated" } } };
 
@@ -46,6 +46,42 @@ describe("restored auth and shell interactions", () => {
     await renderApp(<App />, m.fetch, "/verify-email?token=REDACTED");
     expect(await screen.findByRole("status")).toHaveTextContent("verified");
     expect(m.find("POST", "/api/auth/email-verifications")[0].body).toEqual({ token: "REDACTED" });
+  });
+
+  it("shell navigation reflects the route and real Session state", async () => {
+    const m = mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/connections", { json: { items: [] } }],
+      ["GET", "/api/workspaces/w1/projects", { json: { items: [] } }],
+      [
+        "GET",
+        "/api/workspaces/w1/sessions",
+        {
+          json: {
+            items: [
+              session({ id: "s1", title: "", activity: "awaiting_input", updated_at: new Date().toISOString() }),
+              session({ id: "s2", title: "Fix the PR template", activity: "attention", updated_at: new Date().toISOString() }),
+            ],
+            next_cursor: null,
+          },
+        },
+      ],
+    ]);
+    await renderApp(<App />, m.fetch, "/projects");
+    const nav = (await screen.findAllByRole("navigation"))[0];
+    // Only the current section is marked; there is no invented "Review" queue.
+    expect(within(nav).getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("link", { name: "Sessions" })).not.toHaveAttribute("aria-current");
+    expect(within(nav).queryByText("Review")).toBeNull();
+    // Untitled Sessions are still reachable, and status comes from server activity alone.
+    const untitled = await within(nav).findByRole("link", { name: /Untitled Session/ });
+    expect(untitled).toHaveTextContent("Waiting for you");
+    const titled = within(nav).getByRole("link", { name: /Fix the PR template/ });
+    expect(titled).toHaveTextContent("Needs attention");
+    expect(titled).not.toHaveTextContent("PR ready");
+    await userEvent.type(within(nav).getByLabelText("Search sessions"), "untitled");
+    expect(within(nav).queryByRole("link", { name: /Fix the PR template/ })).toBeNull();
+    expect(within(nav).getByRole("link", { name: /Untitled Session/ })).toBeInTheDocument();
   });
 
   it("keeps desktop/mobile navigation, theme persistence and logout working", async () => {

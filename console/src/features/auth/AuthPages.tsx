@@ -171,7 +171,7 @@ export function LoginPage() {
             </button>
           </span>
         </label>
-        <ErrorNotice error={loginError} />
+        <ErrorNotice error={loginError} title={t("auth.login_failed")} />
         {unverified ? (
           <div className="row wrap small" style={{ marginBottom: 12 }}>
             <button
