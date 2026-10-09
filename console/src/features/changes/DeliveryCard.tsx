@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Delivery } from "../../api/types";
 import { ErrorNotice, Pill, useAction, when, type Tone } from "../../components/ui";
 import { useI18n } from "../../i18n";
+import type { I18nKey } from "../../i18n/en";
 import { useApi } from "../../state/context";
 
 const stateTone = (s: string): Tone =>
@@ -13,6 +14,12 @@ const safeUrl = (u: string | null | undefined) => (u && /^https?:\/\//i.test(u) 
  * One Delivery with its server-computed merge eligibility. The UI never decides
  * eligibility: it renders `merge_eligibility` and sends exactly its pins.
  */
+/** Server vocabulary as words when a translation exists; the raw value otherwise. */
+function word(t: ReturnType<typeof useI18n>["t"], prefix: string, value: string): string {
+  const key = `${prefix}.${value}` as I18nKey;
+  return t(key) === key ? value.replaceAll("_", " ") : t(key);
+}
+
 export function DeliveryCard({ delivery: d, onChanged }: { delivery: Delivery; onChanged: () => void }) {
   const { t } = useI18n();
   const api = useApi();
@@ -47,9 +54,9 @@ export function DeliveryCard({ delivery: d, onChanged }: { delivery: Delivery; o
     <div className="card delivery" role="group" aria-label={t("delivery.aria", { id: d.id.slice(-6) })}>
       <div className="row wrap">
         <strong className="grow">
-          {t("delivery.title")} · {d.transport}
+          {word(t, "delivery.transport", d.transport)}
         </strong>
-        <Pill tone={stateTone(d.state)}>{d.state}</Pill>
+        <Pill tone={stateTone(d.state)}>{word(t, "delivery.state", d.state)}</Pill>
       </div>
       {d.state_reason ? <p className="small muted">{d.state_reason}</p> : null}
       <dl className="kv small">
@@ -66,8 +73,8 @@ export function DeliveryCard({ delivery: d, onChanged }: { delivery: Delivery; o
             <dt>{t("delivery.pr")}</dt>
             <dd>
               {prUrl ? (
-                <a href={prUrl} target="_blank" rel="noopener noreferrer">
-                  #{pr.number}
+                <a className="pr-link" href={prUrl} target="_blank" rel="noopener noreferrer">
+                  {t("delivery.open_pr", { n: pr.number })}
                 </a>
               ) : (
                 `#${pr.number}`
@@ -88,7 +95,7 @@ export function DeliveryCard({ delivery: d, onChanged }: { delivery: Delivery; o
         <ol className="steps small" aria-label={t("delivery.steps")}>
           {d.steps.map((s, i) => (
             <li key={i}>
-              {s.kind}: {s.outcome}
+              {word(t, "delivery.step", s.kind)} <span className="faint">· {word(t, "delivery.outcome", s.outcome)}</span>
             </li>
           ))}
         </ol>
@@ -110,8 +117,9 @@ export function DeliveryCard({ delivery: d, onChanged }: { delivery: Delivery; o
             <Pill tone="warn">{t("delivery.not_eligible")}</Pill>
             <ul className="reasons">
               {elig.reasons.map((r) => (
-                <li key={r}>
-                  <code>{r}</code>
+                <li key={r} title={r}>
+                  {word(t, "delivery.reason", r.split(":")[0])}
+                  {r.includes(":") ? <code> {r.split(":").slice(1).join(":")}</code> : null}
                 </li>
               ))}
             </ul>

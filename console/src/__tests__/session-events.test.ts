@@ -125,6 +125,44 @@ describe("SessionLive", () => {
     expect(live.getState().lastSeq).toBe(2);
   });
 
+  it("detects a silently dropped stream, says reconnecting, then resumes and refetches", async () => {
+    const afters: number[] = [];
+    const statuses: string[] = [];
+    let refetches = 0;
+    let attempt = 0;
+    const api = {
+      sessions: {
+        get: async () => ({ session: { id: "s1", actions: [] }, event_watermark: 0 }),
+        messages: async () => ({ items: [], event_watermark: 0 }),
+        turns: async () => (refetches++, { items: [] }),
+        executor: async () => ({}),
+        streamEvents: async (
+          _s: string,
+          o: { after: number; signal?: AbortSignal; onEvent: (e: EventEnvelope) => void; onAlive?: () => void },
+        ) => {
+          afters.push(o.after);
+          o.onAlive?.();
+          if (attempt++ === 0) o.onEvent(ev(1, "turn.started"));
+          // First connection goes quiet (no events, no heartbeats) and never errors.
+          await new Promise<void>((resolve) => o.signal?.addEventListener("abort", () => resolve()));
+        },
+      },
+    };
+    const live = new SessionLive(api as never, "s1", { reconnectMs: 5, refreshDebounceMs: 1000, stallMs: 30 });
+    live.subscribe(() => {
+      const s = live.getState().status;
+      if (statuses[statuses.length - 1] !== s) statuses.push(s);
+    });
+    live.start();
+    await vi_waitFor(() => afters.length >= 2 && live.getState().status === "live");
+    const before = refetches;
+    live.stop();
+    // Replays strictly after what was applied; the gap was visible to the user.
+    expect(afters.slice(0, 2)).toEqual([0, 1]);
+    expect(statuses.slice(0, 4)).toEqual(["loading", "live", "reconnecting", "live"]);
+    expect(before).toBeGreaterThan(1);
+  });
+
   it("refetches the snapshot on invalid_cursor", async () => {
     let snapshots = 0;
     let attempt = 0;

@@ -27,6 +27,8 @@ type LiveApi = Pick<ApiClient, "sessions">;
 export interface LiveOptions {
   reconnectMs?: number;
   refreshDebounceMs?: number;
+  /** Silence (no event, no server heartbeat) after which the stream is presumed dead. */
+  stallMs?: number;
 }
 
 /**
@@ -42,6 +44,8 @@ export class SessionLive {
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly reconnectMs: number;
   private readonly debounceMs: number;
+  private readonly stallMs: number;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly api: LiveApi,
@@ -50,6 +54,8 @@ export class SessionLive {
   ) {
     this.reconnectMs = opts.reconnectMs ?? 1500;
     this.debounceMs = opts.refreshDebounceMs ?? 120;
+    // The server heartbeats every 15 s; two missed beats mean a silently dropped stream.
+    this.stallMs = opts.stallMs ?? 40_000;
     this.state = {
       ...initialLiveState(),
       status: "loading",
@@ -80,12 +86,28 @@ export class SessionLive {
   start() {
     if (!this.stopped) return;
     this.stopped = false;
+    if (typeof window !== "undefined") window.addEventListener("offline", this.onOffline);
     void this.run(++this.gen);
+  }
+
+  /** The browser lost its network: say so now instead of waiting for the stream to notice. */
+  private onOffline = () => {
+    if (this.stopped || !this.state.session) return;
+    this.set({ status: "reconnecting" });
+    this.abort?.abort();
+  };
+
+  /** (Re)arm the stall watchdog; a half-open connection never errors on its own. */
+  private alive(ctl: AbortController) {
+    if (this.watchdog) clearTimeout(this.watchdog);
+    this.watchdog = setTimeout(() => ctl.abort(), this.stallMs);
   }
 
   stop() {
     this.stopped = true;
     this.gen++;
+    if (typeof window !== "undefined") window.removeEventListener("offline", this.onOffline);
+    if (this.watchdog) clearTimeout(this.watchdog);
     this.abort?.abort();
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
@@ -153,11 +175,22 @@ export class SessionLive {
           await this.snapshot();
           needSnapshot = false;
         }
-        this.set({ status: "live" });
         const ctl = (this.abort = new AbortController());
+        // "live" only once the stream actually answered, so a retry loop while the
+        // network is down keeps saying "reconnecting" instead of flickering.
+        if (this.state.status === "loading") this.set({ status: "live" });
+        this.alive(ctl);
         await this.api.sessions.streamEvents(this.sessionId, {
           after: this.state.lastSeq,
           signal: ctl.signal,
+          onAlive: () => {
+            this.alive(ctl);
+            if (this.state.status !== "live") {
+              this.set({ status: "live", error: null });
+              // Anything that changed while disconnected is refetched, never guessed.
+              this.refresh();
+            }
+          },
           onEvent: (e) => {
             this.dispatch({ type: "events", items: [e] });
             if (this.state.needsResync) ctl.abort();

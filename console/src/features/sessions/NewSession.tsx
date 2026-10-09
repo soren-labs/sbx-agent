@@ -63,7 +63,10 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
   const blocked = models.data !== undefined && usable.length === 0;
 
   const create = useAction(async (key) => {
+    // The first line of the task names the Session, so lists never show "Untitled".
+    const firstLine = prompt.trim().split("\n")[0].trim();
     const body = {
+      ...(firstLine ? { title: firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine } : {}),
       harness: { provider_id: harness, ...(model ? { model } : {}) },
       executor: { backend },
       ...(pinned ? { connections: { inference: pinned } } : {}),

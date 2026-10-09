@@ -335,7 +335,7 @@
   font-size: 14.5px;
   font-weight: 600;
   color: var(--ui-invert-fg) !important;
-  background: #ffffff !important;
+  background: var(--ui-invert-bg) !important;
   cursor: pointer;
   transition: opacity 0.15s, transform 0.08s;
 }
@@ -2075,4 +2075,228 @@
 
 .composer-picker > summary::-webkit-details-marker {
   display: none;
+}
+
+/* ==========================================================================
+   8. PAGE FRAMES, CARDS AND THE SESSIONS INDEX
+   ========================================================================== */
+/* Pages rendered inside the workspace need their own gutters: <main> has none. */
+.narrow,
+.page-wide {
+  width: min(840px, 100%);
+  max-width: none;
+  margin: 0 auto;
+  padding: 40px 24px 60px;
+}
+
+.page-wide {
+  width: min(1080px, 100%);
+}
+
+.narrow h1,
+.page-wide h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ui-text);
+}
+
+.narrow .card,
+.page-wide .card,
+.pane-body > .card,
+.pane-body section.card {
+  padding: 18px 20px;
+}
+
+.narrow .card > h2:first-child,
+.narrow .card > h3:first-child {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.narrow .plain-list,
+.page-wide .session-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+}
+
+.session-row {
+  border-color: var(--ui-border);
+  background: var(--ui-card);
+  padding: 12px 14px;
+}
+
+.session-row .sr-main > .faint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row .sr-side {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.key-once {
+  display: block;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-sunk);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+@media (max-width: 640px) {
+  .narrow,
+  .page-wide {
+    padding: 24px 16px 40px;
+  }
+
+  .session-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .session-row .sr-side {
+    justify-content: flex-start;
+  }
+
+  .narrow .controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Settings: API keys */
+.key-reveal {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: var(--warn-soft);
+}
+
+.key-reveal .n-title {
+  font-weight: 600;
+}
+
+.key-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.key-usage code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.key-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+
+.key-form .field {
+  flex: 1;
+  min-width: 200px;
+  margin-bottom: 0;
+}
+
+.key-form .field input {
+  width: 100%;
+}
+
+.key-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.key-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.key-list li.is-revoked {
+  opacity: 0.6;
+}
+
+.key-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 160px;
+}
+
+.key-name code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.key-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* Setup steps never spill out of their card; long labels wrap instead. */
+.setup-steps {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.setup-step {
+  min-width: 0;
+}
+
+.setup-step > span:nth-child(2) {
+  min-width: 0;
+}
+
+.setup-step small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.n-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.n-details summary {
+  cursor: pointer;
+}
+
+.n-details code {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
 }

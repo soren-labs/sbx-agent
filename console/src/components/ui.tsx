@@ -41,6 +41,11 @@ const KNOWN: Partial<Record<string, I18nKey>> = {
   credential_invalid: "error.credential_invalid",
   unsupported_capability: "error.unsupported_capability",
   idempotency_conflict: "error.idempotency_conflict",
+  connection_required: "error.connection_required",
+  validation_failed: "error.validation_failed",
+  rate_limited: "error.rate_limited",
+  not_found: "error.not_found",
+  forbidden: "error.forbidden",
 };
 
 /** Renders a canonical API error. `executor_unavailable` is a diagnosis, never auto-healed. */
@@ -48,10 +53,13 @@ export function ErrorNotice({
   error,
   onRetry,
   retryLabel,
+  title,
 }: {
   error: unknown;
   onRetry?: () => void;
   retryLabel?: string;
+  /** Overrides the code-derived heading where the generic one would mislead. */
+  title?: string;
 }) {
   const { t } = useI18n();
   if (!error) return null;
@@ -63,9 +71,14 @@ export function ErrorNotice({
     <div className="notice" role="alert">
       <Icon name="warn" />
       <div className="grow">
-        <div className="n-title">{known ? t(known) : (api?.code ?? t("error.generic"))}</div>
+        <div className="n-title">{title ?? (known ? t(known) : (api?.code ?? t("error.generic")))}</div>
         <div className="n-body">{message}</div>
-        {diagnostic ? <div className="n-body mono small">{diagnostic}</div> : null}
+        {diagnostic ? (
+          <details className="n-details">
+            <summary>{t("error.details")}</summary>
+            <code>{diagnostic}</code>
+          </details>
+        ) : null}
         {api?.requestId ? (
           <div className="faint small">
             {t("error.request_id")}: <code>{api.requestId}</code>

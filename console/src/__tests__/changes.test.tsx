@@ -75,8 +75,11 @@ describe("Delivery merge gate", () => {
     });
     await renderApp(<DeliveryCard delivery={d} onChanged={() => undefined} />, m.fetch);
     expect(screen.getByText("Not eligible to merge")).toBeInTheDocument();
-    expect(screen.getByText("missing_required_result:ReviewAssessment")).toBeInTheDocument();
-    expect(screen.getByText("observation_stale")).toBeInTheDocument();
+    // The server's reason codes are explained in words; the code stays available on hover.
+    const reason = screen.getByTitle("missing_required_result:ReviewAssessment");
+    expect(reason).toHaveTextContent("A required review result is missing: ReviewAssessment");
+    expect(screen.getByTitle("observation_stale")).toHaveTextContent("Remote state has not been refreshed yet");
+
     expect(screen.getByRole("button", { name: "Merge (squash)" })).toBeDisabled();
     // retry names what is retried
     expect(screen.getByRole("button", { name: "Retry Delivery" })).toBeInTheDocument();

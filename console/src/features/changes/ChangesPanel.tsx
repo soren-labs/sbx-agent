@@ -3,9 +3,20 @@ import type { ChangeSet } from "../../api/types";
 import { isApiError } from "../../api/errors";
 import { Empty, ErrorNotice, Field, Loading, Pill, shortId, useAction, when } from "../../components/ui";
 import { useI18n } from "../../i18n";
+import type { I18nKey } from "../../i18n/en";
 import { useApi, useQueryClient } from "../../state/context";
 import { useQuery } from "../../state/query";
 import { DeliveryCard } from "./DeliveryCard";
+
+/** Git porcelain status code as a word; unknown codes stay "changed". */
+export function statusKind(status: string): "new" | "modified" | "deleted" | "renamed" | "changed" {
+  const code = status.trim();
+  if (code === "??" || code.startsWith("A")) return "new";
+  if (code.includes("D")) return "deleted";
+  if (code.startsWith("R")) return "renamed";
+  if (code.includes("M")) return "modified";
+  return "changed";
+}
 
 export function DiffView({ diff, truncated }: { diff: string; truncated?: boolean }) {
   const { t } = useI18n();
@@ -47,10 +58,11 @@ function ChangeSetDetail({ cs, rev }: { cs: ChangeSet; rev: number }) {
     <div className="changeset-detail">
       <h3>{t("changes.files_title", { n: files.length })}</h3>
       <ErrorNotice error={detail.error} onRetry={detail.refetch} />
-      <ul className="file-list small">
+      <ul className="change-files">
         {files.map((f) => (
           <li key={f.path}>
-            <code>{f.path}</code> <span className="faint">{f.type}</span>
+            <span className="change-badge">{f.type}</span>
+            <code>{f.path}</code>
           </li>
         ))}
       </ul>
@@ -117,12 +129,18 @@ export function ChangesPanel({ sessionId, revision = 0 }: { sessionId: string; r
         )}
         {liveQ.data ? (
           liveQ.data.observation.files.length ? (
-            <ul className="file-list small">
-              {liveQ.data.observation.files.map((f) => (
-                <li key={f.path}>
-                  <span className="mono faint">{f.status}</span> <code>{f.path}</code>
-                </li>
-              ))}
+            <ul className="change-files" aria-label={t("changes.live")}>
+              {liveQ.data.observation.files.map((f) => {
+                const kind = statusKind(f.status);
+                return (
+                  <li key={f.path}>
+                    <span className={`change-badge is-${kind}`} title={f.status.trim()}>
+                      {t(`changes.status.${kind}` as I18nKey)}
+                    </span>
+                    <code>{f.path}</code>
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p className="muted small">{t("changes.clean")}</p>

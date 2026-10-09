@@ -7,32 +7,35 @@ import { useAuth } from "../state/auth";
 import { useApi } from "../state/context";
 import { useQuery } from "../state/query";
 import { useTheme } from "../theme";
+import { computeSetup } from "../features/setup/checklist";
 
-function formatRelativeTime(dateStr?: string) {
-  if (!dateStr) return "Just now";
+type T = ReturnType<typeof useI18n>["t"];
+
+function formatRelativeTime(t: T, dateStr?: string) {
+  if (!dateStr) return t("time.now");
   const ms = Date.now() - new Date(dateStr).getTime();
   const mins = Math.max(0, Math.floor(ms / 60_000));
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("time.now");
+  if (mins < 60) return t("time.minutes", { n: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  if (hours < 24) return t("time.hours", { n: hours });
+  return t("time.days", { n: Math.floor(hours / 24) });
 }
 
 const shortcutModifier = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 
+/** Server activity values: idle, queued, running, awaiting_input, attention. */
 function isSessionActive(s: Session) {
-  return s.lifecycle === "open" && (s.activity === "running" || s.activity === "starting" || s.activity === "queued");
+  return s.lifecycle === "open" && (s.activity === "running" || s.activity === "queued");
 }
 
-function sessionSubtitle(s: Session) {
-  const time = formatRelativeTime(s.updated_at || s.created_at);
-  if (isSessionActive(s)) return `Working · ${time}`;
-  if (s.lifecycle === "closed") return `Closed · ${time}`;
-  if (s.activity === "failed") return `Needs attention · ${time}`;
-  if (s.title.toLowerCase().includes("pr") || s.labels?.includes("pr")) return `PR ready · ${time}`;
-  return `Idle · ${time}`;
+function sessionSubtitle(t: T, s: Session) {
+  const time = formatRelativeTime(t, s.updated_at || s.created_at);
+  if (isSessionActive(s)) return t("shell.status.working", { time });
+  if (s.lifecycle === "closed") return t("shell.status.closed", { time });
+  if (s.activity === "attention") return t("shell.status.attention", { time });
+  if (s.activity === "awaiting_input") return t("shell.status.waiting", { time });
+  return t("shell.status.idle", { time });
 }
 
 export function AppShell() {
@@ -69,8 +72,9 @@ export function AppShell() {
   );
 
   const allSessions = sessionsQuery.data?.items ?? [];
-  const connections = connectionsQuery.data?.items ?? [];
-  const connectionsIncomplete = connections.length < 3 || connections.some((c) => c.health !== "ready");
+  // Same server-health projection as the Home checklist; never a count of rows.
+  const connectionsIncomplete =
+    connectionsQuery.data !== undefined && !computeSetup(me, connectionsQuery.data.items).complete;
 
   const togglePin = useCallback((id: string) => {
     setPinned((prev) => {
@@ -108,33 +112,29 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [navigate]);
 
-  const filteredSessions = allSessions.filter((s) =>
-    s.title.toLowerCase().includes(search.toLowerCase()),
-  );
+  const titleOf = (s: Session) => s.title || t("session.untitled");
+  const filteredSessions = allSessions.filter((s) => titleOf(s).toLowerCase().includes(search.toLowerCase()));
 
   const pinnedSessions = filteredSessions.filter((s) => pinned.includes(s.id));
   const recentSessions = filteredSessions.filter((s) => !pinned.includes(s.id));
-  const reviewSessions = allSessions.filter(
-    (s) => s.title.toLowerCase().includes("pr") || s.labels?.includes("pr"),
-  );
-
   const username = me?.user.email.split("@")[0] ?? "developer";
   const initials = (me?.user.email[0] ?? "U").toUpperCase();
 
-  const currentSection = location.pathname.startsWith("/connections")
-    ? "Connections"
-    : location.pathname.startsWith("/settings")
-      ? "Settings"
-      : location.pathname.startsWith("/projects")
-        ? "Projects"
-        : location.pathname.startsWith("/sessions")
-          ? "Sessions"
-          : "Home";
+  const currentSection = t(
+    location.pathname.startsWith("/connections")
+      ? "nav.connections"
+      : location.pathname.startsWith("/settings")
+        ? "nav.settings"
+        : location.pathname.startsWith("/projects")
+          ? "nav.projects"
+          : location.pathname.startsWith("/sessions")
+            ? "nav.sessions"
+            : "nav.home",
+  );
 
   const renderSessionRow = (s: Session) => {
     const active = isSessionActive(s);
-    const failed = s.activity === "failed";
-    const isPr = s.title.toLowerCase().includes("pr") || s.labels?.includes("pr");
+    const failed = s.activity === "attention";
     const isPinned = pinned.includes(s.id);
 
     return (
@@ -144,18 +144,18 @@ export function AppShell() {
           className={({ isActive }) => `sidebar-session ${isActive ? "selected" : ""}`}
         >
           <span className={`sidebar-session-state ${active ? "live" : failed ? "attention" : ""}`}>
-            <Icon name={active ? "clock" : failed ? "x" : isPr ? "pr" : "clock"} size={13} />
+            <Icon name={active ? "clock" : failed ? "warn" : "sessions"} size={13} />
           </span>
           <span className="sidebar-session-text">
-            <span className="sidebar-session-title">{s.title}</span>
-            <small>{sessionSubtitle(s)}</small>
+            <span className="sidebar-session-title">{titleOf(s)}</span>
+            <small>{sessionSubtitle(t, s)}</small>
           </span>
           {active && <span className="unread-dot" />}
         </NavLink>
         <button
           type="button"
           className="row-pin icon-button"
-          aria-label={isPinned ? `Unpin ${s.title}` : `Pin ${s.title}`}
+          aria-label={t(isPinned ? "shell.unpin" : "shell.pin", { title: titleOf(s) })}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -177,7 +177,7 @@ export function AppShell() {
         <button
           type="button"
           className="sidebar-scrim"
-          aria-label="Close navigation"
+          aria-label={t("shell.close_nav")}
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -192,7 +192,7 @@ export function AppShell() {
           <button
             type="button"
             className="icon-button desktop-toggle"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={t(collapsed ? "shell.expand" : "shell.collapse")}
             onClick={() => setCollapsed(!collapsed)}
           >
             <Icon name="menu" size={15} />
@@ -201,7 +201,7 @@ export function AppShell() {
 
         <Link to="/" className="new-session-button">
           <Icon name="plus" size={15} />
-          <span>New session</span>
+          <span>{t("shell.new_session")}</span>
           <kbd>{shortcutModifier} 0</kbd>
         </Link>
 
@@ -209,35 +209,32 @@ export function AppShell() {
           <Icon name="search" size={13} />
           <input
             ref={searchRef}
-            aria-label="Search sessions"
-            placeholder="Search sessions…"
+            aria-label={t("shell.search")}
+            placeholder={t("shell.search_ph")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <kbd>{shortcutModifier} K</kbd>
         </label>
 
-        <NavLink to="/sessions" className={({ isActive }) => `sessions-nav ${isActive ? "active" : ""}`}>
-          <Icon name="pr" size={14} />
-          <span>Review</span>
-          <span className="sidebar-nav-badge">{reviewSessions.length}</span>
+        <NavLink to="/sessions" end className={({ isActive }) => `sessions-nav ${isActive ? "active" : ""}`}>
+          <Icon name="sessions" size={14} />
+          <span>{t("nav.sessions")}</span>
+          <span className="sidebar-nav-badge" aria-hidden="true">
+            {allSessions.length}
+          </span>
         </NavLink>
-
-        <div className="sidebar-section-label sessions-section-title">
-          <NavLink to="/sessions" end className={({ isActive }) => (isActive ? "active" : "")}>
-            Sessions
-          </NavLink>
-          <Link to="/" aria-label="New session">
-            <Icon name="plus" size={13} />
-          </Link>
-        </div>
+        <NavLink to="/projects" className={({ isActive }) => `sessions-nav ${isActive ? "active" : ""}`}>
+          <Icon name="branch" size={14} />
+          <span>{t("nav.projects")}</span>
+        </NavLink>
 
         <div className="sidebar-session-scroll">
           {pinnedSessions.length > 0 && (
             <>
               <div className="sidebar-section-label">
                 <Icon name="pin" size={11} />
-                <span>Pinned</span>
+                <span>{t("shell.pinned")}</span>
                 <span>{pinnedSessions.length}</span>
               </div>
               {pinnedSessions.map(renderSessionRow)}
@@ -245,7 +242,7 @@ export function AppShell() {
           )}
 
           <div className="sidebar-section-label">
-            <span>Recent</span>
+            <span>{t("shell.recent")}</span>
             <span>{recentSessions.length}</span>
           </div>
 
@@ -253,7 +250,7 @@ export function AppShell() {
 
           {filteredSessions.length === 0 && (
             <p className="sidebar-empty">
-              {sessionsQuery.loading ? "Loading sessions…" : "No sessions found."}
+              {t(sessionsQuery.loading ? "shell.loading" : "shell.empty")}
             </p>
           )}
         </div>
@@ -264,7 +261,7 @@ export function AppShell() {
             className={({ isActive }) => `sidebar-bottom-link ${isActive ? "active" : ""}`}
           >
             <Icon name="plug" size={14} />
-            <span>Connections</span>
+            <span>{t("nav.connections")}</span>
             {connectionsIncomplete && <span className="integration-alert" />}
           </NavLink>
 
@@ -273,7 +270,7 @@ export function AppShell() {
             className={({ isActive }) => `sidebar-bottom-link ${isActive ? "active" : ""}`}
           >
             <Icon name="settings" size={14} />
-            <span>Settings</span>
+            <span>{t("nav.settings")}</span>
           </NavLink>
 
           <div className="sidebar-user">
@@ -304,7 +301,7 @@ export function AppShell() {
           <button
             type="button"
             className="icon-button mobile-toggle"
-            aria-label="Open navigation"
+            aria-label={t("shell.open_nav")}
             onClick={() => setSidebarOpen(true)}
           >
             <Icon name="menu" size={17} />
@@ -321,19 +318,19 @@ export function AppShell() {
       <nav className="bottom-nav" aria-label={t("nav.primary_mobile")}>
         <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>
           <Icon name="plus" size={18} />
-          <span>New Session</span>
+          <span>{t("nav.new")}</span>
         </NavLink>
         <NavLink to="/sessions" className={({ isActive }) => (isActive ? "active" : "")}>
           <Icon name="list" size={18} />
-          <span>Sessions</span>
+          <span>{t("nav.sessions")}</span>
         </NavLink>
         <NavLink to="/connections" className={({ isActive }) => (isActive ? "active" : "")}>
           <Icon name="plug" size={18} />
-          <span>Connections</span>
+          <span>{t("nav.connections")}</span>
         </NavLink>
         <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
           <Icon name="settings" size={18} />
-          <span>Settings</span>
+          <span>{t("nav.settings")}</span>
         </NavLink>
       </nav>
     </div>

@@ -114,8 +114,8 @@ export function HomePage() {
           </div>
           <div className="home-recent-grid">
             {recent.items.slice(0, 4).map((s: Session) => {
-              const active = s.lifecycle === "open" && s.activity === "running";
-              const failed = s.activity === "failed";
+              const active = s.lifecycle === "open" && (s.activity === "running" || s.activity === "queued");
+              const failed = s.activity === "attention";
               const tone = active ? "ok" : failed ? "warn" : "idle";
               const label = t(active ? "home.status.working" : failed ? "home.status.attention" : "home.status.idle");
               return (

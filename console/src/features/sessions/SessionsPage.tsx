@@ -6,6 +6,7 @@ import { useI18n } from "../../i18n";
 import { useAuth } from "../../state/auth";
 import { useApi } from "../../state/context";
 import { useDocumentTitle } from "../../state/title";
+import { harnessName } from "./harnesses";
 import { ActivityPill, AvailabilityPills } from "./status";
 
 const LIFECYCLES = ["open", "archived", "closed", ""] as const;
@@ -20,8 +21,8 @@ export function SessionRow({ s }: { s: Session }) {
           {s.title || t("session.untitled")}
         </Link>
         <div className="faint small">
-          {s.harness.provider_id}
-          {s.harness.model ? ` / ${s.harness.model}` : ""} · {s.executor.backend} · {s.role}
+          {harnessName(s.harness.provider_id)}
+          {s.harness.model ? ` · ${s.harness.model}` : ""} · {s.executor.backend} · {s.role}
         </div>
       </div>
       <div className="sr-side">
@@ -75,7 +76,7 @@ export function SessionsPage() {
   const [role, setRole] = useState("");
   const list = useSessionList({ lifecycle, role });
   return (
-    <div>
+    <div className="page-wide">
       <div className="page-head">
         <h1>{t("nav.sessions")}</h1>
         <Link to="/" className="btn btn-primary btn-sm">

@@ -21,6 +21,15 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from control.domain.digests import canonical_json
 from control.security.redaction import KNOWN_SECRETS
 
+# Settings sealed alongside a credential so they version with it. They are not
+# credentials: registering a model id or base URL as a "known secret" would redact
+# them out of ordinary error messages and logs.
+NON_SECRET_FIELDS = frozenset({"endpoints", "model", "models"})
+
+
+def _secrets_of(plaintext: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in plaintext.items() if k not in NON_SECRET_FIELDS}
+
 
 class VaultError(Exception):
     pass
@@ -72,7 +81,7 @@ class Vault:
         )
 
     def seal(self, plaintext: dict[str, Any], aad: bytes) -> Sealed:
-        KNOWN_SECRETS.add(plaintext)
+        KNOWN_SECRETS.add(_secrets_of(plaintext))
         nonce = os.urandom(12)
         data = json.dumps(plaintext, separators=(",", ":")).encode()
         return Sealed(
@@ -89,7 +98,7 @@ class Vault:
             )
         except InvalidTag as exc:
             raise VaultError("ciphertext authentication failed") from exc
-        KNOWN_SECRETS.add(plaintext)
+        KNOWN_SECRETS.add(_secrets_of(plaintext))
         return plaintext
 
     def fingerprint(self, material: str) -> str:

@@ -6,6 +6,7 @@ import { App } from "./App";
 import "./styles.css";
 import "./features/features.css";
 import "./restoration.css";
+import "./features/sessions/workbench.css";
 import { I18nProvider } from "./i18n";
 import { AuthProvider } from "./state/auth";
 import { ApiProvider } from "./state/context";
