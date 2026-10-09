@@ -163,7 +163,13 @@ export function createApiClient(options: HttpOptions = {}) {
        */
       async streamEvents(
         s: string,
-        o: { after: number; signal?: AbortSignal; onEvent: (e: EventEnvelope) => void },
+        o: {
+          after: number;
+          signal?: AbortSignal;
+          onEvent: (e: EventEnvelope) => void;
+          /** Any bytes arrived (events or server heartbeats): the connection is alive. */
+          onAlive?: () => void;
+        },
       ): Promise<void> {
         let res: Response;
         try {
@@ -181,6 +187,7 @@ export function createApiClient(options: HttpOptions = {}) {
           const body = await res.json().catch(() => null);
           throw errorFromResponse(res.status, body);
         }
+        o.onAlive?.();
         if (!res.body) return;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -189,6 +196,7 @@ export function createApiClient(options: HttpOptions = {}) {
           for (;;) {
             const { value, done } = await reader.read();
             if (done) return;
+            o.onAlive?.();
             for (const raw of parser.push(decoder.decode(value, { stream: true }))) {
               const env = parseEnvelope(raw);
               if (env) o.onEvent(env);

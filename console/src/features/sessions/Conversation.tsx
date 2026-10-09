@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Link } from "react-router-dom";
 import { Markdown } from "../../components/Markdown";
 import { Icon, Mark } from "../../components/icons";
 import { ErrorNotice, useAction, type Tone } from "../../components/ui";
@@ -118,7 +119,8 @@ function StepRow({ step }: { step: Step }) {
       {open && expandable ? (
         <div className="step-body">
           {step.kind === "thought" ? (
-            <Markdown text={step.output} className="step-thought" />
+            // Reasoning is plain text from the model: not Markdown (it mangles __names__).
+            <div className="step-thought">{step.output.trim()}</div>
           ) : (
             <>
               {input ? <Output label={t("work.input")} value={input} /> : null}
@@ -249,7 +251,7 @@ function TurnActions({ turn, live }: { turn: Turn; live: SessionLive }) {
 }
 
 /** One line of truth about a Turn: what it is doing, or how it ended. */
-function TurnStatus({ turn, live }: { turn: Turn; live: SessionLive }) {
+function TurnStatus({ turn, live, latest }: { turn: Turn; live: SessionLive; latest?: boolean }) {
   const { t } = useI18n();
   const running = isLiveTurn(turn);
   const elapsed = useElapsed(turn.started_at ?? turn.created_at, running);
@@ -284,6 +286,11 @@ function TurnStatus({ turn, live }: { turn: Turn; live: SessionLive }) {
         <span className="turn-label">
           {took !== null ? t("turn.succeeded_in", { time: formatDuration(took) }) : t("turn.succeeded")}
         </span>
+        {latest ? (
+          <Link className="turn-link" to="changes">
+            {t("turn.view_changes")}
+          </Link>
+        ) : null}
         {usage ? (
           <span className="turn-usage" title={t("turn.usage_title", { cached: formatTokens(cached) })}>
             {t("turn.usage", { input: formatTokens(tokensIn + cached), output: formatTokens(tokensOut) })}
@@ -318,7 +325,17 @@ function TurnStatus({ turn, live }: { turn: Turn; live: SessionLive }) {
   );
 }
 
-function AgentBlock({ block, provider, live }: { block: TurnBlock; provider: string; live: SessionLive }) {
+function AgentBlock({
+  block,
+  provider,
+  live,
+  latest,
+}: {
+  block: TurnBlock;
+  provider: string;
+  live: SessionLive;
+  latest?: boolean;
+}) {
   const { t } = useI18n();
   const running = isLiveTurn(block.turn ?? undefined);
   const replies = block.messages.filter((m) => m.role === "assistant");
@@ -338,7 +355,7 @@ function AgentBlock({ block, provider, live }: { block: TurnBlock; provider: str
         {entries.map((entry) =>
           entry.type === "text" ? <Markdown key={entry.key} text={entry.content} /> : <WorkGroup key={entry.key} entry={entry} />,
         )}
-        {block.turn ? <TurnStatus turn={block.turn} live={live} /> : null}
+        {block.turn ? <TurnStatus turn={block.turn} live={live} latest={latest} /> : null}
       </div>
     </article>
   );
@@ -490,7 +507,7 @@ export function ConversationTab({ sessionId, live, state }: { sessionId: string;
                 .map((m) => (
                   <UserMessage key={m.id} m={m} />
                 ))}
-              <AgentBlock block={block} provider={provider} live={live} />
+              <AgentBlock block={block} provider={provider} live={live} latest={index === blocks.length - 1} />
             </div>
           ))}
           {!blocks.length && state.status !== "loading" ? <p className="wl-empty">{t("conv.empty")}</p> : null}

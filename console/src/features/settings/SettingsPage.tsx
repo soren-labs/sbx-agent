@@ -1,3 +1,4 @@
+import { Icon } from "../../components/icons";
 import { useState, type FormEvent } from "react";
 import type { CreatedApiKey } from "../../api/types";
 import { Empty, ErrorNotice, Field, Loading, useAction, when } from "../../components/ui";
@@ -65,43 +66,98 @@ function ApiKeys() {
     e.preventDefault();
     if (name.trim()) void create.run();
   };
+  const [copied, setCopied] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const copy = async () => {
+    if (!created) return;
+    try {
+      await navigator.clipboard.writeText(created.key);
+      setCopied(true);
+    } catch {
+      setCopied(false); // clipboard blocked: the key stays selectable below
+    }
+  };
+  const active = (q.data?.items ?? []).filter((k) => !k.revoked_at);
+  const revoked = (q.data?.items ?? []).filter((k) => k.revoked_at);
   return (
     <section className="card" aria-labelledby="keys-h">
       <h2 id="keys-h">{t("settings.api_keys")}</h2>
+      <p className="muted small">{t("settings.api_keys_intro")}</p>
       {created ? (
-        <div className="notice warn" role="status">
-          <div className="grow">
-            <div className="n-title">{t("settings.key_once")}</div>
-            <code className="key-once">{created.key}</code>
-            <div className="n-actions">
-              <button type="button" className="btn btn-sm" onClick={() => setCreated(null)}>
-                {t("settings.key_dismiss")}
-              </button>
-            </div>
+        <div className="key-reveal" role="status" data-testid="key-reveal">
+          <div className="n-title">{t("settings.key_once")}</div>
+          <code className="key-once" tabIndex={0}>
+            {created.key}
+          </code>
+          <div className="key-usage">
+            <span className="faint small">{t("settings.key_usage")}</span>
+            <code>Authorization: Bearer {created.prefix}…</code>
+          </div>
+          <div className="hs-actions">
+            <button type="button" className="button primary" onClick={() => void copy()}>
+              <Icon name={copied ? "check" : "copy"} size={13} />
+              {copied ? t("settings.key_copied") : t("settings.key_copy")}
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => {
+                setCreated(null);
+                setCopied(false);
+              }}
+            >
+              {t("settings.key_dismiss")}
+            </button>
           </div>
         </div>
       ) : null}
-      <form className="row wrap" onSubmit={submit} aria-label={t("settings.create_key")}>
+      <form className="key-form" onSubmit={submit} aria-label={t("settings.create_key")}>
         <Field id="key-name" label={t("settings.key_name")}>
-          <input id="key-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+          <input
+            id="key-name"
+            value={name}
+            placeholder={t("settings.key_name_ph")}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={80}
+          />
         </Field>
-        <button type="submit" className="btn btn-sm" disabled={!name.trim() || create.pending}>
+        <button type="submit" className="button primary" disabled={!name.trim() || create.pending}>
           {t("settings.create_key")}
         </button>
       </form>
       <ErrorNotice error={create.error ?? revoke.error} />
       {q.loading && !q.data ? <Loading /> : null}
       {q.data && !q.data.items.length ? <Empty>{t("settings.no_keys")}</Empty> : null}
-      <ul className="plain-list">
-        {(q.data?.items ?? []).map((k) => (
-          <li key={k.id} className="row wrap small">
-            <strong>{k.name}</strong>
-            <code>{k.prefix}…</code>
-            <span className="faint grow">{k.revoked_at ? `${t("settings.revoked")} ${when(k.revoked_at)}` : when(k.created_at)}</span>
+      <ul className="key-list" aria-label={t("settings.api_keys")}>
+        {[...active, ...revoked].map((k) => (
+          <li key={k.id} className={k.revoked_at ? "is-revoked" : ""}>
+            <span className="key-name">
+              <strong>{k.name}</strong>
+              <code>{k.prefix}…</code>
+            </span>
+            <span className="faint small">
+              {k.revoked_at ? `${t("settings.revoked")} ${when(k.revoked_at)}` : when(k.created_at)}
+            </span>
             {!k.revoked_at ? (
-              <button type="button" className="btn btn-sm btn-danger" disabled={revoke.pending} onClick={() => void revoke.run(k.id)}>
-                {t("settings.revoke")}
-              </button>
+              confirming === k.id ? (
+                <span className="key-actions">
+                  <button
+                    type="button"
+                    className="button danger"
+                    disabled={revoke.pending}
+                    onClick={() => void revoke.run(k.id).then(() => setConfirming(null))}
+                  >
+                    {t("settings.revoke_confirm")}
+                  </button>
+                  <button type="button" className="button ghost" onClick={() => setConfirming(null)}>
+                    {t("common.cancel")}
+                  </button>
+                </span>
+              ) : (
+                <button type="button" className="button ghost danger" onClick={() => setConfirming(k.id)}>
+                  {t("settings.revoke")}
+                </button>
+              )
             ) : null}
           </li>
         ))}

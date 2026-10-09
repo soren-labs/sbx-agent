@@ -144,3 +144,16 @@ def test_surfaced_fault_messages_are_redacted(stack) -> None:
     Worker(stack.db, {"connection.validate": worker_outcome}).run_once()
     job = stack.db.read(lambda u: u.find_one("jobs", {"dedupe_key": "fault"}))
     assert job["last_error"] == "connect failed for REDACTED"
+
+
+def test_inference_settings_are_not_treated_as_secrets(stack) -> None:
+    """A model id or base URL in an error message must stay readable; only the key is redacted."""
+    from control.security.redaction import scrub
+    from tests.support.api import INFERENCE_URL
+
+    user = User(stack)
+    user.connect("inference_api", inference(ZEN_KEY, model="vendor-model-name"))
+    message = f"400 unknown model vendor-model-name at {INFERENCE_URL} with key {ZEN_KEY}"
+    scrubbed = scrub(message)
+    assert "vendor-model-name" in scrubbed and INFERENCE_URL in scrubbed
+    assert ZEN_KEY not in scrubbed and "REDACTED" in scrubbed
