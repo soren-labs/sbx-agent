@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from "react";
-import type { ConnectionCredential, ConnectionKind } from "../../api/types";
+import type { ConnectionCredential } from "../../api/types";
 import { Field } from "../../components/ui";
 import { useI18n } from "../../i18n";
-import { buildCredential, kindMeta } from "./kinds";
+import { buildCredential, kindMeta, type FieldKind } from "./kinds";
 
 /**
  * Write-only credential entry. Secrets live in component state only until submit,
@@ -15,7 +15,7 @@ export function ConnectionForm({
   pending,
   onSubmit,
 }: {
-  kind: ConnectionKind;
+  kind: FieldKind;
   mode: "create" | "replace";
   initialLabel?: string;
   pending?: boolean;

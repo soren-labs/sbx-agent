@@ -53,7 +53,7 @@ The Executor starts the daemon with `python -m runtime.daemon.main --state-dir â
 | `SBX_IMAGE_DIGEST` | image identity reported in `hello` |
 | `SBX_LEASE_TTL` | optional lease-authority window in seconds (default 1800) |
 | `SBX_SPOOL_MAX_UNACKED` | optional spool bound (default 20000) |
-| `OPENCODE_BIN` / `CODEX_BIN` | optional CLI command overrides (tests point them at fakes) |
+| `OPENCODE_BIN` / `CODEX_BIN` / `CLAUDE_BIN` / `GROK_BIN` / `COMMANDCODE_BIN` | optional CLI command overrides (tests point them at fakes) |
 
 **Modal resources.** The Modal Executor runs inside the **owner's** Modal workspace, using the
 selected Modal Connection's token. On first use it creates the app `sbx-executor`

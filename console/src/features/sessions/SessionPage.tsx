@@ -3,6 +3,7 @@ import type { ExecutorView, Session } from "../../api/types";
 import { ErrorNotice, Loading, shortId, useAction, when } from "../../components/ui";
 import { Icon } from "../../components/icons";
 import { useI18n } from "../../i18n";
+import { harnessName } from "./harnesses";
 import type { I18nKey } from "../../i18n/en";
 import { useApi } from "../../state/context";
 import type { SessionLive } from "../../state/session-live";
@@ -129,14 +130,26 @@ export function SessionPage() {
 
   const active = s.lifecycle === "open" && s.activity === "running";
   const failed = s.activity === "failed";
-  const statusLabel = active ? "Working" : failed ? "Needs attention" : s.lifecycle === "closed" ? "Closed" : "Idle";
+  const statusLabel = t(
+    active
+      ? "home.status.working"
+      : failed
+        ? "home.status.attention"
+        : s.lifecycle === "closed"
+          ? "session.status.closed"
+          : "home.status.idle",
+  );
   const statusTone = active ? "ok" : failed ? "warn" : "idle";
+  // Only what the CLI reported: Turns without usage contribute nothing and no cost is guessed.
+  const reported = state.turns.filter((turn) => turn.usage);
+  const tokens = (field: string) =>
+    reported.reduce((sum, turn) => sum + (Number((turn.usage as Record<string, unknown>)[field]) || 0), 0);
 
   return (
     <div className="session-page-wrapper">
       <Link to="/sessions" className="back-link">
         <Icon name="back" size={13} />
-        <span>All sessions</span>
+        <span>{t("session.all")}</span>
       </Link>
 
       <div className="session-head-row">
@@ -145,11 +158,8 @@ export function SessionPage() {
           <div className="session-meta-chips">
             <span className="session-provider-chip">
               <i className="provider-dot" />
-              {s.harness.provider_id}
-              {s.harness.model ? ` / ${s.harness.model}` : ""}
-            </span>
-            <span className="session-effort-chip">
-              Effort: low
+              {harnessName(s.harness.provider_id)}
+              {s.harness.model ? ` · ${s.harness.model}` : ""}
             </span>
             <span className="faint small" style={{ marginLeft: 8 }}>
               {s.role} · {shortId(s.id)}
@@ -247,78 +257,75 @@ export function SessionPage() {
           </div>
         </div>
 
-        {/* Right rail matching opus-session-history.png */}
         <aside className="session-side-rail">
-          <section className="card hs-card" aria-label="Details">
-            <h3>Details</h3>
+          <section className="card hs-card" aria-label={t("session.details")}>
+            <h3>{t("session.details")}</h3>
             <table className="rail-table">
               <tbody>
                 <tr>
-                  <th>Provider</th>
-                  <td>{s.harness.provider_id}</td>
+                  <th>{t("composer.harness_label")}</th>
+                  <td>{harnessName(s.harness.provider_id)}</td>
                 </tr>
                 <tr>
-                  <th>Model</th>
-                  <td>{s.harness.model || "default"}</td>
+                  <th>{t("composer.model")}</th>
+                  <td>{s.harness.model || "—"}</td>
                 </tr>
                 <tr>
-                  <th>Effort</th>
-                  <td>low</td>
-                </tr>
-                <tr>
-                  <th>Delivery</th>
-                  <td>—</td>
-                </tr>
-                <tr>
-                  <th>Idle timeout</th>
-                  <td>—</td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <section className="card hs-card" aria-label="Usage">
-            <h3>Usage</h3>
-            <table className="rail-table">
-              <tbody>
-                <tr>
-                  <th>Input tokens</th>
-                  <td>20,604</td>
-                </tr>
-                <tr>
-                  <th>Cached</th>
-                  <td>16,226</td>
-                </tr>
-                <tr>
-                  <th>Output tokens</th>
-                  <td>1,164</td>
-                </tr>
-                <tr>
-                  <th>Cost estimate</th>
-                  <td>$0.003</td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <section className="card hs-card" aria-label="Runtime">
-            <h3>Runtime</h3>
-            <table className="rail-table">
-              <tbody>
-                <tr>
-                  <th>Compute</th>
+                  <th>{t("composer.executor")}</th>
                   <td>{s.executor.backend}</td>
                 </tr>
                 <tr>
-                  <th>Turns</th>
-                  <td>{state.turns.length || 1}</td>
+                  <th>{t("session.repository")}</th>
+                  <td>{s.worktree?.repository || "—"}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section className="card hs-card" aria-label={t("session.usage")}>
+            <h3>{t("session.usage")}</h3>
+            {reported.length ? (
+              <table className="rail-table" data-testid="session-usage">
+                <tbody>
+                  <tr>
+                    <th>{t("session.usage.input")}</th>
+                    <td>{tokens("input_tokens").toLocaleString()}</td>
+                  </tr>
+                  <tr>
+                    <th>{t("session.usage.cached")}</th>
+                    <td>{tokens("cached_input_tokens").toLocaleString()}</td>
+                  </tr>
+                  <tr>
+                    <th>{t("session.usage.output")}</th>
+                    <td>{tokens("output_tokens").toLocaleString()}</td>
+                  </tr>
+                  <tr>
+                    <th>{t("session.usage.turns")}</th>
+                    <td>
+                      {reported.length}/{state.turns.length}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            ) : (
+              <p className="faint small">{t("session.usage.none")}</p>
+            )}
+          </section>
+
+          <section className="card hs-card" aria-label={t("session.timeline")}>
+            <h3>{t("session.timeline")}</h3>
+            <table className="rail-table">
+              <tbody>
+                <tr>
+                  <th>{t("session.turns")}</th>
+                  <td>{state.turns.length}</td>
                 </tr>
                 <tr>
-                  <th>Created</th>
+                  <th>{t("session.created")}</th>
                   <td>{when(s.created_at)}</td>
                 </tr>
                 <tr>
-                  <th>Updated</th>
+                  <th>{t("session.updated")}</th>
                   <td>{when(s.updated_at)}</td>
                 </tr>
               </tbody>

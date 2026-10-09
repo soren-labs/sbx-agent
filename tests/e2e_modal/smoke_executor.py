@@ -1,6 +1,6 @@
 """Opt-in live smoke: Modal executor + sbx-runtime + official OpenCode CLI.
 
-Reads SBX_TEST_MODAL_TOKEN_ID/SECRET and OPENCODE_ZEN_API_KEY from the environment,
+Reads SBX_TEST_MODAL_TOKEN_ID/SECRET and SBX_TEST_INFERENCE_API_KEY from the environment,
 never prints them, and always terminates the sandbox. Not collected by pytest.
 """
 
@@ -13,6 +13,8 @@ import time
 
 from control.executors.modal import ModalExecutor
 from control.runtime_client.client import HttpRuntimeConnector
+
+from tests.e2e_modal.inference import inference_credential
 
 
 def main() -> int:
@@ -50,14 +52,20 @@ def main() -> int:
             "restore",
             channel.op("worktree.restore", "op_r", "sess_smoke", {"generation": 0})["status"],
         )
+        credential = inference_credential()
         payload = {
             "provider_id": "opencode",
             "turn_id": "turn_s",
             "execution_id": "exec_s",
             "prompt": "Create hello.txt containing sbx and reply DONE.",
-            "model": "opencode/big-pickle",
+            "model": credential["model"],
             "native_binding": None,
             "deadline_seconds": 300,
+            "inference": {
+                "protocol": "openai_chat",
+                "base_url": credential["endpoints"]["openai_chat"],
+                "model": credential["model"],
+            },
         }
         print(
             "start",
@@ -66,7 +74,7 @@ def main() -> int:
                 "exec_s",
                 "sess_smoke",
                 payload,
-                secrets={"opencode_zen": {"api_key": os.environ["OPENCODE_ZEN_API_KEY"]}},
+                secrets={"inference": {"api_key": credential["api_key"]}},
             )["status"],
         )
         for _ in range(300):

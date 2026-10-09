@@ -53,7 +53,8 @@ smoke-modal:
 check-connectors:
 	uv run python tests/e2e_modal/live_connectors.py
 
-# Real MVP acceptance: email/password + Modal + GitHub token + OpenCode Zen only. Creates
+# Real MVP acceptance: email/password + Modal + GitHub token + a BYOK inference key
+# (SBX_TEST_INFERENCE_API_KEY; DeepSeek endpoints by default). Creates
 # Modal sandboxes and a pull request in SBX_BENCHMARK_GITHUB_REPO (must be */sbx-e2e-test),
 # then always terminates its sandboxes and deletes the refs it created.
 mvp-acceptance:

@@ -10,8 +10,7 @@ const LABEL: Record<SetupId, I18nKey> = {
   account: "setup.account",
   modal: "kind.modal",
   github: "kind.github",
-  opencode_zen: "kind.opencode_zen",
-  codex: "kind.codex",
+  inference_api: "kind.inference_api",
 };
 const TONE: Record<SetupStatus, Tone> = { ready: "ok", pending: "warn", attention: "err", missing: "dim" };
 

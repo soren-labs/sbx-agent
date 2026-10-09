@@ -19,7 +19,10 @@ REPO = Path(__file__).resolve().parents[2]
     [
         "SBX_TEST_MODAL_TOKEN_ID",
         "SBX_TEST_GITHUB_TOKEN",
-        "SBX_BENCHMARK_ZEN_API_KEY",
+        "SBX_TEST_INFERENCE_API_KEY",
+        "SBX_INFERENCE_API_KEY",
+        "SBX_INFERENCE_ALLOW_PRIVATE_URLS",
+        "ANTHROPIC_API_KEY",
         "MODAL_TOKEN_SECRET",
         "GITHUB_TOKEN",
         "SBX_DATABASE_URL",

@@ -98,7 +98,8 @@ def test_english_only_site() -> None:
 
 @pytest.mark.parametrize("path", MAINTAINED, ids=lambda p: str(p.relative_to(SITE)))
 def test_no_legacy_vocabulary(path: Path) -> None:
-    text = path.read_text()
+    # The Anthropic Messages request path belongs to the model provider, not to SBX's API.
+    text = path.read_text().replace("{base_url}/v1/messages", "")
     for pattern in LEGACY_TERMS:
         match = re.search(pattern, text)
         assert match is None, f"{path.relative_to(SITE)}: legacy term {match.group(0)!r}"
@@ -152,9 +153,16 @@ def test_configuration_page_lists_every_control_plane_variable() -> None:
 
 def test_quick_start_covers_minimum_setup() -> None:
     text = (CONTENT / "getting-started" / "quick-start.md").read_text()
-    for needle in ("sbx serve", "PostgreSQL", "Modal", "GitHub", "OpenCode Zen", "Codex"):
+    for needle in (
+        "sbx serve",
+        "PostgreSQL",
+        "Modal",
+        "GitHub",
+        "Inference API key",
+        "Claude Code",
+    ):
         assert needle in text, needle
-    assert "optional" in text.lower()
+    assert "OpenCode Zen" not in text and "auth.json" not in text
 
 
 def test_generated_cli_help() -> None:
@@ -174,10 +182,11 @@ def test_generated_provider_reference() -> None:
     tiers = {row["provider"]: row["support"] for row in data}
     assert tiers == {
         "opencode": "supported",
-        "codex": "experimental",
-        "claude": "disabled",
+        "codex": "supported",
+        "claude": "supported",
+        "grok": "supported",
+        "commandcode": "supported",
         "devin": "disabled",
-        "grok": "disabled",
         "antigravity": "disabled",
     }
 

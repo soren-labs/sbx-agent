@@ -334,7 +334,7 @@
   font: inherit;
   font-size: 14.5px;
   font-weight: 600;
-  color: #0c0d12 !important;
+  color: var(--ui-invert-fg) !important;
   background: #ffffff !important;
   cursor: pointer;
   transition: opacity 0.15s, transform 0.08s;
@@ -536,7 +536,7 @@
 }
 
 .new-session-button:hover {
-  border-color: #3f4452;
+  border-color: var(--ui-border-strong);
   text-decoration: none;
 }
 
@@ -711,7 +711,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #60a5fa;
+  background: var(--ui-info);
   flex-shrink: 0;
 }
 
@@ -1005,7 +1005,7 @@
 }
 
 .setup-step:hover {
-  border-color: #3f4452;
+  border-color: var(--ui-border-strong);
   text-decoration: none;
 }
 
@@ -1050,7 +1050,7 @@
 .setup-step.done .setup-step-check {
   border: 0;
   background: var(--ui-green, #4ade80);
-  color: #0c0d12;
+  color: var(--ui-invert-fg);
 }
 
 /* Prompt-first Composer */
@@ -1064,7 +1064,7 @@
 }
 
 .session-composer:focus-within {
-  border-color: #484e62 !important;
+  border-color: var(--ui-border-strong) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
 }
 
@@ -1147,9 +1147,15 @@
 
 .picker-popover {
   position: absolute;
-  bottom: calc(100% + 8px);
+  /* Opens downward: above the composer it slid under the top bar and its first
+     options could not be clicked. */
+  top: calc(100% + 8px);
   left: 0;
-  width: 280px;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  max-height: min(56vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 14px;
   border-radius: 12px;
   background: var(--ui-card, #18191e);
@@ -1205,8 +1211,8 @@
   display: grid;
   place-items: center;
   border: 0;
-  background: #ffffff !important;
-  color: #0c0d12 !important;
+  background: var(--ui-invert-bg) !important;
+  color: var(--ui-invert-fg) !important;
   cursor: pointer;
   transition: opacity 0.15s, transform 0.08s;
   flex-shrink: 0;
@@ -1269,7 +1275,7 @@
 
 .suggestion-chip:hover {
   color: var(--ui-text, #e8e8e8);
-  border-color: #3f4452;
+  border-color: var(--ui-border-strong);
   transform: translateY(-1px);
 }
 
@@ -1331,7 +1337,7 @@
 }
 
 .recent-card:hover {
-  border-color: #3f4452;
+  border-color: var(--ui-border-strong);
   transform: translateY(-1px);
   text-decoration: none;
 }
@@ -1426,7 +1432,7 @@
   border-radius: 50%;
   font-size: 10px;
   background: var(--ui-green, #4ade80);
-  color: #0c0d12;
+  color: var(--ui-invert-fg);
   border: 2px solid var(--ui-card, #18191e);
 }
 
@@ -1478,13 +1484,13 @@
 }
 
 .hs-badge.ok {
-  color: #4ade80;
-  background: #123824;
+  color: var(--ok);
+  background: var(--ok-soft);
 }
 
 .hs-badge.warn {
-  color: #fbbf24;
-  background: #382a12;
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .hs-badge.idle {
@@ -1519,8 +1525,8 @@
 
 .button.primary,
 .btn.primary {
-  background: #ffffff !important;
-  color: #0c0d12 !important;
+  background: var(--ui-invert-bg) !important;
+  color: var(--ui-invert-fg) !important;
   border: 0;
   font-weight: 600;
 }
@@ -1538,7 +1544,7 @@
 
 .button.danger,
 .btn.danger {
-  color: #f87171;
+  color: var(--err);
 }
 
 .hs-progress {
@@ -1631,8 +1637,8 @@
 }
 
 .hs-note.warn {
-  background: #382a12;
-  color: #fbbf24;
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .hs-token-container {
@@ -1752,8 +1758,8 @@
 }
 
 .pane-tabs button.active {
-  color: #60a5fa;
-  border-bottom-color: #60a5fa;
+  color: var(--ui-info);
+  border-bottom-color: var(--ui-info);
   font-weight: 550;
 }
 
@@ -1777,7 +1783,17 @@
   width: 45%;
 }
 
+.session-side-rail .card {
+  padding: 16px;
+}
+
+.session-side-rail .card h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
 .rail-table td {
+  overflow-wrap: anywhere;
   text-align: right;
   color: var(--ui-text, #e8e8e8);
   font-family: var(--ui-mono);
@@ -1834,6 +1850,17 @@
   .composer-configuration-label {
     display: none;
   }
+  /* Chips sit anywhere along the row; a sheet above the bottom nav never overflows. */
+  .picker-popover {
+    position: fixed;
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-width: none;
+    max-height: 68vh;
+  }
   .repo-chip-label {
     max-width: 100px;
   }
@@ -1855,4 +1882,197 @@
   .sidebar-scrim {
     display: none;
   }
+}
+
+/* ==========================================================================
+   7. CONNECTIONS: instances, details and the inference form
+   ========================================================================== */
+.hs-connection-instance {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.hs-connection-instance + .hs-connection-instance,
+.hs-connection-instance + .hs-actions,
+.hs-connection-instance + .hs-token-container {
+  margin-top: 10px;
+}
+
+.hs-instance-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.hs-instance-header strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.hs-instance-actions,
+.picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hs-badge.err {
+  color: var(--err);
+  background: var(--err-soft);
+}
+
+.hs-badge.err i {
+  background: var(--err);
+}
+
+.conn-details {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.conn-detail {
+  display: grid;
+  grid-template-columns: minmax(120px, 190px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.conn-detail dt {
+  color: var(--fg-faint);
+}
+
+.conn-detail dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.conn-detail code,
+.conn-reason-code code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.conn-detail .hs-repo-list {
+  padding: 0;
+}
+
+.conn-detail .hs-repo-list li {
+  padding: 2px 0;
+}
+
+.conn-probe.err {
+  color: var(--err);
+}
+
+.conn-reason-code {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg-faint);
+}
+
+.hs-note.warn .conn-reason-code:first-child {
+  margin-top: 0;
+}
+
+.hs-token-container form {
+  display: grid;
+  gap: 2px;
+}
+
+.hs-token-container input,
+.hs-token-container select,
+.hs-token-container textarea,
+.picker-popover input {
+  width: 100%;
+  min-width: 0;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+
+.hs-token-container input[aria-invalid="true"] {
+  border-color: var(--err);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+}
+
+.protocol-set {
+  margin: 4px 0 12px;
+  padding: 12px 14px 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-width: 0;
+}
+
+.protocol-set legend {
+  padding: 0 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+
+.protocol-set > p {
+  margin: 0 0 10px;
+}
+
+.composer-hint {
+  margin-top: 10px;
+}
+
+.composer-hint a {
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .conn-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .hs-instance-header {
+    flex-wrap: wrap;
+  }
+}
+
+/* Popover form rows: label above control, full width. */
+.picker-popover .form-label {
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ui-dim);
+}
+
+.picker-popover .form-label select,
+.picker-popover .form-label input {
+  width: 100%;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.composer-picker > summary {
+  list-style: none;
+}
+
+.composer-picker > summary::-webkit-details-marker {
+  display: none;
 }

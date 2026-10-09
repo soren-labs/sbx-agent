@@ -19,8 +19,7 @@ Modal.
 | Email and password account | Product sign-in. Self-hosted verification mail lands in a local directory unless you configure Resend. |
 | Modal token (`token_id`, `token_secret`) | Creates and tears down sandboxes. |
 | GitHub token | Clones repositories and delivers pull requests. |
-| OpenCode Zen API key | Inference for the OpenCode Harness (free models run only through the official OpenCode CLI). |
-| Codex `auth.json` (optional) | Only if you want the experimental Codex Harness. |
+| Inference API key | Your own model provider: API key, base URL and model (for example DeepSeek, or any OpenAI- or Anthropic-compatible endpoint). One key serves every coding CLI that speaks its protocol; a second key is optional. |
 
 ## 1. Configure and start the control plane
 
@@ -61,8 +60,9 @@ a JSON file under `$SBX_DATA_DIR/mail/`; open the link it contains
 ## 4. Add Connections
 
 The Console's setup checklist (home page) lists what is missing. Open
-**Connections** and add, in any order: Modal, GitHub, OpenCode Zen, and
-optionally Codex. Secret fields are write-only; after submit SBX validates each
+**Connections** and add, in any order: an inference API key, Modal and GitHub.
+OpenCode, Codex, Claude Code, Grok Build and Command Code all run on that key;
+nothing vendor-specific is required. Secret fields are write-only; after submit SBX validates each
 Connection in the background and shows its health.
 
 From the CLI the same inputs are read from stdin or a file, never argv:

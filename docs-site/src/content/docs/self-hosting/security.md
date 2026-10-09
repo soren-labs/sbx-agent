@@ -35,8 +35,7 @@ inheriting `os.environ`.
 | --- | --- |
 | Modal token | the executor worker only |
 | GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
-| OpenCode Zen key | the CLI's isolated HOME, scrubbed after each Turn |
-| Codex `auth.json` | an isolated `CODEX_HOME`, scrubbed after each Turn |
+| Inference API key | the CLI process environment for one Turn; CLI config files reference it by variable name only, so it is never written to disk |
 
 ChangeSets and checkpoints exclude credential files, including `.env`,
 `auth.json` and private keys. Safe templates such as `.env.example` remain

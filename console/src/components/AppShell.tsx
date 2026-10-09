@@ -310,12 +310,6 @@ export function AppShell() {
             <Icon name="menu" size={17} />
           </button>
           <span className="topbar-crumb">{currentSection}</span>
-          <div className="topbar-right">
-            <span className="topbar-status">
-              <span />
-              Prototype · local data
-            </span>
-          </div>
         </header>
 
         <main id="workspace-main" tabIndex={-1}>

@@ -12,14 +12,19 @@
   replacement, and resyncs on gaps. Features are Projects, Sessions, Conversation, Activity, Changes
   (with server merge eligibility and pins), Files, Terminal, Services, Child Sessions, Connections
   (write-only secret inputs, cleared after submit, never stored in web storage), Settings and the
-  setup checklist (email/password + Modal + GitHub + Zen; Codex optional).
+  setup checklist (email/password + inference API key + Modal + GitHub). Session creation
+  picks the Harness (official CLI) and a model from the inference Connections that Harness can
+  use; nothing is offered that the API did not report.
 * **SDK** (`src/sbx/sdk`): namespaces `projects`, `connections`, `sessions`, `messages`, `turns`,
-  `changesets`, `deliveries`, `delegations` and `operations`. `execute()` creates or continues
+  `changesets`, `deliveries`, `delegations` and `operations`; `connections.add_inference()` adds a
+  BYOK key and `harnesses()`/`models(provider_id)` expose the catalog. `execute()` creates or continues
   ordinary resources and follows committed events until the Turn is terminal. `turns.wait` and
   `delegations.wait_result` are distinct. Uncertain transport retries reuse the Idempotency-Key, and
   an unknown outcome raises `OutcomeUnknown`.
 * **CLI** (`sbx`): `auth login` reads the password from stdin or a prompt and stores an API key in a
-  0600 config file. `connections add/replace` read secrets from stdin or a file, never argv. Also
+  0600 config file. `connections add/replace` read secrets from stdin or a file, never argv;
+  `inference_api` settings are flags (`--endpoint PROTOCOL=BASE_URL`, `--model`). `sessions create
+  --harness` selects the CLI and `harnesses` lists manifests. Also
   provides `sessions …`, `execute`, `changesets`, `deliveries`, `delegations`, `operations`, and the
   operator commands `serve` and `migrate`.
 

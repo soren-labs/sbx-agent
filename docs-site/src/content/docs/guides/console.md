@@ -19,9 +19,11 @@ rejected with `csrf_failed`.
 
 ## Pages
 
-- **Home**: the setup checklist (account, Modal, GitHub, OpenCode Zen; Codex
-  optional) and the composer for a new Session. It defaults to the OpenCode
-  Harness, the preferred free model and Modal once a Modal Connection exists.
+- **Home**: the setup checklist (account, inference API key, Modal, GitHub)
+  and the composer for a new Session. Pick the coding CLI (OpenCode, Codex,
+  Claude Code, Grok Build, Command Code) and a model from the inference
+  Connections that CLI can use; it defaults to the first CLI your key can drive,
+  that Connection's default model, and Modal once a Modal Connection exists.
 - **Sessions**: the list and the Session view with Conversation, Activity,
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
   Services and Child Sessions tabs.

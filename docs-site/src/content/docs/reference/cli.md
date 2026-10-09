@@ -26,7 +26,7 @@ mode `0600`. Environment variables override the file.
 | --- | --- |
 | `auth login` | Sign in and store an API key. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
-| `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `opencode_zen`, `codex`. Secrets come from stdin or `--credential-file`, never argv. |
+| `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
 | `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |

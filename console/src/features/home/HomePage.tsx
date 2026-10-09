@@ -7,31 +7,35 @@ import { useConnections } from "../connections/ConnectionsPage";
 import { NewSession } from "../sessions/NewSession";
 import { useSessionList } from "../sessions/SessionsPage";
 import type { Session } from "../../api/types";
+import type { I18nKey } from "../../i18n/en";
+import { computeSetup } from "../setup/checklist";
 
-function greeting(email?: string) {
+type T = ReturnType<typeof useI18n>["t"];
+
+function greeting(t: T, email?: string) {
   const hour = new Date().getHours();
-  const part =
+  const part = t(
     hour < 5
-      ? "Working late"
+      ? "home.greeting.late"
       : hour < 12
-        ? "Good morning"
+        ? "home.greeting.morning"
         : hour < 18
-          ? "Good afternoon"
-          : "Good evening";
+          ? "home.greeting.afternoon"
+          : "home.greeting.evening",
+  );
   const name = email ? email.split("@")[0] : null;
   return name ? `${part}, ${name}` : part;
 }
 
-function formatRelativeTime(dateStr?: string) {
-  if (!dateStr) return "Just now";
+function formatRelativeTime(t: T, dateStr?: string) {
+  if (!dateStr) return t("time.now");
   const ms = Date.now() - new Date(dateStr).getTime();
   const mins = Math.max(0, Math.floor(ms / 60_000));
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("time.now");
+  if (mins < 60) return t("time.minutes", { n: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  if (hours < 24) return t("time.hours", { n: hours });
+  return t("time.days", { n: Math.floor(hours / 24) });
 }
 
 export function HomePage() {
@@ -41,118 +45,91 @@ export function HomePage() {
   const recent = useSessionList({ lifecycle: "open", role: "" }, 4);
   const connections = useConnections();
 
-  const connItems = connections.data?.items ?? [];
-  const modalDone = connItems.some((c) => c.kind === "modal" && c.health === "ready");
-  const githubDone = connItems.some((c) => c.kind === "github" && c.health === "ready");
-  const modelDone = connItems.some(
-    (c) => (c.kind === "codex" || c.kind === "opencode_zen") && c.health === "ready",
-  );
-
-  const doneCount = (modalDone ? 1 : 0) + (githubDone ? 1 : 0) + (modelDone ? 1 : 0);
-
-  const steps = [
-    {
-      id: "modal",
-      done: modalDone,
-      title: "Connect Modal",
-      text: "Compute for your sandboxes",
-    },
-    {
-      id: "github",
-      done: githubDone,
-      title: "Connect GitHub",
-      text: "Repositories agents can work on",
-    },
-    {
-      id: "codex",
-      done: modelDone,
-      title: "Connect Codex",
-      text: "The agent that writes the code",
-    },
-  ];
+  // Server-provided health only: the checklist never decides readiness itself.
+  const setup = computeSetup(me, connections.data?.items ?? []);
+  const steps = setup.items.filter((i) => i.id !== "account");
+  const doneCount = steps.filter((i) => i.status === "ready").length;
 
   return (
     <div className="home-content">
-      {/* Centered Hero Greeting matching image(9) */}
       <div className="home-hero">
         <span className="home-hero-mark">
           <Mark />
         </span>
-        <h1>{greeting(me?.user.email)}</h1>
-        <p>What should your agents work on next?</p>
+        <h1>{greeting(t, me?.user.email)}</h1>
+        <p>{t("home.question")}</p>
       </div>
 
-      {/* Setup Progress Card across top matching image(9) */}
-      <section className="setup-card" aria-label="Finish setting up your workspace">
-        <div className="setup-card-head">
-          <div>
-            <h2>Finish setting up your workspace</h2>
-            <p>
-              {doneCount} of 3 connected · Sessions start once all three are ready.
-            </p>
+      {connections.data && !setup.complete ? (
+        <section className="setup-card" aria-label={t("setup.heading")}>
+          <div className="setup-card-head">
+            <div>
+              <h2>{t("setup.heading")}</h2>
+              <p>{t("setup.progress", { done: doneCount, total: steps.length })}</p>
+            </div>
+            <span className="setup-ring" style={{ ["--p" as string]: doneCount / steps.length }}>
+              {doneCount}/{steps.length}
+            </span>
           </div>
-          <span className="setup-ring" style={{ ["--p" as string]: doneCount / 3 }}>
-            {doneCount}/3
-          </span>
-        </div>
-        <div className="setup-steps">
-          {steps.map((step) => (
-            <Link
-              key={step.id}
-              to="/connections"
-              className={`setup-step ${step.done ? "done" : ""}`}
-            >
-              <span className="setup-step-check">
-                {step.done ? <Icon name="check" size={11} /> : null}
-              </span>
-              <span>
-                <strong>{step.title}</strong>
-                <small>{step.done ? "Connected" : step.text}</small>
-              </span>
-              {!step.done && <Icon name="arrowRight" size={13} />}
-            </Link>
-          ))}
-        </div>
-      </section>
+          <div className="setup-steps">
+            {steps.map((step) => {
+              const done = step.status === "ready";
+              return (
+                <Link
+                  key={step.id}
+                  to="/connections"
+                  className={`setup-step ${done ? "done" : ""}`}
+                  data-testid={`setup-step-${step.id}`}
+                  data-status={step.status}
+                >
+                  <span className="setup-step-check">{done ? <Icon name="check" size={11} /> : null}</span>
+                  <span>
+                    <strong>{t(`setup.step.${step.id}` as I18nKey)}</strong>
+                    <small>
+                      {done
+                        ? t("setup.step.done")
+                        : step.status === "missing"
+                          ? t(`setup.step.${step.id}.text` as I18nKey)
+                          : t(`setup.status.${step.status}` as I18nKey)}
+                    </small>
+                  </span>
+                  {!done && <Icon name="arrowRight" size={13} />}
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
       {/* Large Prompt-First Composer */}
       <NewSession />
 
-      {/* Recent Sessions Cards Grid matching image(9) */}
       {recent.items.length > 0 && (
-        <section className="home-recent" aria-label="Recent sessions">
+        <section className="home-recent" aria-label={t("home.recent_title")}>
           <div className="home-recent-head">
-            <h2>Recent sessions</h2>
+            <h2>{t("home.recent_title")}</h2>
             <Link to="/sessions">
-              View all <Icon name="arrowRight" size={12} />
+              {t("home.view_all")} <Icon name="arrowRight" size={12} />
             </Link>
           </div>
           <div className="home-recent-grid">
             {recent.items.slice(0, 4).map((s: Session) => {
               const active = s.lifecycle === "open" && s.activity === "running";
               const failed = s.activity === "failed";
-              const isPr = s.title.toLowerCase().includes("pr") || s.labels?.includes("pr");
-              const tone = active ? "ok" : failed ? "warn" : isPr ? "ok" : "idle";
-              const label = active
-                ? "Working"
-                : failed
-                  ? "Needs attention"
-                  : isPr
-                    ? "PR ready"
-                    : "Idle";
-
+              const tone = active ? "ok" : failed ? "warn" : "idle";
+              const label = t(active ? "home.status.working" : failed ? "home.status.attention" : "home.status.idle");
               return (
                 <Link key={s.id} to={`/sessions/${s.id}`} className="recent-card">
                   <span className="recent-card-top">
                     <span className={`hs-badge ${tone}`}>
                       <i /> {label}
                     </span>
-                    <small>{formatRelativeTime(s.updated_at || s.created_at)}</small>
+                    <small>{formatRelativeTime(t, s.updated_at || s.created_at)}</small>
                   </span>
-                  <strong>{s.title}</strong>
+                  <strong>{s.title || s.id}</strong>
                   <small className="recent-card-repo">
                     <Icon name="branch" size={11} />
-                    {s.worktree?.repository || "soren-labs/sbx-agent"}
+                    {s.worktree?.repository || t("home.no_repo")}
                   </small>
                 </Link>
               );

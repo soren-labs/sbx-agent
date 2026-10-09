@@ -32,6 +32,26 @@
   --run: #60a5fa;
   --run-soft: #1e293b;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.3);
+  /* Workspace surface tokens (restoration.css). Defined per theme: the workspace
+     must follow the selected theme instead of always rendering dark. */
+  --ui-bg: #141414;
+  --ui-side: #17181b;
+  --ui-card: #18191e;
+  --ui-card-border: #272a32;
+  --ui-border: #272a32;
+  --ui-border-strong: #3f4452;
+  --ui-surface: #1f2127;
+  --ui-hover: #23262e;
+  --ui-text: #e8e8e8;
+  --ui-dim: #a5acb8;
+  --ui-muted: #8b92a0;
+  --ui-accent: #6c76e8;
+  --ui-green: #4ade80;
+  --ui-amber: #fbbf24;
+  --ui-info: #60a5fa;
+  --ui-invert-bg: #ffffff;
+  --ui-invert-fg: #0c0d12;
+  --ui-mono: var(--mono);
   color-scheme: dark;
 }
 
@@ -55,6 +75,24 @@
   --run: #7a4fd0;
   --run-soft: #f0eafc;
   --shadow: 0 1px 3px rgba(20, 25, 35, 0.03);
+  --ui-bg: #fcfcfc;
+  --ui-side: #f6f6f5;
+  --ui-card: #ffffff;
+  --ui-card-border: #e4e4e7;
+  --ui-border: #e4e4e7;
+  --ui-border-strong: #c9c9d1;
+  --ui-surface: #f2f2f1;
+  --ui-hover: #ececee;
+  --ui-text: #191919;
+  --ui-dim: #4b4b55;
+  --ui-muted: #6b6b76;
+  --ui-accent: #4f5bd5;
+  --ui-green: #1a8a4a;
+  --ui-amber: #b06000;
+  --ui-info: #2f6fd0;
+  --ui-invert-bg: #18181b;
+  --ui-invert-fg: #ffffff;
+  --ui-mono: var(--mono);
   color-scheme: light;
 }
 

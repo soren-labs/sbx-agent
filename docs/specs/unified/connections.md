@@ -20,6 +20,7 @@ Implements RFC 06 and the RFC 08 auth/connection routes.
 | `SBX_DATA_DIR` | no (`./.sbx-data`) | local blobs and the mail outbox |
 | `SBX_EXECUTORS` | no (`local,modal`) | enabled Executor backends |
 | `SBX_WORKER_THREADS` | no (`4`) | Job worker threads per process |
+| `SBX_INFERENCE_ALLOW_PRIVATE_URLS` | no | `1` allows private-network/`http` inference base URLs (self-hosted gateways only) |
 
 Keep `SBX_VAULT_KEYS` and `SBX_RUNTIME_MASTER_KEY` in a secret manager, never in the database.
 Losing every vault key makes stored CredentialVersions undecryptable.
@@ -43,7 +44,7 @@ Losing every vault key makes stored CredentialVersions undecryptable.
 
 ## Connections
 
-One model for the `modal`, `github`, `opencode_zen` and optional `codex` kinds. Secrets are
+One model for the `modal`, `github` and `inference_api` kinds. Secrets are
 write-only: views expose credential version id/ordinal/format only, never plaintext, ciphertext or
 fingerprints. Request validation errors never echo input.
 
@@ -51,14 +52,47 @@ fingerprints. Request validation errors never echo input.
 | --- | --- | --- | --- |
 | `modal` | `token_id`, `token_secret` | `App.lookup` with the token | executor worker only (sandbox gets a lease-scoped key) |
 | `github` | `token` (PAT or App installation `ghs_` token) | capability probe: `GET /repos/{repo}` for Project repos (+ `GET /installation/repositories` when `GET /user` gives no identity); only `401` or no reachable repository is `reauth_required` | Delivery worker; runtime clone helper via askpass file, never URL/argv |
-| `opencode_zen` | `api_key` | one minimal free-model chat request: 401 = rejected, free-tier gate = authenticated (quota-consuming, recorded) | OpenCode `auth.json` in isolated HOME, scrubbed after each Turn |
-| `codex` | `auth_json` (allowlisted shape) | format only | Codex isolated `CODEX_HOME` |
+| `inference_api` | `api_key`, `model`, and `endpoints` (`{protocol: base_url}`) or one `base_url` + `protocol`; optional `models` | one minimal generation request per endpoint with the configured model (quota-consuming, recorded) | the CLI process environment (`SBX_INFERENCE_API_KEY`, or `ANTHROPIC_API_KEY` for Claude Code); never written to disk |
 
-The model catalog is Zen `/v1/models` crossed with public models.dev pricing. Free models are
-marked `usable_via: official_opencode_cli`, which reflects the provider's rule that the free tier
-runs only inside OpenCode. The preferred model is the first free model in a fixed preference order
-(`big-pickle` first). Project/Session resolution defaults the model to the preferred one when the
-caller sets none.
+### Generic inference (`inference_api`)
+
+Inference is bring-your-own-key and is not tied to a vendor or a Harness. A Connection holds
+one API key, a default model and one base URL per wire protocol the provider speaks:
+`openai_chat` (`{base_url}/chat/completions`), `openai_responses` (`{base_url}/responses`) and
+`anthropic_messages` (`{base_url}/v1/messages`). Only the key is secret. Endpoints and models are
+stored as the CredentialVersion's `public_config`, returned as `config` in Connection views, and
+versioned with the key, so a replacement swaps both atomically. Replacing with only `api_key`
+keeps the current endpoints and model.
+
+* **Harness matching.** Each Harness manifest lists `inference_protocols` in preference order.
+  A Session uses the first of them its inference Connection offers. Auto-selection considers only
+  Connections that offer one; an explicit incompatible Connection is `422 validation_failed`; when
+  none qualifies the Session is refused with `409 connection_required` and
+  `details.inference_protocols`. `GET /api/models?provider_id=…` reports per Connection the
+  `protocol` that Harness would use and `compatible`.
+* **Model.** The Session's model defaults to the Connection's `model`; a caller-supplied model id
+  is pinned as given. The catalog is the configured models plus the provider's model list when it
+  serves one (`GET {base_url}/models`).
+* **Delivery to the runtime.** The broker sends `{"inference": {"api_key"}}` in the operation
+  frame's `secrets` and the chosen `{protocol, base_url, model}` in the `turn.start` payload, so
+  URLs and model ids are never treated or redacted as credential values.
+* **Outbound URL policy.** Base URLs are caller-controlled and probed by the control plane, so
+  they must be `https` origins without userinfo, query or fragment that resolve only to public
+  addresses; loopback, private, link-local and `.internal`/`.local` targets are refused and
+  redirects are never followed. `SBX_INFERENCE_ALLOW_PRIVATE_URLS=1` is the operator opt-in for
+  self-hosted gateways (it also allows `http`).
+* **Health reasons.** `inference_rejected_key` (401/403), `inference_endpoint_or_model_rejected`
+  (400/404/405/422), `inference_base_url_not_public`, `inference_base_url_redirects` map to
+  `reauth_required`; `inference_rate_limited` to `degraded`; unreachable/5xx retries.
+
+### Retired kinds
+
+`opencode_zen` and `codex` (uploaded `auth.json`) are no longer offered: creating one or replacing
+its credential is `422 validation_failed` with `details.replacement = "inference_api"`. Official
+subscription credential management is a later phase. Stored rows are preserved by migration
+`0004` (the kind constraint still admits them; nothing is deleted or rewritten). They are listed
+with `legacy: true`, can be disconnected, are never selected for a new Session, and a Session
+already pinned to one keeps running on its original credential lane.
 
 * CredentialVersions use AES-256-GCM. The AAD binds `{workspace, connection, credential version,
   format}`; the keyring (`SBX_VAULT_KEYS=kid:b64,...`, first key active) lives outside the

@@ -3,14 +3,15 @@ Generated from the unified argparse command model.
 
 ===== sbx =====
 usage: sbx [-h] [--base-url BASE_URL]
-           {auth,projects,connections,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
+           {auth,harnesses,projects,connections,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
            ...
 
 SBX: durable Sessions running official provider CLIs.
 
 positional arguments:
-  {auth,projects,connections,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
+  {auth,harnesses,projects,connections,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
     auth                sign in and store an API key
+    harnesses           official CLI Harnesses and the protocols they accept
     projects            Projects and versions
     connections         manual Connections (secrets via stdin)
     sessions            durable Sessions
@@ -28,6 +29,12 @@ usage: sbx auth [-h] {login} ...
 positional arguments:
   {login}
     login     email/password sign-in; password read from stdin or prompt
+
+options:
+  -h, --help  show this help message and exit
+
+===== sbx harnesses =====
+usage: sbx harnesses [-h]
 
 options:
   -h, --help  show this help message and exit

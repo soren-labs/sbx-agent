@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import os
 
-from control.integrations.connectors import github, modal, opencode_zen
+from control.integrations.connectors import github, inference_api, modal
+
+from tests.e2e_modal.inference import inference_credential
 
 
 def main() -> None:
-    zen = opencode_zen.validate(
-        opencode_zen.normalize({"api_key": os.environ["OPENCODE_ZEN_API_KEY"]})
-    )
+    credential = inference_api.normalize(inference_credential())
+    inference = inference_api.validate(credential)
     print(
-        "zen",
-        zen.status,
-        zen.details.get("auth"),
-        (zen.catalog or {}).get("preferred_model"),
-        sum(m["free"] for m in (zen.catalog or {}).get("models", [])),
-        "free models",
+        "inference",
+        inference.status,
+        {p: r["status"] for p, r in inference.details["endpoints"].items()},
+        (inference.catalog or {}).get("preferred_model"),
+        len((inference.catalog or {}).get("models", [])),
     )
-    bad = opencode_zen.validate({"api_key": "sk-invalid-0000000000000000000000"})
-    print("zen-bad", bad.status)
+    bad = inference_api.validate({**credential, "api_key": "sk-invalid-0000000000000000000000"})
+    print("inference-bad", bad.status, bad.details.get("reason"))
     m = modal.validate(
         modal.normalize(
             {

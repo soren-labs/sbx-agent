@@ -4,6 +4,11 @@
     "support": "supported",
     "transport": "jsonl",
     "distribution": "npm:opencode-ai",
+    "inference_protocols": [
+      "openai_chat",
+      "anthropic_messages",
+      "openai_responses"
+    ],
     "capabilities": {
       "account_portable_resume": "unknown",
       "attachments": "unknown",
@@ -13,7 +18,7 @@
       "interactive_approval": "unsupported",
       "interrupt": "unsupported",
       "mcp": "unknown",
-      "model_discovery": "supported",
+      "model_discovery": "unsupported",
       "native_resume": "supported",
       "native_state_export": "supported",
       "skills": "unknown",
@@ -24,19 +29,22 @@
   },
   {
     "provider": "codex",
-    "support": "experimental",
+    "support": "supported",
     "transport": "jsonl",
     "distribution": "npm:@openai/codex",
+    "inference_protocols": [
+      "openai_responses"
+    ],
     "capabilities": {
       "account_portable_resume": "unknown",
       "attachments": "unknown",
-      "credential_writeback": "unknown",
+      "credential_writeback": "unsupported",
       "effort_settings": "unknown",
       "event_stream": "supported",
       "interactive_approval": "unsupported",
       "interrupt": "unsupported",
       "mcp": "unknown",
-      "model_discovery": "unknown",
+      "model_discovery": "unsupported",
       "native_resume": "supported",
       "native_state_export": "supported",
       "skills": "unknown",
@@ -47,25 +55,82 @@
   },
   {
     "provider": "claude",
-    "support": "disabled",
+    "support": "supported",
     "transport": "jsonl",
     "distribution": "npm:@anthropic-ai/claude-code",
+    "inference_protocols": [
+      "anthropic_messages"
+    ],
     "capabilities": {
       "account_portable_resume": "unknown",
       "attachments": "unknown",
-      "credential_writeback": "unknown",
+      "credential_writeback": "unsupported",
       "effort_settings": "unknown",
-      "event_stream": "unknown",
-      "interactive_approval": "unknown",
-      "interrupt": "unknown",
+      "event_stream": "supported",
+      "interactive_approval": "unsupported",
+      "interrupt": "unsupported",
       "mcp": "unknown",
-      "model_discovery": "unknown",
-      "native_resume": "unknown",
-      "native_state_export": "unknown",
+      "model_discovery": "unsupported",
+      "native_resume": "supported",
+      "native_state_export": "supported",
       "skills": "unknown",
-      "steer": "unknown",
-      "structured_output": "unknown",
-      "usage": "unknown"
+      "steer": "unsupported",
+      "structured_output": "unsupported",
+      "usage": "supported"
+    }
+  },
+  {
+    "provider": "grok",
+    "support": "supported",
+    "transport": "jsonl",
+    "distribution": "npm:@xai-official/grok",
+    "inference_protocols": [
+      "openai_chat"
+    ],
+    "capabilities": {
+      "account_portable_resume": "unknown",
+      "attachments": "unknown",
+      "credential_writeback": "unsupported",
+      "effort_settings": "unknown",
+      "event_stream": "supported",
+      "interactive_approval": "unsupported",
+      "interrupt": "unsupported",
+      "mcp": "unknown",
+      "model_discovery": "unsupported",
+      "native_resume": "supported",
+      "native_state_export": "supported",
+      "skills": "unknown",
+      "steer": "unsupported",
+      "structured_output": "unsupported",
+      "usage": "supported"
+    }
+  },
+  {
+    "provider": "commandcode",
+    "support": "supported",
+    "transport": "jsonl",
+    "distribution": "npm:command-code",
+    "inference_protocols": [
+      "openai_chat",
+      "anthropic_messages",
+      "openai_responses"
+    ],
+    "capabilities": {
+      "account_portable_resume": "unknown",
+      "attachments": "unknown",
+      "credential_writeback": "unsupported",
+      "effort_settings": "unknown",
+      "event_stream": "supported",
+      "interactive_approval": "unsupported",
+      "interrupt": "unsupported",
+      "mcp": "unknown",
+      "model_discovery": "unsupported",
+      "native_resume": "supported",
+      "native_state_export": "supported",
+      "skills": "unknown",
+      "steer": "unsupported",
+      "structured_output": "unsupported",
+      "usage": "supported"
     }
   },
   {
@@ -73,29 +138,7 @@
     "support": "disabled",
     "transport": "acp",
     "distribution": "static.devin.ai",
-    "capabilities": {
-      "account_portable_resume": "unknown",
-      "attachments": "unknown",
-      "credential_writeback": "unknown",
-      "effort_settings": "unknown",
-      "event_stream": "unknown",
-      "interactive_approval": "unknown",
-      "interrupt": "unknown",
-      "mcp": "unknown",
-      "model_discovery": "unknown",
-      "native_resume": "unknown",
-      "native_state_export": "unknown",
-      "skills": "unknown",
-      "steer": "unknown",
-      "structured_output": "unknown",
-      "usage": "unknown"
-    }
-  },
-  {
-    "provider": "grok",
-    "support": "disabled",
-    "transport": "jsonl",
-    "distribution": "host binary",
+    "inference_protocols": [],
     "capabilities": {
       "account_portable_resume": "unknown",
       "attachments": "unknown",
@@ -119,6 +162,7 @@
     "support": "disabled",
     "transport": "jsonl",
     "distribution": "host binary",
+    "inference_protocols": [],
     "capabilities": {
       "account_portable_resume": "unknown",
       "attachments": "unknown",
