@@ -258,10 +258,13 @@ class CommandCodeHarness:
             state["completed"] = True
             usage = frame.get("usage") if isinstance(frame.get("usage"), dict) else None
             if usage and any(usage.values()):
+                cached = int(usage.get("cacheReadTokens") or 0)
                 state["usage"] = {
-                    "input_tokens": int(usage.get("inputTokens") or 0),
+                    # inputTokens includes cache reads; report the uncached part like
+                    # the other Harnesses do.
+                    "input_tokens": max(0, int(usage.get("inputTokens") or 0) - cached),
                     "output_tokens": int(usage.get("outputTokens") or 0),
-                    "cached_input_tokens": int(usage.get("cacheReadTokens") or 0),
+                    "cached_input_tokens": cached,
                 }
             if frame.get("subtype") != "success":
                 self._error(str(frame.get("error") or "run failed"), state, out)

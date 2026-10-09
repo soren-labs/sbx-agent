@@ -2265,3 +2265,38 @@
   display: inline-flex;
   gap: 6px;
 }
+
+/* Setup steps never spill out of their card; long labels wrap instead. */
+.setup-steps {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.setup-step {
+  min-width: 0;
+}
+
+.setup-step > span:nth-child(2) {
+  min-width: 0;
+}
+
+.setup-step small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.n-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.n-details summary {
+  cursor: pointer;
+}
+
+.n-details code {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}

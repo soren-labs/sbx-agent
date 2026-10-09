@@ -21,7 +21,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from control.domain.digests import canonical_json
 from control.security.redaction import KNOWN_SECRETS
 
-
 # Settings sealed alongside a credential so they version with it. They are not
 # credentials: registering a model id or base URL as a "known secret" would redact
 # them out of ordinary error messages and logs.

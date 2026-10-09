@@ -245,3 +245,13 @@ def test_missing_native_session_is_context_unavailable() -> None:
         state = harness.new_state(TurnContext("s", "t", "e", "o", 1, Path("/w"), Path("/h"), "p"))
         outcome = harness.classify_outcome({"exit_code": 1, "stderr_tail": stderr}, state)
         assert outcome.error_code == "context_unavailable", provider
+
+
+def test_usage_reports_uncached_input_separately_from_cache_reads(tmp_path) -> None:
+    """input_tokens means the same thing for every CLI: tokens that were not cache reads."""
+    expected = {"codex": ("success", 17241, 8448), "commandcode": ("success", 44608, 29440)}
+    for provider, (name, total_input, cached) in expected.items():
+        _, state = replay(provider, name, context(tmp_path, provider))
+        usage = HARNESSES[provider].finish(state)[0]["payload"]
+        assert usage["cached_input_tokens"] == cached, provider
+        assert usage["input_tokens"] == total_input - cached, provider

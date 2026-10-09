@@ -20,6 +20,12 @@ source for release notes.
 - SDK/CLI: `connections.add_inference()`, `harnesses()`, `sbx connections add inference_api
   --endpoint … --model …`, `sbx sessions create --harness …`, `sbx harnesses`.
 
+- Console Session workbench: conversation and workspace panel side by side, tool calls grouped
+  into expandable "Working"/"Worked" blocks with readable input and bounded output, explicit
+  queued/starting/working/completed/failed Turn states with Stop and Retry, a docked follow-up
+  composer, scroll position preserved while reading history, and a worded Activity timeline.
+- Console: copy-once API keys with confirmed revoke; Projects in the navigation; translated shell.
+
 ### Changed
 - OpenCode Zen keys and uploaded Codex `auth.json` credentials are retired from new flows.
   Stored Connections are preserved (migration `0004` only widens the kind constraint), listed
@@ -28,6 +34,10 @@ source for release notes.
   after a restore; older checkpoints still restore.
 
 ### Fixed
+- The Session event stream now detects silently dropped connections (heartbeat watchdog and the
+  browser's offline event) and shows a reconnecting state instead of freezing.
+- Model ids and base URLs of inference Connections were registered as secrets and redacted out
+  of error messages; only the API key is.
 - Console workspace ignored the light theme (always dark, with unreadable light inputs);
   composer popovers opened under the top bar; the Connections page, model picker, repository
   picker and Session usage panel showed placeholder data instead of server state.

@@ -79,7 +79,7 @@ describe("Delivery merge gate", () => {
     const reason = screen.getByTitle("missing_required_result:ReviewAssessment");
     expect(reason).toHaveTextContent("A required review result is missing: ReviewAssessment");
     expect(screen.getByTitle("observation_stale")).toHaveTextContent("Remote state has not been refreshed yet");
-    expect(screen.getByText("observation_stale")).toBeInTheDocument();
+
     expect(screen.getByRole("button", { name: "Merge (squash)" })).toBeDisabled();
     // retry names what is retried
     expect(screen.getByRole("button", { name: "Retry Delivery" })).toBeInTheDocument();

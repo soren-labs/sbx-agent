@@ -245,7 +245,12 @@ class CodexHarness:
             state["completed"] = True
             usage = frame.get("usage") if isinstance(frame.get("usage"), dict) else None
             if usage:
-                state["usage"] = {k: int(v) for k, v in usage.items() if isinstance(v, int)}
+                counts = {k: int(v) for k, v in usage.items() if isinstance(v, int)}
+                # Codex counts cached tokens inside input_tokens; every Harness reports
+                # input_tokens as the uncached part so totals mean the same thing.
+                cached = counts.get("cached_input_tokens", 0)
+                counts["input_tokens"] = max(0, counts.get("input_tokens", 0) - cached)
+                state["usage"] = counts
         elif kind in ("turn.failed", "error"):
             err = frame.get("error") if isinstance(frame.get("error"), dict) else {}
             message = str(err.get("message") or frame.get("message") or "provider error")

@@ -1184,3 +1184,10 @@
   font-weight: 600;
   color: var(--ui-accent);
 }
+
+.cs-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}

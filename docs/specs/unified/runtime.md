@@ -100,3 +100,10 @@ excluded and are scrubbed after every Turn. Control verifies the digest, stores 
 and seals a `checkpoint` Snapshot. `worktree.restore{checkpoint_b64}` rejects archives with
 traversal or link escapes. Backend-native memory or filesystem snapshots are not used, and process,
 PTY and socket state is never claimed as restored.
+
+## Usage observations
+
+`usage.observed` carries what the CLI reported, normalized so the fields mean the same for every
+Harness: `input_tokens` is input that was **not** served from cache, `cached_input_tokens` is
+cache reads, `output_tokens` is output. CLIs that report cached tokens inside their input total
+(Codex, Command Code) are adjusted by the adapter. A Turn whose CLI reported nothing has no usage.

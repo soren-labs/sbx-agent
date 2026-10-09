@@ -54,8 +54,8 @@ await a.ctx.close();
 
 // ---------------------------------------------------------------- Alice: Session, PR, API key (recorded)
 a = await launch({ profile: alice.profile, video: path.join(out, "video") });
+await a.ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
 const page = a.page;
-await page.addInitScript(() => { const s = document.createElement("style"); s.textContent = ".key-once{filter:blur(7px)!important}"; document.documentElement.appendChild(s); });
 await page.goto(BASE + "/"); await page.waitForSelector('[data-testid="agent-model-chip"]');
 await page.locator('[data-testid="agent-model-chip"]').click();
 await page.locator(".model-popover").getByRole("button", { name: HARNESS, exact: true }).click();
@@ -66,27 +66,49 @@ await page.getByLabel("Select repository", exact).fill(REPO);
 await shot(page, out, "a06-repository-picker", { full: false });
 await page.keyboard.press("Escape");
 const file = `docs/acceptance-${run}.md`;
-await page.locator("#new-prompt").fill(`Add a new file ${file} with a short heading and one sentence saying this file was written by an SBX Session during Phase One acceptance run ${run}. Run \`git status --short\` to confirm, then summarise what you did.`);
+await page.locator("#new-prompt").fill(`In this repository, do the following and run a shell command after each step so I can follow along:
+1. Look around with \`ls\` and \`git log --oneline -3\`.
+2. Add ${file} with a heading, one sentence saying it was written by an SBX Session during Phase One acceptance run ${run}, and a small Markdown table of two rows.
+3. Add scripts/acceptance_${run}.py that prints "acceptance ${run} ok", and run it with python.
+4. Run \`git status --short\` and summarise what you changed in a short Markdown list.`);
 await shot(page, out, "a07-composer-ready", { full: false });
 await page.locator(".start-session-button").click();
 await page.waitForURL(/\/sessions\/sess_/, { timeout: 30000 });
 const sid = page.url().split("/sessions/")[1].split(/[/?]/)[0];
 const api = (p, init) => page.evaluate(async ([p, init]) => { const r = await fetch(p, init); return { status: r.status, body: await r.json().catch(() => null) }; }, [p, init]);
-const turnDone = async (n, timeout) => { const end = Date.now() + timeout; while (Date.now() < end) { const t = (await api(`/api/sessions/${sid}/turns`)).body.items[n]; if (t && ["succeeded", "failed", "cancelled", "interrupted"].includes(t.state)) return t.state; await page.waitForTimeout(1500); } return "timeout"; };
-await page.waitForTimeout(5000); await shot(page, out, "a08-session-working", { full: false });
-const t1 = await turnDone(0, 600000); await page.waitForTimeout(1500); await shot(page, out, "a09-session-turn1");
+const turnState = async (n) => (await api(`/api/sessions/${sid}/turns`)).body.items[n];
+const terminal = (t) => t && ["succeeded", "failed", "cancelled", "interrupted"].includes(t.state);
+const turnDone = async (n, timeout) => { const end = Date.now() + timeout; while (Date.now() < end) { const t = await turnState(n); if (terminal(t)) return t.state; await page.waitForTimeout(1500); } return "timeout"; };
+// Watch the Turn live: starting, running with tool steps, a step expanded mid-run.
+const seen = new Set(); let shots = 0, expanded = false;
+for (const end = Date.now() + 600000; Date.now() < end; ) {
+  const t = await turnState(0);
+  seen.add((await page.locator('[data-testid="session-status"]').innerText().catch(() => "")).trim());
+  const steps = await page.locator(".work.is-running .step-head[aria-expanded]").count();
+  if (shots < 2 && !steps) { await shot(page, out, `a08-session-starting-${++shots}`, { full: false }); }
+  if (steps && !expanded) { await shot(page, out, "a08-session-running-tools", { full: false }); await page.locator(".work.is-running .step-head[aria-expanded]").first().click(); await page.waitForTimeout(500); await shot(page, out, "a08-session-running-step-expanded", { full: false }); expanded = true; }
+  else if (steps > 2 && shots < 4) { await shot(page, out, `a08-session-running-more-${++shots}`, { full: false }); }
+  if (terminal(t)) break;
+  await page.waitForTimeout(2500);
+}
+const t1 = (await turnState(0)).state; await page.waitForTimeout(1500); await shot(page, out, "a09-session-turn1-finished", { full: false });
 if (t1 !== "succeeded") throw new Error("turn 1 " + t1);
-await page.locator("#followup").fill("In one sentence: which file did you add, and in which repository?");
-await page.locator('form.followup button[type="submit"]').click();
-const t2 = await turnDone(1, 300000); await page.waitForTimeout(1500); await shot(page, out, "a10-session-turn2");
+await page.locator('[data-testid="work-group"] .work-head').first().click(); await page.waitForTimeout(300);
+await page.locator(".work.is-open .step-head[aria-expanded]").first().click().catch(() => {}); await page.waitForTimeout(300);
+await shot(page, out, "a09-session-work-expanded", { full: false });
+await page.locator("#followup").fill("In one sentence: which files did you add, and in which repository?");
+await page.locator("#followup").press("Enter");
+await page.waitForTimeout(5000); await shot(page, out, "a10-followup-running", { full: false });
+const t2 = await turnDone(1, 300000); await page.waitForTimeout(1500); await shot(page, out, "a10-session-turn2", { full: false });
+report.statuses_seen = [...seen];
 step("alice_real_session", { session: sid, turns: [t1, t2], executor: "modal" });
 
 // Changes -> ChangeSet -> Delivery (real pull request in the e2e repository)
-await page.goto(`${BASE}/sessions/${sid}/changes`); await page.waitForTimeout(2500); await shot(page, out, "a11-changes-live");
+await page.getByRole("link", { name: "Review changes" }).last().click(); await page.waitForTimeout(2500); await shot(page, out, "a11-changes-live", { full: false });
 await page.getByRole("button", { name: "Capture ChangeSet" }).click();
 await page.waitForSelector('form[aria-label="Request Delivery"] button[type="submit"]:not([disabled])', { timeout: 120000 });
 await page.getByRole("button", { name: "Show diff" }).click().catch(() => {});
-await shot(page, out, "a12-changeset-ready");
+await shot(page, out, "a12-changeset-ready", { full: false });
 await page.getByLabel("Pull request title").fill(`SBX Phase One acceptance ${run}`);
 await page.getByRole("button", { name: "Request Delivery" }).click();
 let pr = null;
@@ -98,15 +120,26 @@ for (let i = 0; i < 120 && !pr; i++) {
   if (d && d.pull_request && d.pull_request.number) pr = d;
 }
 if (!pr) throw new Error("no pull request");
-await page.waitForTimeout(2500); await shot(page, out, "a13-delivery-pull-request");
+await page.waitForTimeout(2500); await page.locator(".card.delivery").scrollIntoViewIfNeeded().catch(() => {}); await shot(page, out, "a13-delivery-pull-request", { full: false });
 step("alice_delivery_pull_request", { number: pr.pull_request.number, url: pr.pull_request.url ?? pr.pull_request.html_url, branch: pr.target_ref, state: pr.state });
 report.pr = { number: pr.pull_request.number, branch: pr.target_ref };
 
 // API key in the UI, then the real API with that key
 await page.goto(BASE + "/settings"); await page.waitForSelector("#key-name");
+// The one-time key must never reach a screenshot or the video: blur it before it exists,
+// and verify the blur is in effect before anything is captured.
+await page.addStyleTag({ content: ".key-once{filter:blur(8px)!important;user-select:none!important}" });
 await page.fill("#key-name", "acceptance-" + run); await page.getByRole("button", { name: "Create key" }).click();
-await page.waitForSelector(".key-once"); const key = (await page.locator(".key-once").innerText()).trim();
+await page.waitForSelector(".key-once");
+if (!(await page.locator(".key-once").evaluate((el) => getComputedStyle(el).filter)).includes("blur")) throw new Error("key is not blurred; refusing to capture");
 await shot(page, out, "a14-api-key-created-blurred");
+// Copy it the way a user does: the Copy button, then read it back from the clipboard.
+await page.getByRole("button", { name: "Copy key" }).click(); await page.waitForTimeout(300);
+const key = (await page.evaluate(() => navigator.clipboard.readText())).trim();
+if (!key.startsWith("sbx_key_")) throw new Error("clipboard did not receive the key");
+await page.evaluate(() => navigator.clipboard.writeText(""));
+await page.getByRole("button", { name: "I have copied it" }).click();
+await shot(page, out, "a14-api-key-listed");
 const call = async (p, init = {}) => { const r = await fetch(API + p, { ...init, headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...(init.headers ?? {}) } }); return { status: r.status, body: await r.json().catch(() => null) }; };
 const me = await call("/api/me"); const ws = me.body.workspaces[0].id;
 const sessions = await call(`/api/workspaces/${ws}/sessions`);
@@ -116,12 +149,25 @@ let apiTurn = "timeout"; for (let i = 0; i < 150; i++) { const t = (await call(`
 const msgs = (await call(`/api/sessions/${sid}/messages`)).body.items;
 const reply = JSON.stringify(msgs[msgs.length - 1].parts ?? []).includes("API KEY TURN OK");
 const noKey = await fetch(API + "/api/me"); const badKey = await fetch(API + "/api/me", { headers: { Authorization: "Bearer sbx_key_invalid" } });
+// A separate client process: the Python SDK, given only the copied key.
+const { execFileSync } = await import("node:child_process");
+const sdk = JSON.parse(execFileSync("uv", ["run", "python", "-c", `
+import json, os, sys
+sys.path.insert(0, "src")
+from sbx.sdk import SBXClient
+c = SBXClient(os.environ["SBX_BASE_URL"], os.environ["SBX_API_KEY"])
+me = c.me()
+out = c.execute("Run \`python scripts/acceptance_${run}.py\` and reply with exactly its output.", session_id="${sid}", deadline=300)
+msg = c.messages.list("${sid}")[-1]
+text = " ".join(p.get("content") or "" for p in msg["parts"] if p.get("kind") == "text")
+print(json.dumps({"auth_via": me["auth"]["via"], "harnesses": sorted(h["provider_id"] for h in c.harnesses() if h["support_tier"] == "supported"), "sessions": len(c.sessions.list()["items"]), "turn": out["turn"]["state"], "reply_has_marker": "acceptance ${run} ok" in text}))
+`], { cwd: home + "/projects/sbx-agent", env: { ...process.env, SBX_BASE_URL: API, SBX_API_KEY: key }, encoding: "utf8", timeout: 400000 }).trim().split("\n").pop());
+step("alice_api_key_python_sdk_client", sdk);
 const leak = JSON.stringify(conns.body).includes(DEEPSEEK) || JSON.stringify(conns.body).includes(GH) || JSON.stringify(conns.body).includes(MODAL.secret);
 step("alice_api_key_calls", { me: me.status, via: me.body.auth.via, sessions: sessions.status, session_count: sessions.body.items.length, connections: conns.status, connection_kinds: conns.body.items.map((c) => c.kind).sort(), secrets_in_response: leak, send_message: send.status, api_turn: apiTurn, reply_ok: reply, without_key: noKey.status, invalid_key: badKey.status });
-await page.getByRole("button", { name: /dismiss|done|ok|hide/i }).first().click().catch(() => {});
-await page.goto(`${BASE}/sessions/${sid}`); await page.waitForTimeout(2500); await shot(page, out, "a15-session-after-api-turn");
+await page.goto(`${BASE}/sessions/${sid}`); await page.waitForTimeout(2500); await shot(page, out, "a15-session-after-api-turns", { full: false });
 await page.setViewportSize({ width: 390, height: 844 });
-for (const [p, n] of [["", "home"], ["connections", "connections"], [`sessions/${sid}`, "session"], ["settings", "settings"]]) { await page.goto(`${BASE}/${p}`); await page.waitForTimeout(1500); await shot(page, out, "a16-mobile-" + n); }
+for (const [p, n] of [["", "home"], ["connections", "connections"], [`sessions/${sid}`, "session"], [`sessions/${sid}/changes`, "session-changes"], ["settings", "settings"]]) { await page.goto(`${BASE}/${p}`); await page.waitForTimeout(1500); await shot(page, out, "a16-mobile-" + n, { full: !p.startsWith("sessions/") }); }
 await page.locator(".mobile-toggle").click(); await page.waitForTimeout(500); await shot(page, out, "a16-mobile-navigation", { full: false });
 const aliceConn = conns.body.items.map((c) => c.id);
 await a.ctx.close();
