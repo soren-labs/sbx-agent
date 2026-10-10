@@ -1,0 +1,32 @@
+{
+ "status": "ready",
+ "seconds": 6.2,
+ "catalog": {
+  "models": [
+   {
+    "id": "deepseek-flash",
+    "reasoning": {
+     "openai_chat": "toggle",
+     "openai_responses": "toggle",
+     "anthropic_messages": "toggle"
+    }
+   },
+   {
+    "id": "deepseek-v4-pro",
+    "reasoning": {
+     "openai_chat": "toggle",
+     "openai_responses": "toggle",
+     "anthropic_messages": "toggle"
+    }
+   }
+  ],
+  "preferred_model": "deepseek-flash",
+  "protocols": [
+   "openai_chat",
+   "openai_responses",
+   "anthropic_messages"
+  ],
+  "source": "configured + provider model list",
+  "reasoning_source": "default vs. reasoning-disabled request per endpoint"
+ }
+}

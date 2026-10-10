@@ -1,0 +1,76 @@
+{
+ "codex/openai_responses/deepseek-flash/effort=None": {
+  "exit": 0,
+  "s": 3.1,
+  "reasoning_chars": 0,
+  "usage": {
+   "complete": true,
+   "input_tokens": 761,
+   "cached_input_tokens": 7808,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 419,
+   "reasoning_output_tokens": 416
+  }
+ },
+ "codex/openai_responses/deepseek-flash/effort=none": {
+  "exit": 0,
+  "s": 3.7,
+  "reasoning_chars": 0,
+  "usage": {
+   "complete": true,
+   "input_tokens": 770,
+   "cached_input_tokens": 7808,
+   "cache_write_input_tokens": 0,
+   "output_tokens": 585,
+   "reasoning_output_tokens": 582
+  }
+ },
+ "opencode/openai_chat/deepseek-flash/effort=None": {
+  "exit": 0,
+  "s": 9.9,
+  "reasoning_chars": 0,
+  "usage": {
+   "complete": true,
+   "input_tokens": 5710,
+   "output_tokens": 3,
+   "reasoning_tokens": 463,
+   "cached_input_tokens": 1664
+  }
+ },
+ "opencode/openai_chat/deepseek-flash/effort=none": {
+  "exit": 0,
+  "s": 8.3,
+  "reasoning_chars": 0,
+  "usage": {
+   "complete": true,
+   "input_tokens": 5685,
+   "output_tokens": 261,
+   "reasoning_tokens": 0,
+   "cached_input_tokens": 1664
+  }
+ },
+ "opencode/anthropic_messages/deepseek-flash/effort=None": {
+  "exit": 0,
+  "s": 9.3,
+  "reasoning_chars": 0,
+  "usage": {
+   "complete": true,
+   "input_tokens": 5710,
+   "output_tokens": 534,
+   "reasoning_tokens": 0,
+   "cached_input_tokens": 1664
+  }
+ },
+ "opencode/anthropic_messages/deepseek-flash/effort=none": {
+  "exit": 0,
+  "s": 7.8,
+  "reasoning_chars": 0,
+  "usage": {
+   "complete": true,
+   "input_tokens": 5688,
+   "output_tokens": 2,
+   "reasoning_tokens": 0,
+   "cached_input_tokens": 1664
+  }
+ }
+}
