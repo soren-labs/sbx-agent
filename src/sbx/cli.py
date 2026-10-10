@@ -70,6 +70,48 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("validate", "disconnect", "show"):
         cons.add_parser(name).add_argument("connection_id")
 
+    slots = sub.add_parser(
+        "slots",
+        help="subscription Machine Slots (one official login each)",
+        description="Machine Slots: independent official subscription logins kept on private "
+        "Modal Volumes. Exit codes: 0 ok, 1 API error, 2 slot not ready, 3 still pending.",
+    ).add_subparsers(dest="action", required=True)
+    slots.add_parser("list", help="slots, counts and providers")
+    slots.add_parser("providers", help="subscription providers this deployment offers")
+    sa = slots.add_parser("add", help="create a slot and start its official login")
+    sa.add_argument("--provider", default="codex")
+    sa.add_argument("--label")
+    sa.add_argument("--account-alias", help="your own note, e.g. which account this is")
+    sa.add_argument("--volume", help="adopt an existing Modal Volume instead of logging in")
+    sa.add_argument("--connection", help="Modal connection id (default: the verified one)")
+    for name, text in (
+        ("login", "run the official login again"),
+        ("verify", "re-check the login and refresh the model catalog"),
+    ):
+        sub_parser = slots.add_parser(name, help=text)
+        sub_parser.add_argument("slot_id")
+        sub_parser.add_argument("--wait", action="store_true", help="wait for the outcome")
+        sub_parser.add_argument("--timeout", type=float, default=1200.0)
+    sa.add_argument("--wait", action="store_true", help="wait for the outcome")
+    sa.add_argument("--timeout", type=float, default=1200.0)
+    sw = slots.add_parser("wait", help="wait until no login is pending")
+    sw.add_argument("slot_id")
+    sw.add_argument("--timeout", type=float, default=1200.0)
+    for name, text in (
+        ("show", "one slot"),
+        ("models", "model catalog and per-model reasoning efforts, with their source"),
+        ("cancel-login", "stop the pending login"),
+        ("logout", "destroy the stored login; the slot stays"),
+    ):
+        slots.add_parser(name, help=text).add_argument("slot_id")
+    sr = slots.add_parser("rename", help="change the label or the account alias")
+    sr.add_argument("slot_id")
+    sr.add_argument("--label")
+    sr.add_argument("--account-alias")
+    sd = slots.add_parser("delete", help="delete the slot and its volume")
+    sd.add_argument("slot_id")
+    sd.add_argument("--confirm", required=True, help="the slot label, to confirm")
+
     sessions = sub.add_parser("sessions", help="durable Sessions").add_subparsers(
         dest="action", required=True
     )
@@ -78,6 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--backend", default=None, choices=["modal", "local"])
     sc.add_argument("--harness", default="opencode", choices=HARNESSES, help="official CLI")
     sc.add_argument("--model", help="model id (default: the inference connection's model)")
+    sc.add_argument("--slot", help="run on this Machine Slot instead of an inference API key")
+    sc.add_argument("--effort", help="reasoning effort the chosen model supports")
     sc.add_argument("--repo", help="owner/name for projectless Sessions")
     sc.add_argument("--message")
     sessions.add_parser("list")
@@ -167,6 +211,73 @@ def _read_credential(
     return data
 
 
+class SlotNotReady(Exception):
+    """A slot command finished but the slot cannot run Sessions (exit code 2 or 3)."""
+
+    def __init__(self, slot: dict[str, Any], code: int) -> None:
+        super().__init__(slot.get("status"))
+        self.slot, self.code = slot, code
+
+
+def _announce_code(login: dict[str, Any]) -> None:
+    """Human prompt on stderr; stdout stays machine-readable JSON."""
+    print(
+        f"Open {login['verification_url']} and enter the code {login['user_code']} "
+        f"(expires {login['code_expires_at']}).",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _slot_wait(client: SBXClient, slot_id: str, timeout: float) -> dict[str, Any]:
+    try:
+        slot = client.slots.wait(slot_id, deadline=timeout, on_code=_announce_code)
+    except SBXError as exc:
+        if exc.code != "timeout":
+            raise
+        raise SlotNotReady(client.slots.get(slot_id), 3) from None
+    if slot["status"] not in ("ready", "running"):
+        raise SlotNotReady(slot, 2)
+    return slot
+
+
+def _slots(args: argparse.Namespace, client: SBXClient) -> Any:
+    action = args.action
+    if action == "list":
+        return client.slots.overview()
+    if action == "providers":
+        return client.slots.providers()
+    if action == "add":
+        slot = client.slots.add(
+            args.provider,
+            label=args.label,
+            account_alias=args.account_alias,
+            compute_connection_id=args.connection,
+            volume_name=args.volume,
+        )
+        return _slot_wait(client, slot["id"], args.timeout) if args.wait else slot
+    if action in ("login", "verify"):
+        slot = getattr(client.slots, action)(args.slot_id)
+        return _slot_wait(client, slot["id"], args.timeout) if args.wait else slot
+    if action == "wait":
+        return _slot_wait(client, args.slot_id, args.timeout)
+    if action == "rename":
+        changes = {
+            k: v
+            for k, v in (("label", args.label), ("account_alias", args.account_alias))
+            if v is not None
+        }
+        return client.slots.update(args.slot_id, **changes)
+    if action == "delete":
+        return client.slots.delete(args.slot_id, confirm=args.confirm)
+    return {
+        "show": client.slots.get,
+        "models": client.slots.models,
+        "cancel-login": client.slots.cancel_login,
+        "logout": client.slots.logout,
+    }[action](args.slot_id)
+
+
 def _out(value: Any) -> None:
     print(json.dumps(value, indent=2, default=str))
 
@@ -211,6 +322,8 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             "disconnect": client.connections.disconnect,
             "show": client.connections.get,
         }[action](args.connection_id)
+    if cmd == "slots":
+        return _slots(args, client)
     if cmd == "sessions":
         if action == "create":
             body: dict[str, Any] = {}
@@ -219,9 +332,15 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             if args.backend:
                 body["executor"] = {"backend": args.backend}
             body["harness"] = {
-                "provider_id": args.harness,
+                "provider_id": "codex"
+                if args.slot and args.harness == "opencode"
+                else args.harness,
                 **({"model": args.model} if args.model else {}),
+                **({"effort": args.effort} if args.effort else {}),
             }
+            if args.slot:
+                body["inference"] = {"mode": "subscription", "machine_slot_id": args.slot}
+                body.setdefault("executor", {"backend": "modal"})
             if args.repo:
                 body["repository"] = {"full_name": args.repo}
             if args.message:
@@ -302,9 +421,21 @@ def main(
     )
     try:
         _out(run(args, client, stdin or sys.stdin))
+    except SlotNotReady as exc:
+        _out(exc.slot)
+        return exc.code
     except SBXError as exc:
         print(
-            json.dumps({"error": {"code": exc.code, "message": exc.message, "action": exc.action}}),
+            json.dumps(
+                {
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "action": exc.action,
+                        "details": exc.details,
+                    }
+                }
+            ),
             file=sys.stderr,
         )
         return 1

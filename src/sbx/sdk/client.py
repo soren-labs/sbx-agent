@@ -43,6 +43,7 @@ class SBXClient:
         self._workspace_id = workspace_id
         self.projects = Projects(self)
         self.connections = Connections(self)
+        self.slots = MachineSlots(self)
         self.sessions = Sessions(self)
         self.messages = Messages(self)
         self.turns = Turns(self)
@@ -291,6 +292,103 @@ class Connections(_Namespace):
                 return view
             time.sleep(0.5)
         raise DeadlineExceeded("deadline_exceeded", "connection validation did not settle")
+
+
+class MachineSlots(_Namespace):
+    """Subscription Machine Slots: one independent official login per Slot.
+
+    The login runs in the user's own Modal workspace. The API returns the provider's real
+    verification URL and a one-time code while the login waits for approval; it never
+    returns, and this client never handles, the login itself.
+    """
+
+    def overview(self) -> dict[str, Any]:
+        """Slots with their summary counts and the available providers."""
+        return self.c.get(f"/api/workspaces/{self.c.workspace_id}/machine-slots")
+
+    def list(self) -> list[dict[str, Any]]:
+        return self.overview()["items"]
+
+    def providers(self) -> list[dict[str, Any]]:
+        return self.c.get("/api/subscription-providers")["items"]
+
+    def add(
+        self,
+        provider: str = "codex",
+        *,
+        label: str | None = None,
+        account_alias: str | None = None,
+        compute_connection_id: str | None = None,
+        volume_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a Slot and start its official login (or verify an existing Volume)."""
+        body = {
+            "provider": provider,
+            "label": label,
+            "account_alias": account_alias,
+            "compute_connection_id": compute_connection_id,
+            "volume_name": volume_name,
+        }
+        return self.c.post(
+            f"/api/workspaces/{self.c.workspace_id}/machine-slots",
+            {k: v for k, v in body.items() if v is not None},
+        )
+
+    def get(self, slot_id: str) -> dict[str, Any]:
+        return self.c.get(f"/api/machine-slots/{slot_id}")
+
+    def update(self, slot_id: str, **changes: Any) -> dict[str, Any]:
+        """Rename (``label``) or set the ``account_alias`` note."""
+        return self.c.request("PATCH", f"/api/machine-slots/{slot_id}", json=changes)
+
+    def login(self, slot_id: str) -> dict[str, Any]:
+        return self.c.post(f"/api/machine-slots/{slot_id}/logins")
+
+    def verify(self, slot_id: str) -> dict[str, Any]:
+        """Re-check the stored login and refresh the model catalog."""
+        return self.c.post(f"/api/machine-slots/{slot_id}/verifications")
+
+    def cancel_login(self, slot_id: str) -> dict[str, Any]:
+        return self.c.request("DELETE", f"/api/machine-slots/{slot_id}/logins/current")
+
+    def logout(self, slot_id: str) -> dict[str, Any]:
+        return self.c.post(f"/api/machine-slots/{slot_id}/logout")
+
+    def delete(self, slot_id: str, *, confirm: str) -> dict[str, Any]:
+        """Delete the Slot and its Volume; ``confirm`` must repeat the Slot label."""
+        return self.c.request(
+            "DELETE", f"/api/machine-slots/{slot_id}", params={"confirm": confirm}
+        )
+
+    def models(self, slot_id: str) -> dict[str, Any]:
+        """The model catalog the Slot's authenticated CLI reported, with its source."""
+        return self.get(slot_id)["capabilities"].get("catalog") or {
+            "status": "unavailable",
+            "models": [],
+        }
+
+    def wait(
+        self,
+        slot_id: str,
+        *,
+        deadline: float = 1200.0,
+        poll: float = 2.0,
+        on_code: Any = None,
+    ) -> dict[str, Any]:
+        """Wait until no login is pending. ``on_code(login)`` fires once with URL and code."""
+        end = time.monotonic() + deadline
+        announced = False
+        while True:
+            slot = self.get(slot_id)
+            login = slot.get("login") or {}
+            if on_code and not announced and login.get("state") == "awaiting_user":
+                on_code(login)
+                announced = True
+            if slot["status"] != "login_pending":
+                return slot
+            if time.monotonic() >= end:
+                raise SBXError("timeout", "the login is still pending", retryable=True)
+            time.sleep(poll)
 
 
 class Sessions(_Namespace):
