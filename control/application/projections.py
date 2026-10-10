@@ -141,6 +141,8 @@ def message_resource(message: dict[str, Any], parts: list[dict[str, Any]]) -> di
                 "content": p["content"],
                 "data": p["data"],
                 "sealed": p["sealed"],
+                "created_at": _iso(p.get("created_at")),
+                "updated_at": _iso(p.get("updated_at")),
             }
             for p in parts
         ],

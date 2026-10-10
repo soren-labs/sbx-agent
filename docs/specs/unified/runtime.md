@@ -8,7 +8,10 @@ Implements RFC 03. Wire types: `protocol/runtime.py`; daemon: `runtime/daemon/`;
 The RFC names an executor-initiated WebSocket at `/internal/runtime/connect`. This implementation
 carries the **same frames** as authenticated JSON over HTTPS request/response, with the control
 plane as client: Modal exposes the daemon through an encrypted tunnel, and Local uses loopback.
-Evidence flow is pull-based (`/rt/events`, then `/rt/ack` after the DB commit). Operation identity,
+Evidence flow is pull-based (`/rt/events`, then `/rt/ack` after the DB commit). While a Turn is
+live the control plane polls every 0.1 s after a non-empty batch and every 0.3 s otherwise, over
+one pooled keep-alive connection; the ack is sent at the next empty poll, at terminal evidence,
+before a checkpoint, or once 500 ingested observations are unacknowledged. Operation identity,
 fences, dedupe, the committed-ack rule and epoch semantics are unchanged. An outbound WebSocket can
 be added later without changing frames.
 
@@ -107,3 +110,26 @@ PTY and socket state is never claimed as restored.
 Harness: `input_tokens` is input that was **not** served from cache, `cached_input_tokens` is
 cache reads, `output_tokens` is output. CLIs that report cached tokens inside their input total
 (Codex, Command Code) are adjusted by the adapter. A Turn whose CLI reported nothing has no usage.
+
+## Streamed message parts
+
+Claude Code (`--include-partial-messages` with `stream-json --verbose`) and Grok Build
+(`--include-partial-messages` with `streaming-messages-json`) relay the provider's Messages stream
+events. The shared normalizer turns them into incremental observations:
+
+* `text_delta`/`thinking_delta` chunks become `message.part_added` (revision 1) and
+  `message.part_updated` observations with `mode: "append"` for one stable `part_key` per content
+  block, coalesced to at most one observation per 100 ms (or 2000 characters) and flushed when the
+  block ends. A part stops growing at 64 000 characters.
+* The completed `assistant` frame for a streamed block adds nothing when its text equals what was
+  streamed; otherwise it emits one `mode: "replace"` revision with the authoritative text.
+  Signature-only thinking blocks produce no part.
+* A `tool_use` block emits `tool.started` when the block starts, `tool.updated` with the title as
+  soon as the streamed input spells out the command/path, and `tool.updated` with the full input
+  when the block completes. `tool.completed` follows the tool result as before.
+* A block cut off by a provider retry (a new `message_start` before its `content_block_stop`) is
+  continued in the same part with a `replace` revision, so the retried text is not shown twice.
+* Stream events of sub-agents (`parent_tool_use_id` set) are ignored.
+
+Without stream events the same normalizer adds whole blocks once, as before. Codex, OpenCode and
+Command Code print only completed items in their JSON modes; their adapters do not synthesize deltas.

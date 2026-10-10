@@ -1,5 +1,9 @@
 """Claude Code official CLI Harness (``claude -p --output-format stream-json``).
 
+``--include-partial-messages`` relays the provider's own stream events, so reply text,
+visible reasoning and tool calls are observed while they are generated (verified in
+print mode with 2.1.295; the CLI requires ``stream-json`` and ``--verbose`` for it).
+
 Inference is bring-your-own-key over the Anthropic Messages protocol only:
 ``ANTHROPIC_BASE_URL`` and ``ANTHROPIC_API_KEY`` point the CLI at the Turn's endpoint
 (verified against @anthropic-ai/claude-code 2.1.295 with DeepSeek's Anthropic-compatible
@@ -32,7 +36,7 @@ from runtime.harnesses.protocol import (
 )
 from runtime.security.credentials import private_dir, scrub
 
-ADAPTER_VERSION = "claude-harness/1"
+ADAPTER_VERSION = "claude-harness/2"
 PROTOCOLS = ("anthropic_messages",)
 CONFIG_REL = Path(".claude")
 
@@ -64,7 +68,10 @@ class ClaudeHarness:
                 "account_portable_resume": Capability(
                     "unknown", "", "not verified across inference connections"
                 ),
-                "event_stream": Capability("supported", "--output-format stream-json --verbose"),
+                "event_stream": Capability(
+                    "supported",
+                    "--output-format stream-json --verbose --include-partial-messages",
+                ),
                 "interrupt": Capability("unsupported", "", "supervisor process-group stop only"),
                 "steer": Capability("unsupported", "", "print mode has no injection channel"),
                 "interactive_approval": Capability(
@@ -117,6 +124,7 @@ class ClaudeHarness:
             "--output-format",
             "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "--model",
             prepared.model or context.model or "",
             "--dangerously-skip-permissions",

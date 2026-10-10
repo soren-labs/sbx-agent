@@ -122,7 +122,7 @@ class Worker:
             time.sleep(0.05)
         return ran
 
-    def run_forever(self, stop: threading.Event, *, idle_sleep: float = 0.25) -> None:
+    def run_forever(self, stop: threading.Event, *, idle_sleep: float = 0.1) -> None:
         while not stop.is_set():
             try:
                 if not self.run_once():

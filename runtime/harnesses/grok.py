@@ -34,7 +34,7 @@ from runtime.harnesses.protocol import (
 )
 from runtime.security.credentials import private_dir, scrub
 
-ADAPTER_VERSION = "grok-harness/1"
+ADAPTER_VERSION = "grok-harness/2"
 PROTOCOLS = ("openai_chat",)
 CONFIG_REL = Path(".grok")
 
@@ -66,7 +66,10 @@ class GrokHarness:
                 "account_portable_resume": Capability(
                     "unknown", "", "not verified across inference connections"
                 ),
-                "event_stream": Capability("supported", "--output-format streaming-messages-json"),
+                "event_stream": Capability(
+                    "supported",
+                    "--output-format streaming-messages-json --include-partial-messages",
+                ),
                 "interrupt": Capability("unsupported", "", "supervisor process-group stop only"),
                 "steer": Capability("unsupported", "", "single-turn mode has no injection channel"),
                 "interactive_approval": Capability("unsupported", "", "--always-approve approves"),
@@ -118,6 +121,7 @@ class GrokHarness:
             INFERENCE_ALIAS,
             "--output-format",
             "streaming-messages-json",
+            "--include-partial-messages",
             "--always-approve",
             "--sandbox",
             "off",

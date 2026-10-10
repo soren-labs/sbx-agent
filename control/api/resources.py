@@ -325,6 +325,7 @@ def events(
 
     def stream() -> Iterator[str]:
         position, last_beat, started = cursor, time.monotonic(), time.monotonic()
+        last_event = started
         while time.monotonic() - started < min(max(max_seconds, 0.5), 600):
             page = queries.events(
                 who, session_id, after=position, limit=limit, types=type_list, turn_id=turn_id
@@ -333,12 +334,14 @@ def events(
                 yield f"id: {event['seq']}\nevent: {event['type']}\ndata: {json.dumps(event)}\n\n"
             if page["next_after"] > position:
                 position = page["next_after"]
+                last_event = time.monotonic()
                 yield f": watermark {page['event_watermark']}\n\n"
                 continue
             if time.monotonic() - last_beat > 15:
                 last_beat = time.monotonic()
                 yield ": heartbeat\n\n"
-            time.sleep(0.4)
+            # Follow a streaming reply closely; back off once the Session goes quiet.
+            time.sleep(0.1 if time.monotonic() - last_event < 5 else 0.4)
 
     return StreamingResponse(
         stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"}
