@@ -8,6 +8,7 @@ runtime calls happen between transactions with stable operation IDs.
 from __future__ import annotations
 
 import base64
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -406,6 +407,12 @@ class ExecutionService:
             return lease
         if lease["state"] != "allocating":
             return None
+        # Provisioning (image resolve, VM boot, tunnel) may outlast one claim lease: the
+        # live worker keeps its claim instead of being re-dispatched mid-allocation.
+        with ctx.keepalive():
+            return self._bind_lease(ctx, lease)
+
+    def _bind_lease(self, ctx: Any, lease: dict[str, Any]) -> dict[str, Any] | None:
         session = ctx.db.read(lambda uow: uow.get("sessions", lease["session_id"]))
         backend = self._backend(lease)
         compute = self._compute(session)
@@ -454,13 +461,21 @@ class ExecutionService:
                     backend.terminate(handle, f"{lease['id']}:terminate", compute)
                     return None
             ctx.renew()
+            connect_started = time.monotonic()
             endpoint = backend.connect_runtime(handle, compute)
         except DomainError as exc:
             if exc.code in ("credential_invalid", "connection_revoked", "unsupported_capability"):
                 ctx.commit(lambda uow, e=exc: self._lose_unbound(uow, lease["id"], e.code))
             raise
         bound = {**lease, "handle": {**handle, "endpoint": endpoint}}
+        hello_started = time.monotonic()
         hello = self.connector.channel(bound).hello()
+        # Per-stage provisioning cost, so image resolve is distinguishable from VM boot.
+        provisioning = {
+            **(handle.get("timings") or {}),
+            "runtime_connect_ms": int((hello_started - connect_started) * 1000),
+            "handshake_ms": int((time.monotonic() - hello_started) * 1000),
+        }
         if not compatible(int(hello["protocol"]["major"])) or hello["lease_id"] != lease["id"]:
             confirmed = self._confirm_stopped(bound, session)
             ctx.commit(
@@ -505,6 +520,12 @@ class ExecutionService:
                     "image_digest": hello["image_digest"],
                     "protocol_version": row["protocol_version"],
                     "runtime_epoch": hello["runtime_epoch"],
+                    "provisioning": {
+                        **provisioning,
+                        "total_ms": int(
+                            (row["bound_at"] - lease["created_at"]).total_seconds() * 1000
+                        ),
+                    },
                 },
                 actor="application",
                 executor_lease_id=lease["id"],

@@ -41,12 +41,15 @@ class Connections:
         connectors: dict[str, Any],
         *,
         validators: dict[str, Any] | None = None,
+        provisioners: dict[str, Any] | None = None,
     ) -> None:
         self.tx = tx
         self.vault = vault
         self.connectors = connectors
         # kind -> callable(plaintext, **ctx) -> Observation; defaults to connector.validate
         self.validators = validators or {}
+        # kind -> callable(plaintext, connection_id) -> safe result, run after validation
+        self.provisioners = provisioners or {}
         # Other applications register dependents (e.g. executing Deliveries) here.
         self.dependency_hooks: list[Any] = []
 
@@ -648,6 +651,16 @@ class Connections:
                 result=observation.status,
                 workspace_id=current["workspace_id"],
             )
+            if observation.status == "ready" and current["kind"] in self.provisioners:
+                # Build owner-side resources ahead of first use (Modal: the runtime image).
+                uow.enqueue_job(
+                    workspace_id=current["workspace_id"],
+                    kind="connection.provision",
+                    target_id=connection_id,
+                    dedupe_key=f"{connection_id}:{version_id}",
+                    input={"credential_version_id": version_id},
+                    max_attempts=5,
+                )
             return observation.status
 
         result = ctx.commit(commit)
@@ -660,6 +673,30 @@ class Connections:
         if observation.status == "degraded" and observation.retry_after:
             return Continue(delay=observation.retry_after)
         return Succeeded({"status": result})
+
+    def handle_provision(self, ctx: Any) -> Outcome:
+        """Best-effort owner-side preparation; first use still resolves everything itself."""
+        connection_id = ctx.claim.job["connection_id"]
+        version_id = ctx.input.get("credential_version_id")
+        con, version = ctx.db.read(
+            lambda uow: (
+                uow.get("connections", connection_id),
+                uow.get("credential_versions", version_id) if version_id else None,
+            )
+        )
+        provision = self.provisioners.get(con["kind"])
+        if (
+            provision is None
+            or con["config_state"] != "configured"
+            or version is None
+            or version["revoked_at"]
+            or con["current_credential_version_id"] != version_id
+        ):
+            return Succeeded({"skipped": "stale_or_revoked"})
+        material = self.decrypt(version, con)
+        with ctx.keepalive():
+            result = provision(material, connection_id)
+        return Succeeded(result)
 
     def decrypt(self, version: dict[str, Any], con: dict[str, Any]) -> dict[str, Any]:
         from control.application.ports import SealedRef

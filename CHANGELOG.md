@@ -6,6 +6,13 @@ source for release notes.
 
 ## [Unreleased]
 
+### Changed
+- Every Modal sandbox is now a full Linux VM (`runtime="vm"`, Modal SDK `>=1.6.1`). There is one
+  runtime for all Modal workloads; existing Modal and inference Connections keep working unchanged.
+- The shared runtime image is built when a Modal Connection is verified instead of on the first
+  Turn, slow provisioning no longer loses its Job claim, and `executor.bound` reports per-stage
+  provisioning timings (#198, #199).
+
 ## [0.1.3] - 2026-10-10
 
 ### Added

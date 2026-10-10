@@ -28,6 +28,8 @@ class Cloud:
         self.sandboxes: list[FakeSandbox] = []
         self.ids = itertools.count(1)
         self.creates = 0
+        self.create_options: list[dict[str, Any]] = []
+        self.builds = 0
         self.terminated: list[str] = []
         self.fail_list = False
         self.fail_create_before = False
@@ -66,8 +68,11 @@ class FakeSandbox:
 def make_sdk(cloud: Cloud) -> Any:
     class Sandbox:
         @staticmethod
-        def create(*args: str, name: str | None = None, tags: Any = None, **_: Any) -> FakeSandbox:
+        def create(
+            *args: str, name: str | None = None, tags: Any = None, **options: Any
+        ) -> FakeSandbox:
             cloud.creates += 1
+            cloud.create_options.append(options)
             if cloud.fail_create_before:
                 raise ConnectionError("create failed before reaching Modal")
             if name and any(s.name == name and s.alive for s in cloud.sandboxes):
@@ -102,8 +107,25 @@ def make_sdk(cloud: Cloud) -> Any:
                     return s
             raise NotFoundError(sandbox_id)
 
+    class Image:
+        """Chainable recipe; ``build`` is the only call that reaches the cloud."""
+
+        object_id = "im-built"
+
+        @classmethod
+        def debian_slim(cls, **_: Any) -> Image:
+            return cls()
+
+        def __getattr__(self, _name: str) -> Any:
+            return lambda *_, **__: self
+
+        def build(self, app: Any) -> Image:
+            cloud.builds += 1
+            return self
+
     return SimpleNamespace(
         Sandbox=Sandbox,
+        Image=Image,
         Client=SimpleNamespace(from_credentials=lambda *_: object()),
         App=SimpleNamespace(lookup=lambda *_, **__: SimpleNamespace(app_id="ap-test")),
         exception=SimpleNamespace(NotFoundError=NotFoundError),
@@ -203,3 +225,32 @@ def test_terminate_and_describe_confirm_stop(env) -> None:
     assert cloud.terminated == [handle["sandbox_id"]]
     assert executor.describe(handle, COMPUTE)["status"] == "terminated"
     assert executor.terminate({"sandbox_id": "sb-missing"}, "op", COMPUTE) is True
+
+
+def test_every_sandbox_is_a_linux_vm_without_ambient_identity(env) -> None:
+    cloud, executor = env
+    handle = executor.allocate(spec(), "op_0001fault")
+    [options] = cloud.create_options
+    assert options["runtime"] == "vm", "one runtime for custom API and subscription workloads"
+    assert options["secrets"] == [] and options["include_oidc_identity_token"] is False
+    assert handle["runtime"] == "vm" and executor.capabilities()["runtime"] == "vm"
+    assert set(handle["timings"]) == {"image_resolve_ms", "sandbox_create_ms"}
+
+
+def test_prewarm_builds_the_shared_image_once_per_connection_and_recipe() -> None:
+    cloud = Cloud()
+    executor = ModalExecutor(sdk=make_sdk(cloud))
+    first = executor.prewarm(COMPUTE, "con_1")
+    assert first["image_id"] == "im-built" and first["recipe_digest"] == executor.recipe_digest()
+    executor.prewarm(COMPUTE, "con_1")
+    executor.allocate({**spec(), "compute_connection_id": "con_1"}, "op_0001fault")
+    assert cloud.builds == 1, "allocation after prewarm resolves the cached image"
+    executor.prewarm(COMPUTE, "con_2")
+    assert cloud.builds == 2, "each owner workspace builds its own copy"
+
+
+def test_prewarm_requires_a_modal_credential() -> None:
+    executor = ModalExecutor(sdk=make_sdk(Cloud()))
+    with pytest.raises(DomainError) as err:
+        executor.prewarm(None, "con_1")
+    assert err.value.code == "connection_required"

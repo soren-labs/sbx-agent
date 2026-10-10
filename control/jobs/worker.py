@@ -59,6 +59,34 @@ class JobContext:
     def renew(self) -> None:
         self.claim = claims.renew(self.db, self.claim, lease_seconds=self.worker.lease_seconds)
 
+    @contextmanager
+    def keepalive(self, *, max_seconds: float = 900.0) -> Iterator[None]:
+        """Renew the claim while one slow, idempotent external call is in flight.
+
+        A live worker blocked in a valid long call (image build, VM boot) keeps its
+        claim instead of being reclaimed mid-effect; a dead worker still expires after
+        one lease. Renewal stops on a lost claim or after ``max_seconds`` so a hung call
+        cannot hold the Job forever; every commit is still fenced by the claim.
+        """
+        stop = threading.Event()
+        interval = max(self.worker.lease_seconds / 3, 0.05)
+        deadline = time.monotonic() + max_seconds
+
+        def beat() -> None:
+            while not stop.wait(interval) and time.monotonic() < deadline:
+                try:
+                    self.renew()
+                except Exception:
+                    return
+
+        thread = threading.Thread(target=beat, name="sbx-claim-keepalive", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=10)
+
 
 Handler = Callable[[JobContext], Outcome]
 

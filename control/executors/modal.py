@@ -1,8 +1,13 @@
 """Modal Executor backend using the owner's selected Modal Connection.
 
-Modal credentials stay in this worker; the sandbox receives only the per-lease
-enrollment key. The bounded boot command starts sbx-runtime; Turns/files use
-runtime operations over the encrypted tunnel.
+Every sandbox is a full Linux VM (``runtime="vm"``); there is no second runtime for
+any inference mode. Modal credentials stay in this worker; the sandbox receives only
+the per-lease enrollment key. The bounded boot command starts sbx-runtime; Turns/files
+use runtime operations over the encrypted tunnel.
+
+One shared image recipe (CA certificates, Python, Node, Git, the pinned official CLIs
+and the runtime daemon) is built once per owner workspace and recipe digest: ``prewarm``
+builds it when the Modal Connection is verified, so allocation only resolves the cache.
 
 Allocation is idempotent by the allocation operation ID (the effect identity): the
 sandbox is created with a unique name and its tags in one call, so a lost create
@@ -13,6 +18,7 @@ never treated as absence.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -26,7 +32,13 @@ from control.domain.errors import DomainError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_NAME = "sbx-executor"
 RUNTIME_PORT = 8790
+# The only Modal sandbox runtime SBX uses; requires modal>=1.6.1.
+SANDBOX_RUNTIME = "vm"
 RESOURCE_CLASSES = {"standard": (2.0, 4096), "small": (1.0, 2048), "large": (4.0, 8192)}
+
+
+def _ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
 
 
 def _sdk() -> Any:
@@ -50,6 +62,7 @@ class ModalExecutor:
         self.cli_packages = dict(cli_packages or HARNESS_CLI_PACKAGES)
         self.sandbox_timeout = sandbox_timeout
         self._images: dict[tuple[str, str], Any] = {}
+        self._image_lock = threading.Lock()
 
     @property
     def sdk(self) -> Any:
@@ -78,12 +91,10 @@ class ModalExecutor:
     def _app(self, client: Any) -> Any:
         return self.sdk.App.lookup(APP_NAME, create_if_missing=True, client=client)
 
-    def image(self, client: Any, app: Any, connection_key: str) -> Any:
-        key = (connection_key, self.recipe_digest())
-        if key in self._images:
-            return self._images[key]
+    def image_recipe(self) -> Any:
+        """The single shared runtime image definition (unbuilt)."""
         modal = self.sdk
-        image = (
+        return (
             modal.Image.debian_slim(python_version="3.12")
             .apt_install("git", "curl", "ca-certificates", "ripgrep", "procps")
             .run_commands(
@@ -97,9 +108,37 @@ class ModalExecutor:
             )
             .add_local_python_source("runtime", "protocol", copy=True)
         )
-        built = image.build(app)
-        self._images[key] = built
+
+    def image(self, client: Any, app: Any, connection_key: str) -> Any:
+        """Built image for the owner workspace; a cache lookup once the recipe was built."""
+        key = (connection_key, self.recipe_digest())
+        with self._image_lock:
+            if key in self._images:
+                return self._images[key]
+        built = self.image_recipe().build(app)
+        with self._image_lock:
+            self._images[key] = built
         return built
+
+    def prewarm(self, compute: dict[str, Any] | None, connection_key: str) -> dict[str, Any]:
+        """Build the shared image ahead of the first allocation (idempotent)."""
+        client = self._client(compute)
+        started = time.monotonic()
+        try:
+            image = self.image(client, self._app(client), connection_key)
+        except DomainError:
+            raise
+        except Exception as exc:
+            raise DomainError(
+                "executor_unavailable",
+                f"Modal image build failed ({type(exc).__name__})",
+                retryable=True,
+            ) from None
+        return {
+            "image_id": image.object_id,
+            "recipe_digest": self.recipe_digest(),
+            "image_resolve_ms": _ms(started),
+        }
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -107,6 +146,7 @@ class ModalExecutor:
             "snapshot": "runtime_checkpoint",
             "native_pause": False,
             "multi_tenant": True,
+            "runtime": SANDBOX_RUNTIME,
         }
 
     @staticmethod
@@ -149,7 +189,10 @@ class ModalExecutor:
         existing = self._lookup(client, app, operation_id)
         if existing is not None:
             return {**existing, "lease_id": spec["lease_id"]}
+        started = time.monotonic()
         image = self.image(client, app, spec.get("compute_connection_id") or "default")
+        timings = {"image_resolve_ms": _ms(started)}
+        started = time.monotonic()
         cpu, memory = RESOURCE_CLASSES.get(
             spec.get("resource_class") or "standard", RESOURCE_CLASSES["standard"]
         )
@@ -176,6 +219,7 @@ class ModalExecutor:
                 name=self.sandbox_name(operation_id),
                 tags=tags,
                 image=image,
+                runtime=SANDBOX_RUNTIME,
                 client=client,
                 env={
                     "SBX_RUNTIME_KEY": spec["enrollment_key"],
@@ -185,6 +229,7 @@ class ModalExecutor:
                     "PYTHONPATH": "/root",
                 },
                 secrets=[],
+                include_oidc_identity_token=False,
                 encrypted_ports=[RUNTIME_PORT],
                 timeout=self.sandbox_timeout,
                 cpu=cpu,
@@ -209,6 +254,8 @@ class ModalExecutor:
             "operation_id": operation_id,
             "lease_id": spec["lease_id"],
             "image_id": image.object_id,
+            "runtime": SANDBOX_RUNTIME,
+            "timings": {**timings, "sandbox_create_ms": _ms(started)},
             "status": "running",
         }
 

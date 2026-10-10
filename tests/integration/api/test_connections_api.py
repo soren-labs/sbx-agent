@@ -502,3 +502,36 @@ def test_retired_vendor_kinds_are_refused_but_stored_ones_survive(stack) -> None
     revoked = user.delete(f"/api/connections/{con_id}")
     assert revoked.status_code == 200 and revoked.json()["state"] == "revoked"
     assert legacy_key not in user.all_text()
+
+
+class _PrewarmOnly:
+    """Stands in for the Modal executor: records the image prewarm, creates nothing."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[set[str], str]] = []
+
+    def prewarm(self, compute: dict, connection_key: str) -> dict:
+        self.calls.append((set(compute), connection_key))
+        return {"image_id": "im-test", "recipe_digest": "d1", "image_resolve_ms": 3}
+
+
+def test_verified_modal_connection_prewarms_the_runtime_image_once(db, tmp_path) -> None:
+    executor = _PrewarmOnly()
+    stack = ApiStack(db, tmp_path, executors={"modal": executor})
+    try:
+        user = User(stack)
+        modal = user.connect("modal", MODAL)
+        user.connect("inference_api", inference(ZEN), "My Zen")
+        stack.drain()
+        assert executor.calls == [({"token_id", "token_secret"}, modal["id"])]
+        jobs = db.read(lambda u: u.find("jobs", {"kind": "connection.provision"}))
+        assert [j["state"] for j in jobs] == ["succeeded"]
+        assert jobs[0]["result"]["image_id"] == "im-test"
+        assert "token" not in str(jobs[0]["input"]) and MODAL["token_secret"] not in str(jobs[0])
+        bad = user.connect("modal", {"token_id": "ak-bad0000000000001", "token_secret": "x" * 20})
+        stack.drain()
+        assert len(executor.calls) == 1, (
+            f"an unverified credential ({bad['health']}) builds nothing"
+        )
+    finally:
+        stack.shutdown()

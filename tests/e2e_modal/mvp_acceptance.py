@@ -281,9 +281,9 @@ def run() -> None:
     check("codex" not in kinds, "no_codex_connection")
     step("05_no_codex_connection", kinds=kinds)
     models = c.models()
-    free = [m["id"] for conn in models["connections"] for m in conn["models"] if m["free"]]
-    check(models["preferred_model"] in free, "free_model_usable")
-    step("06_usable_free_model", preferred=models["preferred_model"], free_models=free[:10])
+    offered = [m["id"] for conn in models["connections"] for m in conn["models"]]
+    check(models["preferred_model"] in offered, "preferred_model_usable")
+    step("06_usable_model", preferred=models["preferred_model"], models=offered[:10])
 
     main_sha = gh("GET", "/git/ref/heads/main").json()["object"]["sha"]
     base_branch = f"sbx-opus-e2e/base-{RUN}"

@@ -1,0 +1,372 @@
+{
+  "run": "20261010082536",
+  "repository": "soren-labs/sbx-e2e-test",
+  "steps": {
+    "01_login_email_password": {
+      "ok": true,
+      "user_id": "usr_01a124eaf9707e6ab144de4ae5389a80",
+      "verified": true
+    },
+    "02_inference_connection": {
+      "ok": true,
+      "id": "con_01a124eafb177e299f0450bfbb71fb3b",
+      "health": "ready",
+      "validation": {
+        "status": "ready",
+        "observed_at": "2026-10-10T08:25:45.009752+00:00",
+        "details": {
+          "model": "deepseek-flash",
+          "probe": "minimal generation request per endpoint",
+          "endpoints": {
+            "openai_chat": {
+              "status": "ready",
+              "http_status": 200
+            },
+            "openai_responses": {
+              "status": "ready",
+              "http_status": 200
+            },
+            "anthropic_messages": {
+              "status": "ready",
+              "http_status": 200
+            }
+          }
+        },
+        "quota_consuming": true
+      },
+      "config": {
+        "model": "deepseek-flash",
+        "models": [
+          "deepseek-flash"
+        ],
+        "endpoints": {
+          "openai_chat": "https://api.deepseek.com",
+          "openai_responses": "https://api.deepseek.com",
+          "anthropic_messages": "https://api.deepseek.com/anthropic"
+        }
+      }
+    },
+    "03_modal_connection": {
+      "ok": true,
+      "id": "con_01a124eb07597e1283fab99df7cfa3d2",
+      "health": "ready"
+    },
+    "04_github_connection": {
+      "ok": true,
+      "id": "con_01a124eb0b927ae1a73972efccf7715c",
+      "health": "ready",
+      "identity_present": true
+    },
+    "05_no_codex_connection": {
+      "ok": true,
+      "kinds": [
+        "github",
+        "inference_api",
+        "modal"
+      ]
+    },
+    "06_usable_model": {
+      "ok": true,
+      "preferred": "deepseek-flash",
+      "models": [
+        "deepseek-flash",
+        "deepseek-v4-pro"
+      ]
+    },
+    "07_project_session": {
+      "ok": true,
+      "project_id": "prj_01a124eb11c0721f959ab08b2eff7033",
+      "session_id": "sess_01a124eb11d77af7898ba12831ca755b",
+      "model": "deepseek-flash"
+    },
+    "08_modal_sandbox_via_user_credential": {
+      "ok": true,
+      "backend": "modal",
+      "lease": {
+        "id": "lease_01a124eb121d75028e0e69785bd53d13",
+        "generation": 1,
+        "state": "ready",
+        "reason": null,
+        "quarantined": false,
+        "image_digest": "modal:im-NZ3joXFnax3AyFxS0JSvtT",
+        "protocol_version": "1.0",
+        "created_at": "2026-10-10T08:25:47.789454+00:00"
+      }
+    },
+    "09_first_opencode_turn": {
+      "ok": true,
+      "turn_id": "turn_01a124eb11eb703dbc1a56e415b7320b",
+      "state": "succeeded",
+      "cli": {
+        "id": "turn_01a124eb11eb703dbc1a56e415b7320b",
+        "session_id": "sess_01a124eb11d77af7898ba12831ca755b",
+        "ordinal": 1,
+        "state": "succeeded",
+        "reason": null,
+        "triggering_message_id": "msg_01a124eb11e577699a5e989a08d62b80",
+        "retry_of_turn_id": null,
+        "settings": {
+          "model": "deepseek-flash",
+          "provider_id": "opencode"
+        },
+        "result_contract": null,
+        "error": null,
+        "evidence_complete": true,
+        "outcome": {
+          "verdict": "success",
+          "exit_code": 0,
+          "native_id": "ses_edb14cf97ffepQnawajUGa1ubG",
+          "credential_health": "ok"
+        },
+        "usage": {
+          "source": "opencode.step_finish",
+          "complete": true,
+          "input_tokens": 607,
+          "output_tokens": 263,
+          "reasoning_tokens": 25,
+          "cached_input_tokens": 22144
+        },
+        "output_message_id": "msg_01a124eb3b087d82871a22d2b03b9108",
+        "cancel_requested": false,
+        "unknown_acknowledged": false,
+        "version": 4,
+        "created_at": "2026-10-10T08:25:47.729054+00:00",
+        "started_at": "2026-10-10T08:25:54.248312+00:00",
+        "finished_at": "2026-10-10T08:26:01.017843+00:00",
+        "actions": [],
+        "executions": [
+          {
+            "id": "exec_01a124eb2a9879f9815eaa55ce7ed519",
+            "attempt_ordinal": 1,
+            "state": "succeeded",
+            "lease_id": "lease_01a124eb121d75028e0e69785bd53d13",
+            "launch_evidence": "started",
+            "cli_version": "1.18.35",
+            "adapter_version": "opencode-harness/2",
+            "image_digest": "modal:im-NZ3joXFnax3AyFxS0JSvtT",
+            "final_watermark": 12,
+            "outcome": {
+              "message": "",
+              "verdict": "success",
+              "cancelled": false,
+              "exit_code": 0,
+              "native_id": "ses_edb14cf97ffepQnawajUGa1ubG",
+              "timed_out": false,
+              "error_code": null,
+              "retry_advice": "none",
+              "scrub_failures": [],
+              "credential_health": "ok"
+            }
+          }
+        ]
+      },
+      "tools": [
+        "calc.py",
+        "test_calc.py",
+        "python3 -m unittest discover -v"
+      ]
+    },
+    "10_followup_native_continuity": {
+      "ok": true,
+      "state": "succeeded",
+      "codeword_recalled": true,
+      "native_ids": [
+        "ses_edb14cf97ffepQnawajUGa1ubG",
+        "ses_edb14cf97ffepQnawajUGa1ubG"
+      ],
+      "same_native_session": true
+    },
+    "12_immutable_changeset": {
+      "ok": true,
+      "id": "cs_01a124eb6b5f70ec8e5ba92c8e59cbd2",
+      "state": "ready",
+      "subject_digest": "sha256:18f98500316737b578bf858837086247b37a08e379d8fc39b9be9faae6699489",
+      "files": [
+        "__pycache__/calc.cpython-312.pyc",
+        "__pycache__/test_calc.cpython-312.pyc",
+        "calc.py",
+        "test_calc.py"
+      ],
+      "eligible": true,
+      "follow_up_edit_in_diff": true
+    },
+    "11_tests_in_sandbox": {
+      "ok": true,
+      "delegation": "del_01a124eb74db7faabbd9746cf49be086",
+      "state": "succeeded",
+      "verdict": "pass",
+      "platform_checks": [
+        {
+          "name": "unittest",
+          "status": "passed",
+          "exit_code": 0,
+          "head": "b6876f87e72b43a2a1c1227e0a4833e38161e473"
+        }
+      ],
+      "parent_tool_runs": [
+        "python3 -m unittest discover -v"
+      ]
+    },
+    "14_independent_child_review": {
+      "ok": true,
+      "delegation": "del_01a124ebb88a7f9dabb664e12dfaeeae",
+      "child_session": "sess_01a124ebb8827f909721f4fd16a820cc",
+      "state": "succeeded",
+      "reason": null,
+      "verdict": "approve",
+      "pinned_subject": true,
+      "independent": true,
+      "attempts": 1
+    },
+    "13_delivery_draft_pr": {
+      "ok": true,
+      "id": "dlv_01a124ec07c27c639603963c340cec63",
+      "state": "succeeded",
+      "pr": {
+        "number": 44,
+        "url": "https://github.com/soren-labs/sbx-e2e-test/pull/44",
+        "state": "open",
+        "draft": true
+      },
+      "commit": "b8f3a775445e31db6acdc353b4cc08847baddc8b",
+      "steps": [
+        "materialize",
+        "push",
+        "pull_request"
+      ],
+      "github": {
+        "base": "sbx-opus-e2e/base-20261010082536",
+        "head": "sbx/sess_01a124eb11d77af7898ba12831ca755b/cs_01a124eb6b5f70ec8e5ba92c8e59cbd2",
+        "head_sha": "b8f3a775445e31db6acdc353b4cc08847baddc8b",
+        "draft": true
+      }
+    },
+    "15_exact_subject_gate_and_merge": {
+      "ok": true,
+      "first_request": {
+        "state": "blocked",
+        "reasons": [
+          "pull_request_is_draft"
+        ]
+      },
+      "second_request": {
+        "state": "succeeded",
+        "merge_sha": "c4919f41fa20f35186c1d12c459963711126524a",
+        "error": null
+      },
+      "eligibility": {
+        "eligible": false,
+        "reasons": [
+          "pull_request_not_open"
+        ],
+        "subject_digest": "sha256:18f98500316737b578bf858837086247b37a08e379d8fc39b9be9faae6699489",
+        "head_sha": "b8f3a775445e31db6acdc353b4cc08847baddc8b",
+        "observed_at": "2026-10-10T08:27:05.127389+00:00"
+      },
+      "pr_state": "merged"
+    },
+    "16_restart_persistence": {
+      "ok": true,
+      "control_generation": 2,
+      "connections": [
+        [
+          "inference_api",
+          "ready"
+        ],
+        [
+          "modal",
+          "ready"
+        ],
+        [
+          "github",
+          "ready"
+        ]
+      ],
+      "session_lifecycle": "open",
+      "turns": [
+        "succeeded",
+        "succeeded"
+      ],
+      "changesets": 2,
+      "delivery_state": "succeeded",
+      "inference_after_restart": "ready"
+    },
+    "17_cross_owner_isolation": {
+      "ok": true,
+      "denied": {
+        "session": "not_found",
+        "connection": "not_found",
+        "changeset": "not_found",
+        "delivery": "not_found",
+        "delegation": "not_found",
+        "executor": "not_found",
+        "events": "not_found"
+      },
+      "use_other_connections": "not_found",
+      "b_without_connections": "connection_required",
+      "b_connections": 0
+    },
+    "18_disconnect_does_not_orphan_compute": {
+      "ok": true,
+      "while_live": {
+        "code": "connection_in_use",
+        "details": {
+          "executor_leases": [
+            "lease_01a124eb121d75028e0e69785bd53d13",
+            "lease_01a124eb75067528a04487b144fb9fc8",
+            "lease_01a124ebb8d07194a79134d7bd130cce"
+          ]
+        }
+      },
+      "after_release": "revoked",
+      "released_sessions": 3
+    }
+  },
+  "gates": {
+    "connections_ready": true,
+    "no_codex_connection": true,
+    "preferred_model_usable": true,
+    "base_branch_created": true,
+    "first_turn_succeeded": true,
+    "followup_turn_succeeded": true,
+    "followup_recalls_context": true,
+    "same_native_session": true,
+    "changeset_ready": true,
+    "followup_edit_applied": true,
+    "delivery_succeeded": true,
+    "pull_request_is_draft": true,
+    "pr_head_is_delivered_commit": true,
+    "cross_owner_isolation": true,
+    "disconnect_after_release": true,
+    "no_secret_leaks": true
+  },
+  "failure": null,
+  "cleanup": {
+    "terminated_stragglers": 0,
+    "live_sandboxes_after": 0,
+    "pull_request": {
+      "url": "https://github.com/soren-labs/sbx-e2e-test/pull/44",
+      "merged": true
+    },
+    "deleted_refs": [
+      "sbx-opus-e2e/base-20261010082536",
+      "sbx/sess_01a124eb11d77af7898ba12831ca755b/cs_01a124eb6b5f70ec8e5ba92c8e59cbd2"
+    ]
+  },
+  "secret_scan": {
+    "leaks": {
+      "api_responses": [],
+      "control_logs": [],
+      "database": [],
+      "pull_request": [],
+      "evidence": []
+    },
+    "scanned_bytes": {
+      "api_responses": 222505,
+      "control_logs": 24225,
+      "database": 60522,
+      "pull_request": 19843,
+      "evidence": 7706
+    }
+  }
+}

@@ -38,6 +38,10 @@ def test_turn_streams_parts_and_succeeds(stack) -> None:
     )
     assert stack.output_text(turn_id).startswith("ACK: hello")
     types = [e["type"] for e in stack.events(sid)]
+    bound = next(e for e in stack.events(sid) if e["type"] == "executor.bound")
+    assert {"runtime_connect_ms", "handshake_ms", "total_ms"} <= set(
+        bound["payload"]["provisioning"]
+    )
     for expected in (
         "turn.preparing",
         "executor.bound",

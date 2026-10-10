@@ -492,6 +492,6 @@ def _default_priority(kind: str) -> int:
         return PRIORITY["reconcile"]
     if kind in ("turn.dispatch",):
         return PRIORITY["dispatch"]
-    if kind in ("connection.validate",):
+    if kind in ("connection.validate", "connection.provision"):
         return PRIORITY["validate"]
     return PRIORITY["effect"]
