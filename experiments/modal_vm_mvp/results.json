@@ -1,0 +1,197 @@
+{
+  "started_utc": "2026-10-10T07:16:46.509116+00:00",
+  "sdk": "1.6.1",
+  "app": "sbx-exp-vm-mvp-20261010-codex-01",
+  "volumes": [
+    "sbx-exp-vm-mvp-20261010-codex-01-slot-a",
+    "sbx-exp-vm-mvp-20261010-codex-01-slot-b"
+  ],
+  "runtime": "vm",
+  "cpu": 1,
+  "memory_mib": 1024,
+  "timeout_seconds": 180,
+  "events": [
+    {
+      "event": "created",
+      "stage": "first-unbuilt-image",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "create_seconds": 0.36494050400000333
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "command": "cat /proc/sys/kernel/random/boot_id",
+      "stdout": "2f5e2e5b-99ce-4406-a22f-b004d32f1e27\n",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "ready",
+      "stage": "first-unbuilt-image",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "boot_id": "2f5e2e5b-99ce-4406-a22f-b004d32f1e27",
+      "create_to_exec_seconds": 1.5111156300000061
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "command": "\nset -eu\nuname -a\nprintf 'boot_id='; cat /proc/sys/kernel/random/boot_id\nprintf 'pid1='; cat /proc/1/comm\nprintf 'pid_namespace='; readlink /proc/self/ns/pid\nprintf 'cgroup_filesystem='; stat -f -c %T /sys/fs/cgroup\nunshare --mount --pid --fork --mount-proc sh -c 'printf \"nested_pid=\"; echo $$; cat /proc/1/comm'\nmkdir -p /tmp/mvp-mount\nmount -t tmpfs tmpfs /tmp/mvp-mount\nprintf 'tmpfs_mount='; stat -f -c %T /tmp/mvp-mount\numount /tmp/mvp-mount\n",
+      "stdout": "Linux cloud-hypervisor 7.2.9 #1 SMP PREEMPT Sun Oct  4 19:32:00 UTC 2026 x86_64 GNU/Linux\nboot_id=2f5e2e5b-99ce-4406-a22f-b004d32f1e27\npid1=runch-agent\npid_namespace=pid:[4026531836]\ncgroup_filesystem=cgroup2fs\nnested_pid=1\nsh\ntmpfs_mount=tmpfs\n",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "command": "mkdir -p /mvp-profile/.codex; printf '%s\\n' 'synthetic-profile-fad01092313b41ea82ae816c21b510e7' > /mvp-profile/.codex/mvp-marker; sync /mvp-profile",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "command": "touch /tmp/mvp-ephemeral-marker",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "terminated",
+      "id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "returncode": 137,
+      "seconds": 0.7374414860000229
+    },
+    {
+      "event": "image_build_after_first",
+      "image_id": "im-GYYHaMJMKETlbgCvh62lOr",
+      "seconds": 0.09323702000000367
+    },
+    {
+      "event": "created",
+      "stage": "second-built-image",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "create_seconds": 0.0935915439999917
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "command": "cat /proc/sys/kernel/random/boot_id",
+      "stdout": "d531d1db-81a5-4b3e-951b-f58fda607df1\n",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "ready",
+      "stage": "second-built-image",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "boot_id": "d531d1db-81a5-4b3e-951b-f58fda607df1",
+      "create_to_exec_seconds": 1.1801913749999926
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "command": "test ! -e /tmp/mvp-ephemeral-marker; cat /mvp-profile/.codex/mvp-marker",
+      "stdout": "synthetic-profile-fad01092313b41ea82ae816c21b510e7\n",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "fresh_vm_persistence_pass",
+      "first_id": "sb-01M4JAQRW9AH04K20Y7ZJSRK7M",
+      "second_id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN"
+    },
+    {
+      "event": "created",
+      "stage": "concurrent-slot-b",
+      "id": "sb-01M4JAQXMH7QQMJRDWM0E6XNWN",
+      "create_seconds": 0.18619633599996632
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQXMH7QQMJRDWM0E6XNWN",
+      "command": "cat /proc/sys/kernel/random/boot_id",
+      "stdout": "cd26160f-4611-43a3-96d6-6fb0464812e4\n",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "ready",
+      "stage": "concurrent-slot-b",
+      "id": "sb-01M4JAQXMH7QQMJRDWM0E6XNWN",
+      "boot_id": "cd26160f-4611-43a3-96d6-6fb0464812e4",
+      "create_to_exec_seconds": 1.0505276659999936
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "command": "printf 'slot-a\\n' > /mvp-profile/slot-a-only; sync /mvp-profile",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQXMH7QQMJRDWM0E6XNWN",
+      "command": "test ! -e /mvp-profile/.codex/mvp-marker; test ! -e /mvp-profile/slot-a-only; printf 'slot-b\\n' > /mvp-profile/slot-b-only; sync /mvp-profile",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "command": "test ! -e /mvp-profile/slot-b-only; test \"$(cat /mvp-profile/slot-a-only)\" = slot-a",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "exec",
+      "id": "sb-01M4JAQXMH7QQMJRDWM0E6XNWN",
+      "command": "test ! -e /mvp-profile/slot-a-only; test \"$(cat /mvp-profile/slot-b-only)\" = slot-b",
+      "stdout": "",
+      "stderr": "",
+      "returncode": 0
+    },
+    {
+      "event": "concurrent_volume_isolation_pass",
+      "ids": [
+        "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+        "sb-01M4JAQXMH7QQMJRDWM0E6XNWN"
+      ]
+    },
+    {
+      "event": "terminated",
+      "id": "sb-01M4JAQW2CBQNSKM6NJHF2XYVN",
+      "returncode": 137,
+      "seconds": 0.6444223390000161
+    },
+    {
+      "event": "terminated",
+      "id": "sb-01M4JAQXMH7QQMJRDWM0E6XNWN",
+      "returncode": 137,
+      "seconds": 0.634594968999977
+    },
+    {
+      "event": "cleanup_verified",
+      "running_ids": []
+    },
+    {
+      "event": "complete",
+      "outcome": "PASS"
+    }
+  ],
+  "outcome": "PASS",
+  "finished_utc": "2026-10-10T07:16:55.634288+00:00",
+  "post_run_cleanup": {
+    "running_ids": [],
+    "retained_volume": "sbx-exp-vm-mvp-20261010-codex-01-slot-a",
+    "synthetic_file_bytes": {
+      ".codex/mvp-marker": 51,
+      "slot-a-only": 7
+    },
+    "deleted_volume": "sbx-exp-vm-mvp-20261010-codex-01-slot-b",
+    "deletion_verified": true
+  }
+}
