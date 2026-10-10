@@ -55,6 +55,9 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
   const hasApiKey = (connections.data?.items ?? []).some(
     (c) => c.kind === "inference_api" && c.state === "configured" && c.health !== "reauth_required",
   );
+  // Only machines that can run (or are running) are offered; the rest are one link away.
+  const usableSlots = slots.filter((m) => m.status === "ready" || m.status === "running");
+  const idleSlots = slots.length - usableSlots.length;
   const firstFree = slots.find((m) => m.status === "ready");
   // With no API key at all, a ready machine is the only way to run: preselect it.
   const sourceId = sourceOverride ?? (!hasApiKey && connections.data && firstFree ? firstFree.id : "");
@@ -260,7 +263,7 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                   {t("composer.source")}
                   <select id="new-source" value={slot ? slot.id : ""} onChange={(e) => chooseSource(e.target.value)}>
                     <option value="">{t("composer.source_api")}</option>
-                    {slots.map((m) => (
+                    {usableSlots.map((m) => (
                       <option key={m.id} value={m.id} disabled={m.status !== "ready"}>
                         {m.label} · {m.provider_name}
                         {sourceNote(m) ? ` (${sourceNote(m)})` : ""}
@@ -409,7 +412,7 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                       <span>{t("composer.source_api")}</span>
                       {!slot && <Icon name="check" size={12} />}
                     </button>
-                    {slots.map((m) => (
+                    {usableSlots.map((m) => (
                       <button
                         type="button"
                         className="picker-option"
@@ -431,6 +434,11 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                       </button>
                     ))}
                   </div>
+                  {idleSlots ? (
+                    <p className="faint small">
+                      <Link to="/machines">{t("composer.source_more", { count: idleSlots })}</Link>
+                    </p>
+                  ) : null}
                 </>
               ) : null}
               {slot ? null : <h2>{t("composer.harness_label")}</h2>}

@@ -676,6 +676,7 @@ export const en = {
   "machines.reason.generic": "Not usable: {reason}",
   "composer.source": "Runs on",
   "composer.source_api": "Custom API key",
+  "composer.source_more": "{count} more not ready · manage machines",
   "composer.source_busy": "in use",
   "composer.source_needs_login": "needs login",
   "composer.effort": "Reasoning effort",

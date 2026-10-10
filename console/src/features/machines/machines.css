@@ -86,6 +86,8 @@
 .mc-empty p { margin: 0; max-width: 46ch; font-size: 13px; }
 
 @media (max-width: 520px) {
+  .mc-page .hs-lead { font-size: 13px; line-height: 1.45; }
+  .mc-page h1 { font-size: 24px; }
   .mc-title .button { width: 100%; justify-content: center; }
   .mc-toolbar select { flex: 1 1 calc(50% - 4px); }
   .mc-row-head { grid-template-columns: 24px minmax(0, 1fr) auto 12px; gap: 6px; padding: 6px 8px; min-height: 44px; }

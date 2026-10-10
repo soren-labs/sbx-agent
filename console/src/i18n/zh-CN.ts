@@ -516,6 +516,7 @@ export const zhCN: Partial<Record<I18nKey, string>> = {
   "machines.reason.generic": "无法使用：{reason}",
   "composer.source": "运行于",
   "composer.source_api": "自定义 API 密钥",
+  "composer.source_more": "另有 {count} 台尚未就绪 · 管理云电脑",
   "composer.source_busy": "使用中",
   "composer.source_needs_login": "需要登录",
   "composer.effort": "推理强度",

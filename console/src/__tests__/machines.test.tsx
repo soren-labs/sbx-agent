@@ -324,7 +324,9 @@ describe("New Session on a machine", () => {
     const sources = within(screen.getByTestId("source-options"));
     expect(sources.getByRole("button", { name: /Custom API key/ })).toHaveAttribute("aria-pressed", "true");
     expect(sources.getByRole("button", { name: /A2.*in use/ })).toBeDisabled();
-    expect(sources.getByRole("button", { name: /A3.*needs login/ })).toBeDisabled();
+    // Machines that cannot run are not listed; one link leads to them.
+    expect(sources.queryByRole("button", { name: /A3/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "1 more not ready · manage machines" })).toHaveAttribute("href", "/machines");
 
     await user.click(sources.getByRole("button", { name: /A1/ }));
     expect(screen.getByTestId("model-source")).toHaveTextContent("Models reported by codex app-server model/list");
