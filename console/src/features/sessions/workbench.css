@@ -1053,7 +1053,8 @@
     margin-left: 8px;
   }
 
-  .step-kind {
+  /* The icon says the kind; a fold's label carries its count, so that one stays. */
+  .step:not(.step-fold) > .step-head > .step-kind {
     display: none;
   }
 
