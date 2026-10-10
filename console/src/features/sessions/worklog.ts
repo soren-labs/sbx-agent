@@ -182,11 +182,12 @@ function folds(prev: Step, step: Step): boolean {
   return step.kind !== "tool" || prev.name === step.name;
 }
 
-export function rowsOf(steps: Step[]): Row[] {
+export function rowsOf(steps: Step[], apart?: ReadonlySet<string>): Row[] {
   const rows: Row[] = [];
   for (const step of steps) {
     const row = rows[rows.length - 1];
-    if (row && folds(row.steps[row.steps.length - 1], step)) row.steps.push(step);
+    const last = row?.steps[row.steps.length - 1];
+    if (last && !apart?.has(last.key) && !apart?.has(step.key) && folds(last, step)) row.steps.push(step);
     else rows.push({ key: `row:${step.key}`, kind: step.kind, steps: [step] });
   }
   return rows;

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import { Markdown } from "../../components/Markdown";
 import { Icon, Mark } from "../../components/icons";
@@ -117,7 +117,7 @@ function StepRow({ step, nested }: { step: Step; nested?: boolean }) {
   const [open, setOpen] = useState(false);
   const title = step.detail || step.name;
   return (
-    <li className={`step step-${step.status} ${nested ? "is-nested" : ""}`} data-kind={step.kind} data-testid="work-step">
+    <li className={`step step-${step.status} ${nested ? "is-nested" : ""}`} data-kind={step.kind} data-row={nested ? undefined : step.key} data-testid="work-step">
       <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span className="step-icon" aria-hidden="true">
           <Icon name={STEP_ICON[step.kind]} size={13} />
@@ -236,6 +236,14 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
   // Row the reader pinned as the first visible one ("" = from the start): once they
   // touch the list, rows stop sliding out of view under them.
   const [pinned, setPinned] = useState<string | null>(null);
+  // Single rows the reader clicked keep their own row, so a later neighbour of the
+  // same kind does not fold them away together with what they opened.
+  const [apart, setApart] = useState<ReadonlySet<string>>(() => new Set());
+  const touch = (event: MouseEvent<HTMLOListElement>) => {
+    if (pinned === null) setPinned(rows[hidden]?.key ?? "");
+    const key = (event.target as HTMLElement).closest<HTMLElement>("[data-row]")?.dataset.row;
+    if (key && !apart.has(key)) setApart(new Set(apart).add(key));
+  };
   const failed = entry.steps.filter((s) => s.status === "error").length;
   const open = choice ?? entry.running;
   const span = spanOf(entry.steps);
@@ -250,7 +258,7 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
       </ol>
     );
   }
-  const rows = rowsOf(entry.steps);
+  const rows = rowsOf(entry.steps, apart);
   const hidden = !entry.running
     ? 0
     : pinned === null
@@ -269,7 +277,7 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
         {failed ? <span className="work-failed">{t("work.failed_steps", { n: failed })}</span> : null}
       </button>
       {open ? (
-        <ol className="work-steps" onClickCapture={() => pinned === null && setPinned(rows[hidden]?.key ?? "")}>
+        <ol className="work-steps" onClickCapture={touch}>
           {hidden ? (
             <li className="step">
               <button type="button" className="step-more" onClick={() => setPinned("")}>

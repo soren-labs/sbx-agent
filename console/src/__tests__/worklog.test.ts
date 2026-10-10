@@ -166,6 +166,8 @@ describe("worklog model", () => {
     expect(namesOf(rows[0])).toEqual(["a.py", "b.py"]);
     // Row keys depend only on the first step, so a growing fold keeps its open/closed state.
     expect(rowsOf(steps.slice(0, 2))[0].key).toBe(rows[0].key);
+    // A step the reader opened stays a row of its own; its neighbours still fold.
+    expect(rowsOf(steps.slice(0, 3), new Set([steps[0].key])).map((r) => r.steps.length)).toEqual([1, 2]);
   });
 
   it("marks text and reasoning as streaming only while deltas keep arriving here", () => {

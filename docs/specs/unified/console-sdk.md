@@ -57,7 +57,8 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
   failed step always keep their own row. A step expands to the exact command or path, its
   input (readable arguments, not escaped JSON) and output, bounded to 14 lines with an exact
   "show N more lines". While a group is live only its newest 8 rows are shown, with "Show N
-  earlier steps"; once the reader clicks inside the list, no further row leaves it. A tool is
+  earlier steps"; once the reader clicks inside the list, no further row leaves it, and a
+  single row they clicked is never folded into a later neighbour. A tool is
   shown running only while its Turn is live.
 * **Narration**: reply text the agent writes *between* two tool calls of one message is a
   quiet one-line row of that work group (first line as plain words; it expands to the full
