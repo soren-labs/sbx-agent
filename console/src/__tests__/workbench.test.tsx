@@ -49,7 +49,7 @@ const toolPart = (id: string, name: string, status: string, input: unknown, outp
   data: { tool_id: id, name, status, input, ...(output === undefined ? {} : { output }) },
 });
 
-function mount(opts: { messages: Message[]; turns: Turn[]; frames?: string[]; activity?: string; harness?: string }) {
+function mount(opts: { messages: Message[]; turns: Turn[]; frames?: string[]; activity?: string; harness?: string; send?: () => Promise<{ status: number; json: unknown }> }) {
   const m = mockFetch([
     ...identityRoutes,
     ["GET", "/api/sessions/s1", { json: { session: session({ activity: opts.activity ?? "running", harness: { provider_id: opts.harness ?? "claude", model: "flash" } }), event_watermark: 4 } }],
@@ -64,7 +64,7 @@ function mount(opts: { messages: Message[]; turns: Turn[]; frames?: string[]; ac
           ? { body: sse(opts.frames ?? []), headers: { "content-type": "text/event-stream" } }
           : { json: { items: [], next_after: 4, event_watermark: 4 } },
     ],
-    ["POST", "/api/sessions/s1/messages", { status: 202, json: { message_id: "m9" } }],
+    ["POST", "/api/sessions/s1/messages", opts.send ?? { status: 202, json: { message_id: "m9" } }],
     ["POST", "/api/turns/t1/retries", { status: 202, json: { turn_id: "t2" } }],
     ["POST", "/api/turns/t1/cancellations", { status: 202, json: {} }],
   ]);
@@ -220,5 +220,121 @@ describe("Session workbench", () => {
       await userEvent.type(screen.getByLabelText("Message"), "x");
     });
     expect(log.scrollTop).toBe(300);
+  });
+
+  it("folds a long run of tool calls into readable rows and keeps every detail one click away", async () => {
+    const done = (id: string, name: string, input: unknown, output = "ok") => toolPart(id, name, "completed", input, output);
+    const parts = [
+      ...Array.from({ length: 9 }, (_, i) => done(`r${i}`, "Read", { file_path: `/work/src/mod${i}.py` }, `# module ${i}`)),
+      ...Array.from({ length: 4 }, (_, i) => done(`g${i}`, "Grep", { pattern: `needle${i}` }, `mod${i}.py:1`)),
+      done("b1", "Bash", { command: "python -m pytest -q" }, "12 passed"),
+      ...["a.py", "b.py", "c.py"].map((f, i) => done(`w${i}`, "Write", { file_path: `/work/src/${f}`, content: `print(${i})` })),
+      { ...toolPart("e1", "Edit", "error", { file_path: "/work/src/a.py" }, "String to replace not found"), data: { tool_id: "e1", name: "Edit", status: "error", error: true, input: { file_path: "/work/src/a.py" }, output: "String to replace not found" } },
+      ...Array.from({ length: 5 }, (_, i) => done(`r2${i}`, "Read", { file_path: `/work/tests/t${i}.py` })),
+    ].map((part, i) => ({ ...part, created_at: `2026-10-05T00:00:${String(10 + i).padStart(2, "0")}Z`, updated_at: `2026-10-05T00:00:${String(11 + i).padStart(2, "0")}Z` }));
+    expect(parts.length).toBeGreaterThanOrEqual(20);
+    const { ready } = mount({
+      activity: "awaiting_input",
+      messages: [user, reply([...parts, { key: "p9", kind: "text", revision: 1, content: "All done." }], "completed")],
+      turns: [turn({ state: "succeeded", actions: [], finished_at: "2026-10-05T00:01:00Z" })],
+    });
+    await ready;
+    const group = await screen.findByTestId("work-group");
+    // Finished work is one quiet line with its real duration, counts and the failure.
+    expect(group).toHaveTextContent("Worked for 23s");
+    expect(group).toHaveTextContent("1 command · 4 file edits · 14 reads · 4 searches");
+    expect(group).toHaveTextContent("1 failed");
+    expect(within(group).queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(within(group).getByRole("button", { name: /Worked for/ }));
+    // 23 tool calls read as 6 rows: folds for the quiet kinds, single rows for the rest.
+    const rows = within(group).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent?.replace(/\s+/g, " ").trim().slice(0, 40))).toEqual([
+      expect.stringContaining("Read 9 files"),
+      expect.stringContaining("Ran 4 searches"),
+      expect.stringContaining("Ran" + "python -m pytest -q"),
+      expect.stringContaining("Edited 3 files"),
+      expect.stringContaining("Edited" + "/work/src/a.py"),
+      expect.stringContaining("Read 5 files"),
+    ]);
+    expect(rows[0]).toHaveTextContent("mod0.py, mod1.py");
+    expect(rows[4]).toHaveTextContent("Failed");
+    // A fold opens to every step with its exact path; a step opens to its real output.
+    await userEvent.click(within(rows[3]).getByRole("button"));
+    const edits = within(rows[3]).getAllByTestId("work-step");
+    expect(edits.map((e) => e.textContent)).toEqual([
+      expect.stringContaining("/work/src/a.py"),
+      expect.stringContaining("/work/src/b.py"),
+      expect.stringContaining("/work/src/c.py"),
+    ]);
+    await userEvent.click(within(edits[1]).getByRole("button"));
+    expect(edits[1]).toHaveTextContent("content: print(1)");
+    await userEvent.click(within(rows[4]).getByRole("button"));
+    expect(rows[4]).toHaveTextContent("String to replace not found");
+  });
+
+  it("keeps what the reader opened while new output keeps arriving", async () => {
+    let push: (f: string) => void = () => {};
+    const body = new ReadableStream({
+      start(c) {
+        push = (f) => c.enqueue(enc.encode(f));
+      },
+    });
+    const m = mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/sessions/s1", { json: { session: session({ activity: "running", harness: { provider_id: "claude", model: "flash" } }), event_watermark: 4 } }],
+      ["GET", "/api/sessions/s1/messages", { json: { event_watermark: 4, items: [user, reply([toolPart("c1", "Bash", "completed", { command: "ls" }, "a.py"), { key: "p1", kind: "text", revision: 1, content: "Listed." }])] } }],
+      ["GET", "/api/sessions/s1/turns", { json: { items: [turn()] } }],
+      ["GET", "/api/sessions/s1/executor", { json: { backend: "modal", leases: [], worktree: { availability: "live", generation: 1, base_sha: null }, recovery_point: null } }],
+      ["GET", "/api/sessions/s1/events", (call) => (call.headers.Accept === "text/event-stream" ? { body, headers: { "content-type": "text/event-stream" } } : { json: { items: [], next_after: 4, event_watermark: 4 } })],
+    ]);
+    await renderApp(
+      <Routes>
+        <Route path="/sessions/:id/:tab?" element={<SessionPage />} />
+      </Routes>,
+      m.fetch,
+      "/sessions/s1",
+    );
+    const log = await screen.findByRole("log", { name: "Conversation" });
+    const first = (await within(log).findAllByTestId("work-group"))[0];
+    // Finished and followed by prose: collapsed. The reader opens it and one step.
+    expect(within(first).queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(within(first).getByRole("button", { name: /Worked/ }));
+    await userEvent.click(within(within(first).getByRole("listitem")).getByRole("button"));
+    expect(first).toHaveTextContent("a.py");
+    // The reply keeps streaming and a new tool starts in a second group.
+    await act(async () => {
+      push(frame(5, "message.part_updated", { message_id: "m1", part_key: "p1", kind: "text", revision: 2, mode: "append", content: " Now the tests." }));
+      push(frame(6, "tool.started", { message_id: "m1", tool_id: "c2", name: "Bash", status: "running", input: { command: "pytest -q" } }));
+    });
+    await waitFor(() => expect(within(log).getAllByTestId("work-group")).toHaveLength(2));
+    expect(within(log).getByText("Listed. Now the tests.")).toBeInTheDocument();
+    // Their choices survived: the first group and its step are still open.
+    expect(within(log).getAllByTestId("work-group")[0]).toHaveTextContent("a.py");
+    // The bar above the composer names the command that is actually running.
+    const status = screen.getByTestId("turn-status");
+    expect(status).toHaveTextContent("Running");
+    expect(status).toHaveTextContent("pytest -q");
+  });
+
+  it("shows a sent message at once and gives the words back if the server refuses it", async () => {
+    let release: (r: { status: number; json: unknown }) => void = () => {};
+    const { ready } = mount({
+      activity: "awaiting_input",
+      messages: [user],
+      turns: [turn({ state: "succeeded", actions: [] })],
+      send: () => new Promise((resolve) => (release = resolve)),
+    });
+    await ready;
+    const box = (await screen.findByLabelText("Message")) as HTMLTextAreaElement;
+    await userEvent.type(box, "Add a changelog{Enter}");
+    // Before the server answered: the bubble is in the log and the box is free again.
+    const bubble = await screen.findByTestId("outgoing");
+    expect(bubble).toHaveTextContent("Add a changelog");
+    expect(bubble).toHaveTextContent("sending");
+    expect(box.value).toBe("");
+    await act(async () => release({ status: 422, json: { error: { code: "validation_failed", message: "not accepted" } } }));
+    await waitFor(() => expect(screen.queryByTestId("outgoing")).toBeNull());
+    expect(box.value).toBe("Add a changelog");
+    expect(screen.getByRole("button", { name: "Retry sending message" })).toBeInTheDocument();
   });
 });

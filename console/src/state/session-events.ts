@@ -55,7 +55,8 @@ export type LiveAction =
   | { type: "snapshot"; messages: Message[]; watermark: number }
   /** Refresh of messages while streaming: merged by revision, cursor untouched. */
   | { type: "merge_messages"; messages: Message[] }
-  | { type: "events"; items: EventEnvelope[] }
+  /** `now` (ms) stamps parts the events touch; defaults to the wall clock. */
+  | { type: "events"; items: EventEnvelope[]; now?: number }
   | { type: "clear_dirty"; keys: (keyof Dirty)[] };
 
 const sortMessages = (m: Message[]) => [...m].sort((a, b) => a.ordinal - b.ordinal);
@@ -63,7 +64,9 @@ const sortMessages = (m: Message[]) => [...m].sort((a, b) => a.ordinal - b.ordin
 function mergePart(a: MessagePart | undefined, b: MessagePart): MessagePart {
   if (!a) return b;
   if (a.sealed && !b.sealed) return a;
-  return b.revision >= a.revision ? b : a;
+  if (b.revision < a.revision) return a;
+  // A refetch is not activity of its own: the part keeps the time it was last seen live.
+  return a.seen_at ? { ...b, seen_at: a.seen_at } : b;
 }
 
 function mergeMessage(local: Message | undefined, server: Message): Message {
@@ -84,7 +87,7 @@ const EVENT_DIRTY: [RegExp, (keyof Dirty)[]][] = [
   [/^service\./, ["services"]],
 ];
 
-function applyPart(messages: Message[], e: EventEnvelope, partDirty: { unknown: boolean }): Message[] {
+function applyPart(messages: Message[], e: EventEnvelope, partDirty: { unknown: boolean }, now: number): Message[] {
   const p = e.payload ?? {};
   const messageId = typeof p.message_id === "string" ? p.message_id : null;
   if (!messageId) return messages;
@@ -132,8 +135,10 @@ function applyPart(messages: Message[], e: EventEnvelope, partDirty: { unknown: 
   }
   const existing = msg.parts.find((x) => x.key === key);
   let part: MessagePart;
+  // The event's commit time is the same clock the server stamps the part with.
+  const at = typeof e.recorded_at === "string" ? e.recorded_at : null;
   if (!existing) {
-    part = { key, kind, revision: revision ?? 1, content, data, sealed: false };
+    part = { key, kind, revision: revision ?? 1, content, data, sealed: false, created_at: at, updated_at: at, seen_at: now };
   } else {
     if (existing.sealed) return messages;
     const nextRev = revision ?? existing.revision + 1;
@@ -143,6 +148,8 @@ function applyPart(messages: Message[], e: EventEnvelope, partDirty: { unknown: 
       kind === "tool"
         ? { ...existing, revision: nextRev, data: { ...(existing.data ?? {}), ...(data ?? {}) } }
         : { ...existing, revision: nextRev, content: append ? existing.content + content : content };
+    part.updated_at = at ?? existing.updated_at;
+    part.seen_at = now;
   }
   const parts = existing ? msg.parts.map((x) => (x.key === key ? part : x)) : [...msg.parts, part];
   const updated: Message = { ...msg, parts };
@@ -191,7 +198,7 @@ export function liveReducer(state: LiveState, action: LiveAction): LiveState {
         seen.add(e.id);
         events.push(e);
         if (/^(message\.part_|tool\.)/.test(e.type)) {
-          messages = applyPart(messages, e, partDirty);
+          messages = applyPart(messages, e, partDirty, action.now ?? Date.now());
         } else {
           for (const [re, keys] of EVENT_DIRTY) {
             if (re.test(e.type)) for (const k of keys) dirty[k] = true;

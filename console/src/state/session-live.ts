@@ -9,6 +9,7 @@ import {
   type LiveAction,
   type LiveState,
 } from "./session-events";
+import { traceEvent } from "./stream-trace";
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "error";
 
@@ -74,9 +75,17 @@ export class SessionLive {
       this.listeners.delete(fn);
     };
   };
+  private notifying = false;
   private set(patch: Partial<SessionLiveState>) {
     this.state = { ...this.state, ...patch };
-    this.listeners.forEach((l) => l());
+    // One notification per burst: a network chunk often carries several streamed
+    // deltas, and each would otherwise re-render the whole conversation on its own.
+    if (this.notifying) return;
+    this.notifying = true;
+    queueMicrotask(() => {
+      this.notifying = false;
+      this.listeners.forEach((l) => l());
+    });
   }
   private dispatch(action: LiveAction) {
     const next = liveReducer(this.state, action);
@@ -192,6 +201,7 @@ export class SessionLive {
             }
           },
           onEvent: (e) => {
+            traceEvent(e);
             this.dispatch({ type: "events", items: [e] });
             if (this.state.needsResync) ctl.abort();
             else this.scheduleRefresh();

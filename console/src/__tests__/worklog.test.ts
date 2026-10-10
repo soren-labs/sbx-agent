@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Message, MessagePart, Turn } from "../api/types";
 import {
+  activityOf,
   blocksOf,
   countSteps,
   entriesOf,
+  isStreaming,
+  namesOf,
+  rowsOf,
+  spanOf,
   formatDuration,
   formatTokens,
   inputText,
@@ -104,7 +109,88 @@ describe("worklog model", () => {
 
   it("falls back to authored content for Messages without parts", () => {
     const entries = entriesOf(message([], { content: [{ kind: "text", text: "hello" }] }), false);
-    expect(entries).toEqual([{ type: "text", key: "m1:content", content: "hello" }]);
+    expect(entries).toEqual([{ type: "text", key: "m1:content", content: "hello", streaming: false }]);
+  });
+
+  it("folds consecutive finished reads, searches and edits but never a running or failed step", () => {
+    const steps = [
+      tool("1", "Read", "completed", { file_path: "src/a.py" }),
+      tool("2", "Read", "completed", { file_path: "src/b.py" }),
+      tool("3", "Read", "completed", { file_path: "src/a.py" }),
+      tool("4", "Grep", "completed", { pattern: "def " }),
+      tool("5", "Glob", "completed", { pattern: "**/*.py" }),
+      tool("6", "Bash", "completed", { command: "ls" }),
+      tool("7", "Bash", "completed", { command: "pytest" }),
+      tool("8", "Edit", "completed", { file_path: "src/a.py" }),
+      tool("9", "Edit", "error", { file_path: "src/b.py" }, { error: true }),
+      tool("10", "Write", "completed", { file_path: "src/c.py" }),
+      tool("11", "Write", "running", { file_path: "src/d.py" }),
+      tool("12", "mcp__x__lookup", "completed", { query: "a" }),
+      tool("13", "mcp__x__lookup", "completed", { query: "b" }),
+      tool("14", "mcp__y__other", "completed", { query: "c" }),
+    ].map(toStep);
+    const rows = rowsOf(steps);
+    expect(rows.map((r) => [r.kind, r.steps.length])).toEqual([
+      ["read", 3],
+      ["search", 2],
+      ["command", 1], // commands are the work itself: each keeps its own line
+      ["command", 1],
+      ["edit", 1],
+      ["edit", 1], // the failed edit stays visible on its own
+      ["edit", 1],
+      ["edit", 1], // and so does the one still running
+      ["tool", 2], // repeats of the same tool fold; a different tool does not join
+      ["tool", 1],
+    ]);
+    // Folding regroups, it never drops or reorders a step.
+    expect(rows.flatMap((r) => r.steps.map((s) => s.key))).toEqual(steps.map((s) => s.key));
+    expect(namesOf(rows[0])).toEqual(["a.py", "b.py"]);
+    // Row keys depend only on the first step, so a growing fold keeps its open/closed state.
+    expect(rowsOf(steps.slice(0, 2))[0].key).toBe(rows[0].key);
+  });
+
+  it("marks text and reasoning as streaming only while deltas keep arriving here", () => {
+    const now = 1_000_000;
+    const fresh: MessagePart = { key: "p1", kind: "text", revision: 4, content: "Hel", seen_at: now - 300 };
+    expect(isStreaming(fresh, now)).toBe(true);
+    expect(isStreaming({ ...fresh, seen_at: now - 5000 }, now)).toBe(false); // the stream went quiet
+    expect(isStreaming({ ...fresh, seen_at: undefined }, now)).toBe(false); // loaded from a snapshot
+    expect(isStreaming({ ...fresh, sealed: true }, now)).toBe(false);
+    const thought: MessagePart = { key: "r1", kind: "reasoning", revision: 2, content: "Hmm", seen_at: now - 100 };
+    const [work] = entriesOf(message([thought]), true, now);
+    expect(work.type === "work" && work.steps[0].streaming).toBe(true);
+    expect(work.type === "work" && work.running).toBe(true);
+    // Only the newest part can be growing; an older one is done even if it was just seen.
+    const [older, newest] = entriesOf(message([{ ...fresh }, { ...fresh, key: "p2" }]), true, now);
+    expect([older.type === "text" && older.streaming, newest.type === "text" && newest.streaming]).toEqual([false, true]);
+    // Nothing streams once the Turn is over.
+    const [done] = entriesOf(message([fresh]), false, now);
+    expect(done.type === "text" && done.streaming).toBe(false);
+  });
+
+  it("reports the live activity from the newest part and never guesses", () => {
+    const now = 1_000_000;
+    expect(activityOf([], now)).toEqual({ type: "waiting" });
+    expect(activityOf([message([tool("1", "Bash", "running", { command: "pytest -q" })])], now)).toEqual({
+      type: "step",
+      kind: "command",
+      detail: "pytest -q",
+    });
+    expect(activityOf([message([tool("1", "Bash", "completed", { command: "ls" })])], now)).toEqual({ type: "waiting" });
+    expect(activityOf([message([{ key: "p", kind: "text", revision: 2, content: "Hi", seen_at: now - 10 }])], now)).toEqual({ type: "writing" });
+    expect(activityOf([message([{ key: "r", kind: "reasoning", revision: 2, content: "Hm", seen_at: now - 10 }])], now)).toEqual({ type: "thinking" });
+    // A whole block from a CLI that does not stream is not "being written".
+    expect(activityOf([message([text("p", "Complete block")])], now)).toEqual({ type: "waiting" });
+  });
+
+  it("measures a group from recorded part times only", () => {
+    const at = (key: string, created_at: string | null, updated_at: string | null) =>
+      toStep({ ...tool(key, "Bash", "completed", { command: "x" }), created_at, updated_at });
+    expect(spanOf([at("1", "2026-10-10T00:00:05Z", "2026-10-10T00:00:07Z"), at("2", "2026-10-10T00:00:01Z", "2026-10-10T00:00:30Z")])).toEqual({
+      start: "2026-10-10T00:00:01Z",
+      end: "2026-10-10T00:00:30Z",
+    });
+    expect(spanOf([at("1", null, null)])).toEqual({ start: null, end: null });
   });
 
   it("groups Messages under their Turn and keeps Turns that have no Message yet", () => {

@@ -241,6 +241,11 @@ export interface MessagePart {
   content: string;
   data?: Record<string, unknown> | null;
   sealed?: boolean;
+  /** When the part first appeared / last changed; null for parts older than the field. */
+  created_at?: string | null;
+  updated_at?: string | null;
+  /** Client-only: when this browser last applied a live change to the part (ms). */
+  seen_at?: number;
 }
 export interface Message {
   id: string;

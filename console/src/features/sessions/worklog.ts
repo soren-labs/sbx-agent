@@ -18,10 +18,15 @@ export interface Step {
   detail: string;
   input: string;
   output: string;
+  /** Server timestamps of the part; absent when the server never recorded them. */
+  startedAt?: string | null;
+  endedAt?: string | null;
+  /** Reasoning the provider is still streaming. */
+  streaming?: boolean;
 }
 
 export type Entry =
-  | { type: "text"; key: string; content: string }
+  | { type: "text"; key: string; content: string; streaming: boolean }
   | { type: "work"; key: string; steps: Step[]; running: boolean };
 
 // Tool names differ per official CLI; these cover OpenCode, Codex, Claude Code,
@@ -82,8 +87,9 @@ export function inputText(input: unknown, shown = ""): string {
 }
 
 export function toStep(part: MessagePart): Step {
+  const times = { startedAt: part.created_at, endedAt: part.updated_at };
   if (part.kind === "reasoning") {
-    return { key: part.key, kind: "thought", status: "done", name: "reasoning", detail: "", input: "", output: part.content };
+    return { key: part.key, kind: "thought", status: "done", name: "reasoning", detail: "", input: "", output: part.content, ...times };
   }
   const data = (part.data ?? {}) as Record<string, unknown>;
   const name = String(data.name ?? "tool");
@@ -91,7 +97,7 @@ export function toStep(part: MessagePart): Step {
   const status: StepStatus =
     data.error === true || raw === "error" || raw === "failed" ? "error" : raw === "completed" ? "done" : "running";
   const detail = detailOf(data);
-  return { key: part.key, kind: stepKind(name), status, name, detail, input: inputText(data.input, detail), output: text(data.output) };
+  return { key: part.key, kind: stepKind(name), status, name, detail, input: inputText(data.input, detail), output: text(data.output), ...times };
 }
 
 /**
@@ -99,34 +105,125 @@ export function toStep(part: MessagePart): Step {
  * one work group. A group is running only while the Turn itself is live — a tool the
  * CLI never closed must not spin forever after the Turn ended.
  */
-export function entriesOf(message: Message, live: boolean): Entry[] {
+/**
+ * A part counts as streaming only while this browser keeps receiving changes to it.
+ * CLIs that report whole blocks never look like they are typing, and a reload does
+ * not pretend an old part is growing.
+ */
+export const STREAM_FRESH_MS = 2500;
+
+export function isStreaming(part: MessagePart | undefined, now: number): boolean {
+  return !!part && !part.sealed && part.kind !== "tool" && part.seen_at !== undefined && now - part.seen_at < STREAM_FRESH_MS;
+}
+
+export function entriesOf(message: Message, live: boolean, now = Date.now()): Entry[] {
   const entries: Entry[] = [];
   let group: Extract<Entry, { type: "work" }> | null = null;
-  for (const part of message.parts) {
+  const shown = message.parts.filter((part) => part.kind === "tool" || part.content.trim());
+  // Only the newest part can still be growing: the provider generates in order.
+  const last = live ? shown[shown.length - 1] : undefined;
+  const growing = isStreaming(last, now) ? last : undefined;
+  for (const part of shown) {
     if (part.kind === "tool" || part.kind === "reasoning") {
-      if (part.kind === "reasoning" && !part.content.trim()) continue;
       if (!group) {
         group = { type: "work", key: `work:${part.key}`, steps: [], running: false };
         entries.push(group);
       }
       const step = toStep(part);
+      if (part.kind === "reasoning") step.streaming = part === growing;
       group.steps.push(live || step.status !== "running" ? step : { ...step, status: "done" });
-    } else if (part.content.trim()) {
+    } else {
       group = null;
-      entries.push({ type: "text", key: part.key, content: part.content });
+      entries.push({ type: "text", key: part.key, content: part.content, streaming: part === growing });
     }
   }
   if (!message.parts.length) {
     const authored = message.content.map((c) => c.text ?? "").join("\n\n");
-    if (authored.trim()) entries.push({ type: "text", key: `${message.id}:content`, content: authored });
+    if (authored.trim()) entries.push({ type: "text", key: `${message.id}:content`, content: authored, streaming: false });
   }
   for (const entry of entries) {
-    if (entry.type === "work") entry.running = live && entry.steps.some((s) => s.status === "running");
+    if (entry.type === "work") entry.running = live && entry.steps.some((s) => s.status === "running" || s.streaming);
   }
   // While the Turn is live the newest group is where the agent is working.
-  const last = entries[entries.length - 1];
-  if (live && last?.type === "work") last.running = true;
+  const tail = entries[entries.length - 1];
+  if (live && tail?.type === "work") tail.running = true;
   return entries;
+}
+
+/**
+ * One line of the worklog. Consecutive finished steps of the same quiet kind (reads,
+ * searches, edits, …) fold into a single row; a running or failed step always keeps
+ * its own row so it cannot hide inside a fold. Folding only regroups: every step is
+ * still there, in order, one click away.
+ */
+export interface Row {
+  key: string;
+  kind: StepKind;
+  steps: Step[];
+}
+
+const FOLDABLE: StepKind[] = ["read", "search", "edit", "web", "plan", "tool"];
+
+function folds(prev: Step, step: Step): boolean {
+  if (prev.kind !== step.kind || !FOLDABLE.includes(step.kind)) return false;
+  if (prev.status !== "done" || step.status !== "done") return false;
+  // Unclassified tools fold only with repeats of the same tool.
+  return step.kind !== "tool" || prev.name === step.name;
+}
+
+export function rowsOf(steps: Step[]): Row[] {
+  const rows: Row[] = [];
+  for (const step of steps) {
+    const row = rows[rows.length - 1];
+    if (row && folds(row.steps[row.steps.length - 1], step)) row.steps.push(step);
+    else rows.push({ key: `row:${step.key}`, kind: step.kind, steps: [step] });
+  }
+  return rows;
+}
+
+/** Last path segment, for compact lists of files; the full path stays in the step. */
+export function shortName(detail: string): string {
+  const clean = detail.replace(/[\\/]+$/, "");
+  return clean.slice(Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\")) + 1) || detail;
+}
+
+/** Distinct short names of a folded row, in order. */
+export function namesOf(row: Row): string[] {
+  return [...new Set(row.steps.map((step) => shortName(step.detail || step.name)))];
+}
+
+/** First recorded start and last recorded end across steps; null when unrecorded. */
+export function spanOf(steps: Step[]): { start: string | null; end: string | null } {
+  let start: string | null = null;
+  let end: string | null = null;
+  for (const step of steps) {
+    if (step.startedAt && (!start || step.startedAt < start)) start = step.startedAt;
+    const last = step.endedAt ?? step.startedAt;
+    if (last && (!end || last > end)) end = last;
+  }
+  return { start, end };
+}
+
+/** Rows shown while a group is live: the newest ones, so the current step stays in view. */
+export const LIVE_TAIL_ROWS = 8;
+
+/** What the agent is doing right now, from the newest part of a live Turn. */
+export type Activity =
+  | { type: "step"; kind: StepKind; detail: string }
+  | { type: "thinking" }
+  | { type: "writing" }
+  | { type: "waiting" };
+
+export function activityOf(messages: Message[], now = Date.now()): Activity {
+  const parts = messages.filter((m) => m.role === "assistant").flatMap((m) => m.parts);
+  const last = parts[parts.length - 1];
+  if (!last) return { type: "waiting" };
+  if (last.kind === "tool") {
+    const step = toStep(last);
+    return step.status === "running" ? { type: "step", kind: step.kind, detail: step.detail || step.name } : { type: "waiting" };
+  }
+  if (!isStreaming(last, now)) return { type: "waiting" };
+  return last.kind === "reasoning" ? { type: "thinking" } : { type: "writing" };
 }
 
 export type Counts = Partial<Record<StepKind, number>>;
