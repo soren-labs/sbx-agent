@@ -10,6 +10,10 @@ model, so it proves key, base URL, protocol and model together. It can count aga
 provider quota and is recorded as quota-consuming. Base URLs are caller-controlled, so
 they must be public HTTPS origins: private, loopback and link-local targets are refused
 before any request leaves the control plane, and redirects are never followed.
+
+A ready Connection also records, per model and protocol, whether the provider's own
+"reasoning off" switch measurably works (two tiny requests each). That is the only basis
+on which a thinking control is ever offered for a custom API model.
 """
 
 from __future__ import annotations
@@ -18,11 +22,12 @@ import ipaddress
 import os
 import re
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from protocol.capabilities import INFERENCE_PROTOCOLS
+from protocol.capabilities import INFERENCE_PROTOCOLS, REASONING_OFF
 
 from control.domain.errors import DomainError
 from control.integrations.connectors.base import Observation, require
@@ -230,6 +235,80 @@ def _catalog(http: Any, material: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+REASONING_PROMPT = "What is 17 * 23? Think step by step, then give the number."
+REASONING_MODELS = 3
+REASONING_SOURCE = "default vs. reasoning-disabled request per endpoint"
+
+
+def _reasoning_call(
+    http: Any, protocol: str, base_url: str, key: str, model: str, off: bool
+) -> int | None:
+    """Reasoning the provider reports for one tiny request; ``None`` when it cannot be told."""
+    ask = [{"role": "user", "content": REASONING_PROMPT}]
+    headers = {**HEADERS, "Authorization": f"Bearer {key}"}
+    if protocol == "anthropic_messages":
+        url = f"{base_url}/v1/messages"
+        headers = {**HEADERS, "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION}
+        body: dict[str, Any] = {"model": model, "max_tokens": 64, "messages": ask}
+        if off:
+            body["thinking"] = {"type": "disabled"}
+    elif protocol == "openai_responses":
+        url = f"{base_url}/responses"
+        body = {"model": model, "input": REASONING_PROMPT, "max_output_tokens": 64}
+        if off:
+            body["reasoning"] = {"effort": REASONING_OFF}
+    else:
+        url = f"{base_url}/chat/completions"
+        body = {"model": model, "messages": ask, "max_tokens": 64}
+        if off:
+            body["reasoning_effort"] = REASONING_OFF
+    try:
+        response = http.post(url, json=body, headers=headers, timeout=45, follow_redirects=False)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if protocol == "anthropic_messages":
+            blocks = data.get("content") or []
+            return sum(len(b.get("thinking") or "") for b in blocks if b.get("type") == "thinking")
+        usage = data.get("usage") or {}
+        if protocol == "openai_responses":
+            return int((usage.get("output_tokens_details") or {}).get("reasoning_tokens") or 0)
+        message = ((data.get("choices") or [{}])[0]).get("message") or {}
+        counted = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        return int(counted or 0) or len(message.get("reasoning_content") or "")
+    except Exception:
+        return None
+
+
+def _reasoning(http: Any, material: dict[str, Any], models: list[str]) -> dict[str, dict[str, str]]:
+    """Per model and protocol: ``toggle`` only when the model reasons by default and the
+    provider's own off switch measurably stops it; ``none`` when it does not reason;
+    ``unverified`` otherwise. Nothing is assumed from the provider's name."""
+    key = material["api_key"]
+    jobs = [
+        (model, protocol, base_url, off)
+        for model in models[:REASONING_MODELS]
+        for protocol, base_url in material["endpoints"].items()
+        if _resolves_public(base_url)
+        for off in (False, True)
+    ]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        used = list(pool.map(lambda j: _reasoning_call(http, j[1], j[2], key, j[0], j[3]), jobs))
+    seen = {(m, p, off): n for (m, p, _, off), n in zip(jobs, used, strict=True)}
+    out: dict[str, dict[str, str]] = {}
+    for model in models[:REASONING_MODELS]:
+        for protocol in material["endpoints"]:
+            default, off = seen.get((model, protocol, False)), seen.get((model, protocol, True))
+            if default == 0:
+                kind = "none"
+            elif default and off == 0:
+                kind = "toggle"
+            else:
+                kind = "unverified"
+            out.setdefault(model, {})[protocol] = kind
+    return out
+
+
 def validate(credential: dict[str, Any], *, client: Any = None) -> Observation:
     http = client or httpx
     probes = {
@@ -252,6 +331,11 @@ def validate(credential: dict[str, Any], *, client: Any = None) -> Observation:
                 quota_consuming=True,
                 retry_after=failed[0].get("retry_after"),
             )
-    return Observation(
-        "ready", details=details, catalog=_catalog(http, credential), quota_consuming=True
-    )
+    catalog = _catalog(http, credential)
+    reasoning = _reasoning(http, credential, [m["id"] for m in catalog["models"]])
+    catalog["models"] = [
+        {**m, "reasoning": reasoning[m["id"]]} if m["id"] in reasoning else m
+        for m in catalog["models"]
+    ]
+    catalog["reasoning_source"] = REASONING_SOURCE
+    return Observation("ready", details=details, catalog=catalog, quota_consuming=True)

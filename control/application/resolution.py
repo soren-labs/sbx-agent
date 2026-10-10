@@ -13,6 +13,7 @@ from control.domain.errors import DomainError
 from control.domain.identity import Principal
 
 EXECUTOR_BACKENDS = frozenset({"local", "modal"})
+INFERENCE_MODES = frozenset({"custom_api", "subscription"})
 
 
 def _require_enabled(catalog: HarnessCatalog, provider_id: str) -> dict[str, Any]:
@@ -75,8 +76,35 @@ class ExplicitResolver:
             )
         connections = {**(defaults.get("connections") or {}), **(body.get("connections") or {})}
         repository = body.get("repository") if "repository" in body else defaults.get("repository")
+        inference = body.get("inference") or {}
+        mode = inference.get("mode") or (
+            "subscription" if inference.get("machine_slot_id") else "custom_api"
+        )
+        if mode not in INFERENCE_MODES:
+            raise DomainError(
+                "validation_failed",
+                "inference.mode must be custom_api or subscription",
+                details={"field": "inference.mode"},
+            )
+        if mode == "subscription" and connections.get("inference"):
+            # Never both: a subscription Session must not silently fall back to an API key.
+            raise DomainError(
+                "validation_failed",
+                "a subscription Session cannot also pin an inference connection",
+                details={"field": "connections.inference"},
+            )
         return {
-            "harness": {"provider_id": provider_id, "model": harness.get("model")},
+            "harness": {
+                "provider_id": provider_id,
+                "model": harness.get("model"),
+                "effort": harness.get("effort"),
+            },
+            "inference": {
+                "mode": mode,
+                "machine_slot_id": inference.get("machine_slot_id")
+                if mode == "subscription"
+                else None,
+            },
             "executor": executor,
             "connections": {k: connections.get(k) for k in ("compute", "inference", "source")},
             "repository": repository,
@@ -95,7 +123,12 @@ class ExplicitResolver:
     def resolve(
         self, uow: Any, principal: Principal, workspace_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        return self.base(uow, principal, workspace_id, body)
+        spec = self.base(uow, principal, workspace_id, body)
+        if spec["inference"]["mode"] == "subscription":
+            raise DomainError(
+                "unsupported_capability", "subscription Sessions need the Project resolver"
+            )
+        return spec
 
 
 class StaticCatalog:

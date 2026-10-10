@@ -238,6 +238,7 @@ class ModalExecutor:
                     "SBX_IMAGE_DIGEST": f"modal:{image.object_id}",
                     "PYTHONPATH": "/root",
                 },
+                **self._profile_volume(client, spec.get("profile")),
                 encrypted_ports=[RUNTIME_PORT],
                 timeout=self.sandbox_timeout,
                 cpu=cpu,
@@ -290,6 +291,29 @@ class ModalExecutor:
             include_oidc_identity_token=False,
             **options,
         )
+
+    def _profile_volume(self, client: Any, profile: dict[str, Any] | None) -> dict[str, Any]:
+        """Mount of a Machine Slot's private Volume for its single Worker (never created here)."""
+        if not profile:
+            return {}
+        volume = self.sdk.Volume.from_name(
+            profile["volume_name"], create_if_missing=False, version=2, client=client
+        )
+        return {"volumes": {profile["mount"]: volume}}
+
+    def profile_sync(
+        self, handle: dict[str, Any], compute: dict[str, Any] | None, mount: str
+    ) -> bool:
+        """Commit the mounted Slot Volume (Volume v2 persists on an explicit sync)."""
+        try:
+            sandbox = self._sandbox(handle, compute)
+            if sandbox.poll() is not None:
+                return False
+            process = sandbox.exec("sync", mount, timeout=60)
+            process.wait()
+            return process.returncode == 0
+        except Exception:
+            return False
 
     # ------------------------------------------------------------ subscription setup
     def setup_start(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:

@@ -13,6 +13,9 @@ from control.domain.identity import Principal
 
 
 class ProjectResolver(ExplicitResolver):
+    # Machine Slot service (set by composition); ``None`` disables subscription Sessions.
+    slots: Any = None
+
     def resolve(
         self, uow: Any, principal: Principal, workspace_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -50,12 +53,41 @@ class ProjectResolver(ExplicitResolver):
             **DEFAULT_SHIP_POLICY,
             "base_branch": (spec.get("repository") or {}).get("base_ref"),
         }
+        if spec["inference"]["mode"] == "subscription":
+            self._bind_slot(uow, principal, workspace_id, spec)
         spec["connections"] = self._select(uow, workspace_id, spec)
         if not spec["harness"].get("model") and spec["connections"].get("inference"):
             spec["harness"]["model"] = self._config(uow, spec["connections"]["inference"]).get(
                 "model"
             )
         return spec
+
+    def _bind_slot(
+        self, uow: Any, principal: Principal, workspace_id: str, spec: dict[str, Any]
+    ) -> None:
+        """A subscription Session runs on its Slot's Modal workspace with no API key."""
+        if self.slots is None:
+            raise DomainError(
+                "unsupported_capability", "Machine Slots are not enabled on this deployment"
+            )
+        binding = self.slots.session_binding(
+            uow, principal, workspace_id, spec["inference"]["machine_slot_id"], spec["harness"]
+        )
+        if spec["executor"]["backend"] != "modal":
+            raise DomainError(
+                "validation_failed",
+                "a subscription Session runs on the Modal executor",
+                details={"field": "executor.backend", "expected": "modal"},
+            )
+        compute = spec["connections"].get("compute")
+        if compute and compute != binding["compute_connection_id"]:
+            raise DomainError(
+                "validation_failed",
+                "the Session must use the Modal connection that holds the slot",
+                details={"field": "connections.compute"},
+            )
+        spec["inference"]["machine_slot_id"] = binding["slot_id"]
+        spec["connections"]["compute"] = binding["compute_connection_id"]
 
     def _accepted(self, provider_id: str) -> list[str]:
         return list((self.catalog.manifest(provider_id) or {}).get("inference_protocols") or [])
@@ -72,8 +104,9 @@ class ProjectResolver(ExplicitResolver):
     def _select(self, uow: Any, workspace_id: str, spec: dict[str, Any]) -> dict[str, Any]:
         provider_id = spec["harness"]["provider_id"]
         accepted = self._accepted(provider_id)
+        subscription = spec["inference"]["mode"] == "subscription"
         wanted: dict[str, tuple[str | None, bool]] = {
-            "inference": (INFERENCE_KIND, True),
+            "inference": (None if subscription else INFERENCE_KIND, True),
             "compute": ("modal" if spec["executor"]["backend"] == "modal" else None, True),
             "source": ("github" if spec.get("repository") else None, False),
         }

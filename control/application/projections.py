@@ -86,7 +86,15 @@ def session_resource(
         "labels": list(session["labels"] or []),
         "project_id": session["project_id"],
         "project_version_id": session["project_version_id"],
-        "harness": {"provider_id": session["harness_provider"], "model": session["harness_model"]},
+        "harness": {
+            "provider_id": session["harness_provider"],
+            "model": session["harness_model"],
+            "effort": session["harness_effort"],
+        },
+        "inference": {
+            "mode": "subscription" if session["machine_slot_id"] else "custom_api",
+            "machine_slot_id": session["machine_slot_id"],
+        },
         "executor": {
             "backend": session["executor_backend"],
             "resource_class": session["resource_class"],

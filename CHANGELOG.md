@@ -12,6 +12,13 @@ source for release notes.
   real verification URL and code, verifies the login with a real CLI call, and marks the Slot
   ready by itself. API under `/api/machine-slots` (#199).
 
+- Sessions can run on a Machine Slot (`inference.mode = "subscription"`): one Worker VM per
+  Slot, the Slot's Volume mounted only there, no API key attached and no API fallback.
+- Each Slot shows the model catalog its authenticated Codex CLI reports, and Sessions accept only
+  those models and each model's own reasoning efforts (`harness.effort`).
+- Custom API models get a thinking on/off control only where a probe showed the provider's switch
+  works and the Harness forwards it (OpenCode with DeepSeek); no graded levels are invented.
+
 ### Changed
 - Every Modal sandbox is now a full Linux VM (`runtime="vm"`, Modal SDK `>=1.6.1`). There is one
   runtime for all Modal workloads; existing Modal and inference Connections keep working unchanged.

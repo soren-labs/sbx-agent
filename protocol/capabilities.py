@@ -54,3 +54,11 @@ HARNESS_CLI_PACKAGES: dict[str, tuple[str, str]] = {
     "grok": ("@xai-official/grok", "1.0.50"),
     "commandcode": ("command-code", "1.79.2"),
 }
+
+# Custom-API reasoning control verified end to end with the official CLI: Harness ->
+# wire protocols on which the single value ``none`` (thinking off) reaches the endpoint.
+# A model still needs its Connection's probe to show the control takes effect.
+REASONING_OFF = "none"
+REASONING_TOGGLE_PROTOCOLS: dict[str, tuple[str, ...]] = {
+    "opencode": ("openai_chat", "anthropic_messages"),
+}

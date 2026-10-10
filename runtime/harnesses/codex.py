@@ -6,8 +6,12 @@ no credential reaches disk. Codex 0.162 speaks only the OpenAI Responses wire AP
 (``wire_api = "chat"`` was removed upstream), verified with DeepSeek ``/responses``.
 Native threads live in ``CODEX_HOME/sessions``, the only native state.
 
-Sessions created before generic inference keep their uploaded ``auth.json`` lane;
-subscription credential management is not offered to new Sessions.
+A subscription Turn (Machine Slot) instead points ``CODEX_HOME`` at the official login
+on the mounted Slot Volume: no key is passed, nothing is written to the profile's
+``config.toml``, and the model and ``model_reasoning_effort`` travel as CLI overrides.
+Its native threads live on that Volume, so they follow the Slot across Worker VMs.
+
+Sessions created before generic inference keep their uploaded ``auth.json`` lane.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from runtime.harnesses.protocol import (
 )
 from runtime.security.credentials import private_dir, scrub, write_secret_file
 
-ADAPTER_VERSION = "codex-harness/2"
+ADAPTER_VERSION = "codex-harness/3"
 PROTOCOLS = ("openai_responses",)
 
 
@@ -58,7 +62,10 @@ class CodexHarness:
             distribution="npm:@openai/codex",
             transport="jsonl",
             support_tier="supported",
-            credential_methods=["inference_api key via model_providers env_key"],
+            credential_methods=[
+                "inference_api key via model_providers env_key",
+                "official login on a Machine Slot volume",
+            ],
             inference_protocols=list(PROTOCOLS),
             native_state_versions=["codex-sessions-1"],
             capabilities={
@@ -74,9 +81,17 @@ class CodexHarness:
                 "attachments": Capability("unknown"),
                 "structured_output": Capability("unsupported", "", "prompt-only", "prompt_only"),
                 "model_discovery": Capability(
-                    "unsupported", "", "models come from the inference connection catalog"
+                    "supported",
+                    "app-server model/list",
+                    "subscription: the Machine Slot's authenticated catalog; "
+                    "custom API: the inference connection catalog",
                 ),
-                "effort_settings": Capability("unknown", "", "model_reasoning_effort not wired"),
+                "effort_settings": Capability(
+                    "supported",
+                    "-c model_reasoning_effort",
+                    "subscription only, limited to the efforts the selected model lists; with a "
+                    "custom API the CLI does not forward the setting (measured), so none is offered",
+                ),
                 "credential_writeback": Capability("unsupported", "", "static API key"),
                 "usage": Capability("supported", "turn.completed.usage"),
             },
@@ -86,6 +101,8 @@ class CodexHarness:
         home = private_dir(context.home)
         codex_home = private_dir(home / ".codex")
         env = base_env(home, CODEX_HOME=str(codex_home))
+        if (context.inference or {}).get("mode") == "subscription":
+            return self._prepare_subscription(context, home)
         bundle = (credentials.get("codex") or {}).get("auth_json")
         if bundle and not context.inference:
             files, secrets = [write_secret_file(codex_home / "auth.json", bundle)], []
@@ -115,12 +132,27 @@ class CodexHarness:
             home=home, env=env, secrets=[inference.api_key], model=inference.model
         )
 
+    def _prepare_subscription(self, context: TurnContext, home: Path) -> PreparedHarness:
+        """Official login on the Slot Volume; the CLI is its only reader."""
+        route = context.inference or {}
+        profile = {k: str(v) for k, v in (route.get("env") or {}).items() if k != "HOME"}
+        if route.get("provider_id") != "codex" or not profile.get("CODEX_HOME"):
+            raise HarnessError("connection_required", "no Codex machine slot was provided")
+        if not Path(profile["CODEX_HOME"]).is_dir():
+            raise HarnessError("connection_required", "the machine slot profile is not mounted")
+        env = base_env(home, **profile)
+        # File-backed auth (a VM has no keyring); the effort is the model's native setting.
+        args = ["-c", 'cli_auth_credentials_store="file"']
+        if context.effort:
+            args += ["-c", f"model_reasoning_effort={json.dumps(context.effort)}"]
+        return PreparedHarness(home=home, env=env, cli_args=args)
+
     def _common(self, context: TurnContext, prepared: PreparedHarness) -> list[str]:
         flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"]
         model = prepared.model or context.model
         if model:
             flags += ["-m", model]
-        return flags
+        return [*flags, *prepared.cli_args]
 
     def start_turn(self, context: TurnContext, prepared: PreparedHarness) -> NativeInvocation:
         argv = [

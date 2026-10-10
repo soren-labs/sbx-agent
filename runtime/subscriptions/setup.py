@@ -4,7 +4,8 @@ Runs as the VM's main process. It drives the provider's own CLI (device login, l
 status, one real verification call), flushes the profile Volume and publishes a small
 state file for the control plane. Only CLI terminal output is inspected: credential
 files are never opened, listed, copied or printed, and the state file carries only the
-verification URL, the one-time user code (until it is used) and coarse outcome codes.
+verification URL, the one-time user code (until it is used), coarse outcome codes and the
+model catalog the authenticated CLI reports.
 
 The spec is provider data supplied by the control plane's adapter, so this module holds
 no provider knowledge. Every CLI call closes stdin: an open stdin stalls official CLIs.
@@ -15,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
@@ -75,6 +77,74 @@ class Supervisor:
         except (subprocess.TimeoutExpired, OSError):
             return None, ""
         return done.returncode, done.stdout + done.stderr
+
+    def catalog(self) -> dict[str, Any] | None:
+        """Model catalog from the authenticated CLI's own machine interface (JSON-RPC lines).
+
+        Returns only the adapter-listed fields of each item; ``None`` when the CLI offers
+        no trustworthy answer, so nothing is ever guessed.
+        """
+        spec = self.spec.get("catalog")
+        if not spec:
+            return None
+        try:
+            process = subprocess.Popen(
+                spec["argv"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return None
+        try:
+            payload = "".join(json.dumps(request) + "\n" for request in spec["requests"])
+            process.stdin.write(payload.encode())
+            process.stdin.flush()
+            deadline = time.monotonic() + float(spec.get("timeout", 60))
+            pending = b""
+            # Unbuffered reads: a buffered reader would hide lines from ``select``.
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([process.stdout], [], [], 1.0)
+                if not ready:
+                    continue
+                chunk = os.read(process.stdout.fileno(), 65536)
+                if not chunk:
+                    return None
+                pending += chunk
+                *lines, pending = pending.split(b"\n")
+                for line in lines:
+                    found = self._catalog_result(line, spec)
+                    if found is not None:
+                        return found or None
+            return None
+        except (OSError, ValueError):
+            return None
+        finally:
+            process.kill()
+            process.wait()
+
+    @staticmethod
+    def _catalog_result(line: bytes, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """``None`` for unrelated lines, ``{}`` for an unusable answer, else the catalog."""
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(message, dict) or message.get("id") != spec["result_id"]:
+            return None
+        result = message.get("result")
+        items = result.get(spec["items_key"]) if isinstance(result, dict) else None
+        if not isinstance(items, list):
+            return {}
+        fields = spec["item_fields"]
+        return {
+            "items": [
+                {k: item[k] for k in fields if k in item}
+                for item in items[:200]
+                if isinstance(item, dict)
+            ],
+            "complete": not result.get(spec.get("cursor_key", "nextCursor")),
+        }
 
     def logged_in(self) -> bool:
         code, output = self.call(self.spec["status_argv"], 30)
@@ -160,6 +230,7 @@ class Supervisor:
             return self.finish("failed", "profile_sync_failed")
         self.publish(
             cli_version=version.strip()[:80] if version_code == 0 else None,
+            catalog=self.catalog(),
             real_model_call=verified,
             warning=None if verified else "usage_limited",
             profile_synced=True,

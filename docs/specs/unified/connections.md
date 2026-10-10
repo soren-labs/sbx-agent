@@ -85,6 +85,21 @@ keeps the current endpoints and model.
   (400/404/405/422), `inference_base_url_not_public`, `inference_base_url_redirects` map to
   `reauth_required`; `inference_rate_limited` to `degraded`; unreachable/5xx retries.
 
+### Reasoning control for custom API models
+
+A ready `inference_api` Connection records, for up to three models and every configured protocol,
+whether the provider's own reasoning-off switch works, using two tiny requests each (default, and
+with `reasoning_effort: "none"` / `reasoning.effort: "none"` / `thinking: {"type": "disabled"}`).
+The catalog model entry gets `reasoning: {<protocol>: "toggle" | "none" | "unverified"}`:
+`toggle` only when the model reasons by default and the off request reports zero reasoning.
+
+A Session or Turn may then set `effort: "none"` (thinking off) only when both hold: the catalog says
+`toggle` for the protocol the Harness will use, and the Harness is listed in
+`protocol.capabilities.REASONING_TOGGLE_PROTOCOLS` for that protocol (verified with the official
+CLI: OpenCode on `openai_chat` and `anthropic_messages`). No graded levels are offered for custom
+API models, and any other value is rejected with the supported list. Codex does not forward the
+setting to a custom Responses endpoint (measured), so none is offered there.
+
 ### Retired kinds
 
 `opencode_zen` and `codex` (uploaded `auth.json`) are no longer offered: creating one or replacing

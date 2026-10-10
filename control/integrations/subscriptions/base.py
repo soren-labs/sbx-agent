@@ -7,6 +7,7 @@ is mounted. It never handles credentials; those stay inside the VM on the Slot V
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,9 @@ class SubscriptionAdapter:
     profile_env: dict[str, str] = field(default_factory=dict)
     setup: dict[str, Any] = field(default_factory=dict)
     login_window_seconds: int = 900
+    # Where the model catalog comes from (shown to users), and how its raw items normalize.
+    catalog_source: str | None = None
+    parse_catalog: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
 
     def setup_spec(self, mode: str) -> dict[str, Any]:
         """Supervisor input for ``runtime.subscriptions.setup`` (``login`` or ``verify``)."""
@@ -43,4 +47,11 @@ class SubscriptionAdapter:
             "login_method": self.login_method,
             "verification_host": self.verification_host,
             "login_window_seconds": self.login_window_seconds,
+            "catalog_source": self.catalog_source,
         }
+
+    def catalog(self, raw: Any) -> dict[str, Any] | None:
+        """Normalized catalog ``{models, default_model, complete}`` or ``None`` (untrusted input)."""
+        if self.parse_catalog is None or not isinstance(raw, dict):
+            return None
+        return self.parse_catalog(raw)
