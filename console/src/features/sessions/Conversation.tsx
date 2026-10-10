@@ -21,6 +21,7 @@ import {
   namesOf,
   plainLine,
   previewOf,
+  toolsOf,
   rowsOf,
   secondsBetween,
   spanOf,
@@ -183,10 +184,11 @@ function FoldRow({ row }: { row: Row }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const names = namesOf(row);
+  const count = toolsOf(row).length;
   const label =
     row.kind === "tool"
-      ? t("work.fold.tool", { n: row.steps.length, name: row.steps[0].name })
-      : t(`work.fold.${row.kind}` as I18nKey, { n: row.kind === "edit" || row.kind === "read" ? names.length : row.steps.length });
+      ? t("work.fold.tool", { n: count, name: row.steps[0].name })
+      : t(`work.fold.${row.kind}` as I18nKey, { n: row.kind === "edit" || row.kind === "read" ? names.length : count });
   return (
     <li className="step step-fold" data-kind={row.kind} data-testid="work-fold">
       <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -201,9 +203,9 @@ function FoldRow({ row }: { row: Row }) {
       </button>
       {open ? (
         <ol className="work-steps is-nested">
-          {row.steps.map((step) => (
-            <StepRow key={step.key} step={step} nested />
-          ))}
+          {row.steps.map((step) =>
+            step.kind === "thought" ? <ThoughtRow key={step.key} step={step} /> : <StepRow key={step.key} step={step} nested />,
+          )}
         </ol>
       ) : null}
     </li>

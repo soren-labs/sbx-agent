@@ -9,6 +9,7 @@ import {
   namesOf,
   plainLine,
   rowsOf,
+  toolsOf,
   spanOf,
   formatDuration,
   formatTokens,
@@ -166,6 +167,18 @@ describe("worklog model", () => {
     expect(namesOf(rows[0])).toEqual(["a.py", "b.py"]);
     // Row keys depend only on the first step, so a growing fold keeps its open/closed state.
     expect(rowsOf(steps.slice(0, 2))[0].key).toBe(rows[0].key);
+    // Brief thoughts between reads go inside the fold, in order; the label counts the reads.
+    const thought = (key: string): (typeof steps)[number] => ({ ...steps[0], key, kind: "thought", name: "", detail: "", output: "next file" });
+    const mixed = rowsOf([steps[0], thought("t1"), steps[1], thought("t2"), steps[5], thought("t3")]);
+    expect(mixed.map((r) => [r.kind, r.steps.map((s) => s.key).join()])).toEqual([
+      ["read", `${steps[0].key},t1,${steps[1].key}`],
+      ["thought", "t2"], // nothing folded after it, so it stays where it was
+      ["command", steps[5].key],
+      ["thought", "t3"],
+    ]);
+    expect(toolsOf(mixed[0])).toHaveLength(2);
+    expect(namesOf(mixed[0])).toEqual(["a.py", "b.py"]);
+    expect(rowsOf([steps[0], thought("t1"), steps[1]], new Set(["t1"])).map((r) => r.steps.length)).toEqual([1, 1, 1]);
     // A step the reader opened stays a row of its own; its neighbours still fold.
     expect(rowsOf(steps.slice(0, 3), new Set([steps[0].key])).map((r) => r.steps.length)).toEqual([1, 2]);
   });

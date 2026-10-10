@@ -184,13 +184,36 @@ function folds(prev: Step, step: Step): boolean {
 
 export function rowsOf(steps: Step[], apart?: ReadonlySet<string>): Row[] {
   const rows: Row[] = [];
+  // Finished thoughts right after a quiet row wait here: if the next step folds into
+  // that row they go inside the fold with it, so a model that thinks briefly before
+  // every read still yields one "Read 5 files" row.
+  let held: Step[] = [];
+  const single = (step: Step) => rows.push({ key: `row:${step.key}`, kind: step.kind, steps: [step] });
+  const flush = () => {
+    held.forEach(single);
+    held = [];
+  };
   for (const step of steps) {
     const row = rows[rows.length - 1];
-    const last = row?.steps[row.steps.length - 1];
-    if (last && !apart?.has(last.key) && !apart?.has(step.key) && folds(last, step)) row.steps.push(step);
-    else rows.push({ key: `row:${step.key}`, kind: step.kind, steps: [step] });
+    const last = row && toolsOf(row).pop();
+    const free = last && !apart?.has(last.key) && !apart?.has(step.key);
+    if (free && step.kind === "thought" && !step.streaming && FOLDABLE.includes(last.kind) && last.status === "done") {
+      held.push(step);
+    } else if (free && folds(last, step) && !held.some((h) => apart?.has(h.key))) {
+      row.steps.push(...held, step);
+      held = [];
+    } else {
+      flush();
+      single(step);
+    }
   }
+  flush();
   return rows;
+}
+
+/** The steps a row is about: a fold may also carry the thoughts between them. */
+export function toolsOf(row: Row): Step[] {
+  return row.steps.filter((step) => step.kind === row.kind);
 }
 
 /** First line of Markdown as plain words, for a one-line preview; the full text stays in the step. */
@@ -211,7 +234,7 @@ export function shortName(detail: string): string {
 
 /** Distinct short names of a folded row, in order. */
 export function namesOf(row: Row): string[] {
-  return [...new Set(row.steps.map((step) => shortName(step.detail || step.name)))];
+  return [...new Set(toolsOf(row).map((step) => shortName(step.detail || step.name)))];
 }
 
 /** First recorded start and last recorded end across steps; null when unrecorded. */

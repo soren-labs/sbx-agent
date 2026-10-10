@@ -53,7 +53,8 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
 * **Rows and folding**: tool names from all five CLIs are classified (command, edit, read,
   search, web, plan, agent); unknown tools stay generic. Consecutive *finished* steps of the same
   quiet kind (read, search, edit, web, plan, repeats of one generic tool) fold into one row
-  ("Read 9 files · a.py, b.py, …") that expands to every step. Commands, a running step and a
+  ("Read 9 files · a.py, b.py, …") that expands to every step; finished reasoning between two
+  steps that fold goes inside the fold with them, in order. Commands, a running step and a
   failed step always keep their own row. A step expands to the exact command or path, its
   input (readable arguments, not escaped JSON) and output, bounded to 14 lines with an exact
   "show N more lines". While a group is live only its newest 8 rows are shown, with "Show N
