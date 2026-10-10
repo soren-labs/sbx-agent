@@ -1,0 +1,123 @@
+$ sbx slots models slot_01a1260d1ae176a8add1c91a3e3e1a4f
+{
+ "status": "ready",
+ "source": "codex app-server model/list",
+ "cli_version": "codex-cli 0.162.0",
+ "models": [
+  {
+   "id": "gpt-6.1-sol",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+   ]
+  },
+  {
+   "id": "gpt-6-astra",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+   ]
+  },
+  {
+   "id": "gpt-6-sol",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+   ]
+  },
+  {
+   "id": "gpt-6-luna",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-5.6-sol",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+   ]
+  },
+  {
+   "id": "gpt-5.6-terra",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+   ]
+  },
+  {
+   "id": "gpt-5.6-luna",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  }
+ ]
+}
+$ sbx sessions create --backend modal --harness codex --slot slot_01a1260d1ae176a8add1c91a3e3e1a4f --model gpt-6-luna --effort ultra --message say hi
+{
+ "code": "validation_failed",
+ "message": "gpt-6-luna does not support reasoning effort 'ultra'",
+ "action": null,
+ "details": {
+  "field": "harness.effort",
+  "model": "gpt-6-luna",
+  "supported": [
+   "low",
+   "medium",
+   "high",
+   "xhigh",
+   "max"
+  ]
+ }
+}
+$ sbx sessions create --backend modal --harness codex --slot slot_01a1260d1ae176a8add1c91a3e3e1a4f --model gpt-6-luna --effort high --message Run `uname -sr && cat /proc/sys/kernel/random/boot_id` in the shell and report exactly what it printed.
+{
+ "id": "sess_01a1261746c67773b27e8b7028981c35",
+ "harness": {
+  "provider_id": "codex",
+  "model": "gpt-6-luna",
+  "effort": "high"
+ },
+ "inference": {
+  "mode": "subscription",
+  "machine_slot_id": "slot_01a1260d1ae176a8add1c91a3e3e1a4f"
+ },
+ "state": null
+}
+$ sbx sessions events sess_01a1261746c67773b27e8b7028981c35   # selected fields
+execution.started {"cli_version": "codex-cli 0.162.0", "provider_id": "codex"}
+tool.completed {"input": "/bin/bash -lc 'uname -sr && cat /proc/sys/kernel/random/boot_id'", "output": "Linux 7.2.9\neea079ab-55b2-4945-8908-17a53360f6cf\n", "error": false}
+usage.observed {"input_tokens": 12145, "output_tokens": 128, "reasoning_output_tokens": 19}
+turn.succeeded {"outcome": {"verdict": "success", "exit_code": 0, "native_id": "01a12617-6766-7aa2-aa83-a8699ec43701", "credential_health": "ok"}}
+# during the Session: [('Codex 19', 'running')]
+# executor release: 202
+# after release: ('Codex 19', 'ready')
+# summary: {"total": 19, "running": 0, "ready": 4, "login_pending": 0, "needs_attention": 15}

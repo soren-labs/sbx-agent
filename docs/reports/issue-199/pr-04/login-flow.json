@@ -1,0 +1,148 @@
+{
+  "steps": [
+    {
+      "name": "clicked_add",
+      "at": "2026-10-10T13:42:35.500Z"
+    },
+    {
+      "name": "awaiting_approval",
+      "at": "2026-10-10T13:42:42.154Z",
+      "label": "Codex 19",
+      "verification_url": "https://auth.openai.com/codex/device",
+      "code_expires_at": "2026-10-10T13:57:40.674215+00:00"
+    },
+    {
+      "name": "official_page_opened",
+      "at": "2026-10-10T13:42:47.899Z",
+      "host": "auth.openai.com"
+    },
+    {
+      "name": "verifying_shown",
+      "at": "2026-10-10T13:45:32.857Z"
+    },
+    {
+      "name": "login_finished",
+      "at": "2026-10-10T13:45:41.586Z",
+      "status": "ready"
+    },
+    {
+      "name": "task_finished",
+      "at": "2026-10-10T13:46:25.667Z",
+      "id": "sess_01a1261011287fa08762dbc23f438869",
+      "turn": "succeeded",
+      "seconds": 36,
+      "harness": {
+        "provider_id": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": "low"
+      },
+      "inference_mode": "subscription"
+    }
+  ],
+  "final": "ready",
+  "slot": {
+    "volume": {
+      "name": "sbx-slot-01a1260d1ae176a8add1c91a3e3e1a4f",
+      "filesystem": "modal_volume_v2",
+      "managed": true
+    },
+    "cli_version": "codex-cli 0.162.0",
+    "verification": {
+      "observed_at": "2026-10-10T13:45:38.801001+00:00",
+      "real_model_call": true
+    },
+    "catalog": {
+      "status": "ready",
+      "source": "codex app-server model/list",
+      "models": [
+        {
+          "id": "gpt-6.1-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ]
+    },
+    "code_still_returned": false
+  },
+  "session": {
+    "id": "sess_01a1261011287fa08762dbc23f438869",
+    "turn": "succeeded",
+    "seconds": 36,
+    "harness": {
+      "provider_id": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "low"
+    },
+    "inference_mode": "subscription"
+  }
+}
