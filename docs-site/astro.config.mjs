@@ -58,6 +58,7 @@ export default defineConfig({
 					label: 'Guides',
 					items: [
 						'guides/connections',
+						'guides/cloud-machines',
 						'guides/sessions-and-turns',
 						'guides/changes-and-delivery',
 						'guides/child-sessions',

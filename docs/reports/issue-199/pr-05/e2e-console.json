@@ -1,0 +1,140 @@
+{
+  "gates": [
+    {
+      "name": "custom API Session succeeded on a Modal VM",
+      "ok": true,
+      "id": "sess_01a1262134557e93ade21dd79da13fb2",
+      "harness": {
+        "provider_id": "opencode",
+        "model": "deepseek-flash",
+        "effort": "none"
+      },
+      "inference": {
+        "mode": "custom_api",
+        "slot": null,
+        "connection": "set"
+      },
+      "backend": "modal",
+      "kernel": "Linux 7.2.9",
+      "boot_id": "44afd3aa-24d5-43f3-842f-d6a963d72e0c",
+      "reasoning_tokens": null,
+      "output_tokens": 88
+    },
+    {
+      "name": "custom API Session carries no machine and thinking was off",
+      "ok": true,
+      "effort": "none",
+      "reasoning_tokens": null
+    },
+    {
+      "name": "two machines show Running at the same time",
+      "ok": true,
+      "running": 2,
+      "summary": "18 machines · 2 running · 2 ready · 14 need attention"
+    },
+    {
+      "name": "busy machines are listed but cannot be picked",
+      "ok": true,
+      "busy": [
+        "A1 · Codex · in use",
+        "A2 · Codex · in use"
+      ]
+    },
+    {
+      "name": "both machine Sessions succeeded in subscription mode with no API key",
+      "ok": true
+    },
+    {
+      "name": "three Sessions ran in three different VMs",
+      "ok": true,
+      "boot_ids": [
+        "44afd3aa-24d5-43f3-842f-d6a963d72e0c",
+        "5e06a323-1c4e-4900-97a4-be6fb076de6d",
+        "dc333413-2c5f-4c3b-aa7d-afdb946b02f5"
+      ]
+    },
+    {
+      "name": "each machine Session used its own chosen model and effort",
+      "ok": true,
+      "a1": {
+        "provider_id": "codex",
+        "model": "gpt-6-astra",
+        "effort": "low"
+      },
+      "a2": {
+        "provider_id": "codex",
+        "model": "gpt-6-sol",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "machines are Ready again after release",
+      "ok": true,
+      "summary": "18 machines · 0 running · 4 ready · 14 need attention"
+    },
+    {
+      "name": "delete needs the typed name and removes only that machine",
+      "ok": true,
+      "before": 18,
+      "after": 17
+    }
+  ],
+  "custom_api": {
+    "id": "sess_01a1262134557e93ade21dd79da13fb2",
+    "harness": {
+      "provider_id": "opencode",
+      "model": "deepseek-flash",
+      "effort": "none"
+    },
+    "inference": {
+      "mode": "custom_api",
+      "slot": null,
+      "connection": "set"
+    },
+    "backend": "modal",
+    "kernel": "Linux 7.2.9",
+    "boot_id": "44afd3aa-24d5-43f3-842f-d6a963d72e0c",
+    "reasoning_tokens": null,
+    "output_tokens": 88
+  },
+  "parallel": [
+    {
+      "id": "sess_01a1262192457c5994a88cbf8b309be0",
+      "harness": {
+        "provider_id": "codex",
+        "model": "gpt-6-astra",
+        "effort": "low"
+      },
+      "inference": {
+        "mode": "subscription",
+        "slot": "slot_01a1254c3b787e2d905efa49cef395d2",
+        "connection": null
+      },
+      "backend": "modal",
+      "kernel": "Linux 7.2.9",
+      "boot_id": "5e06a323-1c4e-4900-97a4-be6fb076de6d",
+      "reasoning_tokens": 0,
+      "output_tokens": 104
+    },
+    {
+      "id": "sess_01a12621afde73de86f4577e95fb455f",
+      "harness": {
+        "provider_id": "codex",
+        "model": "gpt-6-sol",
+        "effort": "medium"
+      },
+      "inference": {
+        "mode": "subscription",
+        "slot": "slot_01a1254c3b8a734fad300367ac99b834",
+        "connection": null
+      },
+      "backend": "modal",
+      "kernel": "Linux 7.2.9",
+      "boot_id": "dc333413-2c5f-4c3b-aa7d-afdb946b02f5",
+      "reasoning_tokens": 7,
+      "output_tokens": 114
+    }
+  ],
+  "passed": 9,
+  "total": 9
+}

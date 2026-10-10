@@ -18,15 +18,20 @@ Harness support is declared in pinned manifests. The machine-readable table is
 
 Every supported Harness runs the vendor's own CLI with an `inference_api`
 Connection (bring your own key); the Harness and the model provider are
-independent. Vendor subscription logins are not used.
+independent. Codex can also run on your own subscription login through a
+[cloud machine](/guides/cloud-machines/); the other CLIs use API keys only.
 
 A disabled provider cannot be selected. Capability values are `supported`,
 `unsupported` or `unknown`, and `unknown` is never treated as supported. For all
 five supported Harnesses `event_stream`, `native_resume`, `native_state_export`
 and `usage` are supported and verified with real Turns; `interrupt`, `steer`,
-`interactive_approval`, `model_discovery` (models come from the Connection) and
-`credential_writeback` are not. `mcp`, `skills`, `attachments` and
-`effort_settings` are `unknown`: the CLIs have them, SBX does not wire them yet.
+`interactive_approval` and `credential_writeback` are not. `model_discovery` is
+supported for Codex only (a cloud machine's own catalog); elsewhere models come
+from the Connection. `effort_settings` is supported for Codex on a cloud machine
+(the levels the selected model lists) and for OpenCode with an API key (thinking
+off, where the provider's switch was verified); it is not wired for the other
+CLIs. `mcp`, `skills` and `attachments` are `unknown`: the CLIs have them, SBX
+does not wire them yet.
 
 Notes per CLI:
 

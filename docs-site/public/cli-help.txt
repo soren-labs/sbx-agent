@@ -3,17 +3,18 @@ Generated from the unified argparse command model.
 
 ===== sbx =====
 usage: sbx [-h] [--base-url BASE_URL]
-           {auth,harnesses,projects,connections,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
+           {auth,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
            ...
 
 SBX: durable Sessions running official provider CLIs.
 
 positional arguments:
-  {auth,harnesses,projects,connections,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
+  {auth,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
     auth                sign in and store an API key
     harnesses           official CLI Harnesses and the protocols they accept
     projects            Projects and versions
     connections         manual Connections (secrets via stdin)
+    slots               subscription Machine Slots (one official login each)
     sessions            durable Sessions
     execute             create/continue a Session and follow the Turn
     serve               run a local control plane (operator tool)
@@ -53,6 +54,33 @@ usage: sbx connections [-h] {list,add,replace,validate,disconnect,show} ...
 
 positional arguments:
   {list,add,replace,validate,disconnect,show}
+
+options:
+  -h, --help            show this help message and exit
+
+===== sbx slots =====
+usage: sbx slots [-h]
+                 {list,providers,add,login,verify,wait,show,models,cancel-login,logout,rename,delete}
+                 ...
+
+Machine Slots: independent official subscription logins kept on private Modal
+Volumes. Exit codes: 0 ok, 1 API error, 2 slot not ready, 3 still pending.
+
+positional arguments:
+  {list,providers,add,login,verify,wait,show,models,cancel-login,logout,rename,delete}
+    list                slots, counts and providers
+    providers           subscription providers this deployment offers
+    add                 create a slot and start its official login
+    login               run the official login again
+    verify              re-check the login and refresh the model catalog
+    wait                wait until no login is pending
+    show                one slot
+    models              model catalog and per-model reasoning efforts, with
+                        their source
+    cancel-login        stop the pending login
+    logout              destroy the stored login; the slot stays
+    rename              change the label or the account alias
+    delete              delete the slot and its volume
 
 options:
   -h, --help            show this help message and exit
