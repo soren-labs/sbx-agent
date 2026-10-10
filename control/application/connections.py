@@ -698,6 +698,33 @@ class Connections:
             result = provision(material, connection_id)
         return Succeeded(result)
 
+    def material_for(self, connection_id: str, kind: str) -> dict[str, Any]:
+        """Current credential of a usable Connection, for a worker-side effect only."""
+
+        def read(uow: Any) -> tuple[Any, Any]:
+            con = uow.get("connections", connection_id)
+            version = (
+                uow.get("credential_versions", con["current_credential_version_id"])
+                if con and con["current_credential_version_id"]
+                else None
+            )
+            return con, version
+
+        con, version = self.tx.read(read)
+        if (
+            con is None
+            or con["kind"] != kind
+            or con["config_state"] != "configured"
+            or version is None
+            or version["revoked_at"]
+        ):
+            raise DomainError(
+                "connection_required",
+                f"the {kind} connection is not usable",
+                details={"kind": kind},
+            )
+        return self.decrypt(version, con)
+
     def decrypt(self, version: dict[str, Any], con: dict[str, Any]) -> dict[str, Any]:
         from control.application.ports import SealedRef
 

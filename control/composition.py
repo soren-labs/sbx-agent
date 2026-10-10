@@ -27,6 +27,7 @@ from control.application.projections import Queries
 from control.application.projects import Projects
 from control.application.services import Services as ServiceDesires
 from control.application.sessions import Sessions
+from control.application.slots import MachineSlots
 from control.application.tools import ToolGateway
 from control.catalog import load_catalog
 from control.executors.local import LocalExecutor
@@ -35,6 +36,8 @@ from control.integrations.connectors.registry import CONNECTORS
 from control.integrations.email import FileMailSink, ResendMailer
 from control.integrations.git import GitTransport
 from control.integrations.github import GitHubHost
+from control.integrations.subscriptions.base import PROFILE_MOUNT
+from control.integrations.subscriptions.registry import SUBSCRIPTIONS
 from control.jobs.handlers.execution import handlers as execution_handlers
 from control.jobs.worker import Worker
 from control.persistence.database import Database
@@ -102,6 +105,7 @@ class Services:
     identity: Identity
     projects: Projects
     connections: Connections
+    slots: MachineSlots
     sessions: Sessions
     queries: Queries
     execution: ExecutionService
@@ -160,6 +164,14 @@ def build_services(
         db, vault, CONNECTORS, validators=validators, provisioners=provisioners
     )
     sessions = Sessions(db, ProjectResolver(catalog), catalog)
+    slots = MachineSlots(
+        db,
+        SUBSCRIPTIONS,
+        backend=modal_executor,
+        compute=lambda connection_id: connections.material_for(connection_id, "modal"),
+        profile_mount=PROFILE_MOUNT,
+    )
+    connections.dependency_hooks.append(slots.dependents)
     queries = Queries(db)
     changes = Changes(db, connector, blobs, broker)
     deliveries = Deliveries(
@@ -184,6 +196,7 @@ def build_services(
         identity=Identity(db, mailer, public_url=config.public_url),
         projects=Projects(db),
         connections=connections,
+        slots=slots,
         sessions=sessions,
         queries=queries,
         execution=execution,
@@ -200,6 +213,8 @@ def build_services(
         **execution_handlers(execution),
         "connection.validate": connections.handle_validate,
         "connection.provision": connections.handle_provision,
+        "slot.login": slots.handle_login,
+        "slot.delete": slots.handle_delete,
         "changeset.capture": changes.handle_capture,
         "changeset.apply": changes.handle_apply,
         "delivery.perform": deliveries.handle_perform,

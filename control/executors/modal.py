@@ -18,6 +18,7 @@ never treated as absence.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -35,6 +36,8 @@ RUNTIME_PORT = 8790
 # The only Modal sandbox runtime SBX uses; requires modal>=1.6.1.
 SANDBOX_RUNTIME = "vm"
 RESOURCE_CLASSES = {"standard": (2.0, 4096), "small": (1.0, 2048), "large": (4.0, 8192)}
+# A Setup VM only runs the official CLI's login; it never hosts a workload.
+SETUP_RESOURCES = (1.0, 1024)
 
 
 def _ms(started: float) -> int:
@@ -71,7 +74,13 @@ class ModalExecutor:
     def recipe_digest(self) -> str:
         parts = [f"{name}@{version}" for name, version in sorted(self.cli_packages.values())]
         parts.append(str(RUNTIME_PORT))
-        for pkg in ("runtime/daemon", "runtime/harnesses", "runtime/security", "protocol"):
+        for pkg in (
+            "runtime/daemon",
+            "runtime/harnesses",
+            "runtime/security",
+            "runtime/subscriptions",
+            "protocol",
+        ):
             for path in sorted((REPO_ROOT / pkg).rglob("*.py")):
                 parts.append(sha256_hex(path.read_bytes()))
         return sha256_hex("|".join(parts))[:24]
@@ -203,24 +212,25 @@ class ModalExecutor:
             "sbx_workspace": spec["workspace_id"],
         }
         try:
-            sandbox = self.sdk.Sandbox.create(
-                "python",
-                "-m",
-                "runtime.daemon.main",
-                "--state-dir",
-                "/sbx/state",
-                "--work-dir",
-                "/work",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                str(RUNTIME_PORT),
-                app=app,
-                name=self.sandbox_name(operation_id),
-                tags=tags,
-                image=image,
-                runtime=SANDBOX_RUNTIME,
-                client=client,
+            sandbox = self._create(
+                client,
+                app,
+                image,
+                operation_id,
+                tags,
+                (
+                    "python",
+                    "-m",
+                    "runtime.daemon.main",
+                    "--state-dir",
+                    "/sbx/state",
+                    "--work-dir",
+                    "/work",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    str(RUNTIME_PORT),
+                ),
                 env={
                     "SBX_RUNTIME_KEY": spec["enrollment_key"],
                     "SBX_LEASE_ID": spec["lease_id"],
@@ -228,8 +238,6 @@ class ModalExecutor:
                     "SBX_IMAGE_DIGEST": f"modal:{image.object_id}",
                     "PYTHONPATH": "/root",
                 },
-                secrets=[],
-                include_oidc_identity_token=False,
                 encrypted_ports=[RUNTIME_PORT],
                 timeout=self.sandbox_timeout,
                 cpu=cpu,
@@ -258,6 +266,117 @@ class ModalExecutor:
             "timings": {**timings, "sandbox_create_ms": _ms(started)},
             "status": "running",
         }
+
+    def _create(
+        self,
+        client: Any,
+        app: Any,
+        image: Any,
+        operation_id: str,
+        tags: dict[str, str],
+        argv: tuple[str, ...],
+        **options: Any,
+    ) -> Any:
+        """The only place SBX creates a Modal sandbox: always a VM, never with ambient identity."""
+        return self.sdk.Sandbox.create(
+            *argv,
+            app=app,
+            name=self.sandbox_name(operation_id),
+            tags=tags,
+            image=image,
+            runtime=SANDBOX_RUNTIME,
+            client=client,
+            secrets=[],
+            include_oidc_identity_token=False,
+            **options,
+        )
+
+    # ------------------------------------------------------------ subscription setup
+    def setup_start(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
+        """Start (or adopt) the Setup VM for one login attempt on a private Slot Volume.
+
+        Idempotent by ``operation_id`` like ``allocate``. The Volume lives in the owner's
+        Modal workspace and is mounted only here and, later, into the Slot's single Worker.
+        """
+        compute = spec.get("compute")
+        client = self._client(compute)
+        app = self._app(client)
+        existing = self._lookup(client, app, operation_id)
+        if existing is not None:
+            return existing
+        try:
+            image = self.image(client, app, spec.get("compute_connection_id") or "default")
+            volume = self.sdk.Volume.from_name(
+                spec["volume_name"], create_if_missing=True, version=2, client=client
+            )
+            sandbox = self._create(
+                client,
+                app,
+                image,
+                operation_id,
+                {"sbx_alloc": operation_id, **spec["tags"]},
+                ("python", "-m", "runtime.subscriptions.setup"),
+                env={
+                    **spec["env"],
+                    "SBX_SETUP_SPEC": json.dumps(spec["setup"]),
+                    "PYTHONPATH": "/root",
+                },
+                volumes={spec["mount"]: volume},
+                timeout=int(spec["timeout"]),
+                cpu=SETUP_RESOURCES[0],
+                memory=SETUP_RESOURCES[1],
+            )
+        except Exception as exc:
+            try:
+                found = self._find(client, app, operation_id)
+            except Exception:
+                found = None
+            if found is not None:
+                return found
+            raise DomainError(
+                "executor_unavailable",
+                f"Modal setup VM create failed ({type(exc).__name__})",
+                retryable=True,
+            ) from None
+        return {"sandbox_id": sandbox.object_id, "operation_id": operation_id, "status": "running"}
+
+    def setup_observe(
+        self, handle: dict[str, Any], compute: dict[str, Any] | None, state_path: str
+    ) -> dict[str, Any]:
+        """VM liveness plus the supervisor's state file (never profile contents)."""
+        try:
+            sandbox = self._sandbox(handle, compute)
+            if sandbox.poll() is not None:
+                return {"status": "terminated", "state": None}
+            process = sandbox.exec("cat", state_path, timeout=20)
+            output = process.stdout.read()
+            process.wait()
+        except self.sdk.exception.NotFoundError:
+            return {"status": "terminated", "state": None}
+        except Exception as exc:
+            raise DomainError(
+                "executor_unavailable",
+                f"Modal setup VM is unreachable ({type(exc).__name__})",
+                retryable=True,
+            ) from None
+        try:
+            state = json.loads(output) if process.returncode == 0 else None
+        except ValueError:
+            state = None
+        return {"status": "running", "state": state if isinstance(state, dict) else None}
+
+    def volume_delete(self, compute: dict[str, Any] | None, volume_name: str) -> bool:
+        """Delete a Slot's private Volume (and with it the login); missing is success."""
+        client = self._client(compute)
+        try:
+            self.sdk.Volume.objects.delete(volume_name, allow_missing=True, client=client)
+        except Exception as exc:
+            raise DomainError(
+                "executor_unavailable",
+                f"Modal volume delete failed ({type(exc).__name__})",
+                retryable=True,
+            ) from None
+        return True
 
     def _lookup(self, client: Any, app: Any, operation_id: str) -> dict[str, Any] | None:
         try:

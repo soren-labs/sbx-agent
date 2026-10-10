@@ -807,6 +807,183 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Job
+  /api/machine-slots/{slot_id}:
+    delete:
+      description: 'Destructive: ``confirm`` must repeat the slot label.'
+      operationId: delete_machine_slot_api_machine_slots__slot_id__delete
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      - in: query
+        name: confirm
+        required: false
+        schema:
+          default: ''
+          title: Confirm
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Machine Slot
+    get:
+      operationId: get_machine_slot_api_machine_slots__slot_id__get
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Machine Slot Api Machine Slots  Slot Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Machine Slot
+    patch:
+      operationId: patch_machine_slot_api_machine_slots__slot_id__patch
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Patch Machine Slot Api Machine Slots  Slot Id  Patch
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Patch Machine Slot
+  /api/machine-slots/{slot_id}/logins:
+    post:
+      description: Run the provider's official device login again in a fresh Setup
+        VM.
+      operationId: start_machine_slot_login_api_machine_slots__slot_id__logins_post
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Start Machine Slot Login
+  /api/machine-slots/{slot_id}/logins/current:
+    delete:
+      operationId: cancel_machine_slot_login_api_machine_slots__slot_id__logins_current_delete
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Cancel Machine Slot Login
+  /api/machine-slots/{slot_id}/logout:
+    post:
+      operationId: logout_machine_slot_api_machine_slots__slot_id__logout_post
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Logout Machine Slot
+  /api/machine-slots/{slot_id}/verifications:
+    post:
+      description: Check the stored login with one real CLI call in a fresh Setup
+        VM.
+      operationId: verify_machine_slot_api_machine_slots__slot_id__verifications_post
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Verify Machine Slot
   /api/me:
     get:
       operationId: me_api_me_get
@@ -1814,6 +1991,20 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Unarchive
+  /api/subscription-providers:
+    get:
+      operationId: subscription_providers_api_subscription_providers_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Subscription Providers Api Subscription Providers
+                  Get
+                type: object
+          description: Successful Response
+      summary: Subscription Providers
   /api/turns/{turn_id}:
     get:
       operationId: get_turn_api_turns__turn_id__get
@@ -2037,6 +2228,59 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Create Connection
+  /api/workspaces/{workspace_id}/machine-slots:
+    get:
+      operationId: list_machine_slots_api_workspaces__workspace_id__machine_slots_get
+      parameters:
+      - in: path
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Machine Slots Api Workspaces  Workspace Id  Machine
+                  Slots Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Machine Slots
+    post:
+      operationId: create_machine_slot_api_workspaces__workspace_id__machine_slots_post
+      parameters:
+      - in: path
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Create Machine Slot Api Workspaces  Workspace Id  Machine
+                  Slots Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Machine Slot
   /api/workspaces/{workspace_id}/projects:
     get:
       operationId: list_projects_api_workspaces__workspace_id__projects_get

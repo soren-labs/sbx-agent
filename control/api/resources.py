@@ -64,6 +64,68 @@ async def publish_version(request: Request, project_id: str) -> dict[str, Any]:
     )
 
 
+# -- Machine Slots (subscription logins) -------------------------------------------------
+@router.get("/api/subscription-providers")
+def subscription_providers(request: Request) -> dict[str, Any]:
+    principal(request)
+    return {"items": services(request).slots.providers()}
+
+
+@router.get("/api/workspaces/{workspace_id}/machine-slots")
+def list_machine_slots(request: Request, workspace_id: str) -> dict[str, Any]:
+    return services(request).slots.list(principal(request), workspace_id)
+
+
+@router.post("/api/workspaces/{workspace_id}/machine-slots", status_code=201)
+async def create_machine_slot(request: Request, workspace_id: str) -> dict[str, Any]:
+    who = mutating_principal(request)
+    return services(request).slots.create(
+        who, workspace_id, await json_body(request), idempotency_key=idempotency_key(request)
+    )
+
+
+@router.get("/api/machine-slots/{slot_id}")
+def get_machine_slot(request: Request, slot_id: str) -> dict[str, Any]:
+    return services(request).slots.get(principal(request), slot_id)
+
+
+@router.patch("/api/machine-slots/{slot_id}")
+async def patch_machine_slot(request: Request, slot_id: str) -> dict[str, Any]:
+    who = mutating_principal(request)
+    return services(request).slots.update(who, slot_id, await json_body(request))
+
+
+@router.delete("/api/machine-slots/{slot_id}")
+def delete_machine_slot(request: Request, slot_id: str, confirm: str = "") -> JSONResponse:
+    """Destructive: ``confirm`` must repeat the slot label."""
+    who = mutating_principal(request)
+    return accepted(services(request).slots.delete(who, slot_id, {"confirm": confirm}))
+
+
+@router.post("/api/machine-slots/{slot_id}/logins")
+def start_machine_slot_login(request: Request, slot_id: str) -> JSONResponse:
+    """Run the provider's official device login again in a fresh Setup VM."""
+    return accepted(services(request).slots.start_login(mutating_principal(request), slot_id))
+
+
+@router.delete("/api/machine-slots/{slot_id}/logins/current")
+def cancel_machine_slot_login(request: Request, slot_id: str) -> JSONResponse:
+    return accepted(services(request).slots.cancel_login(mutating_principal(request), slot_id))
+
+
+@router.post("/api/machine-slots/{slot_id}/verifications")
+def verify_machine_slot(request: Request, slot_id: str) -> JSONResponse:
+    """Check the stored login with one real CLI call in a fresh Setup VM."""
+    return accepted(
+        services(request).slots.start_login(mutating_principal(request), slot_id, mode="verify")
+    )
+
+
+@router.post("/api/machine-slots/{slot_id}/logout")
+def logout_machine_slot(request: Request, slot_id: str) -> JSONResponse:
+    return accepted(services(request).slots.logout(mutating_principal(request), slot_id))
+
+
 # -- Connections ------------------------------------------------------------------------
 @router.get("/api/workspaces/{workspace_id}/connections")
 def list_connections(

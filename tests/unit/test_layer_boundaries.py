@@ -75,7 +75,12 @@ def test_protocol_is_data_only() -> None:
 
 
 def test_runtime_never_imports_control() -> None:
-    for package in ("runtime/daemon", "runtime/harnesses", "runtime/security"):
+    for package in (
+        "runtime/daemon",
+        "runtime/harnesses",
+        "runtime/security",
+        "runtime/subscriptions",
+    ):
         assert _violations(package, ("control", "psycopg", "fastapi", "modal")) == []
 
 

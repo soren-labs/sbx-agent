@@ -74,6 +74,8 @@ TABLES = frozenset(
         "service_desires",
         "service_instances",
         "tool_grants",
+        "machine_slots",
+        "slot_login_attempts",
     }
 )
 

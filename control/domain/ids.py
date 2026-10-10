@@ -44,6 +44,8 @@ PREFIXES: dict[str, str] = {
     "audit": "aud",
     "observation": "obs",
     "operation": "op",
+    "machine_slot": "slot",
+    "slot_login": "slogin",
 }
 
 
