@@ -138,7 +138,9 @@ function applyPart(messages: Message[], e: EventEnvelope, partDirty: { unknown: 
   // The event's commit time is the same clock the server stamps the part with.
   const at = typeof e.recorded_at === "string" ? e.recorded_at : null;
   if (!existing) {
-    part = { key, kind, revision: revision ?? 1, content, data, sealed: false, created_at: at, updated_at: at, seen_at: now };
+    // A whole block that arrives at once did not stream: only an appended delta (or a
+    // later change, below) marks the part as live activity.
+    part = { key, kind, revision: revision ?? 1, content, data, sealed: false, created_at: at, updated_at: at, seen_at: append ? now : undefined };
   } else {
     if (existing.sealed) return messages;
     const nextRev = revision ?? existing.revision + 1;
