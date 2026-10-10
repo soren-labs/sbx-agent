@@ -123,7 +123,9 @@ export function AppShell() {
   const currentSection = t(
     location.pathname.startsWith("/connections")
       ? "nav.connections"
-      : location.pathname.startsWith("/settings")
+      : location.pathname.startsWith("/machines")
+        ? "nav.machines"
+        : location.pathname.startsWith("/settings")
         ? "nav.settings"
         : location.pathname.startsWith("/projects")
           ? "nav.projects"
@@ -256,6 +258,11 @@ export function AppShell() {
         </div>
 
         <div className="sidebar-bottom">
+          <NavLink to="/machines" className={({ isActive }) => `sidebar-bottom-link ${isActive ? "active" : ""}`}>
+            <Icon name="machine" size={14} />
+            <span>{t("nav.machines")}</span>
+          </NavLink>
+
           <NavLink
             to="/connections"
             className={({ isActive }) => `sidebar-bottom-link ${isActive ? "active" : ""}`}
@@ -323,6 +330,10 @@ export function AppShell() {
         <NavLink to="/sessions" className={({ isActive }) => (isActive ? "active" : "")}>
           <Icon name="list" size={18} />
           <span>{t("nav.sessions")}</span>
+        </NavLink>
+        <NavLink to="/machines" className={({ isActive }) => (isActive ? "active" : "")}>
+          <Icon name="machine" size={18} />
+          <span>{t("nav.machines_short")}</span>
         </NavLink>
         <NavLink to="/connections" className={({ isActive }) => (isActive ? "active" : "")}>
           <Icon name="plug" size={18} />

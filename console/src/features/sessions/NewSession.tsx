@@ -8,6 +8,7 @@ import { useAuth } from "../../state/auth";
 import { useApi, useQueryClient } from "../../state/context";
 import { useQuery } from "../../state/query";
 import { useConnections } from "../connections/ConnectionsPage";
+import { useMachineSlots } from "../machines/MachinesPage";
 import { knownRepositories, modelOptions, pickBackend, pickDefaultModel, pickHarness, usableConnections } from "./defaults";
 import { harnessName, PROTOCOL_NAMES, selectable } from "./harnesses";
 
@@ -40,36 +41,73 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
   const [connectionId, setConnectionId] = useState("");
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [backendOverride, setBackendOverride] = useState<string | null>(null);
+  // "" = custom API key; otherwise the Machine Slot (subscription login) to run on.
+  const [sourceOverride, setSourceOverride] = useState<string | null>(null);
+  const [effortOverride, setEffortOverride] = useState<string | null>(null);
+  const machines = useMachineSlots();
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const offered = selectable(harnesses.data?.items);
-  const harness = harnessOverride ?? pickHarness(harnesses.data?.items, connections.data?.items);
+  const apiHarness = harnessOverride ?? pickHarness(harnesses.data?.items, connections.data?.items);
+  const slots = machines.data?.items ?? [];
+  const hasApiKey = (connections.data?.items ?? []).some(
+    (c) => c.kind === "inference_api" && c.state === "configured" && c.health !== "reauth_required",
+  );
+  const firstFree = slots.find((m) => m.status === "ready");
+  // With no API key at all, a ready machine is the only way to run: preselect it.
+  const sourceId = sourceOverride ?? (!hasApiKey && connections.data && firstFree ? firstFree.id : "");
+  const slot = slots.find((m) => m.id === sourceId && (m.status === "ready" || m.status === "running")) ?? null;
+  const slotHarness = slot
+    ? ((machines.data?.providers ?? []).find((p) => p.provider_id === slot.provider)?.harness_provider_id ?? slot.provider)
+    : null;
+  const harness = slotHarness ?? apiHarness;
   const manifest = offered.find((h) => h.provider_id === harness);
   // Models and compatibility are scoped to the selected Harness: the same key may
   // serve one CLI and not another, depending on the protocols it offers.
   const models = useQuery(w ? ["models", w, harness] : null, () => api.catalog.models(w!, harness));
   const usable = usableConnections(models.data);
   const pinned = usable.some((c) => c.connection_id === connectionId) ? connectionId : "";
-  const options = modelOptions(models.data, pinned || undefined);
-  const model = modelOverride ?? pickDefaultModel(models.data, pinned || undefined) ?? "";
+  // A machine's models are only what its authenticated CLI reported; nothing is built in.
+  const catalog = slot?.capabilities.catalog?.status === "ready" ? slot.capabilities.catalog : null;
+  const slotModels = catalog?.models ?? [];
+  const options = slot ? slotModels.map((m) => m.id) : modelOptions(models.data, pinned || undefined);
+  const model = slot
+    ? modelOverride && options.includes(modelOverride)
+      ? modelOverride
+      : (catalog?.default_model ?? "")
+    : (modelOverride ?? pickDefaultModel(models.data, pinned || undefined) ?? "");
+  const apiModel = (pinned ? usable.filter((c) => c.connection_id === pinned) : usable)
+    .flatMap((c) => c.models)
+    .find((m) => m.id === model);
+  // Reasoning values this exact model supports here: a machine model's own levels, or a
+  // custom API model's verified thinking switch. Empty means there is nothing to choose.
+  const efforts = slot
+    ? (slotModels.find((m) => m.id === model)?.reasoning.efforts ?? [])
+    : (apiModel?.efforts ?? []).map((id) => ({ id, description: null }));
+  const effort = effortOverride && efforts.some((e) => e.id === effortOverride) ? effortOverride : "";
+  const thinkingToggle = !slot && efforts.length === 1 && efforts[0].id === "none";
   const backendKinds = (backends.data?.items ?? []).map((b) => b.kind);
-  const backend = backendOverride ?? pickBackend(connections.data?.items, backends.data?.items);
+  const backend = slot ? "modal" : (backendOverride ?? pickBackend(connections.data?.items, backends.data?.items));
   const repos = knownRepositories(
     connections.data?.items,
     (projects.data?.items ?? []).flatMap((p) => (p.current_version ? [p.current_version.spec.repository.full_name] : [])),
   );
-  const blocked = models.data !== undefined && usable.length === 0;
+  const blocked = !slot && models.data !== undefined && usable.length === 0;
 
   const create = useAction(async (key) => {
     // The first line of the task names the Session, so lists never show "Untitled".
     const firstLine = prompt.trim().split("\n")[0].trim();
     const body = {
       ...(firstLine ? { title: firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine } : {}),
-      harness: { provider_id: harness, ...(model ? { model } : {}) },
+      harness: { provider_id: harness, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
       executor: { backend },
-      ...(pinned ? { connections: { inference: pinned } } : {}),
+      ...(slot
+        ? { inference: { mode: "subscription" as const, machine_slot_id: slot.id } }
+        : pinned
+          ? { connections: { inference: pinned } }
+          : {}),
       ...(projectId
         ? { project_id: projectId }
         : repo.trim()
@@ -114,8 +152,24 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
     setHarnessOverride(next);
     // The model list belongs to the Harness's compatible Connections.
     setModelOverride(null);
+    setEffortOverride(null);
     setConnectionId("");
   };
+
+  const chooseSource = (next: string) => {
+    setSourceOverride(next);
+    // Models and efforts belong to the chosen machine (or API key): never carry them over.
+    setModelOverride(null);
+    setEffortOverride(null);
+  };
+  const chooseModel = (next: string | null) => {
+    setModelOverride(next);
+    setEffortOverride(null);
+  };
+  const sourceNote = (m: (typeof slots)[number]) =>
+    m.status === "running" ? t("composer.source_busy") : m.status === "ready" ? "" : t("composer.source_needs_login");
+  const effortLabel = (id: string) =>
+    thinkingToggle ? t(id === "none" ? "composer.thinking_off" : "composer.thinking_on") : id;
 
   return (
     <>
@@ -201,9 +255,24 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
             <div className="picker-popover config-picker">
               <h2>{t("composer.configuration")}</h2>
 
+              {slots.length ? (
+                <label className="form-label" htmlFor="new-source">
+                  {t("composer.source")}
+                  <select id="new-source" value={slot ? slot.id : ""} onChange={(e) => chooseSource(e.target.value)}>
+                    <option value="">{t("composer.source_api")}</option>
+                    {slots.map((m) => (
+                      <option key={m.id} value={m.id} disabled={m.status !== "ready"}>
+                        {m.label} · {m.provider_name}
+                        {sourceNote(m) ? ` (${sourceNote(m)})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
               <label className="form-label" htmlFor="new-harness">
                 {t("composer.harness")}
-                <select id="new-harness" value={harness} onChange={(e) => chooseHarness(e.target.value)}>
+                <select id="new-harness" value={harness} disabled={slot !== null} onChange={(e) => chooseHarness(e.target.value)}>
                   {!offered.some((h) => h.provider_id === harness) && <option value={harness}>{harnessName(harness)}</option>}
                   {offered.map((h) => (
                     <option key={h.provider_id} value={h.provider_id}>
@@ -213,7 +282,7 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                 </select>
               </label>
 
-              {usable.length > 1 ? (
+              {!slot && usable.length > 1 ? (
                 <label className="form-label" htmlFor="new-connection">
                   {t("composer.connection")}
                   <select
@@ -236,7 +305,7 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
 
               <label className="form-label" htmlFor="new-model">
                 {t("composer.model")}
-                <select id="new-model" value={model} onChange={(e) => setModelOverride(e.target.value)}>
+                <select id="new-model" value={model} onChange={(e) => chooseModel(e.target.value)}>
                   {model === "" && <option value="">{t("composer.model_server")}</option>}
                   {model !== "" && !options.includes(model) && <option value={model}>{model}</option>}
                   {options.map((id) => (
@@ -247,9 +316,28 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                 </select>
               </label>
 
+              <label className="form-label" htmlFor="new-effort">
+                {t(thinkingToggle ? "composer.thinking" : "composer.effort")}
+                <select
+                  id="new-effort"
+                  value={effort}
+                  disabled={efforts.length === 0}
+                  title={efforts.length === 0 ? t("composer.no_effort") : undefined}
+                  onChange={(e) => setEffortOverride(e.target.value || null)}
+                >
+                  <option value="">{t(thinkingToggle ? "composer.thinking_on" : "composer.effort_default")}</option>
+                  {efforts.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {effortLabel(e.id)}
+                    </option>
+                  ))}
+                </select>
+                {efforts.length === 0 ? <span className="hint">{t("composer.no_effort")}</span> : null}
+              </label>
+
               <label className="form-label" htmlFor="new-backend">
                 {t("composer.executor")}
-                <select id="new-backend" value={backend} onChange={(e) => setBackendOverride(e.target.value)}>
+                <select id="new-backend" value={backend} disabled={slot !== null} onChange={(e) => setBackendOverride(e.target.value)}>
                   {(backendKinds.length ? backendKinds : ["modal", "local"]).map((kind) => (
                     <option key={kind} value={kind}>
                       {kind === "modal" || kind === "local" ? t(`composer.backend.${kind}` as I18nKey) : kind}
@@ -302,14 +390,51 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
           <details className="composer-picker model-picker">
             <summary title={t("composer.agent_model")} data-testid="agent-model-chip">
               <span>
-                {harnessName(harness)}
-                <span className="faint"> · {model || t("composer.no_model")}</span>
+                {slot ? slot.label : harnessName(harness)}
+                <span className="faint">
+                  {" "}
+                  · {model || t(slot ? "composer.model_server" : "composer.no_model")}
+                  {effort ? ` · ${effortLabel(effort)}` : ""}
+                </span>
               </span>
               <Icon name="down" size={11} />
             </summary>
             <div className="picker-popover model-popover">
-              <h2>{t("composer.harness_label")}</h2>
-              <div className="picker-options">
+              {slots.length ? (
+                <>
+                  <h2>{t("composer.source")}</h2>
+                  <div className="picker-options" data-testid="source-options">
+                    <button type="button" className="picker-option" aria-pressed={!slot} onClick={() => chooseSource("")}>
+                      <Icon name="plug" size={13} />
+                      <span>{t("composer.source_api")}</span>
+                      {!slot && <Icon name="check" size={12} />}
+                    </button>
+                    {slots.map((m) => (
+                      <button
+                        type="button"
+                        className="picker-option"
+                        key={m.id}
+                        aria-pressed={slot?.id === m.id}
+                        disabled={m.status !== "ready"}
+                        onClick={() => chooseSource(m.id)}
+                      >
+                        <Icon name="machine" size={13} />
+                        <span>
+                          {m.label}
+                          <span className="faint">
+                            {" "}
+                            · {m.provider_name}
+                            {sourceNote(m) ? ` · ${sourceNote(m)}` : ""}
+                          </span>
+                        </span>
+                        {slot?.id === m.id && <Icon name="check" size={12} />}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+              {slot ? null : <h2>{t("composer.harness_label")}</h2>}
+              <div className="picker-options" hidden={slot !== null}>
                 {offered.map((h) => (
                   <button
                     type="button"
@@ -325,31 +450,64 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                 ))}
               </div>
               <h2>{t("composer.model")}</h2>
-              <div className="picker-options">
+              {slot ? (
+                <p className="faint small" data-testid="model-source">
+                  {catalog ? t("composer.slot_models_from", { source: catalog.source ?? "" }) : t("composer.slot_no_catalog")}
+                </p>
+              ) : null}
+              <div className="picker-options" data-testid="model-options">
                 {options.map((id) => (
                   <button
                     type="button"
                     className="picker-option"
                     key={id}
                     aria-pressed={id === model}
-                    onClick={() => {
-                      setModelOverride(id);
-                      closePickers();
-                    }}
+                    onClick={() => chooseModel(id)}
                   >
                     <Icon name="sparkle" size={13} />
-                    <span>{id}</span>
+                    <span>{slotModels.find((m) => m.id === id)?.name ?? id}</span>
                     {id === model && <Icon name="check" size={12} />}
                   </button>
                 ))}
               </div>
-              <input
-                aria-label={t("composer.custom_model")}
-                placeholder={t("composer.custom_model")}
-                spellCheck={false}
-                value={modelOverride ?? ""}
-                onChange={(e) => setModelOverride(e.target.value.trim() === "" ? null : e.target.value.trim())}
-              />
+              {slot ? null : (
+                <input
+                  aria-label={t("composer.custom_model")}
+                  placeholder={t("composer.custom_model")}
+                  spellCheck={false}
+                  value={modelOverride ?? ""}
+                  onChange={(e) => chooseModel(e.target.value.trim() === "" ? null : e.target.value.trim())}
+                />
+              )}
+              {efforts.length ? (
+                <>
+                  <h2>{t(thinkingToggle ? "composer.thinking" : "composer.effort")}</h2>
+                  <div className="picker-options effort-options" data-testid="effort-options">
+                    <button
+                      type="button"
+                      className="picker-option"
+                      aria-pressed={effort === ""}
+                      onClick={() => setEffortOverride(null)}
+                    >
+                      <span>{t(thinkingToggle ? "composer.thinking_on" : "composer.effort_default")}</span>
+                      {effort === "" && <Icon name="check" size={12} />}
+                    </button>
+                    {efforts.map((e) => (
+                      <button
+                        type="button"
+                        className="picker-option"
+                        key={e.id}
+                        aria-pressed={e.id === effort}
+                        title={e.description ?? undefined}
+                        onClick={() => setEffortOverride(e.id)}
+                      >
+                        <span>{effortLabel(e.id)}</span>
+                        {e.id === effort && <Icon name="check" size={12} />}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
               <button type="button" className="btn btn-sm btn-ghost" onClick={closePickers}>
                 {t("composer.done")}
               </button>

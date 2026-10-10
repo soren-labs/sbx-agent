@@ -82,6 +82,8 @@ export type ConnectionCredential =
 
 export interface CatalogModel {
   id: string;
+  /** Reasoning values the selected Harness may send for this model (verified); usually empty. */
+  efforts?: string[];
   free?: boolean;
   usable_via?: string | string[];
 }
@@ -136,7 +138,7 @@ export interface ModelsView {
     health: ConnectionHealth;
     preferred_model?: string | null;
     observed_at?: string | null;
-    models: { id: string }[];
+    models: CatalogModel[];
     protocols?: InferenceProtocol[];
     /** Endpoint the selected Harness would use; null when it offers none. */
     protocol?: InferenceProtocol | null;
@@ -153,7 +155,8 @@ export interface ProjectSpec {
   repository: { full_name: string; base_ref: string };
   checks?: { name: string; argv: string[] }[];
   defaults?: {
-    harness?: { provider_id: string; model?: string };
+    harness?: { provider_id: string; model?: string; effort?: string };
+    inference?: { mode: "subscription"; machine_slot_id: string };
     executor?: { backend: string };
   };
 }
@@ -187,7 +190,8 @@ export interface Session {
   title: string;
   labels?: string[];
   project_id?: string | null;
-  harness: { provider_id: string; model: string | null };
+  harness: { provider_id: string; model: string | null; effort?: string | null };
+  inference?: { mode: "custom_api" | "subscription"; machine_slot_id: string | null };
   executor: {
     backend: string;
     resource_class?: string;
@@ -219,7 +223,10 @@ export interface SessionSnapshot {
 }
 export interface CreateSessionBody {
   project_id?: string;
-  harness: { provider_id: string; model?: string };
+  harness: { provider_id: string; model?: string; effort?: string };
+  /** Subscription: run on a Machine Slot instead of an inference API key. */
+  inference?: { mode: "subscription"; machine_slot_id: string };
+  connections?: { inference?: string };
   executor: { backend: string };
   repository?: { full_name: string; base_ref: string };
   title?: string;
@@ -429,4 +436,82 @@ export interface ServiceItem {
   port: number | null;
   preview: boolean | string | null;
   lease_live?: boolean;
+}
+
+// -- Machine Slots (subscription logins) ---------------------------------------------------
+export type SlotStatus = "running" | "ready" | "login_pending" | "needs_login" | "error" | "deleting";
+
+export interface SlotEffort {
+  id: string;
+  description: string | null;
+}
+export interface SlotModel {
+  id: string;
+  name: string;
+  description: string | null;
+  default: boolean;
+  reasoning: { kind: "levels" | "none"; efforts: SlotEffort[]; default: string | null };
+}
+/** The model catalog the Slot's authenticated CLI reported; never a built-in list. */
+export interface SlotCatalog {
+  status: "ready" | "unavailable";
+  source: string | null;
+  observed_at: string;
+  cli_version: string | null;
+  models: SlotModel[];
+  default_model: string | null;
+  complete?: boolean;
+}
+export interface SlotLogin {
+  attempt_id: string;
+  mode: "login" | "verify";
+  state: "starting" | "awaiting_user" | "verifying" | "succeeded" | "failed" | "expired" | "cancelled";
+  verification_url: string | null;
+  /** One-time code; present only while it still has to be entered. */
+  user_code: string | null;
+  code_expires_at: string | null;
+  error_code: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+export interface MachineSlot {
+  id: string;
+  workspace_id: string;
+  provider: string;
+  provider_name: string;
+  label: string;
+  account_alias: string | null;
+  state: string;
+  status: SlotStatus;
+  state_reason: string | null;
+  busy: boolean;
+  worker: { lease_id: string; session_id: string } | null;
+  compute_connection_id: string;
+  volume: { name: string; filesystem: string; managed: boolean };
+  login: SlotLogin | null;
+  capabilities: {
+    catalog?: SlotCatalog;
+    cli_version?: string | null;
+    verification?: { real_model_call: boolean; observed_at: string };
+  };
+  verified_at: string | null;
+  last_used_at: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface SubscriptionProvider {
+  provider_id: string;
+  display_name: string;
+  harness_provider_id: string;
+  login_method: string;
+  verification_host: string;
+  login_window_seconds: number;
+  catalog_source: string | null;
+  available: boolean;
+}
+export interface MachineSlotList {
+  items: MachineSlot[];
+  summary: { total: number; running: number; ready: number; login_pending: number; needs_attention: number };
+  providers: SubscriptionProvider[];
 }

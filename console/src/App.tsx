@@ -4,6 +4,7 @@ import { Loading } from "./components/ui";
 import { LoginPage, RegisterPage, VerifyEmailPage } from "./features/auth/AuthPages";
 import { ConnectionsPage } from "./features/connections/ConnectionsPage";
 import { HomePage } from "./features/home/HomePage";
+import { MachinesPage } from "./features/machines/MachinesPage";
 import { ProjectsPage } from "./features/projects/ProjectsPage";
 import { SessionPage } from "./features/sessions/SessionPage";
 import { SessionsPage } from "./features/sessions/SessionsPage";
@@ -43,6 +44,7 @@ export function App() {
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="sessions/:id/:tab?" element={<SessionPage />} />
           <Route path="connections" element={<ConnectionsPage />} />
+          <Route path="machines" element={<MachinesPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFound />} />
         </Route>
