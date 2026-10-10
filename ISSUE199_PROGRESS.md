@@ -9,7 +9,7 @@ Nothing here has been merged or deployed.
 | 2 Machine Slots + device login | `feat/issue-199-machine-slots` (stacked on PR 1) | Draft (stacked) | https://github.com/soren-labs/sbx-agent/pull/201 |
 | 3 Slot execution, catalog, effort | `feat/issue-199-slot-execution` (stacked on PR 2) | Draft (stacked) | https://github.com/soren-labs/sbx-agent/pull/202 |
 | 4 SDK/CLI + Console | `feat/issue-199-cli-console` (stacked on PR 3) | Draft (stacked) | https://github.com/soren-labs/sbx-agent/pull/203 |
-| 5 Staging E2E + docs | `feat/issue-199-e2e-docs` (stacked on PR 4) | Draft (stacked) | _see PR list_ |
+| 5 Staging E2E + docs | `feat/issue-199-e2e-docs` (stacked on PR 4) | Draft (stacked) | https://github.com/soren-labs/sbx-agent/pull/204 |
 
 Merge order is 1 → 5; each PR's base is the previous branch.
 
