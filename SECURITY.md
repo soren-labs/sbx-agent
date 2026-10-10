@@ -20,7 +20,7 @@ We aim to acknowledge reports within a few days. There is no bug bounty.
 
 | Version | Supported |
 | --- | --- |
-| unified architecture (`main`, latest tag `v0.1.2`) | ✅ |
+| unified architecture (`main`, latest tag `v0.1.3`) | ✅ |
 | `v0.1.1` and earlier pre-unification releases | ❌ superseded |
 | anything older | ❌ upgrade |
 

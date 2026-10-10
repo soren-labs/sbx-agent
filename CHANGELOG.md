@@ -6,7 +6,11 @@ source for release notes.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-10
+
 ### Added
+- Genuine incremental Claude Code and Grok Build text/reasoning streaming, a live folded Session worklog, stable expansion and scrolling, and actionable Turn statuses (PR #197).
+- Real-Modal acceptance coverage, official CLI adapters and bring-your-own inference API Connections (PRs #194-#196).
 - Generic bring-your-own-key inference Connections (`inference_api`): an API key, a default
   model and one base URL per wire protocol (`openai_chat`, `openai_responses`,
   `anthropic_messages`). The Harness is decoupled from the model provider; DeepSeek is the

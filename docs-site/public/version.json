@@ -1,6 +1,6 @@
 {
   "product": "sbx",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "api": "/api",
   "docs_url": null,
   "openapi_url": "/openapi.json",
