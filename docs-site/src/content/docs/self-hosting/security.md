@@ -36,6 +36,8 @@ inheriting `os.environ`.
 | Modal token | the executor worker only |
 | GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
 | Inference API key | the CLI process environment for one Turn; CLI config files reference it by variable name only, so it is never written to disk |
+| Subscription login (cloud machine) | a private Modal Volume in the owner's Modal workspace, written by the official CLI; mounted only into that machine's one VM. The control plane never reads, stores or returns it, and it is never in a checkpoint or ChangeSet |
+| Device sign-in code | returned to the Slot's owner while the login is pending, then cleared |
 
 ChangeSets and checkpoints exclude credential files, including `.env`,
 `auth.json` and private keys. Safe templates such as `.env.example` remain
@@ -66,5 +68,6 @@ generic exec; mutating operations are a fixed set.
 
 Project code and the official CLI can read any credential explicitly placed in
 their environment, so SBX does not claim tamper-proof attestation. Provider-side
-token revocation on disconnect is not performed. Preview origins and OAuth
+token revocation on disconnect is not performed, and signing a cloud machine out
+destroys its Volume but does not revoke the provider-side session. Preview origins and OAuth
 sign-in are not implemented.

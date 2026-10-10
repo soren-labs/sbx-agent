@@ -332,6 +332,11 @@ models, the `protocol` that Harness would use and whether it is `compatible`.
 The Connection's default `model` is used when a Session sets none; any model id
 you pass explicitly is pinned as given.
 
+Validation also measures, per model and protocol, whether the provider's switch
+for turning reasoning off works. Where it does and the chosen CLI forwards it, a
+Session may set `harness.effort` to `none` (thinking off). See
+[Cloud machines](/guides/cloud-machines/#thinking-control-for-api-key-models).
+
 ## CLI
 
 ```bash
@@ -605,6 +610,9 @@ rejected with `csrf_failed`.
   Claude Code, Grok Build, Command Code) and a model from the inference
   Connections that CLI can use; it defaults to the first CLI your key can drive,
   that Connection's default model, and Modal once a Modal Connection exists.
+  The same picker has **Runs on**: your API key or a ready cloud machine. A
+  machine offers the models its own login reported and each model's reasoning
+  efforts; an API-key model offers a thinking On/Off switch where verified.
 - **Session workbench**: the conversation stays on the left while the agent
   works. With Claude Code and Grok Build the reply and any reasoning the model
   exposes appear as they are generated; the other CLIs report each completed
@@ -620,6 +628,11 @@ rejected with `csrf_failed`.
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
   Services and Child Sessions tabs.
 - **Projects**: reusable repository and environment configuration.
+- **My Cloud Machines**: Codex subscription logins, one per machine. Add a
+  machine with the official sign-in page and a one-time code; the row turns
+  Ready by itself. Compact rows with search, state filter, sort and collapsible
+  groups; expand one to log in again, check the login, rename, sign out or
+  delete. See [Cloud machines](/guides/cloud-machines/).
 - **Connections**: add, validate, replace and disconnect, with write-only
   secret fields.
 - **Settings**: identity, API keys (plaintext shown once) and preferences.
@@ -898,6 +911,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
+| `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `logout`, `delete`, `models`, `wait` |
 | `operations` | `get` |
 
 Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
@@ -915,6 +929,61 @@ deadline. `sessions.stream(session_id, after=0)` reads the SSE stream.
 DelegationResult exists), `changesets.wait_ready`, `deliveries.wait` and
 `connections.wait_health` are separate, explicit-deadline calls. Waiting for a
 Turn and waiting for a result are never interchangeable.
+
+## Machine Slots
+
+`client.slots` manages subscription Machine Slots, each one an independent
+official Codex login. See [Cloud machines](/guides/cloud-machines/) for the
+concept.
+
+```python
+from sbx import SBXClient
+
+client = SBXClient("http://127.0.0.1:8800", api_key="sbx_key_REDACTED")
+
+def show_code(login: dict) -> None:
+    print(f"Open {login['verification_url']} and enter {login['user_code']}")
+
+slot = client.slots.add("codex", label="Laptop", account_alias="team")
+ready = client.slots.wait(slot["id"], deadline=1200, on_code=show_code)
+if ready["status"] not in ("ready", "running"):
+    raise SystemExit(f"slot is {ready['status']}")
+
+model = client.slots.models(slot["id"])["models"][0]
+result = client.sessions.create(
+    harness={
+        "provider_id": "codex",
+        "model": model["id"],
+        # Any id from model["reasoning"]["efforts"]; "default" may be None.
+        **({"effort": e} if (e := model["reasoning"]["default"]) else {}),
+    },
+    executor={"backend": "modal"},
+    inference={"mode": "subscription", "machine_slot_id": slot["id"]},
+    message={"content": "Summarize this repository."},
+)
+print(result["session_id"])
+```
+
+`wait` returns the Slot whatever its status, so check `status` as shown. It
+raises `SBXError` with code `timeout` if the login is still pending at the
+deadline. `on_code` is called once with the `login` object, which carries
+`verification_url` and `user_code`.
+
+| Method | Effect |
+| --- | --- |
+| `slots.add(provider="codex", *, label, account_alias, compute_connection_id, volume_name)` | Create a Slot and start its official login. `volume_name` adopts an existing Volume. |
+| `slots.get(slot_id)` | One Slot. |
+| `slots.update(slot_id, **changes)` | Rename (`label`) or set `account_alias`. |
+| `slots.login(slot_id)` | Run the official login again. |
+| `slots.verify(slot_id)` | Re-check the stored login and refresh the model catalog. |
+| `slots.wait(slot_id, *, deadline=1200.0, poll=2.0, on_code=None)` | Wait until no login is pending. |
+| `slots.models(slot_id)` | The model catalog and reasoning efforts, or `{"status": "unavailable", "models": []}`. |
+| `slots.cancel_login(slot_id)` | Stop the pending login. |
+| `slots.logout(slot_id)` | Destroy the stored login. The Slot stays. |
+| `slots.delete(slot_id, *, confirm)` | Delete the Slot and the Volume SBX created for it (an adopted Volume is kept). `confirm` repeats the Slot label. |
+| `slots.overview()` | Slots with summary counts and the available providers. |
+| `slots.list()` | The `items` of `overview()`. |
+| `slots.providers()` | Subscription providers this deployment offers. |
 
 ## Errors and retries
 
@@ -966,7 +1035,8 @@ mode `0600`. Environment variables override the file.
 | `auth login` | Sign in and store an API key. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
 | `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
-| `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. |
+| `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins. See [Machine Slots](#machine-slots). |
+| `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. `create` accepts `--slot`, `--model` and `--effort` for Machine Slots. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
 | `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
 | `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
@@ -981,6 +1051,76 @@ to stderr and exit with status 1.
 `serve` and `migrate` read the control-plane variables described in
 [Configuration](/self-hosting/configuration/); they are equivalent to
 `python -m control.composition serve` and `migrate`.
+
+## Machine Slots
+
+A Machine Slot is one independent official Codex subscription login. Its
+credentials live on a private Modal Volume in your own Modal workspace, and one
+Slot runs one Session at a time. See [Cloud machines](/guides/cloud-machines/)
+for the concept.
+
+| Command | Arguments and flags | Effect |
+| --- | --- | --- |
+| `slots list` | none | Slots with summary counts and the available providers. |
+| `slots providers` | none | Subscription providers this deployment offers. |
+| `slots add` | `--provider NAME` (default `codex`), `--label TEXT`, `--account-alias TEXT`, `--volume NAME`, `--connection ID`, `--wait`, `--timeout SECONDS` (default `1200`) | Create a Slot and start its official login. `--volume` adopts an existing Modal Volume and only verifies it; SBX never deletes that Volume. `--connection` selects the Modal connection (default: the verified one). |
+| `slots login SLOT_ID` | `--wait`, `--timeout SECONDS` (default `1200`) | Run the official login again. |
+| `slots verify SLOT_ID` | `--wait`, `--timeout SECONDS` (default `1200`) | Re-check the stored login with one real CLI call and refresh the model catalog. |
+| `slots wait SLOT_ID` | `--timeout SECONDS` (default `1200`) | Wait until no login is pending. |
+| `slots show SLOT_ID` | none | One Slot. |
+| `slots models SLOT_ID` | none | The model catalog and each model's reasoning efforts, with its `source`. |
+| `slots cancel-login SLOT_ID` | none | Stop the pending login and its VM. |
+| `slots logout SLOT_ID` | none | Destroy the stored login. The Slot stays and becomes `needs_login`. |
+| `slots rename SLOT_ID` | `--label TEXT`, `--account-alias TEXT` | Change the label or the account alias. |
+| `slots delete SLOT_ID` | `--confirm LABEL` (required) | Delete the Slot and the Volume SBX created for it (an adopted Volume is kept). `--confirm` must repeat the Slot label. |
+
+`--wait` makes `add`, `login` and `verify` block until the login settles, using
+the same rules as `slots wait`. Without `--wait` they return the Slot at once.
+
+### Sign-in prompt
+
+While a command waits, the sign-in URL and one-time code are printed to
+**stderr**, once, when the login is waiting for your approval:
+
+```text
+Open <verification URL> and enter the code <code> (expires <time>).
+```
+
+Stdout stays machine-readable JSON, so `2>/dev/null` keeps only the JSON. The
+code is never written to stdout. Without `--wait` nothing is printed; the URL
+and code are in the `login` object returned by `slots show` until the code is
+used.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | OK. |
+| `1` | API error. A JSON error object is written to stderr. |
+| `2` | The Slot is not ready after waiting, for example `needs_login`, `error` or `deleting`. The Slot JSON is written to stdout. |
+| `3` | The login is still pending when `--timeout` expires. The Slot JSON, with `status` `login_pending`, is written to stdout. |
+
+Argument errors are reported by the argument parser and also exit with `2`;
+they write no JSON to stdout.
+
+### Sessions on a Slot
+
+`sbx sessions create` takes three options for Machine Slots:
+
+- `--slot SLOT_ID` runs the Session on that Slot instead of an inference API
+  key. The executor backend defaults to `modal` unless `--backend` is given.
+  `--harness` defaults to `opencode`, and with `--slot` that default is sent as
+  `codex`. Any other `--harness` value is sent as given.
+- `--model MODEL_ID` selects a model from `sbx slots models`. Without it the
+  provider default is used.
+- `--effort LEVEL` selects a reasoning effort that the chosen model lists. An
+  unsupported model or effort is rejected by the server with
+  `validation_failed` and exit status `1`.
+
+```bash
+sbx sessions create --slot SLOT_ID --model MODEL_ID --effort EFFORT \
+  --message "Summarize this repository."
+```
 
 # Providers
 
@@ -1001,15 +1141,20 @@ Harness support is declared in pinned manifests. The machine-readable table is
 
 Every supported Harness runs the vendor's own CLI with an `inference_api`
 Connection (bring your own key); the Harness and the model provider are
-independent. Vendor subscription logins are not used.
+independent. Codex can also run on your own subscription login through a
+[cloud machine](/guides/cloud-machines/); the other CLIs use API keys only.
 
 A disabled provider cannot be selected. Capability values are `supported`,
 `unsupported` or `unknown`, and `unknown` is never treated as supported. For all
 five supported Harnesses `event_stream`, `native_resume`, `native_state_export`
 and `usage` are supported and verified with real Turns; `interrupt`, `steer`,
-`interactive_approval`, `model_discovery` (models come from the Connection) and
-`credential_writeback` are not. `mcp`, `skills`, `attachments` and
-`effort_settings` are `unknown`: the CLIs have them, SBX does not wire them yet.
+`interactive_approval` and `credential_writeback` are not. `model_discovery` is
+supported for Codex only (a cloud machine's own catalog); elsewhere models come
+from the Connection. `effort_settings` is supported for Codex on a cloud machine
+(the levels the selected model lists) and for OpenCode with an API key (thinking
+off, where the provider's switch was verified); it is not wired for the other
+CLIs. `mcp`, `skills` and `attachments` are `unknown`: the CLIs have them, SBX
+does not wire them yet.
 
 Notes per CLI:
 
@@ -1126,6 +1271,8 @@ inheriting `os.environ`.
 | Modal token | the executor worker only |
 | GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
 | Inference API key | the CLI process environment for one Turn; CLI config files reference it by variable name only, so it is never written to disk |
+| Subscription login (cloud machine) | a private Modal Volume in the owner's Modal workspace, written by the official CLI; mounted only into that machine's one VM. The control plane never reads, stores or returns it, and it is never in a checkpoint or ChangeSet |
+| Device sign-in code | returned to the Slot's owner while the login is pending, then cleared |
 
 ChangeSets and checkpoints exclude credential files, including `.env`,
 `auth.json` and private keys. Safe templates such as `.env.example` remain
@@ -1156,7 +1303,8 @@ generic exec; mutating operations are a fixed set.
 
 Project code and the official CLI can read any credential explicitly placed in
 their environment, so SBX does not claim tamper-proof attestation. Provider-side
-token revocation on disconnect is not performed. Preview origins and OAuth
+token revocation on disconnect is not performed, and signing a cloud machine out
+destroys its Volume but does not revoke the provider-side session. Preview origins and OAuth
 sign-in are not implemented.
 
 # Troubleshooting
@@ -1173,7 +1321,12 @@ Source: /troubleshooting/
 | `validation_failed` mentioning `Idempotency-Key` | Every mutation needs the header. The SDK and CLI add it. |
 | Connection stays `unverified` | Validation is a background Job; make sure workers run (`serve` runs them). `reauth_required` means the provider rejected the credential: replace it. |
 | Turn waits with `connection_required` or `credential_invalid` | Add or replace the inference API key, Modal or GitHub Connection. For `connection_required` with `inference_protocols`, add an endpoint for one of the listed protocols. |
-| Turn waits with `waiting_capacity` | Connection capacity is in use; the Turn continues when a slot frees. |
+| Turn waits with `waiting_capacity` | Connection capacity is in use, or the Session's cloud machine is running another Session; the Turn continues when it frees. |
+| Cloud machine stays **Login pending** | Open the sign-in page and enter the code before it expires. The page updates by itself; if the code expired, choose **Log in again**. |
+| Cloud machine shows **Needs login** after it worked | The provider rejected the stored login or it was signed out. Choose **Log in again**. |
+| Cloud machine shows **Error** | The setup VM was lost or the Volume could not be saved. Choose **Check login**; if it persists, check the Modal Connection. |
+| No models listed for a cloud machine | The CLI gave no catalog. Choose **Check login and refresh models**; Sessions can still run on the provider default. |
+| `validation_failed` on `harness.model` or `harness.effort` | The model is not in the machine's catalog, or it does not list that effort. `details.supported` has the valid values. |
 | `executor_unavailable` on Files, Terminal or Services | No live executor. Reads never wake compute; activate it from the Session. |
 | Turn ended `outcome_unknown` | SBX could not prove the result. Inspect the Worktree, then acknowledge the Turn before retrying. See [Sessions and Turns](/guides/sessions-and-turns/). |
 | Delivery blocked with `remote_head_changed` | The remote branch holds another head. Reconcile with a refresh; SBX never force-pushes. |

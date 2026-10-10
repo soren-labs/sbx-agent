@@ -111,6 +111,11 @@ models, the `protocol` that Harness would use and whether it is `compatible`.
 The Connection's default `model` is used when a Session sets none; any model id
 you pass explicitly is pinned as given.
 
+Validation also measures, per model and protocol, whether the provider's switch
+for turning reasoning off works. Where it does and the chosen CLI forwards it, a
+Session may set `harness.effort` to `none` (thinking off). See
+[Cloud machines](/guides/cloud-machines/#thinking-control-for-api-key-models).
+
 ## CLI
 
 ```bash

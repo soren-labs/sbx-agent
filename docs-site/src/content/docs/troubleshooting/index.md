@@ -13,7 +13,12 @@ description: Common first-run failures and what to do about them.
 | `validation_failed` mentioning `Idempotency-Key` | Every mutation needs the header. The SDK and CLI add it. |
 | Connection stays `unverified` | Validation is a background Job; make sure workers run (`serve` runs them). `reauth_required` means the provider rejected the credential: replace it. |
 | Turn waits with `connection_required` or `credential_invalid` | Add or replace the inference API key, Modal or GitHub Connection. For `connection_required` with `inference_protocols`, add an endpoint for one of the listed protocols. |
-| Turn waits with `waiting_capacity` | Connection capacity is in use; the Turn continues when a slot frees. |
+| Turn waits with `waiting_capacity` | Connection capacity is in use, or the Session's cloud machine is running another Session; the Turn continues when it frees. |
+| Cloud machine stays **Login pending** | Open the sign-in page and enter the code before it expires. The page updates by itself; if the code expired, choose **Log in again**. |
+| Cloud machine shows **Needs login** after it worked | The provider rejected the stored login or it was signed out. Choose **Log in again**. |
+| Cloud machine shows **Error** | The setup VM was lost or the Volume could not be saved. Choose **Check login**; if it persists, check the Modal Connection. |
+| No models listed for a cloud machine | The CLI gave no catalog. Choose **Check login and refresh models**; Sessions can still run on the provider default. |
+| `validation_failed` on `harness.model` or `harness.effort` | The model is not in the machine's catalog, or it does not list that effort. `details.supported` has the valid values. |
 | `executor_unavailable` on Files, Terminal or Services | No live executor. Reads never wake compute; activate it from the Session. |
 | Turn ended `outcome_unknown` | SBX could not prove the result. Inspect the Worktree, then acknowledge the Turn before retrying. See [Sessions and Turns](/guides/sessions-and-turns/). |
 | Delivery blocked with `remote_head_changed` | The remote branch holds another head. Reconcile with a refresh; SBX never force-pushes. |

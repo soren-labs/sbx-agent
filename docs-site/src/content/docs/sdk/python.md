@@ -49,6 +49,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
+| `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `logout`, `delete`, `models`, `wait` |
 | `operations` | `get` |
 
 Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
@@ -66,6 +67,63 @@ deadline. `sessions.stream(session_id, after=0)` reads the SSE stream.
 DelegationResult exists), `changesets.wait_ready`, `deliveries.wait` and
 `connections.wait_health` are separate, explicit-deadline calls. Waiting for a
 Turn and waiting for a result are never interchangeable.
+
+## Machine Slots
+
+`client.slots` manages subscription Machine Slots, each one an independent
+official Codex login. See [Cloud machines](/guides/cloud-machines/) for the
+concept.
+
+```python
+from sbx import SBXClient
+
+client = SBXClient("http://127.0.0.1:8800", api_key="sbx_key_REDACTED")
+
+
+def show_code(login: dict) -> None:
+    print(f"Open {login['verification_url']} and enter {login['user_code']}")
+
+
+slot = client.slots.add("codex", label="Laptop", account_alias="team")
+ready = client.slots.wait(slot["id"], deadline=1200, on_code=show_code)
+if ready["status"] not in ("ready", "running"):
+    raise SystemExit(f"slot is {ready['status']}")
+
+model = client.slots.models(slot["id"])["models"][0]
+result = client.sessions.create(
+    harness={
+        "provider_id": "codex",
+        "model": model["id"],
+        # Any id from model["reasoning"]["efforts"]; "default" may be None.
+        **({"effort": e} if (e := model["reasoning"]["default"]) else {}),
+    },
+    executor={"backend": "modal"},
+    inference={"mode": "subscription", "machine_slot_id": slot["id"]},
+    message={"content": "Summarize this repository."},
+)
+print(result["session_id"])
+```
+
+`wait` returns the Slot whatever its status, so check `status` as shown. It
+raises `SBXError` with code `timeout` if the login is still pending at the
+deadline. `on_code` is called once with the `login` object, which carries
+`verification_url` and `user_code`.
+
+| Method | Effect |
+| --- | --- |
+| `slots.add(provider="codex", *, label, account_alias, compute_connection_id, volume_name)` | Create a Slot and start its official login. `volume_name` adopts an existing Volume. |
+| `slots.get(slot_id)` | One Slot. |
+| `slots.update(slot_id, **changes)` | Rename (`label`) or set `account_alias`. |
+| `slots.login(slot_id)` | Run the official login again. |
+| `slots.verify(slot_id)` | Re-check the stored login and refresh the model catalog. |
+| `slots.wait(slot_id, *, deadline=1200.0, poll=2.0, on_code=None)` | Wait until no login is pending. |
+| `slots.models(slot_id)` | The model catalog and reasoning efforts, or `{"status": "unavailable", "models": []}`. |
+| `slots.cancel_login(slot_id)` | Stop the pending login. |
+| `slots.logout(slot_id)` | Destroy the stored login. The Slot stays. |
+| `slots.delete(slot_id, *, confirm)` | Delete the Slot and the Volume SBX created for it (an adopted Volume is kept). `confirm` repeats the Slot label. |
+| `slots.overview()` | Slots with summary counts and the available providers. |
+| `slots.list()` | The `items` of `overview()`. |
+| `slots.providers()` | Subscription providers this deployment offers. |
 
 ## Errors and retries
 

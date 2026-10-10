@@ -24,6 +24,9 @@ rejected with `csrf_failed`.
   Claude Code, Grok Build, Command Code) and a model from the inference
   Connections that CLI can use; it defaults to the first CLI your key can drive,
   that Connection's default model, and Modal once a Modal Connection exists.
+  The same picker has **Runs on**: your API key or a ready cloud machine. A
+  machine offers the models its own login reported and each model's reasoning
+  efforts; an API-key model offers a thinking On/Off switch where verified.
 - **Session workbench**: the conversation stays on the left while the agent
   works. With Claude Code and Grok Build the reply and any reasoning the model
   exposes appear as they are generated; the other CLIs report each completed
@@ -39,6 +42,11 @@ rejected with `csrf_failed`.
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
   Services and Child Sessions tabs.
 - **Projects**: reusable repository and environment configuration.
+- **My Cloud Machines**: Codex subscription logins, one per machine. Add a
+  machine with the official sign-in page and a one-time code; the row turns
+  Ready by itself. Compact rows with search, state filter, sort and collapsible
+  groups; expand one to log in again, check the login, rename, sign out or
+  delete. See [Cloud machines](/guides/cloud-machines/).
 - **Connections**: add, validate, replace and disconnect, with write-only
   secret fields.
 - **Settings**: identity, API keys (plaintext shown once) and preferences.
