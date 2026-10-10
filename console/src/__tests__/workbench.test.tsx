@@ -49,7 +49,7 @@ const toolPart = (id: string, name: string, status: string, input: unknown, outp
   data: { tool_id: id, name, status, input, ...(output === undefined ? {} : { output }) },
 });
 
-function mount(opts: { messages: Message[]; turns: Turn[]; frames?: string[]; activity?: string; harness?: string; send?: () => Promise<{ status: number; json: unknown }> }) {
+function mount(opts: { messages: Message[]; turns: Turn[]; frames?: string[]; body?: ReadableStream; activity?: string; harness?: string; send?: () => Promise<{ status: number; json: unknown }> }) {
   const m = mockFetch([
     ...identityRoutes,
     ["GET", "/api/sessions/s1", { json: { session: session({ activity: opts.activity ?? "running", harness: { provider_id: opts.harness ?? "claude", model: "flash" } }), event_watermark: 4 } }],
@@ -61,7 +61,7 @@ function mount(opts: { messages: Message[]; turns: Turn[]; frames?: string[]; ac
       "/api/sessions/s1/events",
       (call) =>
         call.headers.Accept === "text/event-stream"
-          ? { body: sse(opts.frames ?? []), headers: { "content-type": "text/event-stream" } }
+          ? { body: opts.body ?? sse(opts.frames ?? []), headers: { "content-type": "text/event-stream" } }
           : { json: { items: [], next_after: 4, event_watermark: 4 } },
     ],
     ["POST", "/api/sessions/s1/messages", opts.send ?? { status: 202, json: { message_id: "m9" } }],
@@ -301,19 +301,56 @@ describe("Session workbench", () => {
     await userEvent.click(within(first).getByRole("button", { name: /Worked/ }));
     await userEvent.click(within(within(first).getByRole("listitem")).getByRole("button"));
     expect(first).toHaveTextContent("a.py");
-    // The reply keeps streaming and a new tool starts in a second group.
+    // The reply keeps streaming, then another tool starts: the sentence between the two
+    // tool calls becomes a line of the same work group instead of splitting it.
     await act(async () => {
       push(frame(5, "message.part_updated", { message_id: "m1", part_key: "p1", kind: "text", revision: 2, mode: "append", content: " Now the tests." }));
+    });
+    expect(await within(log).findByText("Listed. Now the tests.")).toBeInTheDocument();
+    await act(async () => {
       push(frame(6, "tool.started", { message_id: "m1", tool_id: "c2", name: "Bash", status: "running", input: { command: "pytest -q" } }));
     });
-    await waitFor(() => expect(within(log).getAllByTestId("work-group")).toHaveLength(2));
-    expect(within(log).getByText("Listed. Now the tests.")).toBeInTheDocument();
-    // Their choices survived: the first group and its step are still open.
-    expect(within(log).getAllByTestId("work-group")[0]).toHaveTextContent("a.py");
+    await waitFor(() => expect(within(log).getByTestId("work-note")).toHaveTextContent("Listed. Now the tests."));
+    const groups = within(log).getAllByTestId("work-group");
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toHaveTextContent("2 commands");
+    // Their choices survived: the group and the step they opened are still open.
+    expect(groups[0]).toHaveTextContent("a.py");
     // The bar above the composer names the command that is actually running.
     const status = screen.getByTestId("turn-status");
     expect(status).toHaveTextContent("Running");
     expect(status).toHaveTextContent("pytest -q");
+  });
+
+  it("stops sliding live rows out of view once the reader has opened one", async () => {
+    const cmd = (i: number, status = "completed") => toolPart(`c${i}`, "Bash", status, { command: `make step-${i}` }, `out ${i}`);
+    let push: (f: string) => void = () => {};
+    const body = new ReadableStream({
+      start(c) {
+        push = (f) => c.enqueue(enc.encode(f));
+      },
+    });
+    const { ready } = mount({ messages: [user, reply(Array.from({ length: 10 }, (_, i) => cmd(i)))], turns: [turn()], body });
+    await ready;
+    const group = await screen.findByTestId("work-group");
+    // Live: only the newest rows, with the exact number of earlier ones on offer.
+    expect(within(group).getAllByTestId("work-step")).toHaveLength(8);
+    expect(group).toHaveTextContent("Show 2 earlier steps");
+    expect(group).not.toHaveTextContent("make step-1");
+    await userEvent.click(within(within(group).getAllByTestId("work-step")[0]).getByRole("button"));
+    expect(group).toHaveTextContent("out 2");
+    for (const i of [10, 11, 12]) {
+      await act(async () => {
+        push(frame(i - 5, "tool.started", { message_id: "m1", tool_id: `c${i}`, name: "Bash", status: "running", input: { command: `make step-${i}` } }));
+      });
+    }
+    await waitFor(() => expect(group).toHaveTextContent("make step-12"));
+    // The row they opened is still there, still open, and nothing above it moved.
+    expect(group).toHaveTextContent("out 2");
+    expect(group).toHaveTextContent("Show 2 earlier steps");
+    expect(within(group).getAllByTestId("work-step")).toHaveLength(11);
+    await userEvent.click(within(group).getByRole("button", { name: "Show 2 earlier steps" }));
+    expect(within(group).getAllByTestId("work-step")).toHaveLength(13);
   });
 
   it("shows a sent message at once and gives the words back if the server refuses it", async () => {

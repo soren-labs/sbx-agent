@@ -7,6 +7,7 @@ import {
   entriesOf,
   isStreaming,
   namesOf,
+  plainLine,
   rowsOf,
   spanOf,
   formatDuration,
@@ -79,22 +80,40 @@ describe("worklog model", () => {
     expect(inputText(undefined)).toBe("");
   });
 
-  it("keeps prose as prose and groups consecutive tools and reasoning into work", () => {
+  it("keeps the opening line and the answer as prose and folds everything between into work", () => {
     const m = message([
+      text("p0", "I'll take a look."),
       { key: "r1", kind: "reasoning", revision: 1, content: "Plan the steps" },
       tool("1", "Read", "completed", { file_path: "a.py" }),
       tool("2", "Bash", "completed", { command: "ls" }),
-      text("p1", "I looked around."),
-      tool("3", "Write", "running", { file_path: "b.py" }),
+      text("p1", "I looked around. Now the edit."),
+      tool("3", "Write", "completed", { file_path: "b.py" }),
       { key: "r2", kind: "reasoning", revision: 1, content: "   " },
+      text("p2", "Done: b.py is written."),
     ]);
-    const entries = entriesOf(m, true);
-    expect(entries.map((e) => e.type)).toEqual(["work", "text", "work"]);
-    const [first, , last] = entries;
-    expect(first.type === "work" && first.steps.map((s) => s.kind)).toEqual(["thought", "read", "command"]);
-    expect(first.type === "work" && first.running).toBe(false);
-    expect(last.type === "work" && last.running).toBe(true);
-    expect(first.type === "work" && countSteps(first.steps)).toEqual({ thought: 1, read: 1, command: 1 });
+    const entries = entriesOf(m, false);
+    expect(entries.map((e) => e.type)).toEqual(["text", "work", "text"]);
+    const work = entries[1];
+    // Narration between tool calls is a step of the work, in order and in full.
+    expect(work.type === "work" && work.steps.map((s) => s.kind)).toEqual(["thought", "read", "command", "note", "edit"]);
+    expect(work.type === "work" && work.steps[3].output).toBe("I looked around. Now the edit.");
+    expect(work.type === "work" && countSteps(work.steps)).toEqual({ thought: 1, read: 1, command: 1, note: 1, edit: 1 });
+    expect(rowsOf(work.type === "work" ? work.steps : []).map((r) => r.kind)).toEqual(["thought", "read", "command", "note", "edit"]);
+    // Every part is somewhere: nothing is dropped by the regrouping.
+    const keys = entries.flatMap((e) => (e.type === "work" ? e.steps.map((s) => s.key) : [e.key]));
+    expect(keys).toEqual(["p0", "r1", "tool:1", "tool:2", "p1", "tool:3", "p2"]);
+  });
+
+  it("treats the newest text as prose while live until another tool call follows it", () => {
+    const parts = [tool("1", "Read", "completed", { file_path: "a.py" }), text("p1", "Read it. Next: tests.")];
+    const before = entriesOf(message(parts), true);
+    expect(before.map((e) => e.type)).toEqual(["work", "text"]);
+    const after = entriesOf(message([...parts, tool("2", "Bash", "running", { command: "pytest" })]), true);
+    expect(after.map((e) => e.type)).toEqual(["work"]);
+    expect(after[0].type === "work" && after[0].steps.map((s) => s.kind)).toEqual(["read", "note", "command"]);
+    // Same group key before and after, so an open group stays open as it grows.
+    expect(after[0].key).toBe(before[0].key);
+    expect(after[0].type === "work" && after[0].running).toBe(true);
   });
 
   it("never leaves a spinner on a tool once the Turn is no longer live", () => {
@@ -181,6 +200,13 @@ describe("worklog model", () => {
     expect(activityOf([message([{ key: "r", kind: "reasoning", revision: 2, content: "Hm", seen_at: now - 10 }])], now)).toEqual({ type: "thinking" });
     // A whole block from a CLI that does not stream is not "being written".
     expect(activityOf([message([text("p", "Complete block")])], now)).toEqual({ type: "waiting" });
+  });
+
+  it("previews narration as plain words without changing the stored text", () => {
+    expect(plainLine("Now `textkit/slug.py`.\nmore")).toBe("Now textkit/slug.py.");
+    expect(plainLine("**Stage 2** — reading the *five* files back")).toBe("Stage 2 — reading the five files back");
+    expect(plainLine("## See [the docs](https://example.test/x) first")).toBe("See the docs first");
+    expect(plainLine("keep snake_case_names and 2 * 3 * 4 intact")).toBe("keep snake_case_names and 2 * 3 * 4 intact");
   });
 
   it("measures a group from recorded part times only", () => {

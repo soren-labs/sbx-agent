@@ -5,7 +5,7 @@ import type { Message, MessagePart, Turn } from "../../api/types";
  * Messages, parts and Turns: nothing here invents state, durations or outcomes.
  */
 
-export type StepKind = "command" | "edit" | "read" | "search" | "web" | "plan" | "agent" | "thought" | "tool";
+export type StepKind = "command" | "edit" | "read" | "search" | "web" | "plan" | "agent" | "thought" | "note" | "tool";
 export type StepStatus = "running" | "done" | "error";
 
 export interface Step {
@@ -123,11 +123,22 @@ export function entriesOf(message: Message, live: boolean, now = Date.now()): En
   // Only the newest part can still be growing: the provider generates in order.
   const last = live ? shown[shown.length - 1] : undefined;
   const growing = isStreaming(last, now) ? last : undefined;
-  for (const part of shown) {
-    if (part.kind === "tool" || part.kind === "reasoning") {
+  // Text the agent says between two tool calls is narration of the work, not an answer:
+  // it stays in the work group, in order and in full. The opening line (before any
+  // tool) and the closing text (after the last one) remain prose.
+  const firstTool = shown.findIndex((part) => part.kind === "tool");
+  const lastTool = shown.reduce((at, part, index) => (part.kind === "tool" ? index : at), -1);
+  shown.forEach((part, index) => {
+    const narration = part.kind === "text" && index > firstTool && index < lastTool && firstTool >= 0;
+    if (part.kind === "tool" || part.kind === "reasoning" || narration) {
       if (!group) {
         group = { type: "work", key: `work:${part.key}`, steps: [], running: false };
         entries.push(group);
+      }
+      if (narration) {
+        const times = { startedAt: part.created_at, endedAt: part.updated_at };
+        group.steps.push({ key: part.key, kind: "note", status: "done", name: "text", detail: "", input: "", output: part.content, ...times });
+        return;
       }
       const step = toStep(part);
       if (part.kind === "reasoning") step.streaming = part === growing;
@@ -136,7 +147,7 @@ export function entriesOf(message: Message, live: boolean, now = Date.now()): En
       group = null;
       entries.push({ type: "text", key: part.key, content: part.content, streaming: part === growing });
     }
-  }
+  });
   if (!message.parts.length) {
     const authored = message.content.map((c) => c.text ?? "").join("\n\n");
     if (authored.trim()) entries.push({ type: "text", key: `${message.id}:content`, content: authored, streaming: false });
@@ -179,6 +190,16 @@ export function rowsOf(steps: Step[]): Row[] {
     else rows.push({ key: `row:${step.key}`, kind: step.kind, steps: [step] });
   }
   return rows;
+}
+
+/** First line of Markdown as plain words, for a one-line preview; the full text stays in the step. */
+export function plainLine(markdown: string): string {
+  const line = markdown.trim().split("\n")[0];
+  return line
+    .replace(/^#{1,6}\s+|^[-*+]\s+|^>\s+/, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|`|~~)/g, "")
+    .replace(/(^|\s)[*_](\S[^*_]*\S|\S)[*_](?=\s|[.,;:!?)]|$)/g, "$1$2");
 }
 
 /** Last path segment, for compact lists of files; the full path stays in the step. */

@@ -57,7 +57,12 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
   failed step always keep their own row. A step expands to the exact command or path, its
   input (readable arguments, not escaped JSON) and output, bounded to 14 lines with an exact
   "show N more lines". While a group is live only its newest 8 rows are shown, with "Show N
-  earlier steps". A tool is shown running only while its Turn is live.
+  earlier steps"; once the reader clicks inside the list, no further row leaves it. A tool is
+  shown running only while its Turn is live.
+* **Narration**: reply text the agent writes *between* two tool calls of one message is a
+  quiet one-line row of that work group (first line as plain words; it expands to the full
+  Markdown), so a long run stays one group. Text before the first tool call and after the
+  last one stays in the reply itself.
 * **Streaming**: `message.part_added`/`message.part_updated` events with `mode: "append"` grow a
   text or reasoning part in place. A part is presented as streaming (caret, "Thinking" opened,
   "Writing the reply") only while this browser received a change to it in the last 2.5 s and

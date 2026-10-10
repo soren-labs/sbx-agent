@@ -19,6 +19,7 @@ import {
   formatTokens,
   isLiveTurn,
   namesOf,
+  plainLine,
   previewOf,
   rowsOf,
   secondsBetween,
@@ -44,6 +45,7 @@ const STEP_ICON: Record<StepKind, string> = {
   plan: "list",
   agent: "sparkle",
   thought: "sparkles",
+  note: "info",
   tool: "code",
 };
 
@@ -157,6 +159,25 @@ function ThoughtRow({ step }: { step: Step }) {
   );
 }
 
+/** What the agent said between two tool calls: its own words, quiet, complete on click. */
+function NoteRow({ step }: { step: Step }) {
+  const [open, setOpen] = useState(false);
+  const text = step.output.trim();
+  return (
+    <li className="step step-note" data-kind="note" data-testid="work-note">
+      <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="step-title step-title-quiet">{plainLine(text)}</span>
+        <Icon name="chevron" size={12} className={`step-chevron ${open ? "open" : ""}`} />
+      </button>
+      {open ? (
+        <div className="step-body">
+          <Markdown text={text} />
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 /** Several finished steps of one kind on a single line; expanding lists every one. */
 function FoldRow({ row }: { row: Row }) {
   const { t } = useI18n();
@@ -191,6 +212,7 @@ function FoldRow({ row }: { row: Row }) {
 
 function RowItem({ row }: { row: Row }) {
   if (row.steps.length > 1) return <FoldRow row={row} />;
+  if (row.kind === "note") return <NoteRow step={row.steps[0]} />;
   return row.kind === "thought" ? <ThoughtRow step={row.steps[0]} /> : <StepRow step={row.steps[0]} />;
 }
 
@@ -211,7 +233,9 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
   const { t } = useI18n();
   // Open while the agent is working here; the user's own toggle wins afterwards.
   const [choice, setChoice] = useState<boolean | null>(null);
-  const [all, setAll] = useState(false);
+  // Row the reader pinned as the first visible one ("" = from the start): once they
+  // touch the list, rows stop sliding out of view under them.
+  const [pinned, setPinned] = useState<string | null>(null);
   const failed = entry.steps.filter((s) => s.status === "error").length;
   const open = choice ?? entry.running;
   const span = spanOf(entry.steps);
@@ -227,7 +251,12 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
     );
   }
   const rows = rowsOf(entry.steps);
-  const hidden = entry.running && !all ? Math.max(0, rows.length - LIVE_TAIL_ROWS) : 0;
+  const hidden = !entry.running
+    ? 0
+    : pinned === null
+      ? Math.max(0, rows.length - LIVE_TAIL_ROWS)
+      : // A pinned row may since have folded into its neighbour: find it by its step.
+        Math.max(0, rows.findIndex((row) => row.steps.some((step) => `row:${step.key}` === pinned)));
   const head = entry.running
     ? elapsed !== null ? t("work.working_for", { time: formatDuration(elapsed) }) : t("work.working")
     : took ? t("work.worked_for", { time: formatDuration(took) }) : t("work.worked");
@@ -240,11 +269,11 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
         {failed ? <span className="work-failed">{t("work.failed_steps", { n: failed })}</span> : null}
       </button>
       {open ? (
-        <ol className="work-steps">
+        <ol className="work-steps" onClickCapture={() => pinned === null && setPinned(rows[hidden]?.key ?? "")}>
           {hidden ? (
             <li className="step">
-              <button type="button" className="step-more" onClick={() => setAll(true)}>
-                {t("work.earlier", { n: hidden })}
+              <button type="button" className="step-more" onClick={() => setPinned("")}>
+                {t(hidden === 1 ? "work.earlier.one" : "work.earlier", { n: hidden })}
               </button>
             </li>
           ) : null}

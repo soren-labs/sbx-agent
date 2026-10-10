@@ -425,6 +425,15 @@
   color: var(--ui-muted);
 }
 
+.step-note .step-head {
+  padding-left: 6px;
+}
+
+.step-note .step-title {
+  color: var(--ui-dim);
+  font-size: 13px;
+}
+
 .step-running .step-kind,
 .step-running .step-title,
 .step-thought-row.is-streaming .step-kind {
