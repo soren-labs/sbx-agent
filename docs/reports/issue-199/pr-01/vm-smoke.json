@@ -1,0 +1,32 @@
+{
+  "sdk": "1.6.1",
+  "recipe_digest": "f3da5170e440358492f578a1",
+  "prewarm": {
+    "image_id": "im-NZ3joXFnax3AyFxS0JSvtT",
+    "recipe_digest": "f3da5170e440358492f578a1",
+    "image_resolve_ms": 868
+  },
+  "sandbox_id": "sb-01M4JF1V3M7866Q3SA2S3B8527",
+  "runtime": "vm",
+  "timings": {
+    "image_resolve_ms": 688,
+    "sandbox_create_ms": 100,
+    "runtime_connect_ms": 4377,
+    "allocate_to_reachable_ms": 6312
+  },
+  "vm": {
+    "kernel": "Linux 7.2.9",
+    "boot_id": "af83850a-3e72-4631-8e23-0c1fb3541d6e",
+    "pid1": "runch-agent",
+    "gvisor_dmesg_lines": 0
+  },
+  "turn": {
+    "harness": "opencode",
+    "model": "deepseek-flash",
+    "status": "succeeded",
+    "events": 8,
+    "file_written": true,
+    "start_to_done_ms": 5615
+  },
+  "terminated": true
+}

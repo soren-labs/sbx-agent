@@ -1,0 +1,57 @@
+{
+ "executor_bound_provisioning_ms": [
+  {
+   "total_ms": 5890,
+   "handshake_ms": 276,
+   "image_resolve_ms": 3,
+   "sandbox_create_ms": 100,
+   "runtime_connect_ms": 4233
+  },
+  {
+   "total_ms": 5577,
+   "handshake_ms": 274,
+   "image_resolve_ms": 4,
+   "sandbox_create_ms": 97,
+   "runtime_connect_ms": 3918
+  },
+  {
+   "total_ms": 6873,
+   "handshake_ms": 263,
+   "image_resolve_ms": 2,
+   "sandbox_create_ms": 94,
+   "runtime_connect_ms": 5240
+  }
+ ],
+ "job_attempt_outcomes": {
+  "continue": 101,
+  "succeeded": 24
+ },
+ "claim_expired_attempts": 0,
+ "provision_jobs": [
+  {
+   "state": "succeeded",
+   "result": {
+    "image_id": "im-NZ3joXFnax3AyFxS0JSvtT",
+    "recipe_digest": "f3da5170e440358492f578a1",
+    "image_resolve_ms": 1041
+   }
+  }
+ ],
+ "leases": [
+  {
+   "state": "released",
+   "backend": "modal",
+   "runtime": "vm"
+  },
+  {
+   "state": "released",
+   "backend": "modal",
+   "runtime": "vm"
+  },
+  {
+   "state": "released",
+   "backend": "modal",
+   "runtime": "vm"
+  }
+ ]
+}

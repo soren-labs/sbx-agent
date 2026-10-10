@@ -233,6 +233,15 @@ credentials. There are three kinds, all added by manual input:
 | `github` | `token` (personal access token or GitHub App installation token) | Cloning repositories and Delivery (push, pull request, merge). | Repository access for Project repos (`GET /repos/…`); `GET /user` only supplies the identity, so installation tokens are accepted |
 | `inference_api` | `api_key`, `model`, `endpoints` | Inference for every Harness, with your own provider key. Passed to the CLI as an environment variable; never written to disk. | One minimal generation request per endpoint (this consumes a little quota and is recorded) |
 
+## Modal sandboxes
+
+Every Modal sandbox SBX creates is a full Linux virtual machine in your own Modal
+workspace, whatever inference you use. When a Modal Connection is verified, SBX
+builds the shared runtime image there once (official CLIs, Git, Node and the
+runtime), so the first Turn does not wait for an image build. Image builds and
+sandbox time are billed to your workspace; sandboxes are terminated when the
+Session's executor is released.
+
 ## Inference API keys
 
 Inference is bring-your-own-key. A Connection is not a vendor integration: it is
