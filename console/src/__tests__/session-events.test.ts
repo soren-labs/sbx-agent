@@ -36,6 +36,42 @@ describe("event reducer", () => {
     expect(s.messages[0].parts).toHaveLength(1);
   });
 
+  it("grows a part from append deltas exactly once across replays, reconnects and refetches", () => {
+    const delta = (seq: number, revision: number, content: string, mode = "append"): EventEnvelope =>
+      ev(seq, revision === 1 ? "message.part_added" : "message.part_updated", { message_id: "m1", part_key: "p1", kind: "text", revision, mode, content });
+    let s = liveReducer(seeded(), { type: "events", items: [delta(1, 1, "Hel"), delta(2, 2, "lo")], now: 1000 });
+    expect(text(s)).toBe("Hello");
+    // The same deltas again (a reconnect replays from an older cursor): nothing doubles.
+    s = liveReducer(s, { type: "events", items: [delta(1, 1, "Hel"), delta(2, 2, "lo"), delta(3, 2, "lo")], now: 1500 });
+    expect(text(s)).toBe("Hello");
+    expect(s.messages[0].parts[0].seen_at).toBe(1000);
+    // A refetch racing the stream returns a later revision; older deltas still in flight are skipped.
+    s = liveReducer(s, { type: "merge_messages", messages: [msg({ parts: [{ key: "p1", kind: "text", revision: 4, content: "Hello, wor" }] })] });
+    s = liveReducer(s, { type: "events", items: [delta(4, 3, ", w"), delta(5, 4, "or"), delta(6, 5, "ld")], now: 2000 });
+    expect(text(s)).toBe("Hello, world");
+    // The completed block reconciles with one replace revision; a late delta cannot undo it.
+    s = liveReducer(s, { type: "events", items: [delta(7, 6, "Hello, world!", "replace"), delta(8, 5, "ld")], now: 2100 });
+    expect(text(s)).toBe("Hello, world!");
+    expect(s.messages[0].parts).toHaveLength(1);
+    expect(s.messages[0].parts[0]).toMatchObject({ revision: 6, seen_at: 2100 });
+  });
+
+  it("marks a part as live activity only when it actually grew in this browser", () => {
+    // A whole block from a CLI that does not stream: present, but not "being written".
+    let s = liveReducer(seeded(), { type: "events", items: [part(1, 1, "A complete paragraph.")], now: 1000 });
+    expect(s.messages[0].parts[0].seen_at).toBeUndefined();
+    // A later revision of the same part is growth.
+    s = liveReducer(s, { type: "events", items: [part(2, 2, "A complete paragraph. And more.")], now: 1200 });
+    expect(s.messages[0].parts[0].seen_at).toBe(1200);
+    // Tool parts carry real server times from the events that touched them.
+    const at = (seq: number, type: string, status: string, recorded_at: string): EventEnvelope => ({
+      ...ev(seq, type, { message_id: "m1", tool_id: "c1", name: "Bash", status }),
+      recorded_at,
+    });
+    s = apply(s, at(3, "tool.started", "running", "2026-10-10T00:00:01Z"), at(4, "tool.completed", "completed", "2026-10-10T00:00:09Z"));
+    expect(s.messages[0].parts[1]).toMatchObject({ created_at: "2026-10-10T00:00:01Z", updated_at: "2026-10-10T00:00:09Z" });
+  });
+
   it("does not regress a part when a snapshot already contains a later revision", () => {
     const snap = msg({ parts: [{ key: "p1", kind: "text", revision: 3, content: "Hello world" }] });
     let s = seeded([snap], 5);

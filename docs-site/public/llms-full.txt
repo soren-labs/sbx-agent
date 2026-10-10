@@ -597,10 +597,14 @@ rejected with `csrf_failed`.
   Connections that CLI can use; it defaults to the first CLI your key can drive,
   that Connection's default model, and Modal once a Modal Connection exists.
 - **Session workbench**: the conversation stays on the left while the agent
-  works. Tool calls are grouped into "Working"/"Worked" blocks you can expand to
-  see each command, file edit and its output; the status line shows whether the
-  Turn is queued, starting, working, completed or failed, with Stop and Retry
-  where the server allows them. The workspace panel on the right (or the
+  works. With Claude Code and Grok Build the reply and any reasoning the model
+  exposes appear as they are generated; the other CLIs report each completed
+  step. Tool calls are grouped into "Working for…"/"Worked for…" blocks: runs of
+  file reads, searches and edits fold into one line, and any line expands to the
+  exact command or path with its input and output. The status bar above the
+  composer says what the agent is doing right now (the running command,
+  thinking, writing, or waiting for the model) with Stop; a finished Turn shows
+  its duration and tokens, or the failure with Retry where the server allows it. The workspace panel on the right (or the
   **Workspace** switch on small screens) holds Overview, Changes, Files,
   Terminal, Services, Child Sessions and Activity.
 - **Sessions**: the list and the Session view with Conversation, Activity,
@@ -771,8 +775,15 @@ is gap-free. Clients dedupe by `seq`.
 | `delegation.` | `created`, `waiting`, `result_published`, `failed`, `cancel_requested`, `cancelled` |
 | `service.` | `requested`, `ready`, `degraded`, `failed`, `stopped` |
 
-`message.part_updated` replaces a part's content by revision; apply it by
-replacement, never by appending, to avoid duplicating cumulative text. A turn is
+`message.part_added` and `message.part_updated` carry `part_key`, a `revision`
+that only grows per part, and a `mode`. With `mode: "replace"` the payload's
+`content` is the whole part; with `mode: "append"` it is a delta to add to the
+content you already hold. Apply an event only when its `revision` is greater than
+the one you last applied for that part, and never apply to a sealed part: a
+replayed or duplicated event is then a no-op and streamed text is never
+duplicated. Claude Code and Grok Build stream replies and visible reasoning as
+append deltas (about ten per second) and end each block with the completed text
+only if it differs; other CLIs report whole blocks. A turn is
 terminal at `turn.succeeded`, `turn.failed`, `turn.cancelled` or
 `turn.interrupted`; `execution.observed_terminal` with verdict `unknown`
 corresponds to an `outcome_unknown` Turn.

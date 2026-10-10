@@ -220,7 +220,7 @@
     "transport": "jsonl"
   },
   {
-    "adapter_version": "claude-harness/1",
+    "adapter_version": "claude-harness/2",
     "capabilities": {
       "account_portable_resume": {
         "evidence": "",
@@ -247,7 +247,7 @@
         "status": "unknown"
       },
       "event_stream": {
-        "evidence": "--output-format stream-json --verbose",
+        "evidence": "--output-format stream-json --verbose --include-partial-messages",
         "limitation": "",
         "mode": "",
         "status": "supported"
@@ -329,7 +329,7 @@
     "transport": "jsonl"
   },
   {
-    "adapter_version": "grok-harness/1",
+    "adapter_version": "grok-harness/2",
     "capabilities": {
       "account_portable_resume": {
         "evidence": "",
@@ -356,7 +356,7 @@
         "status": "unknown"
       },
       "event_stream": {
-        "evidence": "--output-format streaming-messages-json",
+        "evidence": "--output-format streaming-messages-json --include-partial-messages",
         "limitation": "",
         "mode": "",
         "status": "supported"

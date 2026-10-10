@@ -44,19 +44,51 @@ schemas, server action eligibility, identity, or the query/event store.
 The Session view is a two-pane workbench, not a tab that replaces the conversation:
 
 * **Conversation** (`role="log"`): Messages grouped under their Turn. Assistant parts render in
-  server order — prose as Markdown/GFM, consecutive `tool`/`reasoning` parts as one work group
-  ("Working"/"Worked" with counts by kind). Tool names from all five CLIs are classified
-  (command, edit, read, search, web, plan, agent); unknown tools stay generic. Each step expands
-  to its input (readable arguments, not escaped JSON) and output, bounded to 14 lines with an
-  exact "show N more lines". A tool is shown running only while its Turn is live.
-* **Turn status**: one line per Turn from server state — queued, starting (`preparing`,
-  `waiting_capacity`), working with elapsed time and Stop, completed with real duration and
-  reported tokens, or a failure/cancel/interrupt card with the error code, a plain explanation,
-  and Retry/Acknowledge when the server offers the action. No cost, effort or PR status is
-  derived client-side.
-* **Scroll**: the log follows new output only while the reader is within 80 px of the end;
-  otherwise position is kept and "Jump to latest" appears. The composer is docked, grows to
-  220 px, sends on Enter (Shift+Enter breaks the line, IME-safe) and queues behind a live Turn.
+  server order — prose as Markdown/GFM, consecutive `tool`/`reasoning` parts as one work group.
+  The group header is "Working for <elapsed>" while its Turn is live and "Worked for <duration>"
+  afterwards, measured from the parts' `created_at`/`updated_at` (no duration is shown for parts
+  that never recorded them), followed by counts by kind and the number of failed steps. A group
+  is open while the agent works in it and collapses when it finishes; the reader's own toggle
+  always wins and survives new output. While its Turn is live a group that stops running waits
+  1.5 s before it reads as finished, so a line of narration between two tools does not close and
+  reopen it; clicking inside a group counts as choosing to keep it open.
+* **Rows and folding**: tool names from all five CLIs are classified (command, edit, read,
+  search, web, plan, agent); unknown tools stay generic. Consecutive *finished* steps of the same
+  quiet kind (read, search, edit, web, plan, repeats of one generic tool) fold into one row
+  ("Read 9 files · a.py, b.py, …") that expands to every step; finished reasoning and narration
+  between two steps that fold go inside the fold with them, in order. Commands, a running step and a
+  failed step always keep their own row. A step expands to the exact command or path, its
+  input (readable arguments, not escaped JSON) and output, bounded to 14 lines with an exact
+  "show N more lines". While a group is live only its newest 8 rows are shown, with "Show N
+  earlier steps"; once the reader clicks inside the list, no further row leaves it, and a
+  single row they clicked is never folded into a later neighbour. A tool is
+  shown running only while its Turn is live.
+* **Narration**: reply text the agent writes *between* two tool calls of one message is a
+  quiet one-line row of that work group (first line as plain words; it expands to the full
+  Markdown), so a long run stays one group. Text before the first tool call and after the
+  last one stays in the reply itself.
+* **Streaming**: `message.part_added`/`message.part_updated` events with `mode: "append"` grow a
+  text or reasoning part in place. A part is presented as streaming (caret, "Thinking" opened,
+  "Writing the reply") only while this browser received a change to it in the last 2.5 s and
+  it is the newest unsealed part of a live Turn; whole blocks from CLIs that do not stream, and
+  parts loaded from a snapshot, are never animated. Reasoning shows "Thought for <time>" from
+  recorded part times once it is complete.
+* **Turn status**: a live Turn has one status bar docked above the composer, from server state —
+  queued, starting (`preparing`, `waiting_capacity`), or running with what the newest part says
+  is happening (the running tool and its command/path, "Thinking", "Writing the reply", or
+  "Waiting for the model"), elapsed time and Stop. A finished Turn shows completed with real
+  duration and reported tokens, or a failure/cancel/interrupt card with the error code, a plain
+  explanation, and Retry/Acknowledge when the server offers the action. No cost, effort or PR
+  status is derived client-side.
+* **Scroll and composer**: the log follows new output only while the reader is within 80 px of
+  the end; otherwise position is kept and a "Jump to latest" button appears. The composer is
+  docked, grows to 220 px, sends on Enter (Shift+Enter breaks the line, Escape leaves the box,
+  IME-safe) and queues behind a live Turn. A sent message appears in the log immediately as
+  "sending" and is replaced by the server's Message once accepted; if the request fails the
+  text returns to the box with a retry that reuses the same idempotency key.
+* **Stream trace** (diagnostic, off by default): with `localStorage["sbx.streamTrace"] = "1"`
+  each part/tool event records runtime `observed_at`, control `recorded_at`, browser receipt
+  and paint times in `window.__sbxStreamTrace`.
 * **Workspace panel** (`/sessions/{id}/{overview|changes|files|terminal|services|children|activity}`):
   beside the conversation on wide screens; below 1100 px a Conversation/Workspace switch shows
   one pane. Activity is a worded timeline (event type on hover; per-chunk updates behind a toggle).

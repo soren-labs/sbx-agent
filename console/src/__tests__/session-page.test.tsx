@@ -80,9 +80,13 @@ describe("Session page", () => {
     expect(screen.getByTestId("recovery-point")).toHaveTextContent("Generation 2");
     // One status, from the live Turn, in words; the Stop action names what it does.
     expect(screen.getByTestId("session-status")).toHaveTextContent("Working");
-    const status = within(log).getByTestId("turn-status");
+    // It sits above the composer, outside the scrolling log, and says what is happening:
+    // a text part this browser just received deltas for is being written.
+    expect(within(log).queryByTestId("turn-status")).toBeNull();
+    const status = screen.getByTestId("turn-status");
     expect(status).toHaveAttribute("data-state", "running");
-    expect(status).toHaveTextContent("Working on your request");
+    expect(status).toHaveTextContent("Writing the reply");
+    expect(log.querySelector(".assistant-message.is-streaming")).not.toBeNull();
     expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
     // The running Turn has reported no usage: nothing is invented, and no cost is guessed.
     const usage = screen.getByRole("region", { name: "Usage" });

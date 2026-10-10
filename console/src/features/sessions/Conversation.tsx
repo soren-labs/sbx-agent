@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import { Markdown } from "../../components/Markdown";
 import { Icon, Mark } from "../../components/icons";
@@ -10,15 +10,23 @@ import { useApi } from "../../state/context";
 import type { SessionLive, SessionLiveState } from "../../state/session-live";
 import { harnessName } from "./harnesses";
 import {
+  LIVE_TAIL_ROWS,
+  activityOf,
   blocksOf,
   countSteps,
   entriesOf,
   formatDuration,
   formatTokens,
   isLiveTurn,
+  namesOf,
+  plainLine,
   previewOf,
+  toolsOf,
+  rowsOf,
   secondsBetween,
+  spanOf,
   type Entry,
+  type Row,
   type Step,
   type StepKind,
   type TurnBlock,
@@ -38,6 +46,7 @@ const STEP_ICON: Record<StepKind, string> = {
   plan: "list",
   agent: "sparkle",
   thought: "sparkles",
+  note: "info",
   tool: "code",
 };
 
@@ -60,6 +69,20 @@ function useElapsed(start: string | null | undefined, running: boolean): number 
   return Number.isFinite(ms) ? Math.max(0, Math.round(ms / 1000)) : null;
 }
 
+/** How long a live work group waits for the next tool before it reads as finished. */
+const SETTLE_MS = 1500;
+
+/** `on`, held for `ms` after it turns off, so a state that flips back at once never flickers. */
+function useLinger(on: boolean, ms: number): boolean {
+  const [held, setHeld] = useState(on);
+  useEffect(() => {
+    if (on || !ms) return setHeld(on);
+    const id = setTimeout(() => setHeld(false), ms);
+    return () => clearTimeout(id);
+  }, [on, ms]);
+  return on || (held && ms > 0);
+}
+
 /** Bounded output: the first lines are visible, the rest is one click away. */
 function Output({ label, value, tone }: { label: string; value: string; tone?: "error" }) {
   const { t } = useI18n();
@@ -78,63 +101,141 @@ function Output({ label, value, tone }: { label: string; value: string; tone?: "
   );
 }
 
-function StepRow({ step }: { step: Step }) {
+function StepDetail({ step }: { step: Step }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const title = step.kind === "thought" ? t("work.kind.thought") : step.detail || step.name;
   // The command/path is already the row title; show raw input only when it adds something.
   const input = step.input && step.input.trim() !== step.detail ? step.input : "";
-  const expandable = step.kind === "thought" ? !!step.output : !!(input || step.output);
   return (
-    <li className={`step step-${step.status}`} data-kind={step.kind}>
-      <button
-        type="button"
-        className="step-head"
-        aria-expanded={expandable ? open : undefined}
-        disabled={!expandable}
-        onClick={() => setOpen(!open)}
-      >
+    <div className="step-body">
+      {/* The exact command or path, never the shortened row title. */}
+      {step.detail ? <Output label={step.name} value={step.detail} /> : null}
+      {input ? <Output label={t("work.input")} value={input} /> : null}
+      {step.output ? (
+        <Output label={t("work.output")} value={step.output} tone={step.status === "error" ? "error" : undefined} />
+      ) : step.status !== "running" ? (
+        <p className="step-empty">{t("work.no_output")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function StepState({ step }: { step: Step }) {
+  const { t } = useI18n();
+  if (step.status === "running") return <span className="work-ring" role="img" aria-label={t("work.step.running")} />;
+  if (step.status === "error") return <span className="step-failed">{t("work.step.error")}</span>;
+  return null;
+}
+
+/** One tool call: verb + the real command or path; the full input/output is a click away. */
+function StepRow({ step, nested }: { step: Step; nested?: boolean }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const title = step.detail || step.name;
+  return (
+    <li className={`step step-${step.status} ${nested ? "is-nested" : ""}`} data-kind={step.kind} data-row={nested ? undefined : step.key} data-testid="work-step">
+      <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span className="step-icon" aria-hidden="true">
           <Icon name={STEP_ICON[step.kind]} size={13} />
         </span>
         <span className="step-kind">{t(`work.kind.${step.kind}` as I18nKey)}</span>
-        {step.kind !== "thought" ? (
-          <span className="step-title" title={title}>
-            {title}
-          </span>
-        ) : (
-          <span className="step-title step-title-quiet">{step.output.trim().split("\n")[0]}</span>
-        )}
-        <span className="step-state">
-          {step.status === "running" ? (
-            <span className="work-ring" role="img" aria-label={t("work.step.running")} />
-          ) : step.status === "error" ? (
-            <span className="step-failed">{t("work.step.error")}</span>
-          ) : (
-            <Icon name="check" size={12} />
-          )}
+        <span className="step-title" title={title}>
+          {title}
         </span>
-        {expandable ? <Icon name="chevron" size={12} className={`step-chevron ${open ? "open" : ""}`} /> : null}
+        <StepState step={step} />
+        <Icon name="chevron" size={12} className={`step-chevron ${open ? "open" : ""}`} />
       </button>
-      {open && expandable ? (
+      {open ? <StepDetail step={step} /> : null}
+    </li>
+  );
+}
+
+/** Provider-visible reasoning: open while it streams, folded once the model moves on. */
+function ThoughtRow({ step }: { step: Step }) {
+  const { t } = useI18n();
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const open = choice ?? !!step.streaming;
+  const took = secondsBetween(step.startedAt, step.endedAt);
+  const label = step.streaming
+    ? t("work.thinking")
+    : took ? t("work.thought_for", { time: formatDuration(took) }) : t("work.kind.thought");
+  return (
+    <li className={`step step-thought-row ${step.streaming ? "is-streaming" : ""}`} data-kind="thought" data-testid="work-step">
+      <button type="button" className="step-head" aria-expanded={open} onClick={() => setChoice(!open)}>
+        <span className="step-icon" aria-hidden="true">
+          <Icon name={STEP_ICON.thought} size={13} />
+        </span>
+        <span className="step-kind">{label}</span>
+        {open ? <span className="step-title" /> : <span className="step-title step-title-quiet">{step.output.trim().split("\n")[0]}</span>}
+        <Icon name="chevron" size={12} className={`step-chevron ${open ? "open" : ""}`} />
+      </button>
+      {/* Reasoning is plain text from the model: not Markdown (it mangles __names__). */}
+      {open ? <div className="step-body step-thought">{step.output.trim()}</div> : null}
+    </li>
+  );
+}
+
+/** What the agent said between two tool calls: its own words, quiet, complete on click. */
+function NoteRow({ step }: { step: Step }) {
+  const [open, setOpen] = useState(false);
+  const text = step.output.trim();
+  return (
+    <li className="step step-note" data-kind="note" data-testid="work-note">
+      <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="step-title step-title-quiet">{plainLine(text)}</span>
+        <Icon name="chevron" size={12} className={`step-chevron ${open ? "open" : ""}`} />
+      </button>
+      {open ? (
         <div className="step-body">
-          {step.kind === "thought" ? (
-            // Reasoning is plain text from the model: not Markdown (it mangles __names__).
-            <div className="step-thought">{step.output.trim()}</div>
-          ) : (
-            <>
-              {input ? <Output label={t("work.input")} value={input} /> : null}
-              {step.output ? (
-                <Output label={t("work.output")} value={step.output} tone={step.status === "error" ? "error" : undefined} />
-              ) : step.status !== "running" ? (
-                <p className="step-empty">{t("work.no_output")}</p>
-              ) : null}
-            </>
-          )}
+          <Markdown text={text} />
         </div>
       ) : null}
     </li>
   );
+}
+
+/** Several finished steps of one kind on a single line; expanding lists every one. */
+function FoldRow({ row }: { row: Row }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const names = namesOf(row);
+  const count = toolsOf(row).length;
+  const label =
+    row.kind === "tool"
+      ? t("work.fold.tool", { n: count, name: row.steps[0].name })
+      : t(`work.fold.${row.kind}` as I18nKey, { n: row.kind === "edit" || row.kind === "read" ? names.length : count });
+  return (
+    <li className="step step-fold" data-kind={row.kind} data-testid="work-fold">
+      <button type="button" className="step-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="step-icon" aria-hidden="true">
+          <Icon name={STEP_ICON[row.kind]} size={13} />
+        </span>
+        <span className="step-kind">{label}</span>
+        <span className="step-title step-title-quiet" title={names.join(", ")}>
+          {row.kind === "tool" ? "" : names.join(", ")}
+        </span>
+        <Icon name="chevron" size={12} className={`step-chevron ${open ? "open" : ""}`} />
+      </button>
+      {open ? (
+        <ol className="work-steps is-nested">
+          {row.steps.map((step) =>
+            step.kind === "thought" ? (
+              <ThoughtRow key={step.key} step={step} />
+            ) : step.kind === "note" ? (
+              <NoteRow key={step.key} step={step} />
+            ) : (
+              <StepRow key={step.key} step={step} nested />
+            ),
+          )}
+        </ol>
+      ) : null}
+    </li>
+  );
+}
+
+function RowItem({ row }: { row: Row }) {
+  if (row.steps.length > 1) return <FoldRow row={row} />;
+  if (row.kind === "note") return <NoteRow step={row.steps[0]} />;
+  return row.kind === "thought" ? <ThoughtRow step={row.steps[0]} /> : <StepRow step={row.steps[0]} />;
 }
 
 function plural(t: T, kind: StepKind, n: number): string {
@@ -144,45 +245,75 @@ function plural(t: T, kind: StepKind, n: number): string {
 function summarize(t: T, steps: Step[]): string {
   const counts = countSteps(steps);
   const order: StepKind[] = ["command", "edit", "read", "search", "web", "plan", "agent", "tool"];
-  const bits = order
+  return order
     .filter((kind) => counts[kind])
-    .map((kind) => plural(t, kind, counts[kind]!));
-  return bits.join(" · ") || plural(t, "thought", counts.thought ?? 0);
+    .map((kind) => plural(t, kind, counts[kind]!))
+    .join(" · ");
 }
 
 function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
   const { t } = useI18n();
   // Open while the agent is working here; the user's own toggle wins afterwards.
   const [choice, setChoice] = useState<boolean | null>(null);
+  // Row the reader pinned as the first visible one ("" = from the start): once they
+  // touch the list, rows stop sliding out of view under them.
+  const [pinned, setPinned] = useState<string | null>(null);
+  // Single rows the reader clicked keep their own row, so a later neighbour of the
+  // same kind does not fold them away together with what they opened.
+  const [apart, setApart] = useState<ReadonlySet<string>>(() => new Set());
+  // A line of narration after a tool is not the end of the work: while the Turn is
+  // live the group stays as it is for a moment instead of closing and reopening.
+  const running = useLinger(entry.running, entry.live ? SETTLE_MS : 0);
+  const touch = (event: MouseEvent<HTMLOListElement>) => {
+    // Reading inside the group is a choice to keep it open.
+    if (choice === null) setChoice(true);
+    if (pinned === null) setPinned(rows[hidden]?.key ?? "");
+    const key = (event.target as HTMLElement).closest<HTMLElement>("[data-row]")?.dataset.row;
+    if (key && !apart.has(key)) setApart(new Set(apart).add(key));
+  };
   const failed = entry.steps.filter((s) => s.status === "error").length;
-  const open = choice ?? entry.running;
-  const current = [...entry.steps].reverse().find((s) => s.status === "running") ?? entry.steps[entry.steps.length - 1];
-  // Reasoning with no tool around it is context, not work: keep it visually quiet.
-  const quiet = !entry.running && entry.steps.every((step) => step.kind === "thought");
+  const open = choice ?? running;
+  const span = spanOf(entry.steps);
+  const elapsed = useElapsed(span.start, running);
+  const took = secondsBetween(span.start, span.end);
+  // Reasoning with no tool around it is context, not work: a single quiet line.
+  const solo = entry.steps.length === 1 && entry.steps[0].kind === "thought";
+  if (solo) {
+    return (
+      <ol className="work-steps is-solo" data-testid="work-group">
+        <ThoughtRow step={entry.steps[0]} />
+      </ol>
+    );
+  }
+  const rows = rowsOf(entry.steps, apart);
+  const hidden = !running
+    ? 0
+    : pinned === null
+      ? Math.max(0, rows.length - LIVE_TAIL_ROWS)
+      : // A pinned row may since have folded into its neighbour: find it by its step.
+        Math.max(0, rows.findIndex((row) => row.steps.some((step) => `row:${step.key}` === pinned)));
+  const head = running
+    ? elapsed !== null ? t("work.working_for", { time: formatDuration(elapsed) }) : t("work.working")
+    : took ? t("work.worked_for", { time: formatDuration(took) }) : t("work.worked");
   return (
-    <section
-      className={`work ${entry.running ? "is-running" : ""} ${open ? "is-open" : ""} ${quiet ? "is-quiet" : ""}`}
-      data-testid="work-group"
-    >
+    <section className={`work ${running ? "is-running" : ""} ${open ? "is-open" : ""}`} data-testid="work-group">
       <button type="button" className="work-head" aria-expanded={open} onClick={() => setChoice(!open)}>
         <Icon name="chevron" size={13} className={`step-chevron ${open ? "open" : ""}`} />
-        <strong>{quiet ? t("work.kind.thought") : entry.running ? t("work.working") : t("work.worked")}</strong>
-        <span className="work-summary">
-          {quiet ? entry.steps[0].output.trim().split("\n")[0] : summarize(t, entry.steps)}
-        </span>
+        <strong>{head}</strong>
+        <span className="work-summary">{summarize(t, entry.steps)}</span>
         {failed ? <span className="work-failed">{t("work.failed_steps", { n: failed })}</span> : null}
-        {entry.running ? <span className="work-ring" aria-hidden="true" /> : null}
       </button>
-      {entry.running && !open && current ? (
-        <div className="work-current">
-          <Icon name={STEP_ICON[current.kind]} size={12} />
-          <span>{current.kind === "thought" ? t("work.kind.thought") : current.detail || current.name}</span>
-        </div>
-      ) : null}
       {open ? (
-        <ol className="work-steps">
-          {entry.steps.map((step) => (
-            <StepRow key={step.key} step={step} />
+        <ol className="work-steps" onClickCapture={touch}>
+          {hidden ? (
+            <li className="step">
+              <button type="button" className="step-more" onClick={() => setPinned("")}>
+                {t(hidden === 1 ? "work.earlier.one" : "work.earlier", { n: hidden })}
+              </button>
+            </li>
+          ) : null}
+          {rows.slice(hidden).map((row) => (
+            <RowItem key={row.key} row={row} />
           ))}
         </ol>
       ) : null}
@@ -204,6 +335,27 @@ function UserMessage({ m }: { m: Message }) {
         <time>{clock(m.created_at)}</time>
       </div>
       <div className="wl-bubble">{body}</div>
+    </article>
+  );
+}
+
+/** A message the user just sent, shown at once while the server accepts it. */
+export interface Outgoing {
+  text: string;
+  note: boolean;
+  /** Set once accepted: the bubble yields to the server's Message with this id. */
+  messageId?: string;
+}
+
+function OutgoingMessage({ out }: { out: Outgoing }) {
+  const { t } = useI18n();
+  return (
+    <article className={`wl-msg wl-user is-outgoing ${out.note ? "is-note" : ""}`} aria-label={t("conv.you")} data-testid="outgoing">
+      <div className="wl-meta">
+        <strong>{t("conv.you")}</strong>
+        <span className="wl-tag">{t(out.messageId ? "conv.sent" : "conv.sending")}</span>
+      </div>
+      <div className="wl-bubble">{out.text}</div>
     </article>
   );
 }
@@ -250,35 +402,48 @@ function TurnActions({ turn, live }: { turn: Turn; live: SessionLive }) {
   );
 }
 
-/** One line of truth about a Turn: what it is doing, or how it ended. */
+/**
+ * What the live Turn is doing right now, pinned above the composer: the real running
+ * step, streaming state or lifecycle stage reported by the server — never a guess.
+ */
+function LiveBar({ turn, messages, live, now }: { turn: Turn; messages: Message[]; live: SessionLive; now: number }) {
+  const { t } = useI18n();
+  const elapsed = useElapsed(turn.started_at ?? turn.created_at, true);
+  let label: string;
+  let detail = "";
+  if (turn.state === "running") {
+    const doing = activityOf(messages.filter((m) => m.turn_id === turn.id), now);
+    if (doing.type === "step") {
+      label = t(`work.now.${doing.kind}` as I18nKey);
+      detail = doing.detail;
+    } else {
+      label = t(doing.type === "thinking" ? "work.thinking" : doing.type === "writing" ? "work.now.writing" : "turn.running");
+    }
+  } else {
+    label = t(
+      turn.reason === "waiting_capacity" ? "turn.waiting_capacity" : turn.state === "queued" ? "turn.queued" : "turn.preparing",
+    );
+  }
+  return (
+    <div className="wl-live" role="status" data-state={turn.state} data-testid="turn-status">
+      <span className="work-ring" aria-hidden="true" />
+      <span className="turn-label">{label}</span>
+      {detail ? <code className="wl-live-detail">{detail}</code> : <span className="wl-live-detail" />}
+      {elapsed !== null ? <time className="turn-time">{formatDuration(elapsed)}</time> : null}
+      <TurnActions turn={turn} live={live} />
+    </div>
+  );
+}
+
+/** How a finished Turn ended, with its real duration and usage. */
 function TurnStatus({ turn, live, latest }: { turn: Turn; live: SessionLive; latest?: boolean }) {
   const { t } = useI18n();
-  const running = isLiveTurn(turn);
-  const elapsed = useElapsed(turn.started_at ?? turn.created_at, running);
   const took = secondsBetween(turn.started_at ?? turn.created_at, turn.finished_at);
   const usage = (turn.usage ?? null) as Record<string, unknown> | null;
   const tokensIn = usage ? Number(usage.input_tokens) || 0 : 0;
   const cached = usage ? Number(usage.cached_input_tokens) || 0 : 0;
   const tokensOut = usage ? Number(usage.output_tokens) || 0 : 0;
 
-  if (running) {
-    const label =
-      turn.state === "running"
-        ? t("turn.running")
-        : turn.reason === "waiting_capacity"
-          ? t("turn.waiting_capacity")
-          : turn.state === "queued"
-            ? t("turn.queued")
-            : t("turn.preparing");
-    return (
-      <div className="turn-status is-live" role="status" data-state={turn.state} data-testid="turn-status">
-        <span className="work-ring" aria-hidden="true" />
-        <span className="turn-label">{label}</span>
-        {elapsed !== null ? <time className="turn-time">{formatDuration(elapsed)}</time> : null}
-        <TurnActions turn={turn} live={live} />
-      </div>
-    );
-  }
   if (turn.state === "succeeded") {
     return (
       <div className="turn-status is-done" data-state={turn.state} data-testid="turn-status">
@@ -330,18 +495,21 @@ function AgentBlock({
   provider,
   live,
   latest,
+  now,
 }: {
   block: TurnBlock;
   provider: string;
   live: SessionLive;
   latest?: boolean;
+  now: number;
 }) {
   const { t } = useI18n();
   const running = isLiveTurn(block.turn ?? undefined);
   const replies = block.messages.filter((m) => m.role === "assistant");
-  const entries = replies.flatMap((m) => entriesOf(m, running));
+  const entries = replies.flatMap((m) => entriesOf(m, running, now));
   const started = replies[0]?.created_at ?? block.turn?.started_at ?? block.turn?.created_at;
-  if (!block.turn && !entries.length) return null;
+  // A live Turn with nothing to show yet is represented by the status bar alone.
+  if (!entries.length && (!block.turn || running)) return null;
   return (
     <article className="wl-msg wl-agent" aria-label={t("conv.agent")} aria-busy={running}>
       <div className="wl-meta">
@@ -353,9 +521,17 @@ function AgentBlock({
       </div>
       <div className="wl-body">
         {entries.map((entry) =>
-          entry.type === "text" ? <Markdown key={entry.key} text={entry.content} /> : <WorkGroup key={entry.key} entry={entry} />,
+          entry.type === "text" ? (
+            <Markdown
+              key={entry.key}
+              text={entry.content}
+              className={entry.streaming ? "assistant-message is-streaming" : "assistant-message"}
+            />
+          ) : (
+            <WorkGroup key={entry.key} entry={entry} />
+          ),
         )}
-        {block.turn ? <TurnStatus turn={block.turn} live={live} latest={latest} /> : null}
+        {block.turn && !running ? <TurnStatus turn={block.turn} live={live} latest={latest} /> : null}
       </div>
     </article>
   );
@@ -366,29 +542,46 @@ export function Composer({
   live,
   actions,
   busy,
+  onOutgoing,
 }: {
   sessionId: string;
   live: SessionLive;
   actions: string[];
   /** A Turn is in flight: a sent message queues behind it. */
   busy?: boolean;
+  /** Reports the message being sent so the log can show it immediately. */
+  onOutgoing?: (out: Outgoing | null) => void;
 }) {
   const { t } = useI18n();
   const api = useApi();
   const [text, setText] = useState("");
   const [note, setNote] = useState(false);
+  // What is on the wire; a retry resends exactly this, whatever was typed since.
+  const sending = useRef<Outgoing | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const canSend = actions.includes("send");
   const canNote = canSend || actions.includes("note");
   const asNote = !canSend || note;
   const send = useAction(async (key) => {
-    await api.sessions.sendMessage(
-      sessionId,
-      { content: text.trim(), routing: asNote ? "note" : "queue" },
-      { idempotencyKey: key },
-    );
-    setText(""); // the draft survives until the server accepted the Message
-    live.refresh();
+    const out = sending.current;
+    if (!out) return;
+    onOutgoing?.(out);
+    try {
+      const accepted = await api.sessions.sendMessage(
+        sessionId,
+        { content: out.text, routing: out.note ? "note" : "queue" },
+        { idempotencyKey: key },
+      );
+      sending.current = null;
+      setText((current) => (current === out.text ? "" : current)); // a retried draft
+      onOutgoing?.(accepted.message_id ? { ...out, messageId: accepted.message_id } : null);
+      live.refresh();
+    } catch (err) {
+      // Not accepted: the words go back into the box (unless something new was typed).
+      onOutgoing?.(null);
+      setText((current) => current || out.text);
+      throw err;
+    }
   });
 
   useLayoutEffect(() => {
@@ -401,13 +594,19 @@ export function Composer({
   if (!canNote) return <p className="wl-closed">{t("conv.closed")}</p>;
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
-    if (text.trim() && !send.pending) void send.run();
+    const content = text.trim();
+    if (!content || send.pending) return;
+    sending.current = { text: content, note: asNote };
+    setText("");
+    void send.run();
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter sends, Shift+Enter breaks the line; never while an IME is composing.
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
+    } else if (e.key === "Escape") {
+      e.currentTarget.blur();
     }
   };
   return (
@@ -455,13 +654,25 @@ export function ConversationTab({ sessionId, live, state }: { sessionId: string;
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [behind, setBehind] = useState(false);
+  const [outgoing, setOutgoing] = useState<Outgoing | null>(null);
   const blocks = blocksOf(state.messages, state.turns);
   const provider = state.session?.harness.provider_id ?? "";
-  const busy = state.turns.some((turn) => isLiveTurn(turn));
+  const liveTurn = state.turns.find((turn) => isLiveTurn(turn));
+  // Streaming indicators are time-based: re-evaluate them while a Turn is live.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!liveTurn) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [!!liveTurn]);
+  const clockNow = Math.max(now, state.messages.reduce((n, m) => m.parts.reduce((k, p) => Math.max(k, p.seen_at ?? 0), n), 0));
+  // The optimistic bubble steps aside the moment the server's own Message is in the log.
+  const pending = outgoing && !state.messages.some((m) => m.id === outgoing.messageId) ? outgoing : null;
   // Changes whenever anything visible in the log does.
   const revision =
     state.messages.reduce((n, m) => n + m.parts.reduce((k, p) => k + p.revision, 1), 0) +
-    state.turns.reduce((n, turn) => n + turn.version, 0);
+    state.turns.reduce((n, turn) => n + turn.version, 0) +
+    (pending ? 1 : 0);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -486,9 +697,15 @@ export function ConversationTab({ sessionId, live, state }: { sessionId: string;
     setBehind(false);
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
+  const onOutgoing = (out: Outgoing | null) => {
+    // Sending is a deliberate return to the end of the conversation.
+    if (out) following.current = true;
+    setOutgoing(out);
+  };
 
   return (
     <div className="worklog">
+      <div className="worklog-view">
       <div
         className="worklog-scroll"
         ref={scroller}
@@ -507,19 +724,31 @@ export function ConversationTab({ sessionId, live, state }: { sessionId: string;
                 .map((m) => (
                   <UserMessage key={m.id} m={m} />
                 ))}
-              <AgentBlock block={block} provider={provider} live={live} latest={index === blocks.length - 1} />
+              <AgentBlock block={block} provider={provider} live={live} latest={index === blocks.length - 1} now={clockNow} />
             </div>
           ))}
-          {!blocks.length && state.status !== "loading" ? <p className="wl-empty">{t("conv.empty")}</p> : null}
+          {pending ? (
+            <div className="wl-turn">
+              <OutgoingMessage out={pending} />
+            </div>
+          ) : null}
+          {!blocks.length && !pending && state.status !== "loading" ? <p className="wl-empty">{t("conv.empty")}</p> : null}
         </div>
       </div>
       {behind ? (
-        <button type="button" className="wl-jump" onClick={jump}>
-          <Icon name="down" size={12} />
-          {t("conv.jump_latest")}
+        <button type="button" className="wl-jump" onClick={jump} aria-label={t("conv.jump_latest")} title={t("conv.jump_latest")}>
+          <Icon name="down" size={14} />
         </button>
       ) : null}
-      <Composer sessionId={sessionId} live={live} actions={state.session?.actions ?? []} busy={busy} />
+      </div>
+      {liveTurn ? <LiveBar turn={liveTurn} messages={state.messages} live={live} now={clockNow} /> : null}
+      <Composer
+        sessionId={sessionId}
+        live={live}
+        actions={state.session?.actions ?? []}
+        busy={!!liveTurn}
+        onOutgoing={onOutgoing}
+      />
     </div>
   );
 }

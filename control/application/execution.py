@@ -49,8 +49,12 @@ _FAIL_REASONS = (
 @dataclass
 class ExecutionSettings:
     turn_deadline_seconds: float = 3600.0
-    poll_busy: float = 0.3
-    poll_idle: float = 1.0
+    # Streamed reply text is only as live as this loop: the runtime coalesces deltas to
+    # ~10/s, so evidence is fetched at that pace while it flows and soon after it stops.
+    poll_busy: float = 0.1
+    poll_idle: float = 0.3
+    # Ingested-but-unacknowledged observations tolerated before acking mid-stream.
+    ack_backlog: int = 500
     unreachable_threshold: int = 5
     capacity_retry: float = 2.0
     # Kept for configuration compatibility; elapsed time never proves allocation absence.
@@ -885,10 +889,21 @@ class ExecutionService:
                     )
                 )
                 return Succeeded({"epoch_changed": True})
+            if not batch["items"]:
+                # Nothing new: an idle poll costs no write transaction, and is the moment
+                # to acknowledge what was ingested while evidence was flowing.
+                if acked > int(batch.get("acked") or 0):
+                    channel.ack(batch["runtime_epoch"], acked)
+                return Continue(
+                    delay=self.settings.poll_idle, input={"unreachable": 0, "intent": None}
+                )
             result = ctx.commit(
                 lambda uow: ingest(uow, lease, batch["runtime_epoch"], batch["items"], self.hooks)
             )
-            if result.acked > acked:
+            # The ack only frees runtime spool space; mid-stream it would double the
+            # round trips per batch, so it waits for a pause unless the spool is filling.
+            behind = result.acked - int(batch.get("acked") or 0)
+            if result.acked > acked and (result.terminal or behind >= self.settings.ack_backlog):
                 channel.ack(batch["runtime_epoch"], result.acked)
             if result.terminal:
                 return Succeeded({"acked": result.acked})
@@ -1135,6 +1150,8 @@ class ExecutionService:
                     )
                 )
                 channel.ack(batch["runtime_epoch"], result.acked)
+            elif acked > int(batch.get("acked") or 0):
+                channel.ack(batch["runtime_epoch"], acked)  # an ack deferred mid-stream
             session = ctx.db.read(lambda uow: uow.get("sessions", lease["session_id"]))
             response = channel.op(
                 "snapshot.prepare",

@@ -13,18 +13,26 @@ from control.runtime_client.grants import lease_key, mint
 
 class RuntimeClient:
     def __init__(
-        self, endpoint: str, key: bytes, lease_id: str, generation: int, *, timeout: float = 120.0
+        self,
+        endpoint: str,
+        key: bytes,
+        lease_id: str,
+        generation: int,
+        *,
+        timeout: float = 120.0,
+        http: httpx.Client | None = None,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.key = key
         self.lease_id = lease_id
         self.generation = generation
         self.timeout = timeout
+        self.http = http
 
     def _post(self, path: str, body: dict[str, Any], scope: str = "manage") -> dict[str, Any]:
         token = mint(self.key, self.lease_id, self.generation, scope=scope)
         try:
-            response = httpx.post(
+            response = (self.http or httpx).post(
                 self.endpoint + path,
                 json=body,
                 headers={"Authorization": f"SBX-Grant {token}"},
@@ -86,6 +94,11 @@ class HttpRuntimeConnector:
             raise ValueError("runtime master key must be at least 32 bytes")
         self.master_key = master_key
         self.timeout = timeout
+        # One pooled client for every lease: evidence is polled several times a second
+        # while a Turn streams, and a new TLS handshake per poll costs more than the poll.
+        self.http = httpx.Client(
+            limits=httpx.Limits(max_keepalive_connections=64, keepalive_expiry=30.0)
+        )
 
     def enrollment_key(self, lease: dict[str, Any]) -> str:
         return lease_key(self.master_key, lease["id"], lease["generation"]).hex()
@@ -100,4 +113,5 @@ class HttpRuntimeConnector:
             lease["id"],
             lease["generation"],
             timeout=self.timeout,
+            http=self.http,
         )

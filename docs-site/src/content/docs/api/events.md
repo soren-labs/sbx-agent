@@ -62,8 +62,15 @@ is gap-free. Clients dedupe by `seq`.
 | `delegation.` | `created`, `waiting`, `result_published`, `failed`, `cancel_requested`, `cancelled` |
 | `service.` | `requested`, `ready`, `degraded`, `failed`, `stopped` |
 
-`message.part_updated` replaces a part's content by revision; apply it by
-replacement, never by appending, to avoid duplicating cumulative text. A turn is
+`message.part_added` and `message.part_updated` carry `part_key`, a `revision`
+that only grows per part, and a `mode`. With `mode: "replace"` the payload's
+`content` is the whole part; with `mode: "append"` it is a delta to add to the
+content you already hold. Apply an event only when its `revision` is greater than
+the one you last applied for that part, and never apply to a sealed part: a
+replayed or duplicated event is then a no-op and streamed text is never
+duplicated. Claude Code and Grok Build stream replies and visible reasoning as
+append deltas (about ten per second) and end each block with the completed text
+only if it differs; other CLIs report whole blocks. A turn is
 terminal at `turn.succeeded`, `turn.failed`, `turn.cancelled` or
 `turn.interrupted`; `execution.observed_terminal` with verdict `unknown`
 corresponds to an `outcome_unknown` Turn.

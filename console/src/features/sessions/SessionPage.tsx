@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { ExecutorView, Session } from "../../api/types";
 import { ErrorNotice, Loading, useAction, when } from "../../components/ui";
@@ -6,7 +7,7 @@ import { useI18n } from "../../i18n";
 import { harnessName } from "./harnesses";
 import { formatTokens, isLiveTurn } from "./worklog";
 import type { I18nKey } from "../../i18n/en";
-import { useApi } from "../../state/context";
+import { useApi, useQueryClient } from "../../state/context";
 import type { SessionLive } from "../../state/session-live";
 import { useSessionLive } from "../../state/use-session-live";
 import { useDocumentTitle } from "../../state/title";
@@ -103,6 +104,13 @@ export function SessionPage() {
   const { live, state } = useSessionLive(id);
   const s = state.session;
   useDocumentTitle(s?.title || t("session.untitled"));
+  // The sidebar lists this Session too: it should not keep saying "Working" until its next poll.
+  const qc = useQueryClient();
+  const activity = s?.activity;
+  const workspace = s?.workspace_id;
+  useEffect(() => {
+    if (workspace && activity) qc.invalidate(["sessions", workspace]);
+  }, [qc, workspace, activity]);
 
   const lifecycle = useAction(async (key, kind: "archive" | "unarchive" | "close") => {
     await api.sessions[kind](id, { idempotencyKey: key });
