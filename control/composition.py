@@ -163,7 +163,8 @@ def build_services(
     connections = Connections(
         db, vault, CONNECTORS, validators=validators, provisioners=provisioners
     )
-    sessions = Sessions(db, ProjectResolver(catalog), catalog)
+    resolver = ProjectResolver(catalog)
+    sessions = Sessions(db, resolver, catalog)
     slots = MachineSlots(
         db,
         SUBSCRIPTIONS,
@@ -172,6 +173,9 @@ def build_services(
         profile_mount=PROFILE_MOUNT,
     )
     connections.dependency_hooks.append(slots.dependents)
+    execution.slots = slots
+    resolver.slots = slots
+    sessions.slots = slots
     queries = Queries(db)
     changes = Changes(db, connector, blobs, broker)
     deliveries = Deliveries(

@@ -49,6 +49,15 @@ _SDK = {
     "openai_responses": ("@ai-sdk/openai", ""),
     "anthropic_messages": ("@ai-sdk/anthropic", "/v1"),
 }
+# Per-SDK model option that carries a reasoning effort to the endpoint. Anthropic-style
+# endpoints only have thinking on/off, so the single value ``none`` turns it off.
+_REASONING = {
+    "openai_chat": lambda effort: {"reasoningEffort": effort},
+    "openai_responses": lambda effort: {"reasoningEffort": effort},
+    "anthropic_messages": lambda effort: (
+        {"thinking": {"type": "disabled"}} if effort == "none" else {}
+    ),
+}
 DATA_REL = Path(".local/share/opencode")
 AUTH_FILE = "auth.json"
 _NOT_NATIVE_STATE = {AUTH_FILE, "log"}
@@ -100,7 +109,12 @@ class OpenCodeHarness:
                 "model_discovery": Capability(
                     "unsupported", "", "models come from the inference connection catalog"
                 ),
-                "effort_settings": Capability("unknown", "", "--variant not wired"),
+                "effort_settings": Capability(
+                    "supported",
+                    "model options reasoningEffort / thinking",
+                    "custom API: thinking off (none) on chat and Anthropic-style endpoints whose "
+                    "probe showed the control works; graded levels are not offered",
+                ),
                 "credential_writeback": Capability("unsupported", "", "static API key"),
                 "usage": Capability("supported", "step_finish.tokens"),
             },
@@ -141,7 +155,18 @@ class OpenCodeHarness:
                         "baseURL": inference.base_url + suffix,
                         "apiKey": f"{{env:{INFERENCE_KEY_ENV}}}",
                     },
-                    "models": {inference.model: {"name": inference.model}},
+                    "models": {
+                        inference.model: {
+                            "name": inference.model,
+                            # Sent as the provider's reasoning effort; only a value the
+                            # control plane verified for this endpoint and model arrives.
+                            **(
+                                {"options": _REASONING[inference.protocol](context.effort)}
+                                if context.effort
+                                else {}
+                            ),
+                        }
+                    },
                 }
             },
         }

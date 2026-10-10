@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from protocol.capabilities import REASONING_OFF, REASONING_TOGGLE_PROTOCOLS, select_endpoint
+
 from control.application import access
 from control.application.ports import HarnessCatalog, SessionResolver, Transactions
 from control.application.projections import session_resource, turn_resource
@@ -245,6 +247,8 @@ class Sessions:
         self.catalog = catalog
         # Close side effects owned by other applications (e.g. Delegation subtree cancel).
         self.close_hooks: list[Any] = []
+        # Machine Slot service (set by composition) for subscription Sessions.
+        self.slots: Any = None
 
     # -- creation -----------------------------------------------------------------
     def create(
@@ -292,6 +296,14 @@ class Sessions:
     ) -> dict[str, Any]:
         actor = actor or principal.user_id
         spec = self.resolver.resolve(uow, principal, workspace_id, body)
+        if spec["harness"].get("effort") and spec["inference"]["mode"] != "subscription":
+            self.check_custom_effort(
+                uow,
+                spec["harness"]["provider_id"],
+                spec["connections"].get("inference"),
+                spec["harness"].get("model"),
+                spec["harness"]["effort"],
+            )
         role = body.get("role") or "developer"
         rules.check_role(role)
         session_id = new_id("session")
@@ -308,6 +320,8 @@ class Sessions:
                 "project_version_id": spec.get("project_version_id"),
                 "harness_provider": spec["harness"]["provider_id"],
                 "harness_model": spec["harness"].get("model"),
+                "harness_effort": spec["harness"].get("effort"),
+                "machine_slot_id": (spec.get("inference") or {}).get("machine_slot_id"),
                 "executor_backend": spec["executor"]["backend"],
                 "resource_class": spec["executor"].get("resource_class", "standard"),
                 "compute_connection_id": spec["connections"].get("compute"),
@@ -425,7 +439,7 @@ class Sessions:
                 raise DomainError("unsupported_capability", "steer injection not enabled")
         settings = body.get("settings") or None
         if settings:
-            self._check_settings(session, settings)
+            self._check_settings(uow, session, settings)
         message = insert_message(
             uow,
             session,
@@ -458,21 +472,79 @@ class Sessions:
         response["turn"] = turn_resource(turn)
         return response
 
-    def _check_settings(self, session: dict[str, Any], settings: dict[str, Any]) -> None:
+    def _check_settings(self, uow: Any, session: dict[str, Any], settings: dict[str, Any]) -> None:
         allowed = {"model", "effort"}
         unknown = set(settings) - allowed
         if unknown:
             raise DomainError("validation_failed", f"unknown settings {sorted(unknown)}")
-        if (
-            "effort" in settings
-            and self.catalog.capability(session["harness_provider"], "effort_settings")
-            != "supported"
-        ):
+        model = settings.get("model") or session["harness_model"]
+        effort = settings.get("effort", session["harness_effort"])
+        if session["machine_slot_id"]:
+            # Subscription: only what this Slot's authenticated catalog lists.
+            slot = uow.get("machine_slots", session["machine_slot_id"])
+            self.slots.check_model(slot, model if "model" in settings else None, None)
+            self.slots.check_model(slot, model, effort)
+            return
+        if "effort" in settings:
+            self.check_custom_effort(
+                uow,
+                session["harness_provider"],
+                session["inference_connection_id"],
+                model,
+                settings["effort"],
+            )
+
+    def check_custom_effort(
+        self, uow: Any, provider_id: str, connection_id: str | None, model: Any, effort: Any
+    ) -> None:
+        """Custom-API reasoning: only a control verified for this Harness and model passes."""
+        if self.catalog.capability(provider_id, "effort_settings") != "supported":
             raise DomainError(
                 "unsupported_capability",
                 "effort settings are not supported by this Harness",
                 details={"capability": "effort_settings"},
             )
+        supported = self.custom_efforts(uow, provider_id, connection_id, model)
+        if effort not in supported:
+            raise DomainError(
+                "unsupported_capability" if not supported else "validation_failed",
+                f"{model or 'this model'} has no verified reasoning control"
+                if not supported
+                else f"{model} does not support reasoning effort {effort!r}",
+                details={"capability": "effort_settings", "model": model, "supported": supported},
+            )
+
+    def custom_efforts(
+        self, uow: Any, provider_id: str, connection_id: str | None, model: Any
+    ) -> list[str]:
+        """Reasoning values verified for a custom-API model through this Harness.
+
+        Two independent facts are required: the official CLI was shown to forward the
+        control on the wire protocol it will use, and this Connection's probe showed the
+        provider's off switch works for this model. Otherwise nothing is offered.
+        """
+        protocols = REASONING_TOGGLE_PROTOCOLS.get(provider_id) or ()
+        con = uow.get("connections", connection_id) if connection_id else None
+        if not protocols or con is None or not con["current_credential_version_id"]:
+            return []
+        version = uow.get("credential_versions", con["current_credential_version_id"])
+        config = version["public_config"] or {}
+        accepted = (self.catalog.manifest(provider_id) or {}).get("inference_protocols") or []
+        endpoint = select_endpoint(config.get("endpoints"), accepted)
+        if endpoint is None or endpoint[0] not in protocols:
+            return []
+        observed = {
+            o["kind"]: o
+            for o in uow.query(
+                "observations.latest", connection_id=con["id"], credential_version_id=version["id"]
+            )
+        }.get("catalog")
+        chosen = model or config.get("model")
+        for entry in ((observed or {}).get("safe_details") or {}).get("models") or []:
+            if entry.get("id") == chosen:
+                verified = (entry.get("reasoning") or {}).get(endpoint[0]) == "toggle"
+                return [REASONING_OFF] if verified else []
+        return []
 
     # -- cancellation / retry --------------------------------------------------------
     def cancel_turn(

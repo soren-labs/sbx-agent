@@ -21,10 +21,10 @@
         "status": "unsupported"
       },
       "effort_settings": {
-        "evidence": "",
-        "limitation": "--variant not wired",
+        "evidence": "model options reasoningEffort / thinking",
+        "limitation": "custom API: thinking off (none) on chat and Anthropic-style endpoints whose probe showed the control works; graded levels are not offered",
         "mode": "",
-        "status": "unknown"
+        "status": "supported"
       },
       "event_stream": {
         "evidence": "--format json",
@@ -111,7 +111,7 @@
     "transport": "jsonl"
   },
   {
-    "adapter_version": "codex-harness/2",
+    "adapter_version": "codex-harness/3",
     "capabilities": {
       "account_portable_resume": {
         "evidence": "",
@@ -132,10 +132,10 @@
         "status": "unsupported"
       },
       "effort_settings": {
-        "evidence": "",
-        "limitation": "model_reasoning_effort not wired",
+        "evidence": "-c model_reasoning_effort",
+        "limitation": "subscription only, limited to the efforts the selected model lists; with a custom API the CLI does not forward the setting (measured), so none is offered",
         "mode": "",
-        "status": "unknown"
+        "status": "supported"
       },
       "event_stream": {
         "evidence": "exec --json",
@@ -162,10 +162,10 @@
         "status": "unknown"
       },
       "model_discovery": {
-        "evidence": "",
-        "limitation": "models come from the inference connection catalog",
+        "evidence": "app-server model/list",
+        "limitation": "subscription: the Machine Slot's authenticated catalog; custom API: the inference connection catalog",
         "mode": "",
-        "status": "unsupported"
+        "status": "supported"
       },
       "native_resume": {
         "evidence": "codex exec resume <thread>",
@@ -206,7 +206,8 @@
     },
     "cli_version": "unverified",
     "credential_methods": [
-      "inference_api key via model_providers env_key"
+      "inference_api key via model_providers env_key",
+      "official login on a Machine Slot volume"
     ],
     "distribution": "npm:@openai/codex",
     "inference_protocols": [

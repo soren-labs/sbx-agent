@@ -43,6 +43,24 @@ elif command == "version":
     print("fake-cli 1.2.3")
 """
 
+# Speaks JSON-RPC lines on stdio, like an official CLI's machine interface.
+FAKE_APP_SERVER = r"""
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("id") == 1:
+        print(json.dumps({"id": 1, "result": {"ready": True}}), flush=True)
+    if request.get("method") == "model/list":
+        items = [
+            {"id": "model-a", "displayName": "Model A", "isDefault": True, "secretish": "drop me",
+             "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]},
+            {"id": "model-b", "supportedReasoningEfforts": []},
+        ]
+        print("not json noise", flush=True)
+        print(json.dumps({"id": request["id"], "result": {"data": items, "nextCursor": None}}),
+              flush=True)
+"""
+
 
 @pytest.fixture
 def run(tmp_path):
@@ -54,7 +72,25 @@ def run(tmp_path):
     def start(mode: str = "login", **scenario) -> dict:
         logged_in = scenario.pop("logged_in", False)
         overrides = scenario.pop("spec", {})
+        catalog = scenario.pop("catalog", None)
         (tmp_path / "scenario.json").write_text(json.dumps(scenario))
+        server = tmp_path / "app_server.py"
+        server.write_text(FAKE_APP_SERVER)
+        if catalog:
+            overrides = {
+                **overrides,
+                "catalog": {
+                    "argv": [sys.executable, str(server)] if catalog == "ok" else ["/nonexistent"],
+                    "requests": [
+                        {"id": 1, "method": "initialize", "params": {}},
+                        {"id": 2, "method": "model/list", "params": {}},
+                    ],
+                    "result_id": 2,
+                    "items_key": "data",
+                    "item_fields": ["id", "displayName", "isDefault", "supportedReasoningEfforts"],
+                    "timeout": 10,
+                },
+            }
         if logged_in:
             (tmp_path / "logged_in").write_text("1")
         base = [sys.executable, str(cli)]
@@ -149,3 +185,21 @@ def test_verify_mode_never_starts_a_login(run) -> None:
 def test_verify_mode_reports_a_missing_login(run) -> None:
     missing = run("verify")
     assert missing["final"]["phase"] == "failed" and missing["final"]["error"] == "not_logged_in"
+
+
+def test_catalog_comes_from_the_cli_and_keeps_only_listed_fields(run) -> None:
+    final = run("verify", logged_in=True, catalog="ok")["final"]
+    assert final["phase"] == "succeeded" and final["catalog"]["complete"] is True
+    first, second = final["catalog"]["items"]
+    assert first == {
+        "id": "model-a",
+        "displayName": "Model A",
+        "isDefault": True,
+        "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}],
+    }
+    assert second == {"id": "model-b", "supportedReasoningEfforts": []}
+
+
+def test_missing_catalog_is_reported_as_missing_not_guessed(run) -> None:
+    final = run("verify", logged_in=True, catalog="broken")["final"]
+    assert final["phase"] == "succeeded" and final["catalog"] is None

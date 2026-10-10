@@ -1,0 +1,535 @@
+{
+  "rounds": [
+    {
+      "slots": [
+        "A1",
+        "A2"
+      ],
+      "turns": {
+        "A1": {
+          "state": "succeeded",
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "6ff5c2a4-c524-4a19-a280-06eea7a117e7",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 73,
+          "input_tokens": 6326,
+          "provisioning_ms": {
+            "total_ms": 8360,
+            "handshake_ms": 206,
+            "image_resolve_ms": 6,
+            "sandbox_create_ms": 216,
+            "runtime_connect_ms": 6444
+          },
+          "started_at": "2026-10-10T09:48:55.371254+00:00",
+          "ended_at": "2026-10-10T09:49:17.802535+00:00"
+        },
+        "A2": {
+          "state": "succeeded",
+          "model": "gpt-6-astra",
+          "effort": "medium",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "0254fa7b-78ff-40b3-8254-f707978c6c9f",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 72,
+          "input_tokens": 2101,
+          "provisioning_ms": {
+            "total_ms": 5390,
+            "handshake_ms": 303,
+            "image_resolve_ms": 3,
+            "sandbox_create_ms": 191,
+            "runtime_connect_ms": 3527
+          },
+          "started_at": "2026-10-10T09:48:52.467177+00:00",
+          "ended_at": "2026-10-10T09:49:10.361171+00:00"
+        }
+      },
+      "overlap_seconds": 14.99
+    },
+    {
+      "slots": [
+        "A1",
+        "B1"
+      ],
+      "turns": {
+        "A1": {
+          "state": "succeeded",
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "2eb158d8-a9a5-4fb1-aae8-014001d23725",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 71,
+          "input_tokens": 5956,
+          "provisioning_ms": {
+            "total_ms": 6146,
+            "handshake_ms": 303,
+            "image_resolve_ms": 2,
+            "sandbox_create_ms": 248,
+            "runtime_connect_ms": 4176
+          },
+          "started_at": "2026-10-10T09:49:28.512971+00:00",
+          "ended_at": "2026-10-10T09:49:43.643654+00:00"
+        },
+        "B1": {
+          "state": "succeeded",
+          "model": "gpt-6-sol",
+          "effort": "high",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "fbc22f73-43fb-4032-b0b9-2ed064ce7997",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 74,
+          "input_tokens": 515,
+          "provisioning_ms": {
+            "total_ms": 6146,
+            "handshake_ms": 300,
+            "image_resolve_ms": 3,
+            "sandbox_create_ms": 193,
+            "runtime_connect_ms": 4284
+          },
+          "started_at": "2026-10-10T09:49:28.613898+00:00",
+          "ended_at": "2026-10-10T09:49:40.610441+00:00"
+        }
+      },
+      "overlap_seconds": 11.997
+    },
+    {
+      "slots": [
+        "A1",
+        "A2",
+        "B1"
+      ],
+      "turns": {
+        "A1": {
+          "state": "succeeded",
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "d54c8700-4a3f-47cb-a322-268b501c5db8",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 72,
+          "input_tokens": 14389,
+          "provisioning_ms": {
+            "total_ms": 7195,
+            "handshake_ms": 305,
+            "image_resolve_ms": 2,
+            "sandbox_create_ms": 206,
+            "runtime_connect_ms": 5216
+          },
+          "started_at": "2026-10-10T09:49:56.034964+00:00",
+          "ended_at": "2026-10-10T09:50:10.359465+00:00"
+        },
+        "A2": {
+          "state": "succeeded",
+          "model": "gpt-6-astra",
+          "effort": "medium",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "904544d7-318b-44af-923a-50543992beca",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 68,
+          "input_tokens": 14385,
+          "provisioning_ms": {
+            "total_ms": 6648,
+            "handshake_ms": 282,
+            "image_resolve_ms": 3,
+            "sandbox_create_ms": 197,
+            "runtime_connect_ms": 4689
+          },
+          "started_at": "2026-10-10T09:49:55.509301+00:00",
+          "ended_at": "2026-10-10T09:50:05.510422+00:00"
+        },
+        "B1": {
+          "state": "succeeded",
+          "model": "gpt-6-sol",
+          "effort": "high",
+          "inference_connection": null,
+          "mounted_slot": true,
+          "runtime": "vm",
+          "boot_id": "4c751c69-0c24-4fde-914d-e75ba165a671",
+          "marker_returned": true,
+          "shell_tool_calls": 1,
+          "output_tokens": 73,
+          "input_tokens": 514,
+          "provisioning_ms": {
+            "total_ms": 6421,
+            "handshake_ms": 262,
+            "image_resolve_ms": 3,
+            "sandbox_create_ms": 224,
+            "runtime_connect_ms": 4436
+          },
+          "started_at": "2026-10-10T09:49:55.391408+00:00",
+          "ended_at": "2026-10-10T09:50:03.863072+00:00"
+        }
+      },
+      "overlap_seconds": 7.828
+    }
+  ],
+  "gates": {
+    "A1_ready_with_authenticated_catalog": true,
+    "A2_ready_with_authenticated_catalog": true,
+    "B1_ready_with_authenticated_catalog": true,
+    "server_rejects_a_model_outside_the_catalog": true,
+    "server_rejects_an_effort_the_model_does_not_list": true,
+    "lowest_and_highest_listed_efforts_complete_real_turns": true,
+    "cli_refuses_a_value_that_is_not_an_effort": true,
+    "highest_effort_spends_more_reasoning_tokens_than_lowest": true,
+    "round1_A1+A2_all_turns_succeeded": true,
+    "round1_A1+A2_real_overlap": true,
+    "round1_A1+A2_exact_model_effort_and_real_usage": true,
+    "round1_A1+A2_own_volume_vm_runtime_no_api_key": true,
+    "round1_A1+A2_slots_show_running": true,
+    "round1_A1+A2_slots_freed_no_stale_lock": true,
+    "round2_A1+B1_all_turns_succeeded": true,
+    "round2_A1+B1_real_overlap": true,
+    "round2_A1+B1_exact_model_effort_and_real_usage": true,
+    "round2_A1+B1_own_volume_vm_runtime_no_api_key": true,
+    "round2_A1+B1_slots_show_running": true,
+    "round2_A1+B1_slots_freed_no_stale_lock": true,
+    "round3_A1+A2+B1_all_turns_succeeded": true,
+    "round3_A1+A2+B1_real_overlap": true,
+    "round3_A1+A2+B1_exact_model_effort_and_real_usage": true,
+    "round3_A1+A2+B1_own_volume_vm_runtime_no_api_key": true,
+    "round3_A1+A2+B1_slots_show_running": true,
+    "round3_A1+A2+B1_slots_freed_no_stale_lock": true,
+    "every_worker_vm_had_its_own_fresh_boot": true,
+    "no_vm_left_running": true,
+    "volumes_preserved": true,
+    "no_modal_token_in_api_responses": true
+  },
+  "slots": {
+    "A1": {
+      "status": "ready",
+      "catalog_status": "ready",
+      "catalog_source": "codex app-server model/list",
+      "cli_version": "codex-cli 0.162.0",
+      "models": [
+        {
+          "id": "gpt-6.1-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ],
+      "default_model": "gpt-6.1-sol",
+      "chosen": {
+        "model": "gpt-6.1-sol",
+        "effort": "low"
+      }
+    },
+    "A2": {
+      "status": "ready",
+      "catalog_status": "ready",
+      "catalog_source": "codex app-server model/list",
+      "cli_version": "codex-cli 0.162.0",
+      "models": [
+        {
+          "id": "gpt-6.1-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ],
+      "default_model": "gpt-6.1-sol",
+      "chosen": {
+        "model": "gpt-6-astra",
+        "effort": "medium"
+      }
+    },
+    "B1": {
+      "status": "ready",
+      "catalog_status": "ready",
+      "catalog_source": "codex app-server model/list",
+      "cli_version": "codex-cli 0.162.0",
+      "models": [
+        {
+          "id": "gpt-6.1-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ],
+      "default_model": "gpt-6.1-sol",
+      "chosen": {
+        "model": "gpt-6-sol",
+        "effort": "high"
+      }
+    }
+  },
+  "sdk": "1.6.1",
+  "runtime": "vm",
+  "workspace_id": "wsp_01a1253644447d73a36ac3588b7e384b",
+  "effort_probe": {
+    "model": "gpt-6.1-sol",
+    "lowest": {
+      "effort": "low",
+      "returncode": 0,
+      "turn_completed": true,
+      "seconds": 13.4,
+      "usage": {
+        "input_tokens": 13504,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 174,
+        "reasoning_output_tokens": 162
+      },
+      "cli_named_the_setting": false
+    },
+    "highest": {
+      "effort": "ultra",
+      "returncode": 0,
+      "turn_completed": true,
+      "seconds": 12.2,
+      "usage": {
+        "input_tokens": 13551,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 307,
+        "reasoning_output_tokens": 295
+      },
+      "cli_named_the_setting": false
+    },
+    "not_an_effort": {
+      "effort": "sbx-bogus",
+      "returncode": 1,
+      "turn_completed": false,
+      "seconds": 1.8,
+      "usage": {},
+      "cli_named_the_setting": false
+    }
+  },
+  "boot_ids": [
+    "6ff5c2a4-c524-4a19-a280-06eea7a117e7",
+    "0254fa7b-78ff-40b3-8254-f707978c6c9f",
+    "2eb158d8-a9a5-4fb1-aae8-014001d23725",
+    "fbc22f73-43fb-4032-b0b9-2ed064ce7997",
+    "d54c8700-4a3f-47cb-a322-268b501c5db8",
+    "904544d7-318b-44af-923a-50543992beca",
+    "4c751c69-0c24-4fde-914d-e75ba165a671"
+  ]
+}

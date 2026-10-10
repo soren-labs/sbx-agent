@@ -89,9 +89,10 @@ class MachineSlots:
             else None
         )
         live = attempt is not None and attempt["state"] in LIVE_ATTEMPT_STATES
+        worker = self._holder_lease(uow, slot)
         if slot["state"] in ("deleting", "deleted"):
             status = slot["state"]
-        elif slot["holder_kind"] == "worker":
+        elif worker is not None:
             status = "running"
         elif live:
             status = "login_pending"
@@ -109,8 +110,10 @@ class MachineSlots:
             # What the user sees: running | ready | login_pending | needs_login | error | deleting.
             "status": status,
             "state_reason": slot["state_reason"],
-            "busy": slot["holder_kind"] == "worker",
-            "worker": {"lease_id": slot["holder_id"]} if slot["holder_kind"] == "worker" else None,
+            "busy": worker is not None,
+            "worker": {"lease_id": worker["id"], "session_id": worker["session_id"]}
+            if worker
+            else None,
             "compute_connection_id": slot["compute_connection_id"],
             "volume": {
                 "name": slot["volume_name"],
@@ -352,7 +355,7 @@ class MachineSlots:
                 )
             if slot["state"] == "deleting":
                 return self.view(uow, slot)
-            if slot["holder_kind"] == "worker":
+            if self._holder_lease(uow, slot) is not None:
                 raise DomainError(
                     "invalid_transition",
                     "the slot is running a Session; release its executor first",
@@ -434,7 +437,7 @@ class MachineSlots:
     def _begin_attempt(self, uow: Any, slot: dict[str, Any], mode: str) -> dict[str, Any]:
         if slot["state"] in ("deleting", "deleted"):
             raise DomainError("invalid_transition", "the slot is being deleted")
-        if slot["holder_kind"] is not None:
+        if slot["holder_kind"] == "setup" or self._holder_lease(uow, slot) is not None:
             raise DomainError(
                 "invalid_transition",
                 "the slot is busy"
@@ -493,6 +496,164 @@ class MachineSlots:
             result=result,
             workspace_id=slot["workspace_id"],
         )
+
+    def _catalog(self, slot: dict[str, Any], state: dict[str, Any], now: Any) -> dict[str, Any]:
+        """Model catalog reported by the authenticated CLI, with its provenance.
+
+        Without a trustworthy answer the catalog is marked unavailable; no model is guessed.
+        """
+        adapter = self.adapters[slot["provider"]]
+        parsed = adapter.catalog(state.get("catalog"))
+        base = {
+            "source": adapter.catalog_source,
+            "observed_at": now.isoformat(),
+            "cli_version": state.get("cli_version"),
+        }
+        if parsed is None:
+            return {**base, "status": "unavailable", "models": [], "default_model": None}
+        return {**base, "status": "ready", **parsed}
+
+    # ------------------------------------------------------- Sessions on a Slot (Workers)
+    def session_binding(
+        self,
+        uow: Any,
+        principal: Principal,
+        workspace_id: str,
+        slot_id: Any,
+        harness: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate a Session's subscription choice; returns what the Session pins."""
+        slot = uow.get("machine_slots", str(slot_id or ""), workspace_ids=[workspace_id])
+        if slot is None or slot["state"] in ("deleting", "deleted"):
+            raise DomainError("not_found", "machine slot not found")
+        if not principal.owns(slot["workspace_id"]):
+            raise DomainError("not_found", "machine slot not found")
+        adapter = self.adapters[slot["provider"]]
+        if harness.get("provider_id") != adapter.harness_provider_id:
+            raise DomainError(
+                "validation_failed",
+                f"a {adapter.display_name} slot runs the {adapter.harness_provider_id} harness",
+                details={"field": "harness.provider_id", "expected": adapter.harness_provider_id},
+            )
+        if slot["state"] != "ready":
+            raise DomainError(
+                "connection_required",
+                "the machine slot is not logged in",
+                details={"machine_slot_id": slot["id"], "state": slot["state"]},
+                action="login_machine_slot",
+            )
+        self.check_model(slot, harness.get("model"), harness.get("effort"))
+        return {"slot_id": slot["id"], "compute_connection_id": slot["compute_connection_id"]}
+
+    def check_model(self, slot: dict[str, Any], model: Any, effort: Any) -> None:
+        """Server-side truth check: only catalogued models and their own efforts pass."""
+        if model is None and effort is None:
+            return
+        catalog = (slot["capabilities"] or {}).get("catalog") or {}
+        models = {m["id"]: m for m in catalog.get("models") or []}
+        if not models:
+            raise DomainError(
+                "unsupported_capability",
+                "this slot has no verified model catalog; refresh it or use the provider default",
+                details={"machine_slot_id": slot["id"], "capability": "model_discovery"},
+            )
+        chosen = model or catalog.get("default_model")
+        if chosen not in models:
+            raise DomainError(
+                "validation_failed",
+                "the model is not in this slot's catalog",
+                details={"field": "harness.model", "available": sorted(models)},
+            )
+        allowed = [e["id"] for e in models[chosen]["reasoning"]["efforts"]]
+        if effort is not None and effort not in allowed:
+            raise DomainError(
+                "validation_failed",
+                f"{chosen} does not support reasoning effort {effort!r}",
+                details={"field": "harness.effort", "model": chosen, "supported": allowed},
+            )
+
+    def _holder_lease(self, uow: Any, slot: dict[str, Any]) -> dict[str, Any] | None:
+        """The live Worker lease holding the Slot, or ``None`` once it is confirmed stopped."""
+        if slot["holder_kind"] != "worker":
+            return None
+        lease = uow.get("executor_leases", slot["holder_id"])
+        if lease is None or (lease["state"] in ("released", "lost") and not lease["quarantined"]):
+            return None
+        return lease
+
+    def worker_admit(self, uow: Any, session: dict[str, Any]) -> str:
+        """``ok`` when the Session may take (or already holds) its Slot, else ``wait``."""
+        slot = uow.get("machine_slots", session["machine_slot_id"], lock=True)
+        if slot["state"] != "ready":
+            raise DomainError(
+                "credential_invalid",
+                "the machine slot needs a login before it can run a Session",
+                details={"machine_slot_id": slot["id"], "state": slot["state"]},
+            )
+        if slot["holder_kind"] == "setup":
+            return "wait"
+        holder = self._holder_lease(uow, slot)
+        if holder is not None and holder["session_id"] != session["id"]:
+            return "wait"
+        return "ok"
+
+    def worker_bind(self, uow: Any, session: dict[str, Any], lease: dict[str, Any]) -> None:
+        """Give the Slot's Volume to this lease; the caller holds the Slot row lock."""
+        slot = uow.get("machine_slots", session["machine_slot_id"], lock=True)
+        now = uow.now()
+        uow.update("executor_leases", lease["id"], {"machine_slot_id": slot["id"]})
+        uow.update(
+            "machine_slots",
+            slot["id"],
+            {
+                "holder_kind": "worker",
+                "holder_id": lease["id"],
+                "holder_generation": slot["holder_generation"] + 1,
+                "last_used_at": now,
+                "updated_at": now,
+            },
+            bump_version=True,
+        )
+
+    def worker_profile(self, uow: Any, slot_id: str) -> dict[str, Any]:
+        slot = uow.get("machine_slots", slot_id)
+        adapter = self.adapters[slot["provider"]]
+        return {
+            "provider_id": slot["provider"],
+            "volume_name": slot["volume_name"],
+            "mount": self.profile_mount,
+            "env": dict(adapter.profile_env),
+        }
+
+    def report_health(self, uow: Any, slot_id: str, health: str) -> None:
+        """A Turn whose provider rejected the login marks the Slot for a new login."""
+        if health != "invalid":
+            return
+        slot = uow.get("machine_slots", slot_id, lock=True)
+        if slot["state"] == "ready":
+            uow.update(
+                "machine_slots",
+                slot_id,
+                {
+                    "state": "needs_login",
+                    "state_reason": "provider_rejected_login",
+                    "updated_at": uow.now(),
+                },
+                bump_version=True,
+            )
+
+    def worker_release(self, uow: Any, lease: dict[str, Any]) -> None:
+        """Free the Slot once its Worker lease is confirmed stopped (idempotent)."""
+        if not lease.get("machine_slot_id"):
+            return
+        slot = uow.get("machine_slots", lease["machine_slot_id"], lock=True)
+        if slot["holder_kind"] == "worker" and slot["holder_id"] == lease["id"]:
+            uow.update(
+                "machine_slots",
+                slot["id"],
+                {"holder_kind": None, "holder_id": None, "updated_at": uow.now()},
+                bump_version=True,
+            )
 
     # ------------------------------------------------------------------------- jobs
     def handle_login(self, ctx: Any) -> Outcome:
@@ -625,6 +786,7 @@ class MachineSlots:
                         verified_at=now,
                         capabilities={
                             **(slot["capabilities"] or {}),
+                            "catalog": self._catalog(slot, state or {}, now),
                             "cli_version": (state or {}).get("cli_version"),
                             "verification": {
                                 "real_model_call": bool((state or {}).get("real_model_call")),

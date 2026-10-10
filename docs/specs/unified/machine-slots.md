@@ -1,7 +1,7 @@
 # Machine Slots (subscription logins)
 
-Implemented contract for subscription Machine Slots. Session execution on a Slot, the per-Slot
-model catalog and reasoning effort are specified with the PRs that add them.
+Implemented contract for subscription Machine Slots: the official login, Sessions that run on a
+Slot, the per-Slot model catalog and reasoning effort.
 
 ## Model
 
@@ -85,3 +85,53 @@ attempt only verifies it, the Slot is `volume_managed=false`, and SBX never dele
 A Modal Connection cannot be disconnected while Slots keep Volumes in it (`connection_in_use`,
 `details.machine_slots`). Slots are owner-scoped like every other resource: another owner gets
 `not_found`.
+
+## Model catalog
+
+After a successful login or verification the supervisor asks the authenticated CLI for its models
+through the CLI's own machine interface (Codex: `codex app-server`, JSON-RPC `model/list`). The
+adapter normalizes the answer into `capabilities.catalog`:
+
+```json
+{"status": "ready", "source": "codex app-server model/list", "observed_at": "...",
+ "cli_version": "...", "default_model": "<id>", "complete": true,
+ "models": [{"id": "<id>", "name": "...", "default": true,
+             "reasoning": {"kind": "levels", "default": "<effort>",
+                           "efforts": [{"id": "<effort>", "description": "..."}]}}]}
+```
+
+Every model id and effort is the CLI's own answer for that login; hidden models are dropped; a
+default effort the model does not list is dropped. If the CLI gives no usable answer the catalog is
+`{"status": "unavailable", "models": []}`: nothing is guessed, and a Session can then only use the
+provider default. `POST /api/machine-slots/{id}/verifications` refreshes the catalog.
+
+## Sessions on a Slot
+
+Session creation accepts `inference: {"mode": "subscription", "machine_slot_id": "<slot>"}` next
+to `harness: {provider_id, model?, effort?}`. The default mode is `custom_api` (an `inference_api`
+Connection). Rules, enforced server-side:
+
+- The Slot must be `ready`, owned by the caller, and the Harness must be the adapter's (`codex`).
+  The executor backend must be `modal`, and the compute Connection is the Slot's.
+- `connections.inference` must be absent: a subscription Session never has an API key and never
+  falls back to one. A `custom_api` Session never mounts a Slot Volume.
+- `model` must be in the Slot's catalog and `effort` must be one of that model's efforts (an effort
+  without a model is checked against the default model). With no catalog only the provider default
+  (no model, no effort) is accepted. Per-Turn `settings.model` / `settings.effort` follow the same
+  rules. The Session returns `inference` and `harness.effort`.
+
+Execution:
+
+- Creating the executor lease takes the Slot's holder in the same transaction. If another Session's
+  live lease or a login holds it, the Turn stays `preparing` with reason `waiting_capacity` and no
+  second VM is created. The holder is derived from durable lease state, so a lease that is released
+  or confirmed lost frees the Slot without a separate unlock step.
+- The Worker VM mounts the Slot Volume at `/profile` (never created at allocation) and nothing
+  else of the Slot. `turn.start` carries `inference: {"mode": "subscription", "provider_id", "env"}`
+  and no secrets. The Codex Harness points `CODEX_HOME` at the mounted profile, keeps the Session
+  home private, writes nothing into the profile's `config.toml`, and passes `-m <model>` and
+  `-c model_reasoning_effort="<effort>"`. Native threads live on the Volume and are never part of a
+  checkpoint.
+- After each terminal Turn and before the Worker VM is terminated the executor runs `sync /profile`
+  so login refreshes are committed. A VM that died cannot be synced.
+- A Turn the provider rejects as unauthenticated sets the Slot to `needs_login`.

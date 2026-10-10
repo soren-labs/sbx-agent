@@ -54,7 +54,9 @@ class TurnContext:
     native_binding: dict[str, Any] | None = None
     deadline_seconds: float = 3600.0
     result_contract: dict[str, Any] | None = None
-    # Non-secret BYOK endpoint for this Turn: {"protocol", "base_url", "model"}.
+    # Non-secret inference route for this Turn. Custom API: {"protocol", "base_url", "model"}.
+    # Subscription: {"mode": "subscription", "provider_id", "env"} where ``env`` points the
+    # official CLI at the login on the mounted Machine Slot Volume.
     inference: dict[str, Any] | None = None
 
 
@@ -66,6 +68,8 @@ class PreparedHarness:
     credential_files: list[Path] = field(default_factory=list)
     # CLI-facing model argument when it differs from the Turn's model id.
     model: str | None = None
+    # Extra CLI arguments decided at prepare time (e.g. per-Turn config overrides).
+    cli_args: list[str] = field(default_factory=list)
 
 
 @dataclass

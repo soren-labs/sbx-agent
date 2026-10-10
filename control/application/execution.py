@@ -97,6 +97,8 @@ class ExecutionService:
         self.hooks = IngestHooks(credential_health=self._credential_health)
         # Called after a Worktree is realized on a lease (e.g. Delegation input ChangeSets).
         self.post_restore_hooks: list[Any] = []
+        # Machine Slot service (set by composition) for subscription Sessions.
+        self.slots: Any = None
 
     # ======================================================================== commands
     def activate(self, principal: Principal, session_id: str) -> dict[str, Any]:
@@ -204,6 +206,14 @@ class ExecutionService:
                 "previous compute is quarantined until isolation is confirmed",
                 retryable=True,
             )
+        if session["machine_slot_id"] and self._slots().worker_admit(uow, session) == "wait":
+            # One VM per Slot: its Volume is never mounted by two live sandboxes.
+            raise DomainError(
+                "waiting_capacity",
+                "the machine slot is in use by another Session or a login",
+                details={"machine_slot_id": session["machine_slot_id"]},
+                retryable=True,
+            )
         generation = uow.count("executor_leases", {"session_id": session["id"]}) + 1
         lease = uow.insert(
             "executor_leases",
@@ -220,7 +230,17 @@ class ExecutionService:
             },
         )
         uow.update("sessions", session["id"], {"active_lease_id": lease["id"]})
+        if session["machine_slot_id"]:
+            self.slots.worker_bind(uow, session, lease)
+            lease = {**lease, "machine_slot_id": session["machine_slot_id"]}
         return lease
+
+    def _slots(self) -> Any:
+        if self.slots is None:
+            raise DomainError(
+                "unsupported_capability", "Machine Slots are not enabled on this deployment"
+            )
+        return self.slots
 
     def _backend(self, lease: dict[str, Any]) -> ExecutorBackend:
         backend = self.executors.get(lease["backend"])
@@ -236,6 +256,9 @@ class ExecutionService:
     def _credential_health(
         self, uow: Any, session: dict[str, Any], execution: dict[str, Any], health: str
     ) -> None:
+        if session["machine_slot_id"] and self.slots is not None:
+            self.slots.report_health(uow, session["machine_slot_id"], health)
+            return
         self.credentials.report_health(
             uow, execution["inference_connection_id"], execution["credential_version_id"], health
         )
@@ -340,7 +363,11 @@ class ExecutionService:
                 turn_id=turn_id,
             )
         try:
-            self.credentials.check_inference(uow, session)
+            if session["machine_slot_id"]:
+                # Subscription Sessions never fall back to an API key.
+                self._slots().worker_admit(uow, session)
+            else:
+                self.credentials.check_inference(uow, session)
             if session["executor_backend"] == "modal" and not session["compute_connection_id"]:
                 raise DomainError(
                     "connection_required",
@@ -366,7 +393,24 @@ class ExecutionService:
         if lease is None:
             if uow.count("executor_leases", {"session_id": session["id"], "quarantined": True}):
                 return {"action": "wait", "delay": 5.0}
-            lease = self._new_lease(uow, session)
+            try:
+                lease = self._new_lease(uow, session)
+            except DomainError as exc:
+                if exc.code != "waiting_capacity":
+                    raise
+                if turn["reason"] != "waiting_capacity":
+                    uow.update("turns", turn_id, {"reason": "waiting_capacity"})
+                    uow.append_event(
+                        session,
+                        "turn.preparing",
+                        {
+                            "reason": "waiting_capacity",
+                            "machine_slot_id": session["machine_slot_id"],
+                        },
+                        actor="application",
+                        turn_id=turn_id,
+                    )
+                return {"action": "wait", "delay": self.settings.capacity_retry}
         return {"action": "run", "lease_id": lease["id"]}
 
     def _fail_preparing(self, uow: Any, turn_id: str, code: str, message: str) -> None:
@@ -429,6 +473,11 @@ class ExecutionService:
             "compute": compute,
             "compute_connection_id": lease["compute_connection_id"],
         }
+        if lease.get("machine_slot_id"):
+            # The Slot's private Volume is mounted into this one Worker only.
+            spec["profile"] = ctx.db.read(
+                lambda uow: self._slots().worker_profile(uow, lease["machine_slot_id"])
+            )
         operation_id = lease["allocation_operation_id"]
         try:
             if lease["handle"]:
@@ -727,7 +776,7 @@ class ExecutionService:
             slot = free[0]
         attempt = uow.count("executions", {"turn_id": turn_id}) + 1
         execution_id = new_id("execution")
-        meta = self.credentials.check_inference(uow, session)
+        meta = {} if session["machine_slot_id"] else self.credentials.check_inference(uow, session)
         uow.insert(
             "executions",
             {
@@ -793,7 +842,7 @@ class ExecutionService:
             "execution_id": execution["id"],
             "prompt": compose_prompt(message, turn),
             "model": settings.get("model") or session["harness_model"],
-            "effort": settings.get("effort"),
+            "effort": settings.get("effort") or session["harness_effort"],
             "native_binding": {
                 "provider_id": binding["provider_id"],
                 "native_id": binding["native_id"],
@@ -810,9 +859,21 @@ class ExecutionService:
         accepted = False
         refused: RuntimeRefused | None = None
         try:
-            bundle, meta = self.credentials.inference(session)
-            if meta.get("inference"):
-                payload["inference"] = meta["inference"]
+            if session["machine_slot_id"]:
+                profile = ctx.db.read(
+                    lambda uow: self._slots().worker_profile(uow, session["machine_slot_id"])
+                )
+                # The login stays on the mounted Volume: no secret travels with the Turn.
+                bundle = {}
+                payload["inference"] = {
+                    "mode": "subscription",
+                    "provider_id": profile["provider_id"],
+                    "env": profile["env"],
+                }
+            else:
+                bundle, meta = self.credentials.inference(session)
+                if meta.get("inference"):
+                    payload["inference"] = meta["inference"]
             response = self.connector.channel(lease).op(
                 "turn.start", execution["operation_id"], session["id"], payload, secrets=bundle
             )
@@ -927,6 +988,11 @@ class ExecutionService:
             if result.acked > acked and (result.terminal or behind >= self.settings.ack_backlog):
                 channel.ack(batch["runtime_epoch"], result.acked)
             if result.terminal:
+                if lease.get("machine_slot_id"):
+                    # Persist any login refresh the Turn caused before the VM can be lost.
+                    self._sync_profile(
+                        lease, ctx.db.read(lambda uow: uow.get("sessions", lease["session_id"]))
+                    )
                 return Succeeded({"acked": result.acked})
             more = batch["last_local_seq"] > result.acked
             delay = (
@@ -1086,6 +1152,7 @@ class ExecutionService:
             snapshot_ok = self._checkpoint(ctx, lease)
         # Fence an allocating lease first: no new backend create can start after this.
         lease = ctx.commit(lambda uow: self._quiesce(uow, lease_id))
+        self._sync_profile(lease, session)
         confirmed = self._confirm_stopped(lease, session)
         if confirmed is None:
             ctx.commit(lambda uow: self._quarantine(uow, lease_id, "allocation_unresolved"))
@@ -1095,6 +1162,22 @@ class ExecutionService:
             return Retry("executor_unavailable", "termination not confirmed")
         ctx.commit(lambda uow: self._released(uow, lease_id, snapshot_ok))
         return Succeeded({"checkpoint": snapshot_ok})
+
+    def _sync_profile(self, lease: dict[str, Any], session: dict[str, Any]) -> bool:
+        """Commit the Slot Volume (login refreshes) while its Worker VM is still alive.
+
+        Best effort: a VM that already died cannot be synced, and the next verification
+        reports the Slot as needing a login if its stored state went stale.
+        """
+        if not lease.get("machine_slot_id") or not lease["handle"] or self.slots is None:
+            return False
+        try:
+            mount = self.slots.profile_mount
+            return bool(
+                self._backend(lease).profile_sync(lease["handle"], self._compute(session), mount)
+            )
+        except Exception:
+            return False
 
     def _confirm_stopped(self, lease: dict[str, Any], session: dict[str, Any]) -> bool | None:
         """True only on confirmed termination or authoritative absence; None = wait.
@@ -1277,6 +1360,8 @@ class ExecutionService:
         )
         if session["active_lease_id"] == lease_id:
             uow.update("sessions", session["id"], {"active_lease_id": None})
+        if self.slots is not None:
+            self.slots.worker_release(uow, lease)
         worktree = uow.find_one("worktrees", {"session_id": session["id"]}, lock=True)
         availability = "checkpointed" if (snapshot_ok or worktree["last_snapshot_id"]) else "none"
         uow.update(

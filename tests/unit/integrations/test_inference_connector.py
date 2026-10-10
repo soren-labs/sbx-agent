@@ -35,6 +35,8 @@ class Provider:
         self.calls.append({"method": method, "url": url, **kw})
         assert kw["follow_redirects"] is False, "redirects are never followed"
         answer = self.routes.get(url, Reply(404))
+        if callable(answer):
+            answer = answer(kw.get("json") or {})
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -66,7 +68,10 @@ def test_each_protocol_is_probed_with_its_own_request_shape_and_auth() -> None:
         client=provider,
     )
     assert observation.status == "ready" and observation.quota_consuming is True
-    posts = {c["url"]: c for c in provider.calls if c["method"] == "POST"}
+    posts: dict[str, Any] = {}
+    for call in provider.calls:
+        if call["method"] == "POST":
+            posts.setdefault(call["url"], call)  # the validation request comes first
     chat, responses, anthropic = (
         posts[f"{CHAT}/chat/completions"],
         posts[f"{RESPONSES}/responses"],
@@ -78,11 +83,16 @@ def test_each_protocol_is_probed_with_its_own_request_shape_and_auth() -> None:
     assert responses["json"]["input"] == "ping"
     assert anthropic["headers"]["x-api-key"] == KEY and "Authorization" not in anthropic["headers"]
     assert anthropic["headers"]["anthropic-version"]
+    silent = {"openai_chat": "none", "openai_responses": "none", "anthropic_messages": "none"}
     assert observation.catalog == {
-        "models": [{"id": "vendor-model"}, {"id": "vendor-big"}],
+        "models": [
+            {"id": "vendor-model", "reasoning": silent},
+            {"id": "vendor-big", "reasoning": silent},
+        ],
         "preferred_model": "vendor-model",
         "protocols": ["openai_chat", "openai_responses", "anthropic_messages"],
         "source": "configured + provider model list",
+        "reasoning_source": "default vs. reasoning-disabled request per endpoint",
     }
     assert set(observation.details["endpoints"]) == set(observation.catalog["protocols"])
     assert KEY not in str(observation.details) + str(observation.catalog)
@@ -132,7 +142,8 @@ def test_catalog_falls_back_to_configured_models_when_listing_is_unavailable() -
         {"api_key": KEY, "model": "m1", "models": ["m2", "m1"], "base_url": CHAT}
     )
     catalog = inference_api.validate(credential, client=provider).catalog
-    assert catalog["models"] == [{"id": "m1"}, {"id": "m2"}] and catalog["source"] == "configured"
+    assert [m["id"] for m in catalog["models"]] == ["m1", "m2"]
+    assert catalog["source"] == "configured"
 
 
 def test_hostname_resolving_to_a_private_address_is_never_contacted(monkeypatch) -> None:
@@ -174,3 +185,59 @@ def test_normalize_canonicalizes_and_exposes_only_public_settings() -> None:
     public = inference_api.public_config(credential)
     assert "api_key" not in public and KEY not in str(public)
     assert set(inference_api.SECRET_FIELDS) == set(credential) - set(public)
+
+
+def test_reasoning_control_is_offered_only_where_the_off_switch_measurably_works() -> None:
+    """Binary thinking is a measured fact per model and protocol, never a provider-name guess."""
+
+    def chat(body: dict) -> Reply:
+        if body.get("max_tokens") == 1:
+            return Reply(200)
+        thinks = body["model"] == "thinker" and body.get("reasoning_effort") != "none"
+        usage = {"completion_tokens_details": {"reasoning_tokens": 40 if thinks else 0}}
+        return Reply(200, {"choices": [{"message": {"content": "391"}}], "usage": usage})
+
+    def responses(body: dict) -> Reply:
+        if "reasoning" in body:
+            return Reply(400)  # this endpoint refuses the off switch
+        return Reply(200, {"usage": {"output_tokens_details": {"reasoning_tokens": 30}}})
+
+    def anthropic(body: dict) -> Reply:
+        if body["model"] == "thinker" and "thinking" not in body and body["max_tokens"] != 1:
+            return Reply(200, {"content": [{"type": "thinking", "thinking": "17*23..."}]})
+        return Reply(200, {"content": [{"type": "text", "text": "391"}]})
+
+    provider = Provider(
+        {
+            f"{CHAT}/chat/completions": chat,
+            f"{RESPONSES}/responses": responses,
+            f"{ANTHROPIC}/v1/messages": anthropic,
+        }
+    )
+    credential = inference_api.normalize(
+        {
+            "api_key": KEY,
+            "model": "thinker",
+            "models": ["plain"],
+            "endpoints": {
+                "openai_chat": CHAT,
+                "openai_responses": RESPONSES,
+                "anthropic_messages": ANTHROPIC,
+            },
+        }
+    )
+    catalog = inference_api.validate(credential, client=provider).catalog
+    by_id = {m["id"]: m["reasoning"] for m in catalog["models"]}
+    assert by_id["thinker"] == {
+        "openai_chat": "toggle",
+        "openai_responses": "unverified",
+        "anthropic_messages": "toggle",
+    }
+    assert by_id["plain"]["openai_chat"] == "none", "a model that does not reason gets no control"
+    assert by_id["plain"]["anthropic_messages"] == "none"
+    offs = [c["json"] for c in provider.calls if c["method"] == "POST" and c["json"].get("model")]
+    assert {"reasoning_effort": "none"}.items() <= next(
+        b for b in offs if "reasoning_effort" in b
+    ).items()
+    assert any(b.get("thinking") == {"type": "disabled"} for b in offs)
+    assert any(b.get("reasoning") == {"effort": "none"} for b in offs)

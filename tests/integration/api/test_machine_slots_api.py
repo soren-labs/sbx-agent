@@ -11,15 +11,43 @@ import itertools
 from typing import Any
 
 import pytest
-from tests.support.api import ApiStack, User
+from control.domain.errors import DomainError
+from control.integrations.connectors.base import Observation
+from tests.support.api import INFERENCE_MODEL, ApiStack, User, inference
 
 MODAL = {"token_id": "ak-test0000000000001", "token_secret": "as-secret00000000000001"}
 URL = "https://auth.openai.com/codex/device"
 CODE = "ABCD-12345"
 
 
+CATALOG = {
+    "complete": True,
+    "items": [
+        {
+            "id": "model-a",
+            "displayName": "Model A",
+            "isDefault": True,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low", "description": "Fast"},
+                {"reasoningEffort": "medium", "description": "Balanced"},
+                {"reasoningEffort": "ultra", "description": "Maximum"},
+            ],
+        },
+        {
+            "id": "model-b",
+            "displayName": "Model B",
+            "defaultReasoningEffort": "low",
+            "supportedReasoningEfforts": [{"reasoningEffort": "low", "description": "Fast"}],
+        },
+    ],
+}
+
+
 class SetupCloud:
     """In-memory stand-in for the Modal executor's Setup VM and Volume operations."""
+
+    catalog: Any = CATALOG
 
     def __init__(self) -> None:
         self.ids = itertools.count(1)
@@ -28,6 +56,9 @@ class SetupCloud:
         self.deleted_volumes: list[str] = []
         self.terminated: list[str] = []
         self.starts = 0
+        self.allocations: list[dict[str, Any]] = []
+        self.synced: list[tuple[str, str]] = []
+        self.max_mounts = 0
 
     def setup_start(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
         assert set(spec["compute"]) >= {"token_id", "token_secret"}
@@ -67,6 +98,39 @@ class SetupCloud:
         self.terminated.append(handle["sandbox_id"])
         return True
 
+    # -- Worker allocation (the runtime never becomes reachable in these tests) -----------
+    def allocate(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
+        self.allocations.append(spec)
+        vm = {
+            "sandbox_id": f"sb-{next(self.ids)}",
+            "operation_id": operation_id,
+            "spec": {"tags": {"sbx_slot": None}},
+            "alive": True,
+            "state": {},
+        }
+        self.vms[vm["sandbox_id"]] = vm
+        vm["volume"] = (spec.get("profile") or {}).get("volume_name")
+        mounted = [v for v in self.vms.values() if v["alive"] and v.get("volume") == vm["volume"]]
+        if vm["volume"]:
+            self.max_mounts = max(self.max_mounts, len(mounted))
+        return {
+            "sandbox_id": vm["sandbox_id"],
+            "operation_id": operation_id,
+            "lease_id": spec["lease_id"],
+            "status": "running",
+        }
+
+    def describe(self, handle: dict[str, Any], compute: Any) -> dict[str, Any]:
+        alive = self.vms[handle["sandbox_id"]]["alive"]
+        return {"status": "running" if alive else "terminated"}
+
+    def connect_runtime(self, handle: dict[str, Any], compute: Any) -> str:
+        raise DomainError("executor_unavailable", "runtime not reachable yet", retryable=True)
+
+    def profile_sync(self, handle: dict[str, Any], compute: Any, mount: str) -> bool:
+        self.synced.append((handle["sandbox_id"], mount))
+        return True
+
     def volume_delete(self, compute: Any, name: str) -> bool:
         self.volumes.discard(name)
         self.deleted_volumes.append(name)
@@ -93,7 +157,12 @@ class SetupCloud:
         state.pop("user_code", None)
         state.update(phase=phase, error=error)
         if phase == "succeeded":
-            state.update(cli_version="codex-cli 0.162.0", real_model_call=True, profile_synced=True)
+            state.update(
+                cli_version="codex-cli 0.162.0",
+                real_model_call=True,
+                profile_synced=True,
+                catalog=self.catalog,
+            )
 
     @property
     def running(self) -> list[str]:
@@ -402,3 +471,195 @@ def test_slots_are_unavailable_without_the_modal_executor(db, tmp_path) -> None:
         assert providers[0]["available"] is False
     finally:
         stack.shutdown()
+
+
+# -- Sessions on a Slot ---------------------------------------------------------------------
+
+
+def _session(user: User, slot: dict[str, Any] | None, **overrides: Any) -> Any:
+    body: dict[str, Any] = {
+        "harness": {"provider_id": "codex"},
+        "executor": {"backend": "modal"},
+        "message": {"content": "hello"},
+    }
+    if slot is not None:
+        body["inference"] = {"mode": "subscription", "machine_slot_id": slot["id"]}
+    for key, value in overrides.items():
+        body[key] = {**body.get(key, {}), **value} if isinstance(value, dict) else value
+    return user.post(f"/api/workspaces/{user.workspace_id}/sessions", body)
+
+
+def test_slot_catalog_is_the_cli_answer_with_its_provenance(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _login(stack, cloud, user)
+    catalog = slot["capabilities"]["catalog"]
+    assert catalog["status"] == "ready" and catalog["source"] == "codex app-server model/list"
+    assert catalog["cli_version"] == "codex-cli 0.162.0" and catalog["observed_at"]
+    assert [m["id"] for m in catalog["models"]] == ["model-a", "model-b"]
+    assert catalog["default_model"] == "model-a"
+    assert [e["id"] for e in catalog["models"][1]["reasoning"]["efforts"]] == ["low"]
+
+    cloud.catalog = None  # the CLI stops answering: nothing is guessed
+    user.post(f"/api/machine-slots/{slot['id']}/verifications")
+    stack.drain()
+    cloud.finish(slot, "succeeded")
+    stack.drain()
+    refreshed = _get(user, slot)["capabilities"]["catalog"]
+    assert refreshed["status"] == "unavailable" and refreshed["models"] == []
+    refused = _session(user, slot, harness={"model": "model-a"})
+    assert refused.status_code == 422
+    assert refused.json()["error"]["details"]["capability"] == "model_discovery"
+    assert _session(user, slot).status_code == 202, "the provider default still works"
+
+
+def test_subscription_session_pins_only_catalogued_models_and_their_efforts(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _login(stack, cloud, user)
+    created = _session(user, slot, harness={"model": "model-a", "effort": "ultra"})
+    assert created.status_code == 202, created.text
+    session = created.json()["session"]
+    assert session["inference"] == {"mode": "subscription", "machine_slot_id": slot["id"]}
+    assert session["harness"] == {"provider_id": "codex", "model": "model-a", "effort": "ultra"}
+    assert session["connections"]["inference"] is None, "no API key is attached"
+    assert session["connections"]["compute"] == slot["compute_connection_id"]
+
+    invented = _session(user, slot, harness={"model": "gpt-made-up"})
+    assert invented.status_code == 422
+    assert invented.json()["error"]["details"]["available"] == ["model-a", "model-b"]
+    wrong = _session(user, slot, harness={"model": "model-b", "effort": "ultra"})
+    assert wrong.status_code == 422
+    assert wrong.json()["error"]["details"]["supported"] == ["low"]
+    default_model = _session(user, slot, harness={"effort": "ultra"})
+    assert default_model.status_code == 202, "an effort alone is checked against the default model"
+
+    turn = user.post(
+        f"/api/sessions/{session['id']}/messages",
+        {"content": "again", "settings": {"model": "model-b"}},
+    )
+    assert turn.status_code == 422, "the pinned ultra effort is not valid for model-b"
+    ok = user.post(
+        f"/api/sessions/{session['id']}/messages",
+        {"content": "again", "settings": {"model": "model-b", "effort": "low"}},
+    )
+    assert ok.status_code in (200, 201, 202), ok.text
+
+
+def test_subscription_session_prerequisites_and_no_api_fallback(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    key = user.connect("inference_api", inference("inference-live-like-key-ABCDEFGHIJ0123"))
+    stack.drain()
+    slot = _login(stack, cloud, user)
+    both = _session(user, slot, connections={"inference": key["id"]})
+    assert both.status_code == 422, "never a slot and an API key together"
+    assert _session(user, slot, harness={"provider_id": "opencode"}).status_code == 422
+    assert _session(user, slot, executor={"backend": "local"}).status_code == 422
+    other = _user(stack)
+    stolen = other.post(
+        f"/api/workspaces/{other.workspace_id}/sessions",
+        {
+            "harness": {"provider_id": "codex"},
+            "executor": {"backend": "modal"},
+            "inference": {"mode": "subscription", "machine_slot_id": slot["id"]},
+        },
+    )
+    assert stolen.status_code == 404, "another owner cannot run on this slot"
+
+    pending = _add(user, label="Not logged in")
+    not_ready = _session(user, pending)
+    assert not_ready.status_code == 409
+    assert not_ready.json()["error"]["code"] == "connection_required"
+    custom = _session(user, None, harness={"provider_id": "opencode", "effort": "high"})
+    assert custom.status_code == 422, "no unverified effort is accepted for a custom API model"
+    assert custom.json()["error"]["details"]["capability"] == "effort_settings"
+
+
+def test_one_worker_per_slot_and_release_syncs_then_frees_it(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _login(stack, cloud, user)
+    sessions = {s["session_id"]: s for s in (_session(user, slot).json() for _ in range(2))}
+    stack.drain(40)
+    assert len(cloud.allocations) == 1, "only one VM may mount the slot volume"
+    spec = cloud.allocations[0]
+    assert spec["profile"]["volume_name"] == slot["volume"]["name"]
+    assert spec["profile"]["mount"] == "/profile"
+    holder = sessions.pop(spec["session_id"])
+    [waiter] = sessions.values()
+    busy = _get(user, slot)
+    assert busy["status"] == "running" and busy["busy"] is True
+    assert busy["worker"]["session_id"] == holder["session_id"]
+    waiting = stack.db.read(lambda u: u.get("turns", waiter["turn_id"]))
+    assert waiting["state"] == "preparing" and waiting["reason"] == "waiting_capacity"
+    assert user.post(f"/api/machine-slots/{slot['id']}/logins").status_code == 409
+    assert (
+        user.delete(f"/api/machine-slots/{slot['id']}?confirm={slot['label']}").status_code == 409
+    )
+
+    released = user.post(f"/api/sessions/{holder['session_id']}/executor/releases")
+    assert released.status_code in (200, 202), released.text
+    stack.drive(lambda: len(cloud.allocations) == 2, timeout=30)
+    assert cloud.synced and cloud.synced[0][1] == "/profile", "the volume is committed first"
+    assert cloud.synced[0][0] in cloud.terminated
+    # Whichever Session is dispatched next takes the freed slot; never two at once.
+    assert cloud.max_mounts == 1 and len(cloud.running) == 1
+    after = _get(user, slot)
+    assert after["busy"] is True
+    assert after["worker"]["session_id"] == cloud.allocations[1]["session_id"]
+
+
+def test_custom_api_session_never_mounts_a_slot_volume(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    user.connect("inference_api", inference("inference-live-like-key-ABCDEFGHIJ0123"))
+    stack.drain()
+    _login(stack, cloud, user)
+    created = _session(user, None, harness={"provider_id": "opencode"})
+    assert created.status_code == 202, created.text
+    assert created.json()["session"]["inference"] == {"mode": "custom_api", "machine_slot_id": None}
+    stack.drain(40)
+    assert "profile" not in cloud.allocations[0]
+
+
+def test_custom_api_thinking_toggle_needs_a_measured_probe_and_a_verified_harness(env) -> None:
+    """DeepSeek-style binary thinking: only ``none``, only where both facts were measured."""
+    stack, _ = env
+
+    def validator(material: dict[str, Any], **_: Any) -> Observation:
+        catalog = {
+            "models": [
+                {"id": INFERENCE_MODEL, "reasoning": {"openai_chat": "toggle"}},
+                {"id": "plain-model", "reasoning": {"openai_chat": "none"}},
+                {"id": "odd-model", "reasoning": {"openai_chat": "unverified"}},
+            ],
+            "preferred_model": INFERENCE_MODEL,
+            "protocols": list(material["endpoints"]),
+        }
+        return Observation("ready", catalog=catalog, quota_consuming=True)
+
+    stack.services.connections.validators["inference_api"] = validator
+    user = _user(stack)
+    user.connect("inference_api", inference("inference-live-like-key-ABCDEFGHIJ0123"))
+    stack.drain()
+
+    def create(**harness: Any) -> Any:
+        return user.post(
+            f"/api/workspaces/{user.workspace_id}/sessions",
+            {"harness": {"provider_id": "opencode", **harness}, "executor": {"backend": "local"}},
+        )
+
+    off = create(effort="none")
+    assert off.status_code == 201, off.text
+    assert off.json()["session"]["harness"]["effort"] == "none"
+    graded = create(effort="high")
+    assert graded.status_code == 422, "no invented low/medium/high for a binary control"
+    assert graded.json()["error"]["details"]["supported"] == ["none"]
+    for model in ("plain-model", "odd-model"):
+        refused = create(model=model, effort="none")
+        assert refused.status_code == 422, model
+        assert refused.json()["error"]["details"]["supported"] == []
+    unverified_harness = create(provider_id="grok", effort="none")
+    assert unverified_harness.status_code == 422
+    assert unverified_harness.json()["error"]["details"]["capability"] == "effort_settings"

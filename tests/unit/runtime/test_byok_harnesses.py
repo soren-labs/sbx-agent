@@ -255,3 +255,86 @@ def test_usage_reports_uncached_input_separately_from_cache_reads(tmp_path) -> N
         usage = HARNESSES[provider].finish(state)[0]["payload"]
         assert usage["cached_input_tokens"] == cached, provider
         assert usage["input_tokens"] == total_input - cached, provider
+
+
+def _subscription(tmp_path: Path, **overrides) -> TurnContext:
+    profile = tmp_path / "profile" / ".codex"
+    profile.mkdir(parents=True, exist_ok=True)
+    ctx = context(tmp_path, "codex")
+    ctx.inference = {
+        "mode": "subscription",
+        "provider_id": "codex",
+        "env": {"HOME": str(tmp_path / "profile"), "CODEX_HOME": str(profile)},
+    }
+    for name, value in overrides.items():
+        setattr(ctx, name, value)
+    return ctx
+
+
+def test_codex_subscription_turn_uses_the_slot_login_and_native_effort(tmp_path) -> None:
+    harness = HARNESSES["codex"]
+    ctx = _subscription(tmp_path, model="vendor/model-2", effort="high")
+    prepared = harness.prepare(ctx, {})
+    profile = tmp_path / "profile" / ".codex"
+    assert prepared.env["CODEX_HOME"] == str(profile)
+    assert prepared.env["HOME"] == str(tmp_path / "home"), "the Session home stays private"
+    assert INFERENCE_KEY_ENV not in prepared.env and prepared.secrets == []
+    assert list(profile.iterdir()) == [], "nothing is written into the login profile"
+    argv = harness.start_turn(ctx, prepared).argv
+    assert argv[argv.index("-m") + 1] == "vendor/model-2"
+    overrides = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-c"]
+    assert overrides == ['cli_auth_credentials_store="file"', 'model_reasoning_effort="high"']
+    resumed = harness.resume_turn(ctx, prepared, {"provider_id": "codex", "native_id": "t-1"}).argv
+    assert 'model_reasoning_effort="high"' in resumed and "t-1" in resumed
+    assert harness.native_state_paths(prepared.home) == [], "no profile file is ever exported"
+
+
+def test_codex_subscription_turn_without_effort_or_model_sends_neither(tmp_path) -> None:
+    harness = HARNESSES["codex"]
+    ctx = _subscription(tmp_path)
+    argv = harness.start_turn(ctx, harness.prepare(ctx, {})).argv
+    assert "-m" not in argv and not any("model_reasoning_effort" in a for a in argv)
+
+
+def test_codex_subscription_turn_never_falls_back_to_an_api_key(tmp_path) -> None:
+    harness = HARNESSES["codex"]
+    ctx = _subscription(tmp_path)
+    prepared = harness.prepare(ctx, secrets())
+    assert INFERENCE_KEY_ENV not in prepared.env and KEY not in str(prepared.env)
+    missing = _subscription(tmp_path)
+    missing.inference["env"]["CODEX_HOME"] = str(tmp_path / "not-mounted")
+    with pytest.raises(HarnessError) as err:
+        harness.prepare(missing, secrets())
+    assert err.value.code == "connection_required"
+
+
+@pytest.mark.parametrize(
+    "protocol,expected",
+    [
+        ("openai_chat", {"reasoningEffort": "none"}),
+        ("anthropic_messages", {"thinking": {"type": "disabled"}}),
+    ],
+)
+def test_opencode_passes_thinking_off_as_the_sdk_model_option(tmp_path, protocol, expected) -> None:
+    harness = HARNESSES["opencode"]
+    ctx = context(tmp_path, "opencode")
+    ctx.inference = {"protocol": protocol, "base_url": URLS[protocol], "model": "vendor/model-1"}
+    ctx.effort = "none"
+    prepared = harness.prepare(ctx, secrets())
+    config = json.loads(Path(prepared.env["OPENCODE_CONFIG"]).read_text())
+    [model] = config["provider"]["sbx"]["models"].values()
+    assert model["options"] == expected
+    ctx.effort = None
+    prepared = harness.prepare(ctx, secrets())
+    config = json.loads(Path(prepared.env["OPENCODE_CONFIG"]).read_text())
+    [model] = config["provider"]["sbx"]["models"].values()
+    assert "options" not in model, "no reasoning parameter is sent unless one was chosen"
+
+
+def test_codex_custom_api_config_never_carries_an_effort(tmp_path) -> None:
+    harness = HARNESSES["codex"]
+    ctx = context(tmp_path, "codex")
+    ctx.effort = "none"
+    prepared = harness.prepare(ctx, secrets())
+    config = (Path(prepared.env["CODEX_HOME"]) / "config.toml").read_text()
+    assert "model_reasoning_effort" not in config, "measured: not forwarded to a custom endpoint"

@@ -314,7 +314,11 @@ def test_harness_and_connection_are_matched_by_protocol(stack) -> None:
         assert created.status_code == 201, created.text
         session = created.json()["session"]
         assert session["connections"]["inference"] == chat["id"]
-        assert session["harness"] == {"provider_id": provider, "model": "test-model"}
+        assert session["harness"] == {
+            "provider_id": provider,
+            "model": "test-model",
+            "effort": None,
+        }
     for provider, protocols in (
         ("codex", ["openai_responses"]),
         ("claude", ["anthropic_messages"]),
