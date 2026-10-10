@@ -23,6 +23,8 @@ import type {
   Harness,
   LiveChanges,
   LoginResult,
+  MachineSlot,
+  MachineSlotList,
   Me,
   MergeRequestBody,
   MessageList,
@@ -124,6 +126,23 @@ export function createApiClient(options: HttpOptions = {}) {
       models: (workspace_id: string, provider_id = "opencode") =>
         get<ModelsView>("/api/models", { workspace_id, provider_id }),
       executorBackends: () => get<{ items: ExecutorBackend[] }>("/api/executor-backends"),
+    },
+
+    /** Subscription Machine Slots: the login itself never passes through this client. */
+    slots: {
+      list: (w: string) => get<MachineSlotList>(`/api/workspaces/${enc(w)}/machine-slots`),
+      create: (w: string, body: { provider: string; label?: string; account_alias?: string }, o?: Opts) =>
+        post<MachineSlot>(`/api/workspaces/${enc(w)}/machine-slots`, body, o),
+      get: (id: string) => get<MachineSlot>(`/api/machine-slots/${enc(id)}`),
+      update: (id: string, body: { label?: string; account_alias?: string | null }, o?: Opts) =>
+        send<MachineSlot>("PATCH", `/api/machine-slots/${enc(id)}`, body, o),
+      login: (id: string, o?: Opts) => post<MachineSlot>(`/api/machine-slots/${enc(id)}/logins`, undefined, o),
+      verify: (id: string, o?: Opts) => post<MachineSlot>(`/api/machine-slots/${enc(id)}/verifications`, undefined, o),
+      cancelLogin: (id: string, o?: Opts) =>
+        send<MachineSlot>("DELETE", `/api/machine-slots/${enc(id)}/logins/current`, undefined, o),
+      logout: (id: string, o?: Opts) => post<MachineSlot>(`/api/machine-slots/${enc(id)}/logout`, undefined, o),
+      remove: (id: string, confirm: string, o?: Opts) =>
+        send<MachineSlot>("DELETE", `/api/machine-slots/${enc(id)}?confirm=${enc(confirm)}`, undefined, o),
     },
 
     projects: {

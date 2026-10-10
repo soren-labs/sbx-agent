@@ -53,7 +53,7 @@ def test_manual_connections_validate_and_never_leak(stack) -> None:
     }
     models = user.get(f"/api/models?workspace_id={user.workspace_id}").json()
     assert models["preferred_model"] == "test-model"
-    assert models["connections"][0]["models"][0] == {"id": "test-model"}
+    assert models["connections"][0]["models"][0] == {"id": "test-model", "efforts": []}
     assert models["connections"][0]["compatible"] is True
     assert models["connections"][0]["protocol"] == "openai_chat"
     text = user.all_text()

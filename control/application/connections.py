@@ -12,7 +12,12 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from protocol.capabilities import INFERENCE_KIND, select_endpoint
+from protocol.capabilities import (
+    INFERENCE_KIND,
+    REASONING_OFF,
+    REASONING_TOGGLE_PROTOCOLS,
+    select_endpoint,
+)
 
 from control.application import access
 from control.domain.errors import DomainError
@@ -522,8 +527,20 @@ class Connections:
                     "health": con["health"],
                     "observed_at": catalog.get("observed_at"),
                     "preferred_model": config.get("model"),
-                    "models": catalog.get("models")
-                    or [{"id": m} for m in config.get("models") or []],
+                    # ``efforts``: reasoning values this Harness may send for the model;
+                    # empty unless both the probe and the official CLI were verified.
+                    "models": [
+                        {
+                            **m,
+                            "efforts": [REASONING_OFF]
+                            if endpoint
+                            and endpoint[0] in REASONING_TOGGLE_PROTOCOLS.get(provider_id, ())
+                            and (m.get("reasoning") or {}).get(endpoint[0]) == "toggle"
+                            else [],
+                        }
+                        for m in catalog.get("models")
+                        or [{"id": m} for m in config.get("models") or []]
+                    ],
                     "protocols": list(config.get("endpoints") or {}),
                     "protocol": endpoint[0] if endpoint else None,
                     "compatible": endpoint is not None,
