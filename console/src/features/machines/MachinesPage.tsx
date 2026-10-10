@@ -192,9 +192,14 @@ function SlotRow({
   const reason = slot.state_reason ?? slot.login?.error_code ?? null;
   const reasonKey = reason ? REASONS[reason.split(":")[0]] : undefined;
   const panel = `machine-panel-${slot.id}`;
+  const row = useRef<HTMLLIElement>(null);
+  // A login that needs the person is brought into view: with many machines it opens below the fold.
+  useEffect(() => {
+    if (open && pending) row.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [open, pending]);
 
   return (
-    <li className={`mc-row ${open ? "open" : ""}`} data-testid="machine-row" data-status={slot.status}>
+    <li ref={row} className={`mc-row ${open ? "open" : ""}`} data-testid="machine-row" data-status={slot.status}>
       <button type="button" className="mc-row-head" aria-expanded={open} aria-controls={panel} onClick={onToggle}>
         <span className="mc-icon" aria-hidden="true">
           <Icon name="machine" size={16} />
@@ -379,6 +384,9 @@ export function MachinesPage() {
   const add = useAction(async (key, provider: string) => {
     const slot = await api.slots.create(w!, { provider }, { idempotencyKey: key });
     setOpenId(slot.id);
+    // The new machine must not be hidden by a filter, a search or a collapsed group.
+    setFilter("all");
+    setSearch("");
     setCollapsed((current) => current.filter((p) => p !== provider));
     q.refetch();
   });

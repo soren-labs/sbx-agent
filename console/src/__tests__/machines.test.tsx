@@ -188,10 +188,14 @@ describe("My Cloud Machines", () => {
     await renderApp(<MachinesPage />, fetch);
 
     expect(await screen.findByText("No machines yet")).toBeInTheDocument();
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
     phase = 1;
     await user.click(screen.getByRole("button", { name: "Add Codex machine" }));
     expect(find("POST", "/api/workspaces/w1/machine-slots")[0].body).toEqual({ provider: "codex" });
     expect(await screen.findByText(/Starting a setup machine in your Modal workspace/)).toBeInTheDocument();
+    // With many machines the new row opens below the fold, so it is brought into view.
+    expect(scrolled).toHaveBeenCalled();
 
     phase = 2;
     const code = await screen.findByTestId("device-code", undefined, { timeout: 5000 });
