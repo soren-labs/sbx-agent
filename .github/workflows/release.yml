@@ -317,7 +317,9 @@ jobs:
           fi
 
           compose() {
-            docker compose --env-file .env --env-file release.env -f compose.yml "$@"
+            # SSH feeds this script over stdin. Compose can consume its remaining
+            # lines unless *every* invocation has stdin detached.
+            docker compose --env-file .env --env-file release.env -f compose.yml "$@" </dev/null
           }
 
           if compose ps -q postgres | grep -q .; then
@@ -408,6 +410,18 @@ jobs:
           fi
           docker image prune -f >/dev/null || true
           REMOTE
+
+          # Independent postcondition: SSH may return 0 if a child consumed the
+          # remaining heredoc, skipping migration/recreation/image checks.
+          # Health alone is not proof: the previous release could still respond.
+          expected_image="ghcr.io/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          actual_image="$(ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "sudo docker inspect sbx-agent-sbx-1 --format '{{.Config.Image}}'")"
+          if [ "$actual_image" != "$expected_image" ]; then
+            echo "Release failed: VPS is still on $actual_image, expected $expected_image" >&2
+            exit 1
+          fi
+          echo "Verified VPS running release image $expected_image"
 
       - name: Verify public API
         run: curl --fail --silent --show-error --retry 5 --retry-delay 3 https://api.sbx-agent.com/readyz
