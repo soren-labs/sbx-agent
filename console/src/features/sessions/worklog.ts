@@ -27,7 +27,7 @@ export interface Step {
 
 export type Entry =
   | { type: "text"; key: string; content: string; streaming: boolean }
-  | { type: "work"; key: string; steps: Step[]; running: boolean };
+  | { type: "work"; key: string; steps: Step[]; running: boolean; /** Its Turn is still live. */ live: boolean };
 
 // Tool names differ per official CLI; these cover OpenCode, Codex, Claude Code,
 // Grok Build and Command Code. Anything else stays a generic "tool" step.
@@ -132,7 +132,7 @@ export function entriesOf(message: Message, live: boolean, now = Date.now()): En
     const narration = part.kind === "text" && index > firstTool && index < lastTool && firstTool >= 0;
     if (part.kind === "tool" || part.kind === "reasoning" || narration) {
       if (!group) {
-        group = { type: "work", key: `work:${part.key}`, steps: [], running: false };
+        group = { type: "work", key: `work:${part.key}`, steps: [], running: false, live };
         entries.push(group);
       }
       if (narration) {
@@ -184,9 +184,9 @@ function folds(prev: Step, step: Step): boolean {
 
 export function rowsOf(steps: Step[], apart?: ReadonlySet<string>): Row[] {
   const rows: Row[] = [];
-  // Finished thoughts right after a quiet row wait here: if the next step folds into
-  // that row they go inside the fold with it, so a model that thinks briefly before
-  // every read still yields one "Read 5 files" row.
+  // Finished thoughts and narration right after a quiet row wait here: if the next step
+  // folds into that row they go inside the fold with it, so a model that thinks or says
+  // a line before every read still yields one "Read 5 files" row.
   let held: Step[] = [];
   const single = (step: Step) => rows.push({ key: `row:${step.key}`, kind: step.kind, steps: [step] });
   const flush = () => {
@@ -197,7 +197,8 @@ export function rowsOf(steps: Step[], apart?: ReadonlySet<string>): Row[] {
     const row = rows[rows.length - 1];
     const last = row && toolsOf(row).pop();
     const free = last && !apart?.has(last.key) && !apart?.has(step.key);
-    if (free && step.kind === "thought" && !step.streaming && FOLDABLE.includes(last.kind) && last.status === "done") {
+    const aside = step.kind === "note" || (step.kind === "thought" && !step.streaming);
+    if (free && aside && FOLDABLE.includes(last.kind) && last.status === "done") {
       held.push(step);
     } else if (free && folds(last, step) && !held.some((h) => apart?.has(h.key))) {
       row.steps.push(...held, step);
@@ -211,7 +212,7 @@ export function rowsOf(steps: Step[], apart?: ReadonlySet<string>): Row[] {
   return rows;
 }
 
-/** The steps a row is about: a fold may also carry the thoughts between them. */
+/** The steps a row is about: a fold may also carry the thoughts and narration between them. */
 export function toolsOf(row: Row): Step[] {
   return row.steps.filter((step) => step.kind === row.kind);
 }

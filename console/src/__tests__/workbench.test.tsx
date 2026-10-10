@@ -353,6 +353,62 @@ describe("Session workbench", () => {
     expect(within(group).getAllByTestId("work-step")).toHaveLength(13);
   });
 
+  it("does not close a live group, or what the reader opened in it, when the agent says a line between tools", async () => {
+    let push: (f: string) => void = () => {};
+    const body = new ReadableStream({
+      start(c) {
+        push = (f) => c.enqueue(enc.encode(f));
+      },
+    });
+    const { ready } = mount({
+      messages: [user, reply([toolPart("c1", "Bash", "completed", { command: "make a" }, "built a"), toolPart("c2", "Bash", "running", { command: "make b" })])],
+      turns: [turn()],
+      body,
+    });
+    await ready;
+    const group = await screen.findByTestId("work-group");
+    const closed: boolean[] = [];
+    const watch = new MutationObserver(() => closed.push(within(group).queryAllByTestId("work-step").length === 0));
+    watch.observe(group, { childList: true, subtree: true });
+    // The tool ends and the agent writes a sentence: for a moment nothing is running.
+    await act(async () => {
+      push(frame(5, "tool.completed", { message_id: "m1", tool_id: "c2", name: "Bash", status: "completed", input: { command: "make b" }, output: "built b" }));
+      push(frame(6, "message.part_added", { message_id: "m1", part_key: "p5", kind: "text", revision: 1, mode: "append", content: "Now c." }));
+    });
+    expect(await screen.findByText("Now c.")).toBeInTheDocument();
+    await userEvent.click(within(within(group).getAllByTestId("work-step")[0]).getByRole("button"));
+    expect(group).toHaveTextContent("built a");
+    await act(async () => {
+      push(frame(7, "tool.started", { message_id: "m1", tool_id: "c3", name: "Bash", status: "running", input: { command: "make c" } }));
+    });
+    await waitFor(() => expect(group).toHaveTextContent("make c"));
+    watch.disconnect();
+    expect(closed).not.toContain(true);
+    expect(group).toHaveTextContent("built a");
+    expect(group).toHaveTextContent("Working");
+  });
+
+  it("closes a live group shortly after the closing reply starts", async () => {
+    let push: (f: string) => void = () => {};
+    const body = new ReadableStream({
+      start(c) {
+        push = (f) => c.enqueue(enc.encode(f));
+      },
+    });
+    const { ready } = mount({ messages: [user, reply([toolPart("c1", "Bash", "running", { command: "make a" })])], turns: [turn()], body });
+    await ready;
+    const group = await screen.findByTestId("work-group");
+    expect(within(group).getAllByTestId("work-step")).toHaveLength(1);
+    await act(async () => {
+      push(frame(5, "tool.completed", { message_id: "m1", tool_id: "c1", name: "Bash", status: "completed", input: { command: "make a" }, output: "built a" }));
+      push(frame(6, "message.part_added", { message_id: "m1", part_key: "p5", kind: "text", revision: 1, mode: "append", content: "All built. Here is the summary." }));
+    });
+    expect(await screen.findByText("All built. Here is the summary.")).toBeInTheDocument();
+    expect(within(group).getAllByTestId("work-step")).toHaveLength(1);
+    await waitFor(() => expect(within(group).queryAllByTestId("work-step")).toHaveLength(0), { timeout: 3000 });
+    expect(group).toHaveTextContent("Worked");
+  });
+
   it("shows a sent message at once and gives the words back if the server refuses it", async () => {
     let release: (r: { status: number; json: unknown }) => void = () => {};
     const { ready } = mount({

@@ -179,6 +179,10 @@ describe("worklog model", () => {
     expect(toolsOf(mixed[0])).toHaveLength(2);
     expect(namesOf(mixed[0])).toEqual(["a.py", "b.py"]);
     expect(rowsOf([steps[0], thought("t1"), steps[1]], new Set(["t1"])).map((r) => r.steps.length)).toEqual([1, 1, 1]);
+    // So does a line the agent said between them; before a different kind it stays visible.
+    const note = (key: string): (typeof steps)[number] => ({ ...thought(key), kind: "note", output: "Now the next one." });
+    const said = rowsOf([steps[0], thought("t1"), note("n1"), steps[1], note("n2"), steps[5]]);
+    expect(said.map((r) => [r.kind, r.steps.length])).toEqual([["read", 4], ["note", 1], ["command", 1]]);
     // A step the reader opened stays a row of its own; its neighbours still fold.
     expect(rowsOf(steps.slice(0, 3), new Set([steps[0].key])).map((r) => r.steps.length)).toEqual([1, 2]);
   });

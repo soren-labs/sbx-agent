@@ -69,6 +69,20 @@ function useElapsed(start: string | null | undefined, running: boolean): number 
   return Number.isFinite(ms) ? Math.max(0, Math.round(ms / 1000)) : null;
 }
 
+/** How long a live work group waits for the next tool before it reads as finished. */
+const SETTLE_MS = 1500;
+
+/** `on`, held for `ms` after it turns off, so a state that flips back at once never flickers. */
+function useLinger(on: boolean, ms: number): boolean {
+  const [held, setHeld] = useState(on);
+  useEffect(() => {
+    if (on || !ms) return setHeld(on);
+    const id = setTimeout(() => setHeld(false), ms);
+    return () => clearTimeout(id);
+  }, [on, ms]);
+  return on || (held && ms > 0);
+}
+
 /** Bounded output: the first lines are visible, the rest is one click away. */
 function Output({ label, value, tone }: { label: string; value: string; tone?: "error" }) {
   const { t } = useI18n();
@@ -204,7 +218,13 @@ function FoldRow({ row }: { row: Row }) {
       {open ? (
         <ol className="work-steps is-nested">
           {row.steps.map((step) =>
-            step.kind === "thought" ? <ThoughtRow key={step.key} step={step} /> : <StepRow key={step.key} step={step} nested />,
+            step.kind === "thought" ? (
+              <ThoughtRow key={step.key} step={step} />
+            ) : step.kind === "note" ? (
+              <NoteRow key={step.key} step={step} />
+            ) : (
+              <StepRow key={step.key} step={step} nested />
+            ),
           )}
         </ol>
       ) : null}
@@ -241,15 +261,20 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
   // Single rows the reader clicked keep their own row, so a later neighbour of the
   // same kind does not fold them away together with what they opened.
   const [apart, setApart] = useState<ReadonlySet<string>>(() => new Set());
+  // A line of narration after a tool is not the end of the work: while the Turn is
+  // live the group stays as it is for a moment instead of closing and reopening.
+  const running = useLinger(entry.running, entry.live ? SETTLE_MS : 0);
   const touch = (event: MouseEvent<HTMLOListElement>) => {
+    // Reading inside the group is a choice to keep it open.
+    if (choice === null) setChoice(true);
     if (pinned === null) setPinned(rows[hidden]?.key ?? "");
     const key = (event.target as HTMLElement).closest<HTMLElement>("[data-row]")?.dataset.row;
     if (key && !apart.has(key)) setApart(new Set(apart).add(key));
   };
   const failed = entry.steps.filter((s) => s.status === "error").length;
-  const open = choice ?? entry.running;
+  const open = choice ?? running;
   const span = spanOf(entry.steps);
-  const elapsed = useElapsed(span.start, entry.running);
+  const elapsed = useElapsed(span.start, running);
   const took = secondsBetween(span.start, span.end);
   // Reasoning with no tool around it is context, not work: a single quiet line.
   const solo = entry.steps.length === 1 && entry.steps[0].kind === "thought";
@@ -261,17 +286,17 @@ function WorkGroup({ entry }: { entry: Extract<Entry, { type: "work" }> }) {
     );
   }
   const rows = rowsOf(entry.steps, apart);
-  const hidden = !entry.running
+  const hidden = !running
     ? 0
     : pinned === null
       ? Math.max(0, rows.length - LIVE_TAIL_ROWS)
       : // A pinned row may since have folded into its neighbour: find it by its step.
         Math.max(0, rows.findIndex((row) => row.steps.some((step) => `row:${step.key}` === pinned)));
-  const head = entry.running
+  const head = running
     ? elapsed !== null ? t("work.working_for", { time: formatDuration(elapsed) }) : t("work.working")
     : took ? t("work.worked_for", { time: formatDuration(took) }) : t("work.worked");
   return (
-    <section className={`work ${entry.running ? "is-running" : ""} ${open ? "is-open" : ""}`} data-testid="work-group">
+    <section className={`work ${running ? "is-running" : ""} ${open ? "is-open" : ""}`} data-testid="work-group">
       <button type="button" className="work-head" aria-expanded={open} onClick={() => setChoice(!open)}>
         <Icon name="chevron" size={13} className={`step-chevron ${open ? "open" : ""}`} />
         <strong>{head}</strong>
