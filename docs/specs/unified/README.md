@@ -11,6 +11,7 @@ They replace the retired pre-unification contracts, which are archived read-only
 | [persistence.md](persistence.md) | Schema/migration conventions and invariants enforced by PostgreSQL |
 | [runtime.md](runtime.md) | `sbx-runtime` protocol v1 between control plane and daemon |
 | [connections.md](connections.md) | Product identity, Connections, CredentialVersions and grants |
+| [machine-slots.md](machine-slots.md) | Subscription Machine Slots, Setup VMs and the official login flow |
 | [changes-delivery.md](changes-delivery.md) | ChangeSets, Delivery gates and Delegation |
 | [console-sdk.md](console-sdk.md) | One API, Console state model and SDK/CLI |
 | [openapi.yaml](openapi.yaml) | Generated `/api` contract (`make openapi`; drift-checked) |

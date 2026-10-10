@@ -30,6 +30,7 @@ class Cloud:
         self.creates = 0
         self.create_options: list[dict[str, Any]] = []
         self.builds = 0
+        self.volume_calls: list[tuple[str, str, dict[str, Any]]] = []
         self.terminated: list[str] = []
         self.fail_list = False
         self.fail_create_before = False
@@ -50,6 +51,15 @@ class FakeSandbox:
         self.name = name
         self.tags = dict(tags)
         self.alive = True
+        self.files: dict[str, str] = {}
+
+    def exec(self, *argv: str, timeout: int | None = None) -> Any:
+        content = self.files.get(argv[-1])
+        return SimpleNamespace(
+            stdout=SimpleNamespace(read=lambda: content or ""),
+            wait=lambda: None,
+            returncode=0 if content is not None else 1,
+        )
 
     def poll(self) -> int | None:
         return None if self.alive else 0
@@ -123,9 +133,20 @@ def make_sdk(cloud: Cloud) -> Any:
             cloud.builds += 1
             return self
 
+    class Volume:
+        objects = SimpleNamespace(
+            delete=lambda name, **options: cloud.volume_calls.append(("delete", name, options))
+        )
+
+        @staticmethod
+        def from_name(name: str, **options: Any) -> str:
+            cloud.volume_calls.append(("from_name", name, options))
+            return f"volume:{name}"
+
     return SimpleNamespace(
         Sandbox=Sandbox,
         Image=Image,
+        Volume=Volume,
         Client=SimpleNamespace(from_credentials=lambda *_: object()),
         App=SimpleNamespace(lookup=lambda *_, **__: SimpleNamespace(app_id="ap-test")),
         exception=SimpleNamespace(NotFoundError=NotFoundError),
@@ -254,3 +275,56 @@ def test_prewarm_requires_a_modal_credential() -> None:
     with pytest.raises(DomainError) as err:
         executor.prewarm(None, "con_1")
     assert err.value.code == "connection_required"
+
+
+def setup_spec() -> dict[str, Any]:
+    return {
+        "compute": COMPUTE,
+        "volume_name": "sbx-slot-1",
+        "mount": "/profile",
+        "env": {"HOME": "/profile"},
+        "setup": {"mode": "login"},
+        "tags": {"sbx_slot": "slot_1"},
+        "timeout": 1200,
+    }
+
+
+def test_setup_vm_mounts_only_the_slot_volume_on_the_shared_vm_path(env) -> None:
+    cloud, executor = env
+    handle = executor.setup_start(setup_spec(), "op_setup")
+    again = executor.setup_start(setup_spec(), "op_setup")
+    assert again["sandbox_id"] == handle["sandbox_id"] and cloud.creates == 1, "idempotent"
+    [options] = cloud.create_options
+    assert options["runtime"] == "vm" and options["secrets"] == []
+    assert options["include_oidc_identity_token"] is False
+    assert options["volumes"] == {"/profile": "volume:sbx-slot-1"}
+    assert "encrypted_ports" not in options, "a Setup VM exposes no port"
+    kind, name, volume_options = cloud.volume_calls[0]
+    assert (kind, name) == ("from_name", "sbx-slot-1")
+    assert volume_options["version"] == 2 and volume_options["create_if_missing"] is True
+    assert set(options["env"]) == {"HOME", "SBX_SETUP_SPEC", "PYTHONPATH"}
+    assert "token" not in str(options["env"]).lower()
+    assert cloud.sandboxes[0].tags == {"sbx_alloc": "op_setup", "sbx_slot": "slot_1"}
+
+
+def test_setup_observe_reads_only_the_state_file_and_reports_liveness(env) -> None:
+    cloud, executor = env
+    handle = executor.setup_start(setup_spec(), "op_setup")
+    path = "/tmp/sbx-setup/state.json"
+    assert executor.setup_observe(handle, COMPUTE, path) == {"status": "running", "state": None}
+    cloud.sandboxes[0].files[path] = '{"phase": "awaiting_user"}'
+    assert executor.setup_observe(handle, COMPUTE, path)["state"] == {"phase": "awaiting_user"}
+    cloud.sandboxes[0].files[path] = "not json"
+    assert executor.setup_observe(handle, COMPUTE, path)["state"] is None
+    cloud.sandboxes[0].alive = False
+    assert executor.setup_observe(handle, COMPUTE, path) == {"status": "terminated", "state": None}
+    assert (
+        executor.setup_observe({"sandbox_id": "sb-gone"}, COMPUTE, path)["status"] == "terminated"
+    )
+
+
+def test_volume_delete_tolerates_a_missing_volume(env) -> None:
+    cloud, executor = env
+    assert executor.volume_delete(COMPUTE, "sbx-slot-1") is True
+    kind, name, options = cloud.volume_calls[-1]
+    assert (kind, name) == ("delete", "sbx-slot-1") and options["allow_missing"] is True

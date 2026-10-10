@@ -6,6 +6,12 @@ source for release notes.
 
 ## [Unreleased]
 
+### Added
+- Machine Slots: one independent official Codex login per Slot, each with its own private Modal
+  Volume. The device login runs in a temporary Setup VM in your Modal workspace; SBX shows the
+  real verification URL and code, verifies the login with a real CLI call, and marks the Slot
+  ready by itself. API under `/api/machine-slots` (#199).
+
 ### Changed
 - Every Modal sandbox is now a full Linux VM (`runtime="vm"`, Modal SDK `>=1.6.1`). There is one
   runtime for all Modal workloads; existing Modal and inference Connections keep working unchanged.
