@@ -154,7 +154,11 @@ def build_services(
         catalog=catalog,
         settings=config.execution,
     )
-    connections = Connections(db, vault, CONNECTORS, validators=validators)
+    modal_executor = executors.get("modal")
+    provisioners = {"modal": modal_executor.prewarm} if hasattr(modal_executor, "prewarm") else {}
+    connections = Connections(
+        db, vault, CONNECTORS, validators=validators, provisioners=provisioners
+    )
     sessions = Sessions(db, ProjectResolver(catalog), catalog)
     queries = Queries(db)
     changes = Changes(db, connector, blobs, broker)
@@ -195,6 +199,7 @@ def build_services(
     services.handlers = {
         **execution_handlers(execution),
         "connection.validate": connections.handle_validate,
+        "connection.provision": connections.handle_provision,
         "changeset.capture": changes.handle_capture,
         "changeset.apply": changes.handle_apply,
         "delivery.perform": deliveries.handle_perform,

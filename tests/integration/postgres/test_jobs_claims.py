@@ -173,3 +173,41 @@ def test_commit_under_claim_is_atomic_with_completion(db) -> None:
     assert (
         db.read(lambda u: u.find_one("jobs", {"kind": "retention.cleanup"}))["state"] == "succeeded"
     )
+
+
+def test_keepalive_holds_the_claim_through_a_slow_call_and_stops_after_it(db) -> None:
+    """#198: a live worker in a slow valid allocation is not reclaimed; a dead one is."""
+    principal, sid = _session(db)
+    _enqueue(db, principal.default_workspace_id, sid, 1)
+    seen: dict[str, object] = {}
+
+    def slow(ctx):
+        with ctx.keepalive():
+            time.sleep(1.0)  # several claim leases
+            seen["rival"] = claims.claim_next(db, "rival", kinds=["retention.cleanup"])
+        ctx.commit(lambda uow: None)  # still the current claim
+        return Succeeded({"ok": True})
+
+    worker = Worker(db, {"retention.cleanup": slow}, lease_seconds=0.3)
+    assert worker.run_once() is True
+    assert seen["rival"] is None, "no successor while the holder is alive and renewing"
+    job = db.read(lambda uow: uow.find_one("jobs", {"session_id": sid}))
+    assert job["state"] == "succeeded" and job["claim_generation"] == 1
+
+
+def test_keepalive_does_not_outlive_its_bound_or_mask_a_lost_claim(db) -> None:
+    principal, sid = _session(db)
+    _enqueue(db, principal.default_workspace_id, sid, 1)
+    seen: dict[str, object] = {}
+
+    def hung(ctx):
+        with ctx.keepalive(max_seconds=0.2):
+            time.sleep(1.0)  # the bounded heartbeat gives up; the claim expires
+            seen["rival"] = claims.claim_next(db, "rival", kinds=["retention.cleanup"])
+        with pytest.raises(claims.StaleClaim):
+            ctx.commit(lambda uow: None)
+        raise claims.StaleClaim(ctx.claim, "superseded")
+
+    worker = Worker(db, {"retention.cleanup": hung}, lease_seconds=0.3)
+    assert worker.run_once() is True
+    assert seen["rival"] is not None and seen["rival"].generation == 2

@@ -60,11 +60,22 @@ The Executor starts the daemon with `python -m runtime.daemon.main --state-dir â
 
 **Modal resources.** The Modal Executor runs inside the **owner's** Modal workspace, using the
 selected Modal Connection's token. On first use it creates the app `sbx-executor`
-(`create_if_missing`). It builds one image per Connection and runtime-recipe digest: Debian slim
-with Python 3.12, Node 22, `opencode-ai@1.18.34` and the `runtime`/`protocol` sources. Sandboxes
-carry the tags `sbx_alloc`, `sbx_lease`, `sbx_session` and `sbx_workspace`, have a 6-hour hard
-timeout, and expose only the encrypted runtime port 8790. No Modal Secrets are attached. Image
-builds and sandbox time are billed to that workspace.
+(`create_if_missing`). Every sandbox is created with `runtime="vm"` (a full Linux kernel, Modal SDK
+`>=1.6.1`); this is the only Modal runtime, used for custom-API and subscription workloads alike.
+One shared image is built per Connection and runtime-recipe digest: Debian slim with CA
+certificates, Git, Python 3.12, Node 22, the pinned official CLIs and the `runtime`/`protocol`
+sources. A verified Modal Connection enqueues `connection.provision`, which builds that image ahead
+of first use (best effort, idempotent); allocation then only resolves Modal's image cache.
+Sandboxes carry the tags `sbx_alloc`, `sbx_lease`, `sbx_session` and `sbx_workspace`, have a 6-hour
+hard timeout, receive no Modal Secrets and no OIDC identity token, and expose only the encrypted
+runtime port 8790. Image builds and sandbox time are billed to that workspace.
+
+**Provisioning time and claims.** While a lease is being allocated and bound, the Job claim is
+renewed by a bounded keepalive (every third of the claim lease, at most 15 minutes), so a live
+worker in a slow but valid image build or VM boot is not re-dispatched; a dead worker's claim still
+expires after one lease and its successor adopts the allocation by operation identity.
+`executor.bound` carries `provisioning` in milliseconds: `image_resolve_ms`, `sandbox_create_ms`
+(Modal), `runtime_connect_ms`, `handshake_ms` and `total_ms` (lease creation to bound).
 
 **Allocation identity and release.** Each lease has a durable `allocation_operation_id` (the
 effect identity). Before any backend create the lease records `observed_status=allocate_requested`;
