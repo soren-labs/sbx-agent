@@ -67,9 +67,11 @@ function StatusPill({ slot }: { slot: MachineSlot }) {
   );
 }
 
-function host(url: string | null): string {
+/** Where a sign-in link goes, without its query: a provider may put a one-time code there. */
+function destination(url: string | null): string {
   try {
-    return new URL(url ?? "").host;
+    const { origin, pathname } = new URL(url ?? "");
+    return origin + pathname;
   } catch {
     return "";
   }
@@ -86,12 +88,22 @@ function PasteCode({ slot, onChanged }: { slot: MachineSlot; onChanged: () => vo
   const { t } = useI18n();
   const api = useApi();
   const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
   const send = useAction(async (key) => {
     await api.slots.submitLoginCode(slot.id, code.trim(), { idempotencyKey: key });
     // The code is used once; it is not kept in the page after it was sent.
     setCode("");
+    setSent(true);
     onChanged();
   });
+  // Until the next refresh shows the check, the field stays away: a second send is never typed.
+  if (sent) {
+    return (
+      <p className="mc-login-wait" role="status">
+        <Spinner /> {t("machines.login.paste_sent")}
+      </p>
+    );
+  }
   return (
     <form
       className="mc-paste"
@@ -168,8 +180,8 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
                 <Icon name="external" size={13} />
                 {t("machines.login.open")}
               </a>
-              {/* A sign-in link with a long query is opened, not read: show where it goes. */}
-              <span className="mc-url">{pasting ? host(login.verification_url) : login.verification_url}</span>
+              {/* The link is opened, not read: its query can be long or carry the one-time code. */}
+              <span className="mc-url">{destination(login.verification_url)}</span>
             </li>
             {pasting ? (
               <li>
@@ -193,7 +205,12 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
           </ol>
           <p className="mc-login-wait" role="status">
             <Spinner /> {t(pasting ? "machines.login.waiting_paste" : "machines.login.waiting")}
-            {left ? <span className="mc-expiry"> · {t("machines.login.expires", { time: left })}</span> : null}
+            {left ? (
+              <span className="mc-expiry">
+                {" "}
+                · {t(pasting ? "machines.login.window" : "machines.login.expires", { time: left })}
+              </span>
+            ) : null}
           </p>
         </>
       ) : null}
