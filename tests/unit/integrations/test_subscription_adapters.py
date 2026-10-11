@@ -67,3 +67,80 @@ def test_antigravity_sign_in_is_the_cli_screen_with_a_pasted_code() -> None:
     assert setup["pty"]["prompt"] in screen
     assert "please sign in" in setup["status_fail"]
     assert adapter.describe()["verification_host"] == "accounts.google.com"
+
+
+GROK_RAW = {
+    "complete": True,
+    "current": "grok-a",
+    "items": [
+        {
+            "modelId": "grok-a",
+            "name": "Grok A",
+            "description": "Frontier",
+            "_meta": {
+                "supportsReasoningEffort": True,
+                "reasoningEffort": "high",
+                "totalContextTokens": 500000,
+                "reasoningEfforts": [
+                    {"id": "xhigh", "value": "xhigh", "label": "Extra", "default": False},
+                    {"id": "high", "value": "high", "description": "More", "default": True},
+                    {"id": "high", "value": "high", "default": False},
+                    "junk",
+                ],
+            },
+        },
+        {
+            "modelId": "grok-b",
+            "name": "Grok B",
+            "_meta": {"supportsReasoningEffort": False, "reasoningEfforts": [{"id": "low"}]},
+        },
+        {"name": "no id"},
+    ],
+}
+
+
+def test_grok_catalog_keeps_each_models_own_effort_menu() -> None:
+    catalog = SUBSCRIPTIONS["grok"].catalog(GROK_RAW)
+    assert catalog["default_model"] == "grok-a" and catalog["complete"] is True
+    first, second = catalog["models"]
+    assert first["id"] == "grok-a" and first["name"] == "Grok A" and first["default"] is True
+    assert first["reasoning"] == {
+        "kind": "levels",
+        "default": "high",
+        "efforts": [
+            {"id": "xhigh", "description": "Extra"},
+            {"id": "high", "description": "More"},
+        ],
+    }
+    assert second["reasoning"] == {"kind": "none", "efforts": [], "default": None}
+    assert SUBSCRIPTIONS["grok"].catalog({"items": [], "current": "x"}) is None
+    unknown_default = SUBSCRIPTIONS["grok"].catalog({**GROK_RAW, "current": "not-listed"})
+    assert unknown_default["default_model"] is None, "a default that is not listed is dropped"
+
+
+def test_antigravity_catalog_is_only_what_the_cli_printed() -> None:
+    adapter = SUBSCRIPTIONS["antigravity"]
+    raw = {
+        "complete": True,
+        "efforts": "low|medium|high",
+        "lines": [
+            "Fetching available models...",
+            "Available models:",
+            "* model-pro-1 (default)",
+            "  - model-flash-2   Fast model",
+            "Some Sentence That Is Not A Slug",
+            "model-pro-1",
+        ],
+    }
+    catalog = adapter.catalog(raw)
+    assert [m["id"] for m in catalog["models"]] == ["model-pro-1", "model-flash-2"]
+    assert catalog["default_model"] == "model-pro-1" and catalog["effort_scope"] == "cli"
+    levels = [e["id"] for e in catalog["models"][1]["reasoning"]["efforts"]]
+    assert levels == ["low", "medium", "high"], "the CLI's own --effort levels, nothing added"
+    no_levels = adapter.catalog({**raw, "efforts": None})
+    assert no_levels["models"][0]["reasoning"]["kind"] == "none"
+    assert no_levels["effort_scope"] is None
+    assert adapter.catalog({"lines": ["Error: Please sign in to view available models."]}) is None
+    assert adapter.catalog({"lines": ["Gemini Pro", "Claude Sonnet"]}) is None, (
+        "names are not slugs"
+    )

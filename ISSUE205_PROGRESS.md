@@ -5,8 +5,8 @@ implementation (#200-#204). Nothing here has been merged or deployed.
 
 | PR | Branch | Scope | State |
 | --- | --- | --- | --- |
-| 1 | `feat/issue-205-provider-auth-core` | adapters, login methods, Setup VM supervisor, API, spec | open |
-| 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | not started |
+| 1 | `feat/issue-205-provider-auth-core` | adapters, login methods, Setup VM supervisor, API, spec | draft, https://github.com/soren-labs/sbx-agent/pull/206 |
+| 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | draft |
 | 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | not started |
 | 4 | `feat/issue-205-e2e-docs` (stacked on 3) | staging E2E evidence, docs-site, changelog | not started |
 
@@ -42,3 +42,19 @@ implementation (#200-#204). Nothing here has been merged or deployed.
   `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
   (the URL the official `install.sh` reads).
 - `AGY_CLI_DISABLE_AUTO_UPDATE` is set from the name found in the binary; it is not in the public docs.
+
+## PR 2 notes
+
+- Catalog sources: Grok from `grok agent stdio` `initialize` (nested path, generic in the
+  supervisor); Antigravity from the printed lines of `agy models` plus the `--effort` levels in
+  `agy --help`. The Antigravity parser accepts a line only when its first word is a lower-case
+  slug; if the real output names models differently the catalog is `unavailable` and Sessions run
+  the provider default. Check it against a real login and adjust `parse_catalog`.
+- `runtime/harnesses/antigravity.py` is new and subscription-only. The stream shape follows the
+  public headless docs (`event` discriminator, payload under the same key); no recorded fixture
+  from a real run exists yet. `tool_info` output field names are a guess (`output` / `result`).
+- Grok subscription Turns keep the existing `streaming-messages-json` normalizer; only the login
+  location, `-m` and `--effort` differ from the custom-API mode.
+- `antigravity` left the disabled Harness list: the archive is checksum-pinned, which was the gate.
+- `tests/unit/runtime/test_startup_receipts.py::test_service_receipt_mutation_cannot_confirm_orphan_stop[True-unlink]`
+  failed once in a full run and passed 4 of 4 reruns; the file is untouched by this work.

@@ -9,7 +9,6 @@ from runtime.harnesses.protocol import Capability, HarnessManifest
 
 _DISABLED = {
     "devin": ("static.devin.ai", "acp", "proprietary distribution; ACP resume not verified"),
-    "antigravity": ("host binary", "jsonl", "host-binary distribution not reproducible"),
 }
 
 

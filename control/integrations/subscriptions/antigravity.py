@@ -13,9 +13,61 @@ while signed out, so its words decide.
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from control.integrations.subscriptions.base import PROFILE_MOUNT, SubscriptionAdapter
 
 _WORK = "/tmp/sbx-setup/verify"
+# A model slug as ``--model`` takes it: lower-case, no spaces.
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9._:/-]{1,79}$")
+_NOISE = ("fetching", "error", "warning", "available models", "models:")
+
+
+def parse_catalog(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Model slugs from the lines ``agy models`` printed; a line that is not a slug is ignored.
+
+    ``agy`` has no machine-readable catalog. Its ``--effort`` levels belong to the CLI, not
+    to a model (the CLI resolves a level per model), so every model carries the same levels
+    and the catalog says so with ``effort_scope="cli"``. Nothing is added to what was printed.
+    """
+    levels = [
+        {"id": level, "description": None}
+        for level in dict.fromkeys(str(raw.get("efforts") or "").split("|"))
+        if re.fullmatch(r"[a-z]{2,12}", level)
+    ]
+    models: list[dict[str, Any]] = []
+    for line in raw.get("lines") or []:
+        if not isinstance(line, str) or line.lower().startswith(_NOISE):
+            continue
+        marked = line.startswith(("*", ">")) or "(default)" in line.lower()
+        tokens = line.lstrip("*>-•· \t").split()
+        slug = tokens[0].strip("`\"',") if tokens else ""
+        if not _SLUG.match(slug) or slug in [m["id"] for m in models]:
+            continue
+        models.append(
+            {
+                "id": slug,
+                "name": slug,
+                "description": None,
+                "default": marked,
+                "reasoning": {
+                    "kind": "levels" if levels else "none",
+                    "efforts": levels,
+                    "default": None,
+                },
+            }
+        )
+    if not models:
+        return None
+    defaults = [m["id"] for m in models if m["default"]]
+    return {
+        "models": models,
+        "default_model": defaults[0] if len(defaults) == 1 else None,
+        "complete": bool(raw.get("complete")),
+        "effort_scope": "cli" if levels else None,
+    }
+
 
 ADAPTER = SubscriptionAdapter(
     provider_id="antigravity",
@@ -33,7 +85,18 @@ ADAPTER = SubscriptionAdapter(
         "AGY_CLI_DISABLE_AUTO_UPDATE": "1",
         "AGY_CLI_HIDE_ACCOUNT_INFO": "1",
     },
+    catalog_source="agy models",
+    parse_catalog=parse_catalog,
     setup={
+        "catalog": {
+            "kind": "text",
+            "argv": ["agy", "models"],
+            # The effort levels the installed CLI accepts, from its own usage text.
+            "facts": {
+                "efforts": {"argv": ["agy", "--help"], "pattern": r"--effort\s[^\n]*\(([a-z|]+)\)"}
+            },
+            "timeout": 60,
+        },
         "ensure_dirs": [f"{PROFILE_MOUNT}/.gemini"],
         "login_argv": ["agy"],
         "pty": {

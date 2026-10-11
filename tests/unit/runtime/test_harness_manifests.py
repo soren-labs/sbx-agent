@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from protocol.capabilities import CAPABILITY_NAMES, HARNESS_CLI_PACKAGES, INFERENCE_PROTOCOLS
+from protocol.capabilities import (
+    CAPABILITY_NAMES,
+    HARNESS_CLI_ARCHIVES,
+    HARNESS_CLI_PACKAGES,
+    INFERENCE_PROTOCOLS,
+)
 from runtime.harnesses.opencode import OpenCodeHarness
 from runtime.harnesses.registry import manifest_data
 
@@ -25,12 +30,16 @@ def test_every_manifest_declares_all_capabilities_truthfully() -> None:
     tiers = {m["provider_id"]: m["support_tier"] for m in manifest_data()}
     live = ("opencode", "codex", "claude", "grok", "commandcode")
     assert all(tiers[p] == "supported" for p in live)
-    assert all(tiers[p] == "disabled" for p in ("devin", "antigravity"))
+    assert tiers["devin"] == "disabled"
+    # Subscription only: it runs on a Machine Slot login and accepts no custom API.
+    assert tiers["antigravity"] == "supported"
     by_id = {m["provider_id"]: m for m in manifest_data()}
     for provider in live:
         protocols = by_id[provider]["inference_protocols"]
         assert protocols and set(protocols) <= set(INFERENCE_PROTOCOLS), provider
         assert provider in HARNESS_CLI_PACKAGES, "every enabled Harness pins its official CLI"
+    assert by_id["antigravity"]["inference_protocols"] == []
+    assert "antigravity" in HARNESS_CLI_ARCHIVES, "pinned by checksum, not by npm version"
     assert by_id["codex"]["inference_protocols"] == ["openai_responses"]
     assert by_id["claude"]["inference_protocols"] == ["anthropic_messages"]
     assert by_id["grok"]["inference_protocols"] == ["openai_chat"]

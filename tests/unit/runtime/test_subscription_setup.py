@@ -205,6 +205,65 @@ def test_missing_catalog_is_reported_as_missing_not_guessed(run) -> None:
     assert final["phase"] == "succeeded" and final["catalog"] is None
 
 
+def test_catalog_can_sit_at_a_nested_path_of_an_earlier_answer(run, tmp_path) -> None:
+    server = tmp_path / "agent.py"
+    server.write_text(
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    r = json.loads(line)\n"
+        "    state = {'currentModelId': 'm-1', 'availableModels': [\n"
+        "        {'modelId': 'm-1', 'name': 'M1', 'extra': 'drop', '_meta': {'efforts': ['a']}}]}\n"
+        "    print(json.dumps({'id': r['id'], 'result': {'_meta': {'modelState': state}}}),\n"
+        "          flush=True)\n"
+    )
+    spec = {
+        "catalog": {
+            "argv": [sys.executable, str(server)],
+            "requests": [{"id": 1, "method": "initialize", "params": {}}],
+            "result_id": 1,
+            "items_path": ["_meta", "modelState", "availableModels"],
+            "value_paths": {"current": ["_meta", "modelState", "currentModelId"]},
+            "item_fields": ["modelId", "name", "_meta"],
+            "timeout": 10,
+        }
+    }
+    catalog = run("verify", logged_in=True, spec=spec)["final"]["catalog"]
+    assert catalog["current"] == "m-1"
+    assert catalog["items"] == [{"modelId": "m-1", "name": "M1", "_meta": {"efforts": ["a"]}}]
+
+
+def test_text_catalog_is_the_printed_lines_and_facts_from_the_cli_itself(run, tmp_path) -> None:
+    cli = tmp_path / "models.py"
+    cli.write_text(
+        "import sys\n"
+        "if sys.argv[1] == 'models':\n"
+        "    print('Fetching...\\n\\n  \\x1b[1mmodel-one\\x1b[0m\\n  model-two (default)')\n"
+        "elif sys.argv[1] == 'help':\n"
+        "    print('  --effort   Reasoning effort (low|high)')\n"
+        "else:\n"
+        "    sys.exit(2)\n"
+    )
+    base = [sys.executable, str(cli)]
+
+    def catalog(models: str, pattern: str = r"--effort\s[^\n]*\(([a-z|]+)\)"):
+        spec = {
+            "catalog": {
+                "kind": "text",
+                "argv": [*base, models],
+                "facts": {"efforts": {"argv": [*base, "help"], "pattern": pattern}},
+            }
+        }
+        return run("verify", logged_in=True, spec=spec)["final"]["catalog"]
+
+    assert catalog("models") == {
+        "lines": ["Fetching...", "model-one", "model-two (default)"],
+        "complete": True,
+        "efforts": "low|high",
+    }
+    assert "efforts" not in catalog("models", r"--nothing (\w+)"), "an absent fact stays absent"
+    assert catalog("broken") is None, "a failing models command is no catalog"
+
+
 # A full-screen sign-in like an official CLI's remote login: pick a method, show the URL as
 # a terminal hyperlink, read the authorization code from the terminal.
 FAKE_TUI = r"""

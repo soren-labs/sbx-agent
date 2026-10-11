@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from control.integrations.connectors.base import Observation
 from tests.support.api import INFERENCE_MODEL, ApiStack, User, inference
-from tests.support.slots import CODE, MODAL, URL, SetupCloud
+from tests.support.slots import AGY_CATALOG, CODE, GROK_CATALOG, MODAL, URL, SetupCloud
 
 
 @pytest.fixture
@@ -644,3 +644,93 @@ def test_custom_api_thinking_toggle_needs_a_measured_probe_and_a_verified_harnes
     unverified_harness = create(provider_id="grok", effort="none")
     assert unverified_harness.status_code == 422
     assert unverified_harness.json()["error"]["details"]["capability"] == "effort_settings"
+
+
+# -- Sessions on Grok Build and Antigravity Slots -----------------------------------------
+
+
+def _ready(stack: ApiStack, cloud: SetupCloud, user: User, provider: str, catalog: Any) -> dict:
+    cloud.catalog = catalog
+    return _login(stack, cloud, user, provider=provider)
+
+
+def test_grok_slot_runs_grok_sessions_with_each_models_own_efforts(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _ready(stack, cloud, user, "grok", GROK_CATALOG)
+    catalog = slot["capabilities"]["catalog"]
+    assert catalog["status"] == "ready" and catalog["source"] == "grok agent stdio initialize"
+    assert catalog["default_model"] == "grok-a"
+    assert [m["id"] for m in catalog["models"]] == ["grok-a", "grok-b"]
+
+    created = _session(
+        user, slot, harness={"provider_id": "grok", "model": "grok-a", "effort": "xhigh"}
+    )
+    assert created.status_code == 202, created.text
+    session = created.json()["session"]
+    assert session["harness"] == {"provider_id": "grok", "model": "grok-a", "effort": "xhigh"}
+    assert session["connections"]["inference"] is None, "no API key is attached"
+    stack.drain()
+    [allocation] = cloud.allocations
+    profile = allocation["profile"]
+    assert profile["volume_name"] == slot["volume"]["name"] and profile["mount"] == "/profile"
+    assert profile["provider_id"] == "grok" and profile["env"]["GROK_HOME"] == "/profile/.grok"
+
+    no_menu = _session(
+        user, slot, harness={"provider_id": "grok", "model": "grok-b", "effort": "high"}
+    )
+    assert no_menu.status_code == 422, "grok-b lists no efforts"
+    key = user.connect("inference_api", inference("inference-live-like-key-ABCDEFGHIJ0123"))
+    invented = _session(user, slot, harness={"provider_id": "grok", "model": "grok-9000"})
+    assert invented.json()["error"]["details"]["available"] == ["grok-a", "grok-b"]
+    wrong_harness = _session(user, slot)
+    assert wrong_harness.status_code == 422
+    assert wrong_harness.json()["error"]["details"]["expected"] == "grok"
+    with_key = _session(
+        user,
+        slot,
+        harness={"provider_id": "grok"},
+        connections={"inference": key["id"]},
+    )
+    assert with_key.status_code == 422, "a subscription Session never also takes an API key"
+
+
+def test_antigravity_slot_offers_the_printed_models_and_the_cli_effort_levels(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _ready(stack, cloud, user, "antigravity", AGY_CATALOG)
+    catalog = slot["capabilities"]["catalog"]
+    assert catalog["source"] == "agy models" and catalog["effort_scope"] == "cli"
+    assert [m["id"] for m in catalog["models"]] == ["agy-pro-1", "agy-flash-2"]
+    assert catalog["default_model"] == "agy-pro-1"
+
+    harness = {"provider_id": "antigravity", "model": "agy-flash-2", "effort": "medium"}
+    created = _session(user, slot, harness=harness)
+    assert created.status_code == 202, created.text
+    assert created.json()["session"]["harness"] == harness
+    assert _session(user, slot, harness={**harness, "effort": "max"}).status_code == 422
+    assert _session(user, slot, harness={**harness, "model": "gemini-made-up"}).status_code == 422
+
+
+def test_antigravity_without_a_readable_model_list_runs_the_provider_default_only(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _ready(stack, cloud, user, "antigravity", {"lines": ["Gemini Pro (preview)"]})
+    assert slot["status"] == "ready"
+    assert slot["capabilities"]["catalog"]["status"] == "unavailable"
+    assert slot["capabilities"]["catalog"]["models"] == []
+    default = _session(user, slot, harness={"provider_id": "antigravity"})
+    assert default.status_code == 202, default.text
+    guessed = _session(user, slot, harness={"provider_id": "antigravity", "model": "gemini-pro"})
+    assert guessed.status_code == 422
+    assert guessed.json()["error"]["code"] == "unsupported_capability"
+
+
+def test_antigravity_has_no_custom_api_mode(env) -> None:
+    stack, _ = env
+    user = _user(stack)
+    user.connect("inference_api", inference("inference-live-like-key-ABCDEFGHIJ0123"))
+    stack.drain()
+    refused = _session(user, None, harness={"provider_id": "antigravity"})
+    assert refused.status_code in (409, 422), refused.text
+    assert "sess" not in refused.text

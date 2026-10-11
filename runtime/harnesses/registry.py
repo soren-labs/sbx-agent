@@ -6,7 +6,8 @@ import os
 import subprocess
 from typing import Any
 
-from runtime.harnesses import claude, codex, commandcode, grok, opencode
+from runtime.harnesses import antigravity, claude, codex, commandcode, grok, opencode
+from runtime.harnesses.antigravity import AntigravityHarness
 from runtime.harnesses.claude import ClaudeHarness
 from runtime.harnesses.codex import CodexHarness
 from runtime.harnesses.commandcode import CommandCodeHarness
@@ -41,6 +42,7 @@ def installed(probe: bool = True) -> dict[str, Harness]:
         "claude": ClaudeHarness(version(claude)),
         "grok": GrokHarness(version(grok)),
         "commandcode": CommandCodeHarness(version(commandcode)),
+        "antigravity": AntigravityHarness(version(antigravity)),
     }
 
 
