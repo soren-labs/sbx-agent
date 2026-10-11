@@ -279,6 +279,8 @@ sys.stdout.write("\x1b[2J\x1b[H Open the URL below:\r\n \x1b]8;;" + url + "\x07"
 sys.stdout.flush()
 code = sys.stdin.readline().strip()
 if code == "REDACTED-good-code":
+    if (home / "slow_accept").exists():
+        time.sleep(2.0)  # the provider takes a moment to accept the code
     (home / "logged_in").write_text("1")
     sys.stdout.write("Signed in.\r\n")
 else:
@@ -314,7 +316,7 @@ def run_pty(run, tmp_path):
                     "steps": [{"expect": "Select login method", "send": "\r"}],
                     "prompt": "authorization code",
                     "input": "authorization_code",
-                    "accept_seconds": 1.5,
+                    "accept_seconds": 8,
                     **pty_extra,
                 },
                 **spec,
@@ -340,7 +342,7 @@ def test_terminal_sign_in_relays_the_url_and_types_the_submitted_code(run_pty) -
 
 
 def test_terminal_sign_in_reports_a_code_the_cli_did_not_accept(run_pty) -> None:
-    result = run_pty("REDACTED-wrong-code")
+    result = run_pty("REDACTED-wrong-code", pty_extra={"accept_seconds": 1.5})
     assert result["final"]["phase"] == "failed"
     assert result["final"]["error"] == "code_rejected"
     assert "REDACTED-wrong-code" not in json.dumps(result["seen"])
@@ -356,20 +358,32 @@ def test_terminal_sign_in_on_an_already_signed_in_profile_only_verifies(run_pty)
 def test_a_code_sent_twice_is_removed_not_typed(run_pty, tmp_path) -> None:
     import threading
 
+    (tmp_path / "slow_accept").write_text("1")
+    drained: list[bool] = []
+
     def resend() -> None:
+        # After the first code was taken (written, then consumed), a second one arrives
+        # while the CLI is still deciding. The supervisor must remove it without typing it.
         target = tmp_path / "work" / "login-input"
-        for _ in range(200):
+        for wanted in (True, False):
+            for _ in range(500):
+                if target.exists() is wanted:
+                    break
+                time.sleep(0.02)
+        target.write_text("REDACTED-second-code\n")
+        for _ in range(75):
             if not target.exists():
                 break
             time.sleep(0.02)
-        target.write_text("REDACTED-second-code\n")
+        drained.append(not target.exists())
 
     thread = threading.Thread(target=resend, daemon=True)
     thread.start()
-    result = run_pty("REDACTED-good-code")
+    result = run_pty("REDACTED-good-code", pty_extra={"accept_seconds": 20})
     thread.join(timeout=10)
-    assert result["final"]["phase"] == "succeeded"
-    assert not (result["work"] / "login-input").exists()
+    assert drained == [True], "removed while the login was still being decided"
+    assert result["final"]["phase"] == "succeeded", "the second code was not typed"
+    assert "REDACTED-second-code" not in json.dumps(result["seen"])
 
 
 def test_terminal_sign_in_never_types_malformed_input(run_pty) -> None:
