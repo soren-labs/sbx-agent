@@ -60,20 +60,22 @@ options:
 
 ===== sbx slots =====
 usage: sbx slots [-h]
-                 {list,providers,add,login,verify,wait,show,models,cancel-login,logout,rename,delete}
+                 {list,providers,add,login,verify,wait,code,show,models,cancel-login,logout,rename,delete}
                  ...
 
 Machine Slots: independent official subscription logins kept on private Modal
 Volumes. Exit codes: 0 ok, 1 API error, 2 slot not ready, 3 still pending.
 
 positional arguments:
-  {list,providers,add,login,verify,wait,show,models,cancel-login,logout,rename,delete}
+  {list,providers,add,login,verify,wait,code,show,models,cancel-login,logout,rename,delete}
     list                slots, counts and providers
     providers           subscription providers this deployment offers
     add                 create a slot and start its official login
     login               run the official login again
     verify              re-check the login and refresh the model catalog
     wait                wait until no login is pending
+    code                send the code the browser showed after sign-in
+                        (Antigravity)
     show                one slot
     models              model catalog and per-model reasoning efforts, with
                         their source

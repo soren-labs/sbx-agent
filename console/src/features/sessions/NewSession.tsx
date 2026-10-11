@@ -50,6 +50,8 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
   const formRef = useRef<HTMLFormElement>(null);
 
   const offered = selectable(harnesses.data?.items);
+  // A Harness without a custom-API mode runs on a machine only; it is not a choice for an API key.
+  const apiOffered = offered.filter((h) => (h.inference_protocols ?? []).length > 0);
   const apiHarness = harnessOverride ?? pickHarness(harnesses.data?.items, connections.data?.items);
   const slots = machines.data?.items ?? [];
   const hasApiKey = (connections.data?.items ?? []).some(
@@ -277,7 +279,7 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                 {t("composer.harness")}
                 <select id="new-harness" value={harness} disabled={slot !== null} onChange={(e) => chooseHarness(e.target.value)}>
                   {!offered.some((h) => h.provider_id === harness) && <option value={harness}>{harnessName(harness)}</option>}
-                  {offered.map((h) => (
+                  {apiOffered.map((h) => (
                     <option key={h.provider_id} value={h.provider_id}>
                       {harnessName(h.provider_id)}
                     </option>
@@ -442,8 +444,8 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
                 </>
               ) : null}
               {slot ? null : <h2>{t("composer.harness_label")}</h2>}
-              <div className="picker-options" hidden={slot !== null}>
-                {offered.map((h) => (
+              <div className="picker-options" data-testid="harness-options" hidden={slot !== null}>
+                {apiOffered.map((h) => (
                   <button
                     type="button"
                     className="picker-option"
@@ -490,6 +492,11 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
               {efforts.length ? (
                 <>
                   <h2>{t(thinkingToggle ? "composer.thinking" : "composer.effort")}</h2>
+                  {slot && catalog?.effort_scope === "cli" ? (
+                    <p className="faint small" data-testid="effort-scope">
+                      {t("composer.effort_cli_levels", { provider: slot.provider_name })}
+                    </p>
+                  ) : null}
                   <div className="picker-options effort-options" data-testid="effort-options">
                     <button
                       type="button"

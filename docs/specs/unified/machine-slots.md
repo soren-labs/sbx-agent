@@ -187,3 +187,19 @@ Execution:
 - After each terminal Turn and before the Worker VM is terminated the executor runs `sync /profile`
   so login refreshes are committed. A VM that died cannot be synced.
 - A Turn the provider rejects as unauthenticated sets the Slot to `needs_login`.
+
+## Clients
+
+All three clients use the routes above and branch on `login.method` / `login.input`; none of them
+keeps the pasted code after sending it.
+
+| Step | Console (`/machines`) | CLI | SDK |
+| --- | --- | --- | --- |
+| Add | "Add machine" menu listing the available providers with how each signs in | `sbx slots add --provider codex\|antigravity\|grok` | `client.slots.add(provider)` |
+| Device code (`codex`, `grok`) | URL button, the code with a copy button, expiry countdown | `--wait` / `sbx slots wait` print the URL and code on stderr | `wait(on_code=...)` |
+| Pasted code (`antigravity`) | URL button (only the host is printed), a field for the code and "Send code" | `sbx slots code SLOT [--code C]`, or the prompt of `--wait` on a terminal; without a terminal `wait` prints the URL and the `sbx slots code` hint | `submit_code(slot_id, code)`, `wait(on_input=...)` |
+| Run | New Session: Runs on, model and effort pickers from the Slot's catalog; a note when `effort_scope` is `cli` | `sbx sessions create --slot SLOT [--model M] [--effort E]`; the Harness defaults to the Slot's provider | `sessions.create(inference={"mode": "subscription", "machine_slot_id": ...})` |
+
+`sbx slots code` reads the code from `--code`, a hidden prompt on a terminal, or one line on stdin,
+and prints the Slot as JSON; the code is never echoed. In New Session a Harness without a custom-API
+mode (`antigravity`) is offered only through a machine.

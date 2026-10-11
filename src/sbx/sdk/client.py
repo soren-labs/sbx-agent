@@ -297,9 +297,10 @@ class Connections(_Namespace):
 class MachineSlots(_Namespace):
     """Subscription Machine Slots: one independent official login per Slot.
 
-    The login runs in the user's own Modal workspace. The API returns the provider's real
-    verification URL and a one-time code while the login waits for approval; it never
-    returns, and this client never handles, the login itself.
+    The login runs in the user's own Modal workspace. Some providers show a verification URL
+    and a code to confirm there (``user_code``). Others show a URL, and after sign-in the
+    browser displays a code that the user sends back with :meth:`submit_code`. This client
+    never handles the login itself.
     """
 
     def overview(self) -> dict[str, Any]:
@@ -367,6 +368,10 @@ class MachineSlots(_Namespace):
             "models": [],
         }
 
+    def submit_code(self, slot_id: str, code: str) -> dict[str, Any]:
+        """Send the code the browser showed after sign-in (``authorization_code``); never stored."""
+        return self.c.post(f"/api/machine-slots/{slot_id}/logins/current/code", {"code": code})
+
     def wait(
         self,
         slot_id: str,
@@ -374,16 +379,29 @@ class MachineSlots(_Namespace):
         deadline: float = 1200.0,
         poll: float = 2.0,
         on_code: Any = None,
+        on_input: Any = None,
     ) -> dict[str, Any]:
-        """Wait until no login is pending. ``on_code(login)`` fires once with URL and code."""
+        """Wait until no login is pending.
+
+        ``on_code(login)`` fires once when a device code is waiting for approval. ``on_input(login)``
+        fires once per login attempt when the browser's code is needed; a non-empty return value
+        is submitted with :meth:`submit_code`, and ``None`` keeps waiting.
+        """
         end = time.monotonic() + deadline
         announced = False
+        asked: set[str] = set()
         while True:
             slot = self.get(slot_id)
             login = slot.get("login") or {}
-            if on_code and not announced and login.get("state") == "awaiting_user":
-                on_code(login)
-                announced = True
+            if login.get("state") == "awaiting_user":
+                if on_code and not announced and login.get("user_code"):
+                    on_code(login)
+                    announced = True
+                if on_input and login.get("input") and login["attempt_id"] not in asked:
+                    asked.add(login["attempt_id"])
+                    code = on_input(login)
+                    if code:
+                        self.submit_code(slot_id, code)
             if slot["status"] != "login_pending":
                 return slot
             if time.monotonic() >= end:

@@ -17,7 +17,7 @@ CREDENTIAL_FIELDS = {
     "inference_api": ("api_key",),
 }
 INFERENCE_PROTOCOLS = ("openai_chat", "openai_responses", "anthropic_messages")
-HARNESSES = ("opencode", "codex", "claude", "grok", "commandcode")
+HARNESSES = ("opencode", "codex", "claude", "grok", "commandcode", "antigravity")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,7 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     slots.add_parser("list", help="slots, counts and providers")
     slots.add_parser("providers", help="subscription providers this deployment offers")
     sa = slots.add_parser("add", help="create a slot and start its official login")
-    sa.add_argument("--provider", default="codex")
+    sa.add_argument(
+        "--provider", default="codex", help="codex, antigravity or grok (see: sbx slots providers)"
+    )
     sa.add_argument("--label")
     sa.add_argument("--account-alias", help="your own note, e.g. which account this is")
     sa.add_argument("--volume", help="adopt an existing Modal Volume instead of logging in")
@@ -97,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     sw = slots.add_parser("wait", help="wait until no login is pending")
     sw.add_argument("slot_id")
     sw.add_argument("--timeout", type=float, default=1200.0)
+    scode = slots.add_parser(
+        "code", help="send the code the browser showed after sign-in (Antigravity)"
+    )
+    scode.add_argument("slot_id")
+    scode.add_argument("--code", help="the code (default: prompt, or one line on stdin)")
     for name, text in (
         ("show", "one slot"),
         ("models", "model catalog and per-model reasoning efforts, with their source"),
@@ -118,7 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sessions.add_parser("create")
     sc.add_argument("--project")
     sc.add_argument("--backend", default=None, choices=["modal", "local"])
-    sc.add_argument("--harness", default="opencode", choices=HARNESSES, help="official CLI")
+    sc.add_argument(
+        "--harness",
+        default=None,
+        choices=HARNESSES,
+        help="official CLI (default: opencode, or the slot's CLI with --slot)",
+    )
     sc.add_argument("--model", help="model id (default: the inference connection's model)")
     sc.add_argument("--slot", help="run on this Machine Slot instead of an inference API key")
     sc.add_argument("--effort", help="reasoning effort the chosen model supports")
@@ -229,9 +241,27 @@ def _announce_code(login: dict[str, Any]) -> None:
     )
 
 
+def _ask_login_code(login: dict[str, Any], slot_id: str) -> str | None:
+    """Authorization-code providers: prompt for the code the browser shows after sign-in."""
+    print(
+        f"Open {login['verification_url']} and sign in. The browser then shows a code.",
+        file=sys.stderr,
+        flush=True,
+    )
+    if sys.stdin.isatty():
+        return getpass.getpass("Paste the code shown in the browser: ").strip() or None
+    print(f"Send it with: sbx slots code {slot_id}", file=sys.stderr, flush=True)
+    return None
+
+
 def _slot_wait(client: SBXClient, slot_id: str, timeout: float) -> dict[str, Any]:
     try:
-        slot = client.slots.wait(slot_id, deadline=timeout, on_code=_announce_code)
+        slot = client.slots.wait(
+            slot_id,
+            deadline=timeout,
+            on_code=_announce_code,
+            on_input=lambda login: _ask_login_code(login, slot_id),
+        )
     except SBXError as exc:
         if exc.code != "timeout":
             raise
@@ -261,6 +291,17 @@ def _slots(args: argparse.Namespace, client: SBXClient) -> Any:
         return _slot_wait(client, slot["id"], args.timeout) if args.wait else slot
     if action == "wait":
         return _slot_wait(client, args.slot_id, args.timeout)
+    if action == "code":
+        if args.code is not None:
+            code = args.code
+        elif sys.stdin.isatty():
+            code = getpass.getpass("Code shown in the browser: ")
+        else:
+            code = sys.stdin.readline()
+        code = code.strip()
+        if not code:
+            raise SystemExit("no code was given")
+        return client.slots.submit_code(args.slot_id, code)
     if action == "rename":
         changes = {
             k: v
@@ -331,10 +372,11 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
                 body["project_id"] = args.project
             if args.backend:
                 body["executor"] = {"backend": args.backend}
+            harness = args.harness
+            if harness is None and args.slot:
+                harness = client.slots.get(args.slot)["provider"]
             body["harness"] = {
-                "provider_id": "codex"
-                if args.slot and args.harness == "opencode"
-                else args.harness,
+                "provider_id": harness or "opencode",
                 **({"model": args.model} if args.model else {}),
                 **({"effort": args.effort} if args.effort else {}),
             }

@@ -461,14 +461,22 @@ export interface SlotCatalog {
   models: SlotModel[];
   default_model: string | null;
   complete?: boolean;
+  /** "cli": the effort levels are the CLI's own, the same for every model. */
+  effort_scope?: "cli" | null;
 }
+/** device_code: confirm a shown code; authorization_code: send back the code the browser shows. */
+export type LoginMethod = "device_code" | "authorization_code";
 export interface SlotLogin {
   attempt_id: string;
   mode: "login" | "verify";
   state: "starting" | "awaiting_user" | "verifying" | "succeeded" | "failed" | "expired" | "cancelled";
+  /** How the provider's official login works; see SubscriptionProvider.login_method. */
+  method?: LoginMethod | null;
   verification_url: string | null;
   /** One-time code; present only while it still has to be entered. */
   user_code: string | null;
+  /** Set while the login waits for the code the browser displays after sign-in. */
+  input?: "authorization_code" | null;
   code_expires_at: string | null;
   error_code: string | null;
   started_at: string;
@@ -504,7 +512,7 @@ export interface SubscriptionProvider {
   provider_id: string;
   display_name: string;
   harness_provider_id: string;
-  login_method: string;
+  login_method: LoginMethod | string;
   verification_host: string;
   login_window_seconds: number;
   catalog_source: string | null;

@@ -140,6 +140,9 @@ export function createApiClient(options: HttpOptions = {}) {
       verify: (id: string, o?: Opts) => post<MachineSlot>(`/api/machine-slots/${enc(id)}/verifications`, undefined, o),
       cancelLogin: (id: string, o?: Opts) =>
         send<MachineSlot>("DELETE", `/api/machine-slots/${enc(id)}/logins/current`, undefined, o),
+      /** Sends the code the browser displayed after sign-in; the server never stores it. */
+      submitLoginCode: (id: string, code: string, o?: Opts) =>
+        post<MachineSlot>(`/api/machine-slots/${enc(id)}/logins/current/code`, { code }, o),
       logout: (id: string, o?: Opts) => post<MachineSlot>(`/api/machine-slots/${enc(id)}/logout`, undefined, o),
       remove: (id: string, confirm: string, o?: Opts) =>
         send<MachineSlot>("DELETE", `/api/machine-slots/${enc(id)}?confirm=${enc(confirm)}`, undefined, o),

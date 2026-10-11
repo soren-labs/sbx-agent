@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { MachineSlot, MachineSlotList, SlotStatus } from "../../api/types";
+import type { MachineSlot, MachineSlotList, SlotStatus, SubscriptionProvider } from "../../api/types";
 import { Icon, Spinner } from "../../components/icons";
 import { ErrorNotice, Loading, useAction, when } from "../../components/ui";
 import { useI18n } from "../../i18n";
@@ -27,6 +27,7 @@ const COLLAPSED_KEY = "sbx.machines.collapsed";
 const REASONS: Record<string, I18nKey> = {
   login_denied: "machines.reason.login_denied",
   login_failed: "machines.reason.login_failed",
+  code_rejected: "machines.reason.code_rejected",
   code_expired: "machines.reason.code_expired",
   login_window_elapsed: "machines.reason.code_expired",
   expired: "machines.reason.code_expired",
@@ -66,10 +67,58 @@ function StatusPill({ slot }: { slot: MachineSlot }) {
   );
 }
 
+function host(url: string | null): string {
+  try {
+    return new URL(url ?? "").host;
+  } catch {
+    return "";
+  }
+}
+
 function remaining(iso: string | null, now: number): string | null {
   if (!iso) return null;
   const left = Math.max(0, Math.floor((new Date(iso).getTime() - now) / 1000));
   return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+}
+
+/** Step 2 of a sign-in that hands back a code: paste what the browser showed, send it once. */
+function PasteCode({ slot, onChanged }: { slot: MachineSlot; onChanged: () => void }) {
+  const { t } = useI18n();
+  const api = useApi();
+  const [code, setCode] = useState("");
+  const send = useAction(async (key) => {
+    await api.slots.submitLoginCode(slot.id, code.trim(), { idempotencyKey: key });
+    // The code is used once; it is not kept in the page after it was sent.
+    setCode("");
+    onChanged();
+  });
+  return (
+    <form
+      className="mc-paste"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (code.trim()) void send.run();
+      }}
+    >
+      <input
+        className="mc-paste-input"
+        data-testid="login-code-input"
+        aria-label={t("machines.login.paste_label")}
+        placeholder={t("machines.login.paste_placeholder")}
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+      />
+      <button type="submit" className="button primary" disabled={send.pending || !code.trim()}>
+        {send.pending ? <Spinner /> : null}
+        {t("machines.login.paste_send")}
+      </button>
+      <ErrorNotice error={send.error} />
+    </form>
+  );
 }
 
 /** The official login, live: real URL and one-time code, then automatic verification. */
@@ -97,6 +146,7 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
     }
   };
   const left = remaining(login.code_expires_at, now);
+  const pasting = login.input === "authorization_code";
   return (
     <div className="mc-login" role="group" aria-label={t("machines.login.title")} data-login-state={login.state}>
       {login.state === "starting" ? (
@@ -118,30 +168,38 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
                 <Icon name="external" size={13} />
                 {t("machines.login.open")}
               </a>
-              <span className="mc-url">{login.verification_url}</span>
+              {/* A sign-in link with a long query is opened, not read: show where it goes. */}
+              <span className="mc-url">{pasting ? host(login.verification_url) : login.verification_url}</span>
             </li>
-            <li>
-              <span>{t("machines.login.step_code")}</span>
-              <span className="mc-code-row">
-                <code className="mc-code" data-testid="device-code" aria-label={t("machines.login.code")}>
-                  {login.user_code}
-                </code>
-                <button type="button" className="button" onClick={() => void copy()}>
-                  <Icon name={copied ? "check" : "copy"} size={13} />
-                  {copied ? t("machines.login.copied") : t("machines.login.copy")}
-                </button>
-              </span>
-            </li>
+            {pasting ? (
+              <li>
+                <span>{t("machines.login.step_paste")}</span>
+                <PasteCode slot={slot} onChanged={onChanged} />
+              </li>
+            ) : (
+              <li>
+                <span>{t("machines.login.step_code")}</span>
+                <span className="mc-code-row">
+                  <code className="mc-code" data-testid="device-code" aria-label={t("machines.login.code")}>
+                    {login.user_code}
+                  </code>
+                  <button type="button" className="button" onClick={() => void copy()}>
+                    <Icon name={copied ? "check" : "copy"} size={13} />
+                    {copied ? t("machines.login.copied") : t("machines.login.copy")}
+                  </button>
+                </span>
+              </li>
+            )}
           </ol>
           <p className="mc-login-wait" role="status">
-            <Spinner /> {t("machines.login.waiting")}
+            <Spinner /> {t(pasting ? "machines.login.waiting_paste" : "machines.login.waiting")}
             {left ? <span className="mc-expiry"> · {t("machines.login.expires", { time: left })}</span> : null}
           </p>
         </>
       ) : null}
       {login.state === "verifying" ? (
         <p className="mc-login-wait" role="status">
-          <Spinner /> {t("machines.login.verifying")}
+          <Spinner /> {t(login.method === "authorization_code" ? "machines.login.verifying_paste" : "machines.login.verifying")}
         </p>
       ) : null}
       <div className="mc-actions">
@@ -352,6 +410,85 @@ function matches(slot: MachineSlot, filter: Filter): boolean {
   return slot.status === filter;
 }
 
+/** One provider: a plain button. Several: a menu that says how each one signs in. */
+function AddMachine({
+  providers,
+  disabled,
+  onAdd,
+}: {
+  providers: SubscriptionProvider[];
+  disabled: boolean;
+  onAdd: (provider: string) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  if (providers.length <= 1) {
+    return (
+      <button
+        type="button"
+        className="button primary"
+        disabled={disabled || providers.length === 0}
+        onClick={() => onAdd(providers[0].provider_id)}
+      >
+        <Icon name="plus" size={13} />
+        {t("machines.add", { provider: providers[0]?.display_name ?? "Codex" })}
+      </button>
+    );
+  }
+  return (
+    <div className="mc-add" ref={root}>
+      <button
+        type="button"
+        className="button primary"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name="plus" size={13} />
+        {t("machines.add_any")}
+        <Icon name="down" size={12} />
+      </button>
+      {open ? (
+        <ul className="mc-add-menu" role="menu" aria-label={t("machines.add_choose")}>
+          {providers.map((p) => (
+            <li key={p.provider_id} role="none">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onAdd(p.provider_id);
+                }}
+              >
+                <strong>{p.display_name}</strong>
+                <small>
+                  {t(p.login_method === "authorization_code" ? "machines.add_hint_paste" : "machines.add_hint_code", {
+                    host: p.verification_host,
+                  })}
+                </small>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function MachinesPage() {
   const { t } = useI18n();
   const api = useApi();
@@ -417,9 +554,10 @@ export function MachinesPage() {
 
   const providers = data?.providers ?? [];
   const available = providers.filter((p) => p.available);
+  // A provider gets a group once it has a machine; a filter that matches none says so in place.
   const groups = providers
-    .map((p) => ({ provider: p, slots: items.filter((s) => s.provider === p.provider_id) }))
-    .filter((g) => g.slots.length > 0 || (data?.items ?? []).every((s) => s.provider !== g.provider.provider_id));
+    .filter((p) => (data?.items ?? []).some((s) => s.provider === p.provider_id))
+    .map((p) => ({ provider: p, slots: items.filter((s) => s.provider === p.provider_id) }));
   const total = data?.summary.total ?? 0;
 
   return (
@@ -427,15 +565,7 @@ export function MachinesPage() {
       <div className="page-eyebrow">{t("machines.eyebrow")}</div>
       <div className="mc-title">
         <h1>{t("machines.title")}</h1>
-        <button
-          type="button"
-          className="button primary"
-          disabled={add.pending || available.length === 0 || !w}
-          onClick={() => void add.run(available[0].provider_id)}
-        >
-          <Icon name="plus" size={13} />
-          {t("machines.add", { provider: available[0]?.display_name ?? "Codex" })}
-        </button>
+        <AddMachine providers={available} disabled={add.pending || !w} onAdd={(id) => void add.run(id)} />
       </div>
       <p className="hs-lead">{t("machines.lead")}</p>
 

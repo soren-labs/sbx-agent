@@ -7,6 +7,7 @@ const NAMES: Record<string, string> = {
   claude: "Claude Code",
   grok: "Grok Build",
   commandcode: "Command Code",
+  antigravity: "Antigravity",
 };
 
 export const PROTOCOLS: InferenceProtocol[] = ["openai_chat", "openai_responses", "anthropic_messages"];
