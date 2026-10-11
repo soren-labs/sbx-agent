@@ -483,6 +483,7 @@ export const zhCN: Partial<Record<I18nKey, string>> = {
   "machines.login.paste_label": "登录后显示的代码",
   "machines.login.paste_placeholder": "粘贴代码",
   "machines.login.paste_send": "发送代码",
+  "machines.login.paste_sent": "代码已发送，正在等待登录完成…",
   "machines.login.code": "一次性验证码",
   "machines.login.copy": "复制验证码",
   "machines.login.copied": "已复制",

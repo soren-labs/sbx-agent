@@ -88,12 +88,22 @@ function PasteCode({ slot, onChanged }: { slot: MachineSlot; onChanged: () => vo
   const { t } = useI18n();
   const api = useApi();
   const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
   const send = useAction(async (key) => {
     await api.slots.submitLoginCode(slot.id, code.trim(), { idempotencyKey: key });
     // The code is used once; it is not kept in the page after it was sent.
     setCode("");
+    setSent(true);
     onChanged();
   });
+  // Until the next refresh shows the check, the field stays away: a second send is never typed.
+  if (sent) {
+    return (
+      <p className="mc-login-wait" role="status">
+        <Spinner /> {t("machines.login.paste_sent")}
+      </p>
+    );
+  }
   return (
     <form
       className="mc-paste"

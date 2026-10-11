@@ -19,7 +19,7 @@ from sbx.cli import main as cli_main
 from sbx.sdk import SBXClient, SBXError
 
 ZEN = "byok-sdk-key-000000000001"
-PASTED = "4/0AbCdEf-authorization_code_from_browser"
+PASTED = "REDACTED-authorization-code"
 AGY_URL = "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y"
 
 

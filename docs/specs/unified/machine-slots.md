@@ -186,7 +186,8 @@ Execution:
   (`inference_protocols` is empty), so it cannot be combined with an `inference_api` Connection.
   Measured on a signed-in `agy` 1.3.3: `--model <variant> --effort <other level>` and `--effort` on a
   model without effort both fail with `invalid model selection` before any model call. The server
-  therefore rejects any `effort` on an Antigravity Slot (`validation_failed`, `supported: []`) and
+  therefore rejects any `effort` on an Antigravity Slot (`validation_failed`: `harness.effort` with
+  `supported: []` next to a model, `harness.model` without one because the CLI marks no default) and
   the Harness never passes `--effort`.
 - After each terminal Turn and before the Worker VM is terminated the executor runs `sync /profile`
   so login refreshes are committed. A VM that died cannot be synced.

@@ -643,6 +643,7 @@ export const en = {
   "machines.login.paste_label": "Code shown after sign-in",
   "machines.login.paste_placeholder": "Paste the code",
   "machines.login.paste_send": "Send code",
+  "machines.login.paste_sent": "Code sent. Waiting for the sign-in to finish…",
   "machines.login.code": "One-time code",
   "machines.login.copy": "Copy code",
   "machines.login.copied": "Copied",

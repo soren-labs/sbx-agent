@@ -459,7 +459,7 @@ const GROK_CATALOG: SlotCatalog = {
   ],
 };
 const GOOGLE_URL = `https://accounts.google.com/o/oauth2/auth?client_id=x&state=y&scope=${"s".repeat(400)}`;
-const PASTED = "4/0AbCdEf-authorization_code_from_browser";
+const PASTED = "REDACTED-authorization-code";
 
 describe("Three providers", () => {
   const login = (state: string, extra: object = {}) =>
@@ -568,6 +568,8 @@ describe("Three providers", () => {
     await user.click(send);
     await waitFor(() => expect(find("POST", "/api/machine-slots/slot_agy/logins/current/code")).toHaveLength(2));
     expect(find("POST", "/api/machine-slots/slot_agy/logins/current/code")[1].body).toEqual({ code: PASTED });
+    // The field goes away at once, so the same code cannot be sent twice.
+    await waitFor(() => expect(screen.queryByTestId("login-code-input")).not.toBeInTheDocument());
     expect(await screen.findByText(/Code sent\. Verifying with a real request/, undefined, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByTestId("login-code-input")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(PASTED);

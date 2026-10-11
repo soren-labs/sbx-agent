@@ -103,7 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
         "code", help="send the code the browser showed after sign-in (Antigravity)"
     )
     scode.add_argument("slot_id")
-    scode.add_argument("--code", help="the code (default: prompt, or one line on stdin)")
+    scode.add_argument(
+        "--code",
+        help="the code; prefer the prompt or stdin, which keep it out of your shell history",
+    )
     for name, text in (
         ("show", "one slot"),
         ("models", "model catalog and per-model reasoning efforts, with their source"),
