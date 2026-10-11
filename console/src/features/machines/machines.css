@@ -79,6 +79,24 @@
   font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: 0.12em; padding: 6px 12px;
   border: 1px dashed var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--fg); user-select: all;
 }
+.mc-paste { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mc-paste-input {
+  flex: 1 1 220px; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--fg); font-family: var(--mono); font-size: 13px;
+}
+.mc-paste .notice { flex-basis: 100%; }
+.mc-add { position: relative; }
+.mc-add > .button { display: inline-flex; align-items: center; gap: 6px; }
+.mc-add-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; margin: 0; padding: 4px; list-style: none; width: min(300px, calc(100vw - 32px));
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+.mc-add-menu button {
+  display: grid; gap: 2px; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--fg);
+  font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.mc-add-menu button:hover, .mc-add-menu button:focus-visible { background: var(--bg-hover, rgb(127 127 127 / 0.12)); }
+.mc-add-menu small { color: var(--fg-faint); font-size: 11.5px; overflow-wrap: anywhere; }
 .mc-login-wait { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--fg-dim); font-size: 13px; flex-wrap: wrap; }
 .mc-expiry { color: var(--fg-faint); }
 .mc-empty { display: grid; justify-items: center; gap: 6px; margin-top: 18px; padding: 28px 16px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--fg-dim); text-align: center; }
@@ -89,6 +107,9 @@
   .mc-page .hs-lead { font-size: 13px; line-height: 1.45; }
   .mc-page h1 { font-size: 24px; }
   .mc-title .button { width: 100%; justify-content: center; }
+  .mc-add { width: 100%; }
+  .mc-add-menu { left: 0; right: 0; width: auto; }
+  .mc-paste .button { flex: 1 1 100%; justify-content: center; }
   .mc-toolbar select { flex: 1 1 calc(50% - 4px); }
   .mc-row-head { grid-template-columns: 24px minmax(0, 1fr) auto 12px; gap: 6px; padding: 6px 8px; min-height: 44px; }
   .mc-icon { width: 24px; height: 24px; }

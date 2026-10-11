@@ -70,11 +70,35 @@ function slot(over: Partial<MachineSlot> & { id: string }): MachineSlot {
   };
 }
 
-function listing(items: MachineSlot[]): MachineSlotList {
+const THREE_PROVIDERS: MachineSlotList["providers"] = [
+  ...PROVIDERS,
+  {
+    provider_id: "antigravity",
+    display_name: "Antigravity",
+    harness_provider_id: "antigravity",
+    login_method: "authorization_code",
+    verification_host: "accounts.google.com",
+    login_window_seconds: 900,
+    catalog_source: "agy models",
+    available: true,
+  },
+  {
+    provider_id: "grok",
+    display_name: "Grok Build",
+    harness_provider_id: "grok",
+    login_method: "device_code",
+    verification_host: "accounts.x.ai",
+    login_window_seconds: 900,
+    catalog_source: "grok agent stdio initialize",
+    available: true,
+  },
+];
+
+function listing(items: MachineSlot[], providers = PROVIDERS): MachineSlotList {
   const count = (s: string[]) => items.filter((i) => s.includes(i.status)).length;
   return {
     items,
-    providers: PROVIDERS,
+    providers,
     summary: {
       total: items.length,
       running: count(["running"]),
@@ -407,5 +431,280 @@ describe("New Session on a machine", () => {
       harness: { provider_id: "codex" },
       inference: { mode: "subscription", machine_slot_id: "slot_bare" },
     });
+  });
+});
+
+/** Placeholder ids shaped like each CLI's answer. */
+const AGY_CATALOG: SlotCatalog = {
+  status: "ready",
+  source: "agy models",
+  observed_at: "2026-10-11T09:00:00+00:00",
+  cli_version: "1.3.3",
+  default_model: null,
+  // The CLI lists one slug per effort variant; there is no separate effort.
+  models: [
+    ["agy-pro-1-high", "Agy Pro 1 (High)"],
+    ["agy-pro-1-low", "Agy Pro 1 (Low)"],
+  ].map(([id, name]) => ({ id, name, description: null, default: false, reasoning: { kind: "none" as const, default: null, efforts: [] } })),
+};
+const GROK_CATALOG: SlotCatalog = {
+  status: "ready",
+  source: "grok agent stdio initialize",
+  observed_at: "2026-10-11T09:00:00+00:00",
+  cli_version: "grok 1.0.50",
+  default_model: "grok-a",
+  models: [
+    { id: "grok-a", name: "Grok A", description: null, default: true, reasoning: { kind: "levels", default: "high", efforts: [{ id: "xhigh", description: "Extra High" }, { id: "high", description: "High" }] } },
+    { id: "grok-b", name: "Grok B", description: null, default: false, reasoning: { kind: "none", default: null, efforts: [] } },
+  ],
+};
+const GOOGLE_URL = `https://accounts.google.com/o/oauth2/auth?client_id=x&state=y&scope=${"s".repeat(400)}`;
+const PASTED = "REDACTED-authorization-code";
+
+describe("Three providers", () => {
+  const login = (state: string, extra: object = {}) =>
+    ({
+      attempt_id: "a1",
+      mode: "login",
+      state,
+      method: "authorization_code",
+      verification_url: null,
+      user_code: null,
+      input: null,
+      code_expires_at: null,
+      error_code: null,
+      started_at: "2026-10-11T09:00:00+00:00",
+      finished_at: null,
+      ...extra,
+    }) as MachineSlot["login"];
+  const agy = (over: Partial<MachineSlot>) =>
+    slot({ id: "slot_agy", label: "Antigravity 1", provider: "antigravity", provider_name: "Antigravity", capabilities: {}, ...over });
+
+  it("groups machines by provider and lets you pick the provider to add", async () => {
+    const user = userEvent.setup();
+    const items = [
+      slot({ id: "c1", label: "Codex 1" }),
+      slot({ id: "g1", label: "Grok Build 1", provider: "grok", provider_name: "Grok Build", capabilities: { catalog: GROK_CATALOG } }),
+      slot({ id: "g2", label: "Grok Build 2", provider: "grok", provider_name: "Grok Build", status: "needs_login", state: "needs_login", state_reason: "code_rejected", capabilities: {} }),
+    ];
+    const { fetch, find } = mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/machine-slots", { json: listing(items, THREE_PROVIDERS) }],
+      ["POST", "/api/workspaces/w1/machine-slots", { status: 201, json: agy({ status: "login_pending", state: "login_pending", login: login("starting") }) }],
+    ]);
+    await renderApp(<MachinesPage />, fetch);
+
+    expect(await screen.findByRole("button", { name: /Codex.*1 machine/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Grok Build.*2 machines/ })).toBeInTheDocument();
+    // A provider without a machine has no empty group.
+    expect(screen.queryByRole("region", { name: "Antigravity" })).not.toBeInTheDocument();
+
+    // A filter that matches nothing in a group says so instead of hiding the group.
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "attention");
+    expect(screen.getAllByTestId("machine-row")).toHaveLength(1);
+    expect(within(screen.getByRole("region", { name: "Codex" })).getByText(/No machine matches/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "all");
+
+    const add = screen.getByRole("button", { name: "Add machine" });
+    expect(add).toHaveAttribute("aria-expanded", "false");
+    await user.click(add);
+    const menu = within(screen.getByRole("menu", { name: "Choose a provider" }));
+    expect(menu.getAllByRole("menuitem").map((b) => b.querySelector("strong")!.textContent)).toEqual(["Codex", "Antigravity", "Grok Build"]);
+    expect(menu.getByRole("menuitem", { name: /Antigravity/ })).toHaveTextContent("Sign in at accounts.google.com, then paste the code it shows");
+    expect(menu.getByRole("menuitem", { name: /Grok Build/ })).toHaveTextContent("Sign in at accounts.x.ai and confirm a one-time code");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    await user.click(add);
+    await user.click(screen.getByRole("menuitem", { name: /Antigravity/ }));
+    expect(find("POST", "/api/workspaces/w1/machine-slots")[0].body).toEqual({ provider: "antigravity" });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("signs in to Antigravity by pasting the code the browser shows, and never keeps it on the page", async () => {
+    const user = userEvent.setup();
+    const pending = (l: MachineSlot["login"]) => agy({ status: "login_pending", state: "login_pending", verified_at: null, login: l });
+    const phases = [
+      listing([pending(login("awaiting_user", { verification_url: GOOGLE_URL, input: "authorization_code", code_expires_at: new Date(Date.now() + 600_000).toISOString() }))], THREE_PROVIDERS),
+      listing([pending(login("verifying"))], THREE_PROVIDERS),
+      listing([agy({ capabilities: { catalog: AGY_CATALOG, cli_version: "1.3.3" }, login: login("succeeded", { finished_at: "2026-10-11T09:05:00+00:00" }) })], THREE_PROVIDERS),
+    ];
+    let phase = 0;
+    let reject = true;
+    const { fetch, find } = mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/machine-slots", () => ({ json: phases[phase] })],
+      [
+        "POST",
+        "/api/machine-slots/slot_agy/logins/current/code",
+        () =>
+          reject
+            ? { status: 422, json: { error: { code: "validation_failed", category: "validation", message: "paste the code shown in the browser after signing in", retryable: false, details: { field: "code" }, request_id: "r1" } } }
+            : { status: 202, json: phases[1].items[0] },
+      ],
+    ]);
+    await renderApp(<MachinesPage />, fetch);
+
+    const open = await screen.findByRole("link", { name: "Open sign-in page" });
+    expect(open).toHaveAttribute("href", GOOGLE_URL);
+    // The long sign-in link is opened, not printed; only where it goes is shown.
+    expect(screen.getByText("https://accounts.google.com/o/oauth2/auth")).toBeInTheDocument();
+    expect(screen.queryByText(GOOGLE_URL)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("device-code")).not.toBeInTheDocument();
+    expect(screen.getByText("Waiting for the code from the sign-in page.")).toBeInTheDocument();
+
+    const input = screen.getByRole("textbox", { name: "Code shown after sign-in" });
+    const send = screen.getByRole("button", { name: "Send code" });
+    expect(send).toBeDisabled();
+    await user.type(input, "short");
+    await user.click(send);
+    expect(await screen.findByText("paste the code shown in the browser after signing in")).toBeInTheDocument();
+    expect(input).toHaveValue("short"); // a refused code stays so it can be corrected
+
+    reject = false;
+    phase = 1;
+    await user.clear(input);
+    await user.type(input, `  ${PASTED} `);
+    await user.click(send);
+    await waitFor(() => expect(find("POST", "/api/machine-slots/slot_agy/logins/current/code")).toHaveLength(2));
+    expect(find("POST", "/api/machine-slots/slot_agy/logins/current/code")[1].body).toEqual({ code: PASTED });
+    // The field goes away at once, so the same code cannot be sent twice.
+    await waitFor(() => expect(screen.queryByTestId("login-code-input")).not.toBeInTheDocument());
+    expect(await screen.findByText(/Code sent\. Verifying with a real request/, undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByTestId("login-code-input")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(PASTED);
+
+    phase = 2;
+    await waitFor(() => expect(screen.getByTestId("machine-row").dataset.status).toBe("ready"), { timeout: 5000 });
+    expect(screen.getByText("2 models, reported by agy models")).toBeInTheDocument();
+  }, 20000);
+
+  it("explains a code the provider did not accept", async () => {
+    const user = userEvent.setup();
+    const rejected = agy({ status: "needs_login", state: "needs_login", state_reason: "code_rejected", login: login("failed", { error_code: "code_rejected" }) });
+    const { fetch } = mockFetch([...identityRoutes, ["GET", "/api/workspaces/w1/machine-slots", { json: listing([rejected], THREE_PROVIDERS) }]]);
+    await renderApp(<MachinesPage />, fetch);
+    await user.click(within(await screen.findByTestId("machine-row")).getByRole("button"));
+    expect(screen.getByText("The provider did not accept that code. Log in again to get a new sign-in link.")).toBeInTheDocument();
+  });
+
+  it("shows the paste-code sign-in in Chinese", async () => {
+    localStorage.setItem("sbx.console.locale", "zh-CN");
+    const waiting = agy({ status: "login_pending", state: "login_pending", login: login("awaiting_user", { verification_url: GOOGLE_URL, input: "authorization_code" }) });
+    const { fetch } = mockFetch([...identityRoutes, ["GET", "/api/workspaces/w1/machine-slots", { json: listing([waiting], THREE_PROVIDERS) }]]);
+    await renderApp(<MachinesPage />, fetch);
+    expect(await screen.findByRole("textbox", { name: "登录后显示的代码" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送代码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "添加云电脑" })).toBeInTheDocument();
+  });
+});
+
+describe("A sign-in link that carries the one-time code", () => {
+  it("opens the provider's own link but never prints the code outside the masked field", async () => {
+    const waiting = slot({
+      id: "slot_g",
+      label: "Grok Build 1",
+      provider: "grok",
+      provider_name: "Grok Build",
+      status: "login_pending",
+      state: "login_pending",
+      capabilities: {},
+      login: {
+        attempt_id: "a1",
+        mode: "login",
+        state: "awaiting_user",
+        method: "device_code",
+        verification_url: "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+        user_code: "ABCD-1234",
+        input: null,
+        code_expires_at: null,
+        error_code: null,
+        started_at: "2026-10-11T09:00:00+00:00",
+        finished_at: null,
+      },
+    });
+    const { fetch } = mockFetch([...identityRoutes, ["GET", "/api/workspaces/w1/machine-slots", { json: listing([waiting], THREE_PROVIDERS) }]]);
+    await renderApp(<MachinesPage />, fetch);
+    const code = await screen.findByTestId("device-code");
+    expect(code).toHaveTextContent("ABCD-1234");
+    expect(screen.getByRole("link", { name: "Open sign-in page" })).toHaveAttribute("href", "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234");
+    expect(screen.getByText("https://accounts.x.ai/oauth2/device")).toBeInTheDocument();
+    // The code is on the page exactly once, in the element captures blur.
+    const elsewhere = document.body.textContent!.replace(code.textContent!, "");
+    expect(elsewhere).not.toContain("ABCD-1234");
+  });
+});
+
+describe("New Session on a Grok Build or Antigravity machine", () => {
+  const GROK = slot({ id: "slot_g", label: "Grok Build 1", provider: "grok", provider_name: "Grok Build", capabilities: { catalog: GROK_CATALOG } });
+  const AGY = slot({ id: "slot_y", label: "Antigravity 1", provider: "antigravity", provider_name: "Antigravity", capabilities: { catalog: AGY_CATALOG } });
+  const routes = () =>
+    mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/connections", { json: { items: [connection({ kind: "modal", id: "c_modal" }), DEEPSEEK] } }],
+      ["GET", "/api/harnesses", { json: { items: [...HARNESSES, { provider_id: "grok", support_tier: "supported", inference_protocols: ["openai_chat"], capabilities: {} }, { provider_id: "antigravity", support_tier: "supported", inference_protocols: [], capabilities: {} }] } }],
+      ["GET", "/api/executor-backends", { json: { items: [{ kind: "modal" }, { kind: "local" }] } }],
+      ["GET", "/api/workspaces/w1/projects", { json: { items: [] } }],
+      ["GET", "/api/models", (call) => ({ json: models(call.query.get("provider_id") ?? "opencode") })],
+      ["GET", "/api/workspaces/w1/machine-slots", { json: listing([slot({ id: "slot_a", label: "A1" }), GROK, AGY], THREE_PROVIDERS) }],
+      ["POST", "/api/workspaces/w1/sessions", { status: 202, json: { session_id: "s1", session: session(), event_watermark: 0 } }],
+    ]);
+  const efforts = () => within(screen.getByTestId("effort-options")).getAllByRole("button").map((b) => b.textContent);
+
+  it("runs the Grok harness with the chosen model's own effort menu", async () => {
+    const user = userEvent.setup();
+    const { fetch, find } = routes();
+    await renderApp(<NewSession />, fetch);
+    await user.click(await screen.findByTestId("agent-model-chip"));
+    await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /Grok Build 1/ }));
+    expect(screen.getByTestId("model-source")).toHaveTextContent("Models reported by grok agent stdio initialize");
+    expect(efforts()).toEqual(["Model default", "xhigh", "high"]);
+    expect(screen.queryByTestId("effort-scope")).not.toBeInTheDocument();
+    await user.click(within(screen.getByTestId("effort-options")).getByRole("button", { name: "xhigh" }));
+    await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "Grok B" }));
+    expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument(); // Grok B lists no efforts
+    await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "Grok A" }));
+    await user.click(within(screen.getByTestId("effort-options")).getByRole("button", { name: "xhigh" }));
+    await user.type(screen.getByRole("textbox", { name: /task/i }), "fix it");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(find("POST", "/api/workspaces/w1/sessions")).toHaveLength(1));
+    expect(find("POST", "/api/workspaces/w1/sessions")[0].body).toMatchObject({
+      harness: { provider_id: "grok", model: "grok-a", effort: "xhigh" },
+      inference: { mode: "subscription", machine_slot_id: "slot_g" },
+      executor: { backend: "modal" },
+    });
+  });
+
+  it("runs the Antigravity harness with a model variant and offers no separate effort", async () => {
+    const user = userEvent.setup();
+    const { fetch, find } = routes();
+    await renderApp(<NewSession />, fetch);
+    await user.click(await screen.findByTestId("agent-model-chip"));
+    await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /Antigravity 1/ }));
+    expect(screen.getByTestId("model-source")).toHaveTextContent("Models reported by agy models");
+    // The CLI's display names carry the effort; the picker shows them as printed.
+    expect(within(screen.getByTestId("model-options")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Agy Pro 1 (High)", "Agy Pro 1 (Low)"]);
+    expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument();
+    await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "Agy Pro 1 (Low)" }));
+    expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: /task/i }), "fix it");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(find("POST", "/api/workspaces/w1/sessions")).toHaveLength(1));
+    const body = find("POST", "/api/workspaces/w1/sessions")[0].body as { connections?: unknown; harness: { effort?: string } };
+    expect(body).toMatchObject({
+      harness: { provider_id: "antigravity", model: "agy-pro-1-low" },
+      inference: { mode: "subscription", machine_slot_id: "slot_y" },
+    });
+    expect(body.harness.effort).toBeUndefined(); // an effort next to a variant is refused by the CLI
+    expect(body.connections).toBeUndefined(); // never an API key next to a subscription
+  });
+
+  it("does not offer Antigravity as a harness for a custom API key", async () => {
+    const user = userEvent.setup();
+    const { fetch } = routes();
+    await renderApp(<NewSession />, fetch);
+    await user.click(await screen.findByTestId("agent-model-chip"));
+    const names = within(screen.getByTestId("harness-options")).getAllByRole("button").map((b) => b.textContent);
+    expect(names).toEqual(["OpenCode", "Codex", "Grok Build"]);
   });
 });

@@ -6,8 +6,8 @@ implementation (#200-#204). Nothing here has been merged or deployed.
 | PR | Branch | Scope | State |
 | --- | --- | --- | --- |
 | 1 | `feat/issue-205-provider-auth-core` | adapters, login methods, Setup VM supervisor, API, spec | draft, https://github.com/soren-labs/sbx-agent/pull/206 |
-| 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | draft |
-| 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | not started |
+| 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | draft, https://github.com/soren-labs/sbx-agent/pull/207 |
+| 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | draft |
 | 4 | `feat/issue-205-e2e-docs` (stacked on 3) | staging E2E evidence, docs-site, changelog | not started |
 
 ## Verified on the real CLIs (2026-10-11, isolated HOME, no credentials)
@@ -58,3 +58,17 @@ implementation (#200-#204). Nothing here has been merged or deployed.
 - `antigravity` left the disabled Harness list: the archive is checksum-pinned, which was the gate.
 - `tests/unit/runtime/test_startup_receipts.py::test_service_receipt_mutation_cannot_confirm_orphan_stop[True-unlink]`
   failed once in a full run and passed 4 of 4 reruns; the file is untouched by this work.
+
+## PR 3 notes
+
+- Console: "Add machine" becomes a provider menu once more than one provider is available; a
+  provider gets a group only when it has a machine. The Antigravity login shows the sign-in host
+  (not the 700-character URL), a paste field (`data-testid="login-code-input"`) and "Send code".
+  Blur that field before any capture, like `device-code`.
+- New Session offers a Harness with no custom-API mode only through a machine, and shows a note
+  when the catalog's `effort_scope` is `cli`.
+- SDK `client.slots.submit_code`, `wait(on_input=...)`; CLI `sbx slots code`. `sbx sessions create
+  --slot` now takes the Harness from the Slot's provider (it was hardcoded to codex). The SDK/CLI
+  glue and its tests were written by a Haiku subagent and reviewed.
+- Browser checks (desktop, 320 px, zh-CN) are still to be done on staging; only Vitest covers the
+  new UI so far.

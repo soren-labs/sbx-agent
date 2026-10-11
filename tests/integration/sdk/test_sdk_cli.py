@@ -6,17 +6,21 @@ import io
 import json
 import os
 import stat
+import sys
 import threading
+import time
 
 import httpx
 import pytest
 from tests.support.api import ApiStack
-from tests.support.slots import CODE, MODAL, URL, SetupCloud
+from tests.support.slots import AGY_CATALOG, CODE, GROK_CATALOG, MODAL, URL, SetupCloud
 
 from sbx.cli import main as cli_main
 from sbx.sdk import SBXClient, SBXError
 
 ZEN = "byok-sdk-key-000000000001"
+PASTED = "REDACTED-authorization-code"
+AGY_URL = "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y"
 
 
 @pytest.fixture
@@ -214,6 +218,45 @@ def _approve(
     return thread
 
 
+def _sign_in_as_user(
+    cloud: SetupCloud, slot_id: str, url: str, *, approve: bool = True, hold: float = 0.2
+) -> threading.Thread:
+    """Play the user of an authorization-code login: open the URL, paste the shown code, finish."""
+
+    def play() -> None:
+        slot = {"id": slot_id}
+        for _ in range(400):
+            try:
+                cloud.vm_for(slot)
+                break
+            except StopIteration:
+                time.sleep(0.02)
+        cloud.show_url(slot, url)
+        if not approve:
+            return
+        for _ in range(400):
+            if cloud.vm_for(slot).get("inputs"):
+                break
+            time.sleep(0.02)
+        state = cloud.vm_for(slot)["state"]
+        state.update(phase="verifying")
+        state.pop("input", None)
+        time.sleep(hold)
+        cloud.finish(slot, "succeeded")
+
+    thread = threading.Thread(target=play, daemon=True)
+    thread.start()
+    return thread
+
+
+def _wait_for_input(client: SBXClient, slot_id: str) -> None:
+    for _ in range(400):
+        if client.slots.get(slot_id)["login"].get("input") == "authorization_code":
+            return
+        time.sleep(0.02)
+    raise AssertionError("the login never asked for the browser code")
+
+
 def test_sdk_slot_login_models_and_subscription_session(slot_env) -> None:
     stack, client, cloud = slot_env
     assert client.slots.providers()[0]["provider_id"] == "codex"
@@ -249,6 +292,53 @@ def test_sdk_slot_login_models_and_subscription_session(slot_env) -> None:
         client.slots.delete(slot["id"], confirm="Laptop")
     assert wrong.value.code == "validation_failed"
     assert client.slots.delete(slot["id"], confirm="Desk")["status"] == "deleting"
+
+
+def test_sdk_antigravity_authorization_code_login(slot_env) -> None:
+    stack, client, cloud = slot_env
+    cloud.catalog = AGY_CATALOG
+    slot = client.slots.add("antigravity", label="AGY")
+    assert slot["status"] == "login_pending"
+    code_calls: list[dict] = []
+    asked: list[dict] = []
+    player = _sign_in_as_user(cloud, slot["id"], AGY_URL)
+    ready = client.slots.wait(
+        slot["id"],
+        deadline=30,
+        poll=0.05,
+        on_code=code_calls.append,
+        on_input=lambda login: asked.append(login) or PASTED,
+    )
+    player.join(timeout=10)
+    assert ready["status"] == "ready"
+    assert code_calls == [], "a login without a device code never announces one"
+    assert len(asked) == 1 and asked[0]["verification_url"] == AGY_URL
+    assert asked[0]["user_code"] is None
+    assert [text for _, text in cloud.vm_for(slot)["inputs"]] == [PASTED]
+    assert client.slots.models(slot["id"])["source"] == "agy models"
+
+
+def test_sdk_submit_code_rejections(slot_env) -> None:
+    stack, client, cloud = slot_env
+    codex = client.slots.add("codex", label="Device")
+    with pytest.raises(SBXError) as not_waiting:
+        client.slots.submit_code(codex["id"], PASTED)
+    assert not_waiting.value.code == "invalid_transition"
+
+    cloud.catalog = AGY_CATALOG
+    agy = client.slots.add("antigravity", label="AGY malformed")
+    player = _sign_in_as_user(cloud, agy["id"], AGY_URL, approve=False)
+    _wait_for_input(client, agy["id"])
+    with pytest.raises(SBXError) as malformed:
+        client.slots.submit_code(agy["id"], "x")
+    assert malformed.value.code == "validation_failed"
+    assert client.slots.get(agy["id"])["login"]["input"] == "authorization_code"
+    assert client.slots.submit_code(agy["id"], PASTED)["login"]["state"] in (
+        "awaiting_user",
+        "verifying",
+    )
+    player.join(timeout=10)
+    assert [text for _, text in cloud.vm_for(agy)["inputs"]] == [PASTED]
 
 
 def test_cli_slots_json_exit_codes_and_no_code_after_use(slot_env, capsys) -> None:
@@ -300,3 +390,73 @@ def test_cli_slots_json_exit_codes_and_no_code_after_use(slot_env, capsys) -> No
     assert cli_main(["slots", "wait", slow["id"], "--timeout", "0.3"], client=client) == 3
     assert json.loads(capsys.readouterr().out)["status"] == "login_pending"
     assert cli_main(["slots", "cancel-login", slow["id"]], client=client) == 0
+
+
+def test_cli_slots_providers_lists_all_three(slot_env, capsys) -> None:
+    stack, client, cloud = slot_env
+    assert cli_main(["slots", "providers"], client=client) == 0
+    providers = json.loads(capsys.readouterr().out)
+    assert [(p["provider_id"], p["login_method"]) for p in providers] == [
+        ("codex", "device_code"),
+        ("antigravity", "authorization_code"),
+        ("grok", "device_code"),
+    ]
+
+
+def test_cli_antigravity_code_from_flag_and_stdin(slot_env, capsys, monkeypatch) -> None:
+    stack, client, cloud = slot_env
+    cloud.catalog = AGY_CATALOG
+    for use_flag in (True, False):
+        assert cli_main(["slots", "add", "--provider", "antigravity"], client=client) == 0
+        slot = json.loads(capsys.readouterr().out)
+        player = _sign_in_as_user(cloud, slot["id"], AGY_URL)
+        _wait_for_input(client, slot["id"])
+        if use_flag:
+            assert cli_main(["slots", "code", slot["id"], "--code", PASTED], client=client) == 0
+        else:
+            monkeypatch.setattr(sys, "stdin", io.StringIO(PASTED + "\n"))
+            assert cli_main(["slots", "code", slot["id"]], client=client) == 0
+        sent = capsys.readouterr()
+        assert PASTED not in sent.out and PASTED not in sent.err
+        assert cli_main(["slots", "wait", slot["id"], "--timeout", "30"], client=client) == 0
+        player.join(timeout=10)
+        done = capsys.readouterr()
+        assert json.loads(done.out)["status"] == "ready"
+        assert PASTED not in done.out + done.err
+        assert [text for _, text in cloud.vm_for(slot)["inputs"]] == [PASTED]
+
+
+def test_cli_antigravity_wait_without_tty_prints_url_and_hint(
+    slot_env, capsys, monkeypatch
+) -> None:
+    stack, client, cloud = slot_env
+    cloud.catalog = AGY_CATALOG
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert cli_main(["slots", "add", "--provider", "antigravity"], client=client) == 0
+    slot = json.loads(capsys.readouterr().out)
+    player = _sign_in_as_user(cloud, slot["id"], AGY_URL, approve=False)
+    assert cli_main(["slots", "wait", slot["id"], "--timeout", "1"], client=client) == 3
+    player.join(timeout=10)
+    err = capsys.readouterr().err
+    assert AGY_URL in err and "sbx slots code" in err and slot["id"] in err
+    assert "None" not in err
+    assert cli_main(["slots", "cancel-login", slot["id"]], client=client) == 0
+    capsys.readouterr()
+
+
+def test_cli_grok_device_code_and_harness_follows_slot(slot_env, capsys) -> None:
+    stack, client, cloud = slot_env
+    cloud.catalog = GROK_CATALOG
+    assert cli_main(["slots", "add", "--provider", "grok", "--label", "Grok"], client=client) == 0
+    slot = json.loads(capsys.readouterr().out)
+    player = _approve(cloud, slot["id"], hold=3.0)
+    assert cli_main(["slots", "wait", slot["id"], "--timeout", "30"], client=client) == 0
+    player.join(timeout=10)
+    captured = capsys.readouterr()
+    assert URL in captured.err and CODE in captured.err
+    assert CODE not in captured.out
+
+    args = ["sessions", "create", "--slot", slot["id"], "--model", "grok-a", "--effort", "xhigh"]
+    assert cli_main(args, client=client) == 0
+    session = json.loads(capsys.readouterr().out)["session"]
+    assert session["harness"] == {"provider_id": "grok", "model": "grok-a", "effort": "xhigh"}
