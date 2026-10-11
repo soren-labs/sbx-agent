@@ -90,6 +90,7 @@ def test_official_login_flows_to_ready_without_a_second_step(env) -> None:
     assert ready["verified_at"] and cloud.running == [], "the Setup VM is destroyed"
     stored = stack.db.read(lambda u: u.find("slot_login_attempts", {"slot_id": slot["id"]}))
     assert [a["user_code"] for a in stored] == [None], "the used code is not retained"
+    assert [a["verification_url"] for a in stored] == [None], "nor is the link it was shown with"
     listing = user.get(f"/api/workspaces/{user.workspace_id}/machine-slots").json()
     assert listing["summary"] == {
         "total": 1,
@@ -304,7 +305,7 @@ def test_slots_need_a_verified_modal_connection_and_a_known_provider(env) -> Non
     assert missing.status_code == 409 and missing.json()["error"]["code"] == "connection_required"
     unknown = user.post(path, {"provider": "claude"})
     assert unknown.status_code == 422
-    assert unknown.json()["error"]["details"]["supported"] == ["codex"]
+    assert unknown.json()["error"]["details"]["supported"] == ["antigravity", "codex", "grok"]
 
 
 def test_slots_are_unavailable_without_the_modal_executor(db, tmp_path) -> None:
@@ -317,6 +318,141 @@ def test_slots_are_unavailable_without_the_modal_executor(db, tmp_path) -> None:
         assert providers[0]["available"] is False
     finally:
         stack.shutdown()
+
+
+# -- Providers ------------------------------------------------------------------------------
+
+GOOGLE_URL = "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y&" + "s" * 700
+PASTED = "REDACTED-authorization-code"
+
+
+def test_three_providers_each_with_its_official_login_method(env) -> None:
+    stack, _ = env
+    user = _user(stack)
+    providers = {
+        p["provider_id"]: p for p in user.get("/api/subscription-providers").json()["items"]
+    }
+    assert list(providers) == ["codex", "antigravity", "grok"]
+    assert providers["codex"]["login_method"] == "device_code"
+    assert providers["grok"]["login_method"] == "device_code"
+    assert providers["grok"]["verification_host"] == "accounts.x.ai"
+    assert providers["antigravity"]["login_method"] == "authorization_code"
+    assert providers["antigravity"]["verification_host"] == "accounts.google.com"
+    assert all(p["available"] for p in providers.values())
+
+
+def test_grok_device_login_uses_its_own_private_home(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slot = _add(user, provider="grok")
+    assert slot["label"] == "Grok Build 1" and slot["provider_name"] == "Grok Build"
+    assert slot["login"]["method"] == "device_code"
+    stack.drain()
+    spec = cloud.vm_for(slot)["spec"]
+    assert spec["setup"]["login_argv"] == ["grok", "login", "--device-auth"]
+    assert spec["env"]["GROK_HOME"] == "/profile/.grok" and spec["env"]["HOME"] == "/profile"
+    assert not any("key" in k.lower() or "token" in k.lower() for k in spec["env"])
+    cloud.show_code(slot)
+    stack.drain()
+    waiting = _get(user, slot)["login"]
+    assert waiting["user_code"] == CODE and waiting["input"] is None
+    refused = user.post(f"/api/machine-slots/{slot['id']}/logins/current/code", {"code": PASTED})
+    assert refused.status_code == 409, "a device login has no code to send back"
+    cloud.finish(slot, "succeeded")
+    stack.drain()
+    assert _get(user, slot)["status"] == "ready" and cloud.running == []
+
+
+def test_antigravity_login_relays_the_pasted_code_without_keeping_it(env) -> None:
+    stack, cloud = env
+    user, other = _user(stack), _user(stack)
+    slot = _add(user, provider="antigravity")
+    path = f"/api/machine-slots/{slot['id']}/logins/current/code"
+    assert slot["login"]["method"] == "authorization_code" and slot["login"]["input"] is None
+    early = user.post(path, {"code": PASTED})
+    assert early.status_code == 409, "nothing is waiting for a code yet"
+    stack.drain()
+    spec = cloud.vm_for(slot)["spec"]
+    assert spec["setup"]["login_argv"] == ["agy"] and spec["setup"]["pty"]["input"]
+    assert spec["env"]["HOME"] == "/profile"
+
+    cloud.show_url(slot, GOOGLE_URL)
+    stack.drain()
+    waiting = _get(user, slot)["login"]
+    assert waiting["state"] == "awaiting_user" and waiting["input"] == "authorization_code"
+    assert waiting["verification_url"] == GOOGLE_URL, "the long sign-in URL is not truncated"
+    assert waiting["user_code"] is None
+
+    assert other.post(path, {"code": PASTED}).status_code == 404
+    for bad in ({}, {"code": ""}, {"code": "short"}, {"code": "has space in it"}, {"code": 7}):
+        assert user.post(path, bad).status_code == 422
+    assert "inputs" not in cloud.vm_for(slot)
+
+    cloud.reachable = False
+    unreachable = user.post(path, {"code": PASTED})
+    assert unreachable.json()["error"]["code"] == "executor_unavailable"
+    assert unreachable.json()["error"]["retryable"] is True
+    cloud.reachable = True
+    sent = user.post(path, {"code": f"  {PASTED}\n"})
+    assert sent.status_code == 202, sent.text
+    assert cloud.vm_for(slot)["inputs"] == [("/tmp/sbx-setup/login-input", PASTED)]
+    assert PASTED not in sent.text
+
+    # The code exists only inside the Setup VM: no table row, audit entry or Job carries it.
+    def dump(uow: Any) -> str:
+        tables = (
+            "slot_login_attempts",
+            "machine_slots",
+            "jobs",
+            "audit_records",
+            "command_deduplication",
+        )
+        return repr([uow.find(table, {}) for table in tables])
+
+    assert PASTED not in stack.db.read(dump)
+
+    cloud.vm_for(slot)["state"].update(phase="verifying")
+    cloud.vm_for(slot)["state"].pop("input")
+    stack.drain()
+    checking = _get(user, slot)["login"]
+    assert checking["state"] == "verifying" and checking["input"] is None
+    assert user.post(path, {"code": PASTED}).status_code == 409
+
+    cloud.finish(slot, "failed", "code_rejected")
+    stack.drain()
+    rejected = _get(user, slot)
+    assert rejected["status"] == "needs_login" and rejected["state_reason"] == "code_rejected"
+    assert cloud.running == []
+
+    again = user.post(f"/api/machine-slots/{slot['id']}/logins")
+    assert again.status_code == 202
+    stack.drain()
+    cloud.show_url(slot, GOOGLE_URL)
+    stack.drain()
+    assert user.post(path, {"code": PASTED}).status_code == 202
+    cloud.finish(slot, "succeeded")
+    stack.drain()
+    ready = _get(user, slot)
+    assert ready["status"] == "ready" and ready["login"]["verification_url"] is None
+
+
+def test_providers_and_accounts_never_share_a_volume_or_a_home(env) -> None:
+    stack, cloud = env
+    user = _user(stack)
+    slots = [
+        _add(user, provider=p) for p in ("codex", "antigravity", "grok", "grok", "antigravity")
+    ]
+    stack.drain()
+    volumes = [slot["volume"]["name"] for slot in slots]
+    assert len(set(volumes)) == 5
+    assert [cloud.vm_for(slot)["spec"]["volume_name"] for slot in slots] == volumes
+    assert [slot["label"] for slot in slots] == [
+        "Codex 1",
+        "Antigravity 1",
+        "Grok Build 1",
+        "Grok Build 2",
+        "Antigravity 2",
+    ]
 
 
 # -- Sessions on a Slot ---------------------------------------------------------------------

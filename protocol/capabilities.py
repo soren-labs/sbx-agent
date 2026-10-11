@@ -55,6 +55,21 @@ HARNESS_CLI_PACKAGES: dict[str, tuple[str, str]] = {
     "commandcode": ("command-code", "1.79.2"),
 }
 
+# Official CLIs published as release archives rather than npm packages:
+# provider -> (command, archive member, version, archive URL, archive SHA-512). The URL and
+# digest are the vendor's own release manifest entry for linux x86_64.
+HARNESS_CLI_ARCHIVES: dict[str, tuple[str, str, str, str, str]] = {
+    "antigravity": (
+        "agy",
+        "antigravity",
+        "1.3.3",
+        "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+        "1.3.3-5524738307653632/linux-x64/cli_linux_x64.tar.gz",
+        "abe3ddf5cf30d3adaa586acf505221aa19702f5ca71af3c8b1f9b1a5976bd8e5"
+        "c151c41ea33b39c41675d25843462a3e8c382c054f580e9d7e1688919d3b5110",
+    ),
+}
+
 # Custom-API reasoning control verified end to end with the official CLI: Harness ->
 # wire protocols on which the single value ``none`` (thinking off) reaches the endpoint.
 # A model still needs its Connection's probe to show the control takes effect.

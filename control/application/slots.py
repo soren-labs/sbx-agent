@@ -2,8 +2,10 @@
 
 A Slot is a durable row plus one private Volume in the owner's Modal workspace. Logging
 in runs the provider's official CLI in a temporary Setup VM; the control plane only
-relays the verification URL and the one-time user code, then observes the outcome. The
-login itself never leaves the Volume: nothing here reads, stores or returns credentials.
+relays the verification URL and the one-time user code, then observes the outcome. For a
+provider whose CLI asks for the code the browser shows, it passes that code straight into
+the Setup VM without storing or logging it. The login itself never leaves the Volume:
+nothing here reads, stores or returns credentials.
 
 The Slot's ``holder`` is the single VM allowed to mount its Volume (a Setup VM now, a
 Session's Worker later), so a login and an execution can never share a writable profile.
@@ -26,7 +28,10 @@ LIVE_ATTEMPT_STATES = ("starting", "awaiting_user", "verifying")
 SETUP_STATE_PATH = "/tmp/sbx-setup/state.json"
 # The Setup VM outlives the login window only long enough to be observed and stopped.
 SETUP_VM_MARGIN_SECONDS = 300
+SETUP_INPUT_PATH = "/tmp/sbx-setup/login-input"
 _VOLUME_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+# Shape of a pasted authorization code (the supervisor applies the same check).
+_LOGIN_CODE = re.compile(r"^[A-Za-z0-9._~/+=-]{8,512}$")
 _NEVER_STARTED = "setup_vm_lost"
 
 
@@ -99,6 +104,8 @@ class MachineSlots:
         else:
             status = slot["state"]
         adapter = self.adapters.get(slot["provider"])
+        method = adapter.login_method if adapter else None
+        awaiting = attempt is not None and attempt["state"] == "awaiting_user"
         return {
             "id": slot["id"],
             "workspace_id": slot["workspace_id"],
@@ -124,9 +131,14 @@ class MachineSlots:
                 "attempt_id": attempt["id"],
                 "mode": attempt["mode"],
                 "state": attempt["state"],
+                "method": method,
                 "verification_url": attempt["verification_url"] if live else None,
                 # The one-time code is shown only while it still has to be entered.
-                "user_code": attempt["user_code"] if attempt["state"] == "awaiting_user" else None,
+                "user_code": attempt["user_code"] if awaiting else None,
+                # What the user has to send back (``POST .../logins/current/code``), if anything.
+                "input": "authorization_code"
+                if awaiting and attempt["mode"] == "login" and method == "authorization_code"
+                else None,
                 "code_expires_at": _iso(attempt["code_expires_at"]) if live else None,
                 "error_code": attempt["error_code"],
                 "started_at": _iso(attempt["created_at"]),
@@ -325,6 +337,58 @@ class MachineSlots:
             self._wake(uow, slot, attempt)
             self._audit(uow, principal.user_id, "machine_slot.login_cancel", slot)
             return self.view(uow, slot)
+
+        return self.tx.run(fn)
+
+    def submit_login_code(
+        self, principal: Principal, slot_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Pass the code the browser displayed into the waiting official CLI.
+
+        The code goes from this request straight into the Setup VM: it is not written to
+        the database, the audit log, a Job or the response.
+        """
+        self._require_backend()
+        code = body.get("code")
+        code = code.strip() if isinstance(code, str) else ""
+        if not _LOGIN_CODE.match(code):
+            raise DomainError(
+                "validation_failed",
+                "paste the code shown in the browser after signing in",
+                details={"field": "code"},
+            )
+
+        def waiting(uow: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+            slot = self._owned(uow, principal, slot_id)
+            attempt = (
+                uow.get("slot_login_attempts", slot["current_login_attempt_id"])
+                if slot["current_login_attempt_id"]
+                else None
+            )
+            if (
+                attempt is None
+                or attempt["state"] != "awaiting_user"
+                or attempt["mode"] != "login"
+                or attempt["handle"] is None
+                or attempt["cancel_requested"]
+                or self.adapters[slot["provider"]].login_method != "authorization_code"
+            ):
+                raise DomainError("invalid_transition", "this login is not waiting for a code")
+            return slot, attempt
+
+        slot, attempt = self.tx.read(waiting)
+        compute = self.compute(slot["compute_connection_id"])
+        if not self.backend.setup_input(attempt["handle"], compute, SETUP_INPUT_PATH, code):
+            raise DomainError(
+                "executor_unavailable",
+                "the login machine could not be reached; try again",
+                retryable=True,
+            )
+
+        def fn(uow: Any) -> dict[str, Any]:
+            current = self._owned(uow, principal, slot_id)
+            self._audit(uow, principal.user_id, "machine_slot.login_code", current)
+            return self.view(uow, current)
 
         return self.tx.run(fn)
 
@@ -719,8 +783,9 @@ class MachineSlots:
         if phase == "awaiting_user" and attempt["state"] == "starting":
             progress = {
                 "state": "awaiting_user",
-                "verification_url": str(state.get("verification_url") or "")[:500],
-                "user_code": str(state.get("user_code") or "")[:40],
+                "verification_url": str(state.get("verification_url") or "")[:2000],
+                # A sign-in that waits for a pasted code shows no device code.
+                "user_code": str(state.get("user_code") or "")[:40] or None,
                 "code_expires_at": _timestamp(state.get("code_expires_at")),
             }
         elif phase == "verifying" and attempt["state"] != "verifying":
@@ -769,6 +834,8 @@ class MachineSlots:
                 {
                     "state": outcome,
                     "user_code": None,
+                    # A provider may put the one-time code in its link: neither outlives the attempt.
+                    "verification_url": None,
                     "error_code": (error or None) and str(error)[:120],
                     "finished_at": now,
                     "updated_at": now,

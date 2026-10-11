@@ -19,13 +19,14 @@ never treated as absence.
 from __future__ import annotations
 
 import json
+import shlex
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
-from protocol.capabilities import HARNESS_CLI_PACKAGES
+from protocol.capabilities import HARNESS_CLI_ARCHIVES, HARNESS_CLI_PACKAGES
 
 from control.domain.digests import sha256_hex
 from control.domain.errors import DomainError
@@ -58,11 +59,14 @@ class ModalExecutor:
         *,
         sdk: Any = None,
         cli_packages: dict[str, tuple[str, str]] | None = None,
+        cli_archives: dict[str, tuple[str, str, str, str, str]] | None = None,
         sandbox_timeout: int = 3600 * 6,
     ) -> None:
         self._sdk = sdk
         # Official CLI npm distributions baked into the executor image (pinned versions).
         self.cli_packages = dict(cli_packages or HARNESS_CLI_PACKAGES)
+        # Official CLIs shipped as checksum-pinned release archives (one binary each).
+        self.cli_archives = dict(HARNESS_CLI_ARCHIVES if cli_archives is None else cli_archives)
         self.sandbox_timeout = sandbox_timeout
         self._images: dict[tuple[str, str], Any] = {}
         self._image_lock = threading.Lock()
@@ -73,6 +77,10 @@ class ModalExecutor:
 
     def recipe_digest(self) -> str:
         parts = [f"{name}@{version}" for name, version in sorted(self.cli_packages.values())]
+        parts.extend(
+            f"{name}@{version}:{digest}"
+            for name, _, version, _, digest in sorted(self.cli_archives.values())
+        )
         parts.append(str(RUNTIME_PORT))
         for pkg in (
             "runtime/daemon",
@@ -113,10 +121,26 @@ class ModalExecutor:
                 + " ".join(f"{name}@{version}" for name, version in self.cli_packages.values()),
                 "opencode --version && codex --version && claude --version"
                 " && grok --version && cmd --version",
+                *self._archive_commands(),
                 "git config --system user.name sbx && git config --system user.email sbx@localhost",
             )
             .add_local_python_source("runtime", "protocol", copy=True)
         )
+
+    def _archive_commands(self) -> list[str]:
+        """Install each archive CLI: download, verify the pinned SHA-512, place the binary."""
+        commands = []
+        for values in self.cli_archives.values():
+            binary, member, version, url, digest = (shlex.quote(value) for value in values)
+            commands.append(
+                f"curl -fsSL -o /tmp/{binary}.tgz {url}"
+                f" && echo {digest}'  '/tmp/{binary}.tgz | sha512sum -c -"
+                f" && tar -xzf /tmp/{binary}.tgz -C /tmp {member}"
+                f" && install -m 0755 /tmp/{member} /usr/local/bin/{binary}"
+                f" && rm -f /tmp/{binary}.tgz /tmp/{member}"
+                f" && {binary} --version | grep -F {version}"
+            )
+        return commands
 
     def image(self, client: Any, app: Any, connection_key: str) -> Any:
         """Built image for the owner workspace; a cache lookup once the recipe was built."""
@@ -388,6 +412,26 @@ class ModalExecutor:
         except ValueError:
             state = None
         return {"status": "running", "state": state if isinstance(state, dict) else None}
+
+    def setup_input(
+        self, handle: dict[str, Any], compute: dict[str, Any] | None, path: str, text: str
+    ) -> bool:
+        """Hand the supervisor one line the user submitted (never an argv or a log)."""
+        try:
+            sandbox = self._sandbox(handle, compute)
+            if sandbox.poll() is not None:
+                return False
+            # Written through stdin and renamed, so the supervisor never reads a partial file.
+            process = sandbox.exec(
+                "sh", "-c", 'umask 077; cat > "$1.tmp" && mv "$1.tmp" "$1"', "sh", path, timeout=20
+            )
+            process.stdin.write(text.encode())
+            process.stdin.write_eof()
+            process.stdin.drain()
+            process.wait()
+            return process.returncode == 0
+        except Exception:
+            return False
 
     def volume_delete(self, compute: dict[str, Any] | None, volume_name: str) -> bool:
         """Delete a Slot's private Volume (and with it the login); missing is success."""

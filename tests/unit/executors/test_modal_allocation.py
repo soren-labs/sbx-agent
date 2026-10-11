@@ -32,6 +32,7 @@ class Cloud:
         self.builds = 0
         self.volume_calls: list[tuple[str, str, dict[str, Any]]] = []
         self.terminated: list[str] = []
+        self.execs: list[tuple[str, ...]] = []
         self.fail_list = False
         self.fail_create_before = False
         self.lose_create_response = False
@@ -54,6 +55,20 @@ class FakeSandbox:
         self.files: dict[str, str] = {}
 
     def exec(self, *argv: str, timeout: int | None = None) -> Any:
+        if argv[0] == "sh":
+            # ``setup_input``: the text arrives on stdin, never on the command line.
+            self.cloud.execs.append(argv)
+            written: list[bytes] = []
+            path = argv[-1]
+
+            def close() -> None:
+                self.files[path] = b"".join(written).decode()
+
+            return SimpleNamespace(
+                stdin=SimpleNamespace(write=written.append, write_eof=close, drain=lambda: None),
+                wait=lambda: None,
+                returncode=0,
+            )
         content = self.files.get(argv[-1])
         return SimpleNamespace(
             stdout=SimpleNamespace(read=lambda: content or ""),
@@ -321,6 +336,28 @@ def test_setup_observe_reads_only_the_state_file_and_reports_liveness(env) -> No
     assert (
         executor.setup_observe({"sandbox_id": "sb-gone"}, COMPUTE, path)["status"] == "terminated"
     )
+
+
+def test_setup_input_reaches_the_vm_through_stdin_only(env) -> None:
+    cloud, executor = env
+    handle = executor.setup_start(setup_spec(), "op_setup")
+    path = "/tmp/sbx-setup/login-input"
+    assert executor.setup_input(handle, COMPUTE, path, "REDACTED-pasted-code") is True
+    assert cloud.sandboxes[0].files[path] == "REDACTED-pasted-code"
+    assert "REDACTED-pasted-code" not in repr(cloud.execs), "never part of a command line"
+    cloud.sandboxes[0].alive = False
+    assert executor.setup_input(handle, COMPUTE, path, "REDACTED-pasted-code") is False
+    assert executor.setup_input({"sandbox_id": "sb-gone"}, COMPUTE, path, "x") is False
+
+
+def test_image_installs_archive_clis_only_after_their_pinned_checksum(env) -> None:
+    _, executor = env
+    [command] = executor._archive_commands()
+    assert "sha512sum -c -" in command and command.index("sha512sum") < command.index("install ")
+    assert "/usr/local/bin/agy" in command and "agy --version | grep -F 1.3.3" in command
+    pinned = executor.recipe_digest()
+    executor.cli_archives["antigravity"] = ("agy", "antigravity", "9.9.9", "https://x/y", "00")
+    assert executor.recipe_digest() != pinned, "a new pin rebuilds the image"
 
 
 def test_volume_delete_tolerates_a_missing_volume(env) -> None:

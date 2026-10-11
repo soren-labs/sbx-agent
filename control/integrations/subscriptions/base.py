@@ -20,8 +20,11 @@ class SubscriptionAdapter:
     display_name: str
     # The Harness that executes Turns for this subscription.
     harness_provider_id: str
+    # ``device_code``: the CLI shows a URL and a code the user confirms in the browser.
+    # ``authorization_code``: the CLI shows a URL and the user submits the code the browser
+    # displays afterwards.
     login_method: str
-    # Official page where the user approves the device code (shown before the CLI reports it).
+    # Official page where the user approves the login (shown before the CLI reports it).
     verification_host: str
     profile_env: dict[str, str] = field(default_factory=dict)
     setup: dict[str, Any] = field(default_factory=dict)

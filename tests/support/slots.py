@@ -55,6 +55,7 @@ class SetupCloud:
         self.allocations: list[dict[str, Any]] = []
         self.synced: list[tuple[str, str]] = []
         self.max_mounts = 0
+        self.reachable = True
 
     def setup_start(self, spec: dict[str, Any], operation_id: str) -> dict[str, Any]:
         assert set(spec["compute"]) >= {"token_id", "token_secret"}
@@ -88,6 +89,13 @@ class SetupCloud:
         if not vm["alive"]:
             return {"status": "terminated", "state": None}
         return {"status": "running", "state": dict(vm["state"])}
+
+    def setup_input(self, handle: dict[str, Any], compute: Any, path: str, text: str) -> bool:
+        vm = self.vms[handle["sandbox_id"]]
+        if not vm["alive"] or not self.reachable:
+            return False
+        vm.setdefault("inputs", []).append((path, text))
+        return True
 
     def terminate(self, handle: dict[str, Any], operation_id: str, compute: Any) -> bool:
         self.vms[handle["sandbox_id"]]["alive"] = False
@@ -145,6 +153,15 @@ class SetupCloud:
             phase="awaiting_user",
             verification_url=URL,
             user_code=CODE,
+            code_expires_at="2099-01-01T00:00:00+00:00",
+        )
+
+    def show_url(self, slot: dict[str, Any], url: str) -> None:
+        """A sign-in that waits for the code the browser displays (no device code)."""
+        self.vm_for(slot)["state"].update(
+            phase="awaiting_user",
+            verification_url=url,
+            input="authorization_code",
             code_expires_at="2099-01-01T00:00:00+00:00",
         )
 

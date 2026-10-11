@@ -936,6 +936,31 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Cancel Machine Slot Login
+  /api/machine-slots/{slot_id}/logins/current/code:
+    post:
+      description: Send the code the browser displayed to the waiting official CLI
+        (never stored).
+      operationId: submit_machine_slot_login_code_api_machine_slots__slot_id__logins_current_code_post
+      parameters:
+      - in: path
+        name: slot_id
+        required: true
+        schema:
+          title: Slot Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Submit Machine Slot Login Code
   /api/machine-slots/{slot_id}/logout:
     post:
       operationId: logout_machine_slot_api_machine_slots__slot_id__logout_post

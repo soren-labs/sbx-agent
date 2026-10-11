@@ -113,6 +113,15 @@ def cancel_machine_slot_login(request: Request, slot_id: str) -> JSONResponse:
     return accepted(services(request).slots.cancel_login(mutating_principal(request), slot_id))
 
 
+@router.post("/api/machine-slots/{slot_id}/logins/current/code")
+async def submit_machine_slot_login_code(request: Request, slot_id: str) -> JSONResponse:
+    """Send the code the browser displayed to the waiting official CLI (never stored)."""
+    who = mutating_principal(request)
+    return accepted(
+        services(request).slots.submit_login_code(who, slot_id, await json_body(request))
+    )
+
+
 @router.post("/api/machine-slots/{slot_id}/verifications")
 def verify_machine_slot(request: Request, slot_id: str) -> JSONResponse:
     """Check the stored login with one real CLI call in a fresh Setup VM."""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -203,3 +204,142 @@ def test_catalog_comes_from_the_cli_and_keeps_only_listed_fields(run) -> None:
 def test_missing_catalog_is_reported_as_missing_not_guessed(run) -> None:
     final = run("verify", logged_in=True, catalog="broken")["final"]
     assert final["phase"] == "succeeded" and final["catalog"] is None
+
+
+# A full-screen sign-in like an official CLI's remote login: pick a method, show the URL as
+# a terminal hyperlink, read the authorization code from the terminal.
+FAKE_TUI = r"""
+import pathlib, sys, time
+home = pathlib.Path(__file__).parent
+command = sys.argv[1]
+if command == "status":
+    ok = (home / "logged_in").exists()
+    print("Fetching models...\n" + ("model-a" if ok else "Error: Please sign in to view models."))
+    sys.exit(0)
+assert sys.stdin.isatty(), "the sign-in screen needs a terminal"
+if (home / "logged_in").exists():
+    # A profile that is already signed in opens the normal screen, not the sign-in one.
+    sys.stdout.write("\x1b[2J\x1b[H Ready. Ask anything.\r\n")
+    sys.stdout.flush()
+    time.sleep(60)
+sys.stdout.write("\x1b[2J\x1b[H Welcome. Select login method:\r\n > 1. OAuth\r\n")
+sys.stdout.flush()
+sys.stdin.readline()
+url = "https://signin.example.test/o/oauth2/auth?client_id=abc&state=xyz"
+sys.stdout.write("\x1b[2J\x1b[H Open the URL below:\r\n \x1b]8;;" + url + "\x07" + url
+                 + "\x1b]8;;\x07\r\n \x1b[2mauthorization code...\x1b[0m\r\n")
+sys.stdout.flush()
+code = sys.stdin.readline().strip()
+if code == "REDACTED-good-code":
+    (home / "logged_in").write_text("1")
+    sys.stdout.write("Signed in.\r\n")
+else:
+    sys.stdout.write("That code did not work.\r\n")
+sys.stdout.flush()
+time.sleep(60)
+"""
+
+
+@pytest.fixture
+def run_pty(run, tmp_path):
+    tui = tmp_path / "tui.py"
+    tui.write_text(FAKE_TUI)
+
+    def start(code: str | None, **spec) -> dict:
+        logged_in = spec.pop("logged_in", False)
+        pty_extra = spec.pop("pty_extra", {})
+        work = tmp_path / "work"
+        work.mkdir(exist_ok=True)
+        if code is not None:
+            # The control plane writes the submitted code before or after the URL shows.
+            (work / "login-input").write_text(code + "\n")
+        return run(
+            login="unused",
+            logged_in=logged_in,
+            spec={
+                "login_argv": [sys.executable, str(tui), "login"],
+                "status_argv": [sys.executable, str(tui), "status"],
+                "status_ok": "",
+                "status_fail": ["please sign in"],
+                "url_pattern": r"https://signin\.example\.test/o/oauth2/\S+",
+                "pty": {
+                    "steps": [{"expect": "Select login method", "send": "\r"}],
+                    "prompt": "authorization code",
+                    "input": "authorization_code",
+                    "accept_seconds": 1.5,
+                    **pty_extra,
+                },
+                **spec,
+            },
+        )
+
+    return start
+
+
+def test_terminal_sign_in_relays_the_url_and_types_the_submitted_code(run_pty) -> None:
+    result = run_pty("REDACTED-good-code")
+    waiting = next(s for s in result["seen"] if s["phase"] == "awaiting_user")
+    assert waiting["verification_url"] == (
+        "https://signin.example.test/o/oauth2/auth?client_id=abc&state=xyz"
+    )
+    assert waiting["input"] == "authorization_code" and "user_code" not in waiting
+    assert result["final"]["phase"] == "succeeded"
+    # The submitted code is consumed: not in any published state, not left on disk.
+    assert "REDACTED-good-code" not in json.dumps(result["seen"])
+    assert not (result["work"] / "login-input").exists()
+    assert not (result["work"] / "login-output").exists()
+    assert "input" not in result["final"]
+
+
+def test_terminal_sign_in_reports_a_code_the_cli_did_not_accept(run_pty) -> None:
+    result = run_pty("REDACTED-wrong-code")
+    assert result["final"]["phase"] == "failed"
+    assert result["final"]["error"] == "code_rejected"
+    assert "REDACTED-wrong-code" not in json.dumps(result["seen"])
+
+
+def test_terminal_sign_in_on_an_already_signed_in_profile_only_verifies(run_pty) -> None:
+    result = run_pty(None, logged_in=True, pty_extra={"signed_in_probe_after": 0.3})
+    phases = [s["phase"] for s in result["seen"]]
+    assert "awaiting_user" not in phases, "no sign-in screen was shown, so no link is invented"
+    assert result["final"]["phase"] == "succeeded" and result["final"]["real_model_call"] is True
+
+
+def test_a_code_sent_twice_is_removed_not_typed(run_pty, tmp_path) -> None:
+    import threading
+
+    def resend() -> None:
+        target = tmp_path / "work" / "login-input"
+        for _ in range(200):
+            if not target.exists():
+                break
+            time.sleep(0.02)
+        target.write_text("REDACTED-second-code\n")
+
+    thread = threading.Thread(target=resend, daemon=True)
+    thread.start()
+    result = run_pty("REDACTED-good-code")
+    thread.join(timeout=10)
+    assert result["final"]["phase"] == "succeeded"
+    assert not (result["work"] / "login-input").exists()
+
+
+def test_terminal_sign_in_never_types_malformed_input(run_pty) -> None:
+    result = run_pty("REDACTED-good-code; rm -rf /", deadline_seconds=2)
+    assert result["final"]["phase"] == "expired"
+    assert not (result["work"] / "login-input").exists()
+
+
+def test_terminal_sign_in_expires_when_no_code_arrives(run_pty) -> None:
+    result = run_pty(None, deadline_seconds=1.5)
+    assert [s["phase"] for s in result["seen"]][-2:] == ["awaiting_user", "expired"]
+    assert result["final"]["error"] == "code_expired"
+
+
+def test_signed_out_words_decide_even_when_the_status_command_exits_zero(run) -> None:
+    result = run(
+        "verify",
+        logged_in=True,
+        spec={"status_ok": "", "status_fail": ["logged in using test"]},
+    )
+    assert result["final"]["error"] == "not_logged_in"
