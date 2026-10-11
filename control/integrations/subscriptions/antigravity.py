@@ -13,9 +13,56 @@ while signed out, so its words decide.
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from control.integrations.subscriptions.base import PROFILE_MOUNT, SubscriptionAdapter
 
 _WORK = "/tmp/sbx-setup/verify"
+# A model slug as ``--model`` takes it: lower-case, no spaces.
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9._:/-]{1,79}$")
+_NOISE = ("fetching", "error", "warning", "available models", "models:")
+
+
+def parse_catalog(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Models from the lines ``agy models`` printed: ``<slug><TAB><display name>``.
+
+    Verified against a signed-in Antigravity CLI 1.3.3. Reasoning effort is not a separate
+    setting here: the CLI lists one slug per effort variant (``...-high``, ``...-low``) and
+    rejects ``--effort`` next to a variant slug or a model without effort. So every model
+    is offered as printed, with no effort list, and choosing the variant chooses the effort.
+    A line whose first field is not a slug is ignored; nothing is added to what was printed.
+    """
+    models: list[dict[str, Any]] = []
+    for line in raw.get("lines") or []:
+        if not isinstance(line, str) or line.lower().startswith(_NOISE):
+            continue
+        marked = line.startswith(("*", ">")) or "(default)" in line.lower()
+        slug, _, rest = line.lstrip("*>-•· \t").partition("\t")
+        if not rest:
+            slug, _, rest = slug.partition(" ")
+        slug = slug.strip("`\"',")
+        if not _SLUG.match(slug) or slug in [m["id"] for m in models]:
+            continue
+        name = re.sub(r"\s*\(default\)\s*", " ", rest, flags=re.I).strip()[:120]
+        models.append(
+            {
+                "id": slug,
+                "name": name or slug,
+                "description": None,
+                "default": marked,
+                "reasoning": {"kind": "none", "efforts": [], "default": None},
+            }
+        )
+    if not models:
+        return None
+    defaults = [m["id"] for m in models if m["default"]]
+    return {
+        "models": models,
+        "default_model": defaults[0] if len(defaults) == 1 else None,
+        "complete": bool(raw.get("complete")),
+    }
+
 
 ADAPTER = SubscriptionAdapter(
     provider_id="antigravity",
@@ -33,7 +80,14 @@ ADAPTER = SubscriptionAdapter(
         "AGY_CLI_DISABLE_AUTO_UPDATE": "1",
         "AGY_CLI_HIDE_ACCOUNT_INFO": "1",
     },
+    catalog_source="agy models",
+    parse_catalog=parse_catalog,
     setup={
+        "catalog": {
+            "kind": "text",
+            "argv": ["agy", "models"],
+            "timeout": 60,
+        },
         "ensure_dirs": [f"{PROFILE_MOUNT}/.gemini"],
         "login_argv": ["agy"],
         "pty": {

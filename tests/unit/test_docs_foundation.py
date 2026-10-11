@@ -187,7 +187,7 @@ def test_generated_provider_reference() -> None:
         "grok": "supported",
         "commandcode": "supported",
         "devin": "disabled",
-        "antigravity": "disabled",
+        "antigravity": "supported",
     }
 
 

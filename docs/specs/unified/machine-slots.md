@@ -125,9 +125,8 @@ A Modal Connection cannot be disconnected while Slots keep Volumes in it (`conne
 
 ## Model catalog
 
-After a successful login or verification the supervisor asks the authenticated CLI for its models
-through the CLI's own machine interface (Codex: `codex app-server`, JSON-RPC `model/list`). The
-adapter normalizes the answer into `capabilities.catalog`:
+After a successful login or verification the supervisor asks the authenticated CLI for its models.
+The adapter normalizes the answer into `capabilities.catalog`:
 
 ```json
 {"status": "ready", "source": "codex app-server model/list", "observed_at": "...",
@@ -137,8 +136,16 @@ adapter normalizes the answer into `capabilities.catalog`:
                            "efforts": [{"id": "<effort>", "description": "..."}]}}]}
 ```
 
+| Provider | `source` | What the CLI gives | Efforts |
+| --- | --- | --- | --- |
+| `codex` | `codex app-server model/list` | JSON-RPC model list | each model's `supportedReasoningEfforts` |
+| `grok` | `grok agent stdio initialize` | `_meta.modelState.availableModels` and `currentModelId` of the CLI's agent protocol | each model's `reasoningEfforts` menu ids (what `--effort` accepts); none when the model does not support effort |
+| `antigravity` | `agy models` | printed text, `<slug><TAB><display name>` per line; there is no machine-readable catalog | none as a separate setting: the CLI lists one slug per effort variant (`...-high`, `...-low`), so every model has `reasoning.kind = "none"` and choosing the variant chooses the effort |
+
 Every model id and effort is the CLI's own answer for that login; hidden models are dropped; a
-default effort the model does not list is dropped. If the CLI gives no usable answer the catalog is
+default the CLI does not list is dropped. For `antigravity` only lines whose first field is a model
+slug count, a line that is not a slug is ignored, and a model is the default only when the CLI
+marks exactly one. If the CLI gives no usable answer the catalog is
 `{"status": "unavailable", "models": []}`: nothing is guessed, and a Session can then only use the
 provider default. `POST /api/machine-slots/{id}/verifications` refreshes the catalog.
 
@@ -148,7 +155,8 @@ Session creation accepts `inference: {"mode": "subscription", "machine_slot_id":
 to `harness: {provider_id, model?, effort?}`. The default mode is `custom_api` (an `inference_api`
 Connection). Rules, enforced server-side:
 
-- The Slot must be `ready`, owned by the caller, and the Harness must be the adapter's (`codex`).
+- The Slot must be `ready`, owned by the caller, and the Harness must be the adapter's (`codex`,
+  `grok` or `antigravity`, the same id as the provider).
   The executor backend must be `modal`, and the compute Connection is the Slot's.
 - `connections.inference` must be absent: a subscription Session never has an API key and never
   falls back to one. A `custom_api` Session never mounts a Slot Volume.
@@ -165,10 +173,22 @@ Execution:
   or confirmed lost frees the Slot without a separate unlock step.
 - The Worker VM mounts the Slot Volume at `/profile` (never created at allocation) and nothing
   else of the Slot. `turn.start` carries `inference: {"mode": "subscription", "provider_id", "env"}`
-  and no secrets. The Codex Harness points `CODEX_HOME` at the mounted profile, keeps the Session
-  home private, writes nothing into the profile's `config.toml`, and passes `-m <model>` and
-  `-c model_reasoning_effort="<effort>"`. Native threads live on the Volume and are never part of a
-  checkpoint.
+  and no secrets. Per Harness:
+
+  | Harness | Login location | Session home | Model and effort |
+  | --- | --- | --- | --- |
+  | `codex` | `CODEX_HOME` on the Volume | private | `-m <model>`, `-c model_reasoning_effort="<effort>"` |
+  | `grok` | `GROK_HOME` on the Volume | private | `-m <model>`, `--effort <effort>`; no `config.toml` is written |
+  | `antigravity` | `HOME` is the Volume (`agy` has no home override) | the Volume | `--model <slug>` only; `agy -p --output-format stream-json` |
+
+  Nothing is written into the profile by SBX. Native threads, sessions and conversations live on
+  the Volume and are never part of a checkpoint. The `antigravity` Harness has no custom-API mode
+  (`inference_protocols` is empty), so it cannot be combined with an `inference_api` Connection.
+  Measured on a signed-in `agy` 1.3.3: `--model <variant> --effort <other level>` and `--effort` on a
+  model without effort both fail with `invalid model selection` before any model call. The server
+  therefore rejects any `effort` on an Antigravity Slot (`validation_failed`: `harness.effort` with
+  `supported: []` next to a model, `harness.model` without one because the CLI marks no default) and
+  the Harness never passes `--effort`.
 - After each terminal Turn and before the Worker VM is terminated the executor runs `sync /profile`
   so login refreshes are committed. A VM that died cannot be synced.
 - A Turn the provider rejects as unauthenticated sets the Slot to `needs_login`.

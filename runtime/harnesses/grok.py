@@ -6,7 +6,11 @@ credential reaches disk and no xAI login is involved. Grok Build 1.0.50 sends cu
 models to ``{base_url}/chat/completions`` (OpenAI Chat Completions), verified with
 DeepSeek.
 
-Sessions live in ``~/.grok/sessions/<url-encoded cwd>/<session id>/``; resume
+A subscription Turn (Machine Slot) instead points ``GROK_HOME`` at the official login on
+the mounted Slot Volume: no key is passed, no ``config.toml`` is written, and the model
+and reasoning effort travel as ``-m`` / ``--effort``.
+
+Sessions live in ``$GROK_HOME/sessions/<url-encoded cwd>/<session id>/``; resume
 (``-r <id>``) therefore needs the same worktree path, which the runtime keeps stable.
 """
 
@@ -34,7 +38,7 @@ from runtime.harnesses.protocol import (
 )
 from runtime.security.credentials import private_dir, scrub
 
-ADAPTER_VERSION = "grok-harness/2"
+ADAPTER_VERSION = "grok-harness/3"
 PROTOCOLS = ("openai_chat",)
 CONFIG_REL = Path(".grok")
 
@@ -57,7 +61,10 @@ class GrokHarness:
             distribution="npm:@xai-official/grok",
             transport="jsonl",
             support_tier="supported",
-            credential_methods=["inference_api key via config.toml model env_key"],
+            credential_methods=[
+                "inference_api key via config.toml model env_key",
+                "official login on a Machine Slot volume",
+            ],
             inference_protocols=list(PROTOCOLS),
             native_state_versions=["grok-sessions-1"],
             capabilities={
@@ -80,9 +87,17 @@ class GrokHarness:
                     "unsupported", "", "--json-schema not wired; prompt-only", "prompt_only"
                 ),
                 "model_discovery": Capability(
-                    "unsupported", "", "models come from the inference connection catalog"
+                    "supported",
+                    "grok agent stdio initialize",
+                    "subscription: the Machine Slot's authenticated catalog; "
+                    "custom API: the inference connection catalog",
                 ),
-                "effort_settings": Capability("unknown", "", "--reasoning-effort not wired"),
+                "effort_settings": Capability(
+                    "supported",
+                    "--effort",
+                    "subscription only, limited to the efforts the selected model lists; "
+                    "not verified with a custom API, so none is offered there",
+                ),
                 "credential_writeback": Capability("unsupported", "", "static API key"),
                 "usage": Capability("supported", "result.usage"),
             },
@@ -90,6 +105,8 @@ class GrokHarness:
 
     def prepare(self, context: TurnContext, credentials: dict[str, Any]) -> PreparedHarness:
         home = private_dir(context.home)
+        if (context.inference or {}).get("mode") == "subscription":
+            return self._prepare_subscription(context, home)
         config_dir = private_dir(home / CONFIG_REL)
         inference = resolve_inference(context, credentials, PROTOCOLS)
         # JSON string syntax is valid TOML basic-string syntax for these values.
@@ -112,13 +129,32 @@ class GrokHarness:
             home=home, env=env, secrets=[inference.api_key], model=INFERENCE_ALIAS
         )
 
-    def _argv(self, context: TurnContext, session: str | None) -> list[str]:
+    def _prepare_subscription(self, context: TurnContext, home: Path) -> PreparedHarness:
+        """Official login on the Slot Volume; the CLI is its only reader."""
+        route = context.inference or {}
+        profile = {k: str(v) for k, v in (route.get("env") or {}).items() if k != "HOME"}
+        if route.get("provider_id") != "grok" or not profile.get("GROK_HOME"):
+            raise HarnessError("connection_required", "no Grok Build machine slot was provided")
+        if not Path(profile["GROK_HOME"]).is_dir():
+            raise HarnessError("connection_required", "the machine slot profile is not mounted")
+        # The image pins the verified CLI; the effort is the model's own menu option.
+        args = ["--no-auto-update"]
+        if context.effort:
+            args += ["--effort", context.effort]
+        return PreparedHarness(
+            home=home, env=base_env(home, **profile), model=context.model, cli_args=args
+        )
+
+    def _argv(
+        self, context: TurnContext, prepared: PreparedHarness, session: str | None
+    ) -> list[str]:
         argv = [
             *_bin(),
+            *prepared.cli_args,
             "-p",
             argv_text(context.prompt),
-            "-m",
-            INFERENCE_ALIAS,
+            # No ``-m`` leaves the choice to the CLI: the subscription's default model.
+            *(["-m", prepared.model] if prepared.model else []),
             "--output-format",
             "streaming-messages-json",
             "--include-partial-messages",
@@ -131,7 +167,7 @@ class GrokHarness:
         return argv + (["-r", session] if session else [])
 
     def start_turn(self, context: TurnContext, prepared: PreparedHarness) -> NativeInvocation:
-        return NativeInvocation(self._argv(context, None), context.worktree, prepared.env)
+        return NativeInvocation(self._argv(context, prepared, None), context.worktree, prepared.env)
 
     def resume_turn(
         self, context: TurnContext, prepared: PreparedHarness, binding: dict[str, Any]
@@ -141,10 +177,13 @@ class GrokHarness:
             raise HarnessError("context_unavailable", "no compatible Grok Build session")
         # An id with no local transcript makes the CLI look it up remotely, which waits
         # for an xAI login that BYOK never has. Refuse instead of hanging the Turn.
-        sessions = prepared.home / CONFIG_REL / "sessions"
+        grok_home = prepared.env.get("GROK_HOME")
+        sessions = (Path(grok_home) if grok_home else prepared.home / CONFIG_REL) / "sessions"
         if not any(sessions.glob(f"*/{native_id}")):
             raise HarnessError("context_unavailable", "Grok Build session is not on this runtime")
-        return NativeInvocation(self._argv(context, native_id), context.worktree, prepared.env)
+        return NativeInvocation(
+            self._argv(context, prepared, native_id), context.worktree, prepared.env
+        )
 
     def new_state(self, context: TurnContext) -> dict[str, Any]:
         return messages_stream.new_state(context)

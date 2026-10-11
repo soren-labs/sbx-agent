@@ -40,6 +40,36 @@ CATALOG = {
 }
 
 
+# What the supervisor reports for the other providers (shapes of the real CLIs' answers).
+GROK_CATALOG = {
+    "complete": True,
+    "current": "grok-a",
+    "items": [
+        {
+            "modelId": "grok-a",
+            "name": "Grok A",
+            "_meta": {
+                "supportsReasoningEffort": True,
+                "reasoningEfforts": [
+                    {"id": "xhigh", "label": "Extra High", "default": False},
+                    {"id": "high", "label": "High", "default": True},
+                ],
+            },
+        },
+        {"modelId": "grok-b", "name": "Grok B", "_meta": {"supportsReasoningEffort": False}},
+    ],
+}
+AGY_CATALOG = {
+    "complete": True,
+    "lines": [
+        "Fetching available models...",
+        "agy-pro-1-high\tAgy Pro 1 (High)",
+        "agy-pro-1-low\tAgy Pro 1 (Low)",
+        "agy-plain-2\tAgy Plain 2",
+    ],
+}
+
+
 class SetupCloud:
     """In-memory stand-in for the Modal executor's Setup VM and Volume operations."""
 

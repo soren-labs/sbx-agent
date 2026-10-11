@@ -330,7 +330,7 @@
     "transport": "jsonl"
   },
   {
-    "adapter_version": "grok-harness/2",
+    "adapter_version": "grok-harness/3",
     "capabilities": {
       "account_portable_resume": {
         "evidence": "",
@@ -351,10 +351,10 @@
         "status": "unsupported"
       },
       "effort_settings": {
-        "evidence": "",
-        "limitation": "--reasoning-effort not wired",
+        "evidence": "--effort",
+        "limitation": "subscription only, limited to the efforts the selected model lists; not verified with a custom API, so none is offered there",
         "mode": "",
-        "status": "unknown"
+        "status": "supported"
       },
       "event_stream": {
         "evidence": "--output-format streaming-messages-json --include-partial-messages",
@@ -381,10 +381,10 @@
         "status": "unknown"
       },
       "model_discovery": {
-        "evidence": "",
-        "limitation": "models come from the inference connection catalog",
+        "evidence": "grok agent stdio initialize",
+        "limitation": "subscription: the Machine Slot's authenticated catalog; custom API: the inference connection catalog",
         "mode": "",
-        "status": "unsupported"
+        "status": "supported"
       },
       "native_resume": {
         "evidence": "grok -p -r <session_id>",
@@ -425,7 +425,8 @@
     },
     "cli_version": "unverified",
     "credential_methods": [
-      "inference_api key via config.toml model env_key"
+      "inference_api key via config.toml model env_key",
+      "official login on a Machine Slot volume"
     ],
     "distribution": "npm:@xai-official/grok",
     "inference_protocols": [
@@ -550,6 +551,113 @@
     "transport": "jsonl"
   },
   {
+    "adapter_version": "antigravity-harness/1",
+    "capabilities": {
+      "account_portable_resume": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "attachments": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "credential_writeback": {
+        "evidence": "",
+        "limitation": "the CLI refreshes its login on the Machine Slot volume",
+        "mode": "",
+        "status": "supported"
+      },
+      "effort_settings": {
+        "evidence": "",
+        "limitation": "effort is part of the model: the CLI lists one slug per effort variant and rejects --effort next to it",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "event_stream": {
+        "evidence": "--output-format stream-json",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "interactive_approval": {
+        "evidence": "",
+        "limitation": "--dangerously-skip-permissions approves",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "interrupt": {
+        "evidence": "",
+        "limitation": "supervisor process-group stop only",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "mcp": {
+        "evidence": "",
+        "limitation": "agy mcp not wired",
+        "mode": "",
+        "status": "unknown"
+      },
+      "model_discovery": {
+        "evidence": "agy models",
+        "limitation": "the Machine Slot's authenticated list; text output, slug and display name",
+        "mode": "",
+        "status": "supported"
+      },
+      "native_resume": {
+        "evidence": "agy -p --conversation <id>",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      },
+      "native_state_export": {
+        "evidence": "",
+        "limitation": "conversations stay on the Machine Slot volume",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "skills": {
+        "evidence": "",
+        "limitation": "",
+        "mode": "",
+        "status": "unknown"
+      },
+      "steer": {
+        "evidence": "",
+        "limitation": "--input-format stream-json not wired",
+        "mode": "",
+        "status": "unsupported"
+      },
+      "structured_output": {
+        "evidence": "",
+        "limitation": "--json-schema not wired; prompt-only",
+        "mode": "prompt_only",
+        "status": "unsupported"
+      },
+      "usage": {
+        "evidence": "result.usage",
+        "limitation": "",
+        "mode": "",
+        "status": "supported"
+      }
+    },
+    "cli_version": "unverified",
+    "credential_methods": [
+      "official login on a Machine Slot volume"
+    ],
+    "distribution": "archive:antigravity-cli",
+    "inference_protocols": [],
+    "native_state_versions": [
+      "antigravity-conversations-1"
+    ],
+    "provider_id": "antigravity",
+    "support_tier": "supported",
+    "transport": "jsonl"
+  },
+  {
     "adapter_version": "none",
     "capabilities": {
       "account_portable_resume": {
@@ -651,108 +759,5 @@
     "provider_id": "devin",
     "support_tier": "disabled",
     "transport": "acp"
-  },
-  {
-    "adapter_version": "none",
-    "capabilities": {
-      "account_portable_resume": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "attachments": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "credential_writeback": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "effort_settings": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "event_stream": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "interactive_approval": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "interrupt": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "mcp": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "model_discovery": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "native_resume": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "native_state_export": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "skills": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "steer": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "structured_output": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      },
-      "usage": {
-        "evidence": "",
-        "limitation": "host-binary distribution not reproducible",
-        "mode": "",
-        "status": "unknown"
-      }
-    },
-    "cli_version": "unverified",
-    "credential_methods": [],
-    "distribution": "host binary",
-    "inference_protocols": [],
-    "native_state_versions": [],
-    "provider_id": "antigravity",
-    "support_tier": "disabled",
-    "transport": "jsonl"
   }
 ]

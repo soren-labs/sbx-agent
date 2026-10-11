@@ -51,6 +51,12 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _dig(value: Any, path: list[str]) -> Any:
+    for key in path:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
 def _reaped(pid: int, seconds: float) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -110,14 +116,17 @@ class Supervisor:
         return done.returncode, done.stdout + done.stderr
 
     def catalog(self) -> dict[str, Any] | None:
-        """Model catalog from the authenticated CLI's own machine interface (JSON-RPC lines).
+        """Model catalog from the authenticated CLI's own interface.
 
-        Returns only the adapter-listed fields of each item; ``None`` when the CLI offers
-        no trustworthy answer, so nothing is ever guessed.
+        Either JSON-RPC lines on stdio (only the adapter-listed fields of each item are
+        returned) or, for a CLI with no machine interface, the lines its models command
+        prints. ``None`` when the CLI offers no trustworthy answer, so nothing is guessed.
         """
         spec = self.spec.get("catalog")
         if not spec:
             return None
+        if spec.get("kind") == "text":
+            return self._catalog_text(spec)
         try:
             process = subprocess.Popen(
                 spec["argv"],
@@ -164,11 +173,11 @@ class Supervisor:
         if not isinstance(message, dict) or message.get("id") != spec["result_id"]:
             return None
         result = message.get("result")
-        items = result.get(spec["items_key"]) if isinstance(result, dict) else None
+        items = _dig(result, spec.get("items_path") or [spec["items_key"]])
         if not isinstance(items, list):
             return {}
         fields = spec["item_fields"]
-        return {
+        found: dict[str, Any] = {
             "items": [
                 {k: item[k] for k in fields if k in item}
                 for item in items[:200]
@@ -176,6 +185,21 @@ class Supervisor:
             ],
             "complete": not result.get(spec.get("cursor_key", "nextCursor")),
         }
+        # Single values next to the list, e.g. the model the CLI currently defaults to.
+        for name, path in (spec.get("value_paths") or {}).items():
+            value = _dig(result, path)
+            if isinstance(value, str | int | float | bool):
+                found[name] = value
+        return found
+
+    def _catalog_text(self, spec: dict[str, Any]) -> dict[str, Any] | None:
+        """Printed lines of a models command, for a CLI with no machine interface."""
+        code, output = self.call(spec["argv"], float(spec.get("timeout", 60)))
+        if code != 0:
+            return None
+        lines = [line.strip()[:300] for line in ANSI.sub("", output).splitlines()]
+        found: dict[str, Any] = {"lines": [line for line in lines if line][:200], "complete": True}
+        return found if found["lines"] else None
 
     def logged_in(self) -> bool:
         code, output = self.call(
