@@ -19,6 +19,7 @@ never treated as absence.
 from __future__ import annotations
 
 import json
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -129,10 +130,11 @@ class ModalExecutor:
     def _archive_commands(self) -> list[str]:
         """Install each archive CLI: download, verify the pinned SHA-512, place the binary."""
         commands = []
-        for binary, member, version, url, digest in self.cli_archives.values():
+        for values in self.cli_archives.values():
+            binary, member, version, url, digest = (shlex.quote(value) for value in values)
             commands.append(
                 f"curl -fsSL -o /tmp/{binary}.tgz {url}"
-                f" && echo '{digest}  /tmp/{binary}.tgz' | sha512sum -c -"
+                f" && echo {digest}'  '/tmp/{binary}.tgz | sha512sum -c -"
                 f" && tar -xzf /tmp/{binary}.tgz -C /tmp {member}"
                 f" && install -m 0755 /tmp/{member} /usr/local/bin/{binary}"
                 f" && rm -f /tmp/{binary}.tgz /tmp/{member}"
