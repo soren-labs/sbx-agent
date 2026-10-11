@@ -20,6 +20,7 @@ Nothing was deployed.
 | 2 | Stored login works on a brand-new VM with nobody signing in | PASS, both providers | `live/live-*.json` `verify_on_fresh_vm`: `real_model_call: true`; `second_vm.different_vm_than_session_1: true` |
 | 3 | Real noninteractive Turn with the official binary, file write plus shell command | PASS, both providers | `live/live-*.json` `task`: `succeeded`, 2 tool calls, the answer contains the file's word; real token usage |
 | 3 | Resume in the same Session | PASS, both providers | `resume`: `succeeded`, `native_resumed: true`, the model recalls the word without tools |
+| 2 | "Log in again" on a machine that is still signed in | PASS, both providers | `live/relogin-*.json`: no link shown, verified with a real call, back to `ready` (Grok 16 s, Antigravity 92 s including an image rebuild) |
 | 3 | Cancel a running Turn | PASS, both providers | `cancel`: `running` then `cancelled / cancelled_by_user` in 14 s; machine `ready` afterwards |
 | 4 | Catalog and effort from the signed-in CLI | PASS | Grok: 4 models with per-model effort menus. Antigravity: 14 models as printed, no separate effort (see below) |
 | 4 | Server refuses invented models and unlisted efforts | PASS | `refusals` in `live/live-*.json`; `live/cli-flow.log` |
@@ -70,6 +71,22 @@ After the fix the same machine ran real tasks from the API, the CLI and the Cons
 | Resume Turn | succeeded, 6 s | succeeded, 5 s |
 | Task on a second fresh VM | succeeded, different boot id | succeeded, different boot id |
 | Cancel | cancelled in 14 s | cancelled in 14 s |
+
+## Independent review
+
+A reviewer who did not write the code reviewed the cumulative diff against `AGENTS.md` sections 4
+and 5. Verdict: no reproducible P0 or P1. One finding was a P1 candidate and was settled live:
+
+| Finding | Outcome |
+| --- | --- |
+| "Log in again" on a signed-in Antigravity machine would show no sign-in screen and hold the machine until the 15-minute window closed | Confirmed as a real gap, fixed (the supervisor now asks the CLI's status when no screen appears), covered by a PTY test, and verified live (`live/relogin-antigravity.json`) |
+| The sign-in link (which for Grok carries the code) stayed in the attempt row after the attempt ended | Fixed: cleared with the code; test added |
+| A code submitted twice could stay on the Setup VM's disk until the VM ended | Fixed: removed, never typed; the Console replaces the field with a status line after sending |
+| Spec wording for an effort without a model on Antigravity | Fixed in the spec |
+| The fix that stops printing the link's query lived in the docs branch | Moved to the Console branch |
+| Fixtures with code-shaped values | Changed to `REDACTED-...` values |
+| `--code` on the command line, unquoted constants in the image recipe | Help text warns; values are quoted |
+| The PTY is not drained while the status command runs | Not changed (hardening only; live runs unaffected) |
 
 ## Known limits
 

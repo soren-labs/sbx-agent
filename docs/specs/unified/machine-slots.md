@@ -108,7 +108,7 @@ first confirms VM termination; an unconfirmed termination retries.
 
 | Route | Effect |
 | --- | --- |
-| `POST /api/machine-slots/{id}/logins` | Official login again (re-login). If it does not complete, a previously `ready` Slot stays `ready`. |
+| `POST /api/machine-slots/{id}/logins` | Official login again (re-login). If it does not complete, a previously `ready` Slot stays `ready`. On a profile that is still signed in the CLI offers no sign-in step: the supervisor sees the CLI's status, skips to verification and the Slot stays `ready` (for a PTY sign-in it asks the status once no sign-in screen has appeared for 8 seconds). Switching accounts therefore needs a logout first. |
 | `POST /api/machine-slots/{id}/verifications` | Check the stored login with one real CLI call on a fresh VM. |
 | `DELETE /api/machine-slots/{id}/logins/current` | Cancel the live attempt and stop its VM. |
 | `POST /api/machine-slots/{id}/logins/current/code` | Send the code the browser displayed (`authorization_code` providers only). |

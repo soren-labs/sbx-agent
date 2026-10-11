@@ -119,7 +119,7 @@ version and the Volume name, with these actions:
 
 | Action | Effect |
 | --- | --- |
-| Log in again | Runs the official login again on the same Volume. For Antigravity this gives a new link. If you do not finish, a Ready machine stays Ready. |
+| Log in again | Runs the official login again on the same Volume. If the machine is still signed in, the CLI shows no sign-in step: SBX re-checks the stored login and the machine stays Ready. To use a different account, **Sign out** first, then log in. If you do not finish a login, a Ready machine stays Ready. |
 | Check login and refresh models | Verifies the stored login with one real CLI call on a fresh VM and re-reads the model list. |
 | Rename | Changes the label or the account note. The note is your own reminder; SBX does not read account identity from the login. |
 | Sign out | Destroys the Volume. The machine stays and needs a login. The provider-side session is not revoked; do that in your provider account if you need to. |

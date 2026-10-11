@@ -126,3 +126,6 @@ Both official logins were approved by a person on staging ("Grok Build 6", "Anti
   delete them from the Console when no longer wanted; that destroys their Volumes.
 - The build host is a burstable instance; when it is throttled, time-bounded Console tests can
   time out locally. CI is the reference for those.
+- Independent review: no P0/P1. Its findings and what was done are in the evidence report. The one
+  behavioural change: re-login on a still-signed-in machine only re-verifies (no link); switching
+  accounts needs a logout first.
