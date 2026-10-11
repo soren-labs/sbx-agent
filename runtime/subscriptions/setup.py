@@ -311,6 +311,9 @@ class Supervisor:
                         submitted_at = time.monotonic()
                         self.state.pop("input", None)
                         self.publish(phase="verifying")
+                else:
+                    # A code sent twice is never typed and never left on disk.
+                    self.input_path.unlink(missing_ok=True)
                 if exited_at is None:
                     try:
                         if os.waitpid(pid, os.WNOHANG)[0] == pid:
@@ -318,8 +321,13 @@ class Supervisor:
                             pid = 0
                     except ChildProcessError:
                         exited_at, pid = time.monotonic(), 0
-                # The CLI's own status is the authority, and only once a code was entered.
-                waiting = submitted_at is not None or exited_at is not None
+                # The CLI's own status is the authority once a code was entered. It is also asked
+                # when no sign-in screen appears: a profile that is already signed in opens the
+                # CLI's normal screen, and the login then only needs verifying.
+                no_screen = "verification_url" not in self.state and self.elapsed() > float(
+                    ui.get("signed_in_probe_after", 8)
+                )
+                waiting = submitted_at is not None or exited_at is not None or no_screen
                 if waiting and time.monotonic() >= next_status:
                     next_status = time.monotonic() + float(spec.get("status_interval", 3))
                     if self.logged_in():

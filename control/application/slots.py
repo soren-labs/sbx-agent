@@ -834,6 +834,8 @@ class MachineSlots:
                 {
                     "state": outcome,
                     "user_code": None,
+                    # A provider may put the one-time code in its link: neither outlives the attempt.
+                    "verification_url": None,
                     "error_code": (error or None) and str(error)[:120],
                     "finished_at": now,
                     "updated_at": now,

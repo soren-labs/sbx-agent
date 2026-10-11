@@ -90,6 +90,7 @@ def test_official_login_flows_to_ready_without_a_second_step(env) -> None:
     assert ready["verified_at"] and cloud.running == [], "the Setup VM is destroyed"
     stored = stack.db.read(lambda u: u.find("slot_login_attempts", {"slot_id": slot["id"]}))
     assert [a["user_code"] for a in stored] == [None], "the used code is not retained"
+    assert [a["verification_url"] for a in stored] == [None], "nor is the link it was shown with"
     listing = user.get(f"/api/workspaces/{user.workspace_id}/machine-slots").json()
     assert listing["summary"] == {
         "total": 1,
@@ -322,7 +323,7 @@ def test_slots_are_unavailable_without_the_modal_executor(db, tmp_path) -> None:
 # -- Providers ------------------------------------------------------------------------------
 
 GOOGLE_URL = "https://accounts.google.com/o/oauth2/auth?client_id=x&state=y&" + "s" * 700
-PASTED = "4/0AbCdEf-authorization_code_from_browser"
+PASTED = "REDACTED-authorization-code"
 
 
 def test_three_providers_each_with_its_official_login_method(env) -> None:
