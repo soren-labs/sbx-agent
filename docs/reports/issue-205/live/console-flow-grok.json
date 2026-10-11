@@ -1,0 +1,159 @@
+{
+  "provider": "grok",
+  "steps": [
+    {
+      "name": "clicked_add",
+      "at": "2026-10-11T04:32:38.940Z",
+      "provider": "grok"
+    },
+    {
+      "name": "awaiting_person",
+      "at": "2026-10-11T04:32:47.842Z",
+      "label": "Grok Build 6",
+      "method": "device_code",
+      "host": "accounts.x.ai",
+      "url_length": 55,
+      "pending_file": "/home/ubuntu/sbx-issue205/stage/pending-login-grok.json"
+    },
+    {
+      "name": "verifying_shown",
+      "at": "2026-10-11T04:35:37.084Z"
+    },
+    {
+      "name": "login_finished",
+      "at": "2026-10-11T04:35:41.505Z",
+      "status": "ready"
+    },
+    {
+      "name": "task_finished",
+      "at": "2026-10-11T04:36:24.427Z",
+      "id": "sess_01a1293f04127ae8aea3bbf5091ab79d",
+      "turn": "succeeded",
+      "seconds": 25,
+      "picked": {
+        "model": "Grok 4.7",
+        "effort": "xhigh"
+      },
+      "harness": {
+        "provider_id": "grok",
+        "model": "grok-4.7",
+        "effort": "xhigh"
+      },
+      "inference": {
+        "mode": "subscription",
+        "machine_slot_id": "slot_01a1293bf93f7c7da0dba2618ea61c7a"
+      },
+      "inference_connection": null,
+      "usage": {
+        "source": "grok.result",
+        "complete": true,
+        "input_tokens": 22362,
+        "output_tokens": 195,
+        "cached_input_tokens": 26752
+      },
+      "error": {
+        "verdict": "success",
+        "exit_code": 0,
+        "native_id": "01a1293f-34da-7380-80b0-040cfa356f58",
+        "credential_health": "ok"
+      }
+    }
+  ],
+  "final": "ready",
+  "slot": {
+    "label": "Grok Build 6",
+    "state_reason": null,
+    "volume": {
+      "name": "sbx-slot-01a1293bf93f7c7da0dba2618ea61c7a",
+      "filesystem": "modal_volume_v2",
+      "managed": true
+    },
+    "cli_version": "grok 1.0.50 (c58f321264ba)",
+    "verification": {
+      "observed_at": "2026-10-11T04:35:37.930559+00:00",
+      "real_model_call": true
+    },
+    "catalog": {
+      "status": "ready",
+      "source": "grok agent stdio initialize",
+      "default_model": "grok-4.7",
+      "effort_scope": null,
+      "models": [
+        {
+          "id": "grok-4.7",
+          "efforts": [
+            "xhigh",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        {
+          "id": "grok-4.7-build-fast",
+          "efforts": [
+            "xhigh",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        {
+          "id": "grok-4.6",
+          "efforts": [
+            "xhigh",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        {
+          "id": "grok-4.5",
+          "efforts": [
+            "high",
+            "medium",
+            "low"
+          ]
+        }
+      ]
+    },
+    "code_still_returned": false,
+    "url_still_returned": false
+  },
+  "session": {
+    "id": "sess_01a1293f04127ae8aea3bbf5091ab79d",
+    "turn": "succeeded",
+    "seconds": 25,
+    "picked": {
+      "model": "Grok 4.7",
+      "effort": "xhigh"
+    },
+    "harness": {
+      "provider_id": "grok",
+      "model": "grok-4.7",
+      "effort": "xhigh"
+    },
+    "inference": {
+      "mode": "subscription",
+      "machine_slot_id": "slot_01a1293bf93f7c7da0dba2618ea61c7a"
+    },
+    "inference_connection": null,
+    "usage": {
+      "source": "grok.result",
+      "complete": true,
+      "input_tokens": 22362,
+      "output_tokens": 195,
+      "cached_input_tokens": 26752
+    },
+    "error": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "01a1293f-34da-7380-80b0-040cfa356f58",
+      "credential_health": "ok"
+    }
+  },
+  "after_release": {
+    "status": "ready",
+    "busy": false
+  },
+  "page_errors": []
+}

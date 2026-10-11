@@ -7,16 +7,26 @@ description: Release notes for the unified SBX architecture.
 
 - **Modal sandboxes**: every Modal sandbox is a Linux VM, started from a
   prewarmed shared image.
-- **Machine Slots**: each Slot is one official Codex subscription login, signed
-  in with the official device login and kept on a private Modal Volume in your
-  own Modal workspace. See [Cloud machines](/guides/cloud-machines/).
+- **Machine Slots**: each Slot is one official subscription login, kept on a
+  private Modal Volume in your own Modal workspace. Codex and Grok Build sign in
+  with the official device login. See [Cloud machines](/guides/cloud-machines/).
+- **Grok Build machines**: a `grok` Slot signs in with `grok login --device-auth`
+  and runs Sessions on the Grok Build harness with the models its CLI reports.
+- **Antigravity machines**: an `antigravity` Slot signs in with Google's official
+  `agy` CLI. The user opens the Google sign-in link, signs in, and pastes the code
+  the browser shows. Antigravity runs only on a machine; it has no API-key mode.
+- **Paste-code login**: `sbx slots code` and `client.slots.submit_code` send the
+  code shown after an Antigravity sign-in. SBX passes it to the waiting CLI and
+  does not store it.
 - **Sessions on a Slot**: a Session runs on a Slot, one at a time. Models come
   from the catalog the Slot's CLI reports, with the reasoning efforts each model
   supports.
 - **Thinking on/off**: verified custom-API models can turn thinking on or off.
 - **CLI and SDK**: `sbx slots` and `client.slots`. `sbx sessions create` accepts
-  `--slot`, `--model` and `--effort`.
-- **Console**: "My Cloud Machines" lists and manages Slots.
+  `--slot`, `--model` and `--effort`. With `--slot`, the Harness now defaults to
+  the Slot's provider; it was always Codex before.
+- **Console**: "My Cloud Machines" lists and manages Slots, grouped by provider,
+  with an "Add machine" menu for Codex, Grok Build and Antigravity.
 
 ## Unified architecture (current)
 
@@ -34,7 +44,8 @@ SBX is built around a single domain model and a single API.
 - **ChangeSets, Deliveries and Delegations**: immutable subjects, exact-subject
   merge gate and generic child Sessions with validated ResultContracts.
 - **Harnesses**: OpenCode, Codex, Claude Code, Grok Build and Command Code run
-  as official CLIs on your inference key; others are disabled.
+  as official CLIs on your inference key. Antigravity runs as the official `agy`
+  CLI on a subscription machine only; Devin is disabled.
 
 Not available yet: preview origins, OAuth acquisition for Connections and a
 WebSocket terminal (terminals poll).

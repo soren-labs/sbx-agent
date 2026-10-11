@@ -108,7 +108,7 @@ first confirms VM termination; an unconfirmed termination retries.
 
 | Route | Effect |
 | --- | --- |
-| `POST /api/machine-slots/{id}/logins` | Official login again (re-login). If it does not complete, a previously `ready` Slot stays `ready`. |
+| `POST /api/machine-slots/{id}/logins` | Official login again (re-login). If it does not complete, a previously `ready` Slot stays `ready`. On a profile that is still signed in the CLI offers no sign-in step: the supervisor sees the CLI's status, skips to verification and the Slot stays `ready` (for a PTY sign-in it asks the status once no sign-in screen has appeared for 8 seconds). Switching accounts therefore needs a logout first. |
 | `POST /api/machine-slots/{id}/verifications` | Check the stored login with one real CLI call on a fresh VM. |
 | `DELETE /api/machine-slots/{id}/logins/current` | Cancel the live attempt and stop its VM. |
 | `POST /api/machine-slots/{id}/logins/current/code` | Send the code the browser displayed (`authorization_code` providers only). |
@@ -204,6 +204,10 @@ keeps the pasted code after sending it.
 | Device code (`codex`, `grok`) | URL button, the code with a copy button, expiry countdown | `--wait` / `sbx slots wait` print the URL and code on stderr | `wait(on_code=...)` |
 | Pasted code (`antigravity`) | URL button (only the host is printed), a field for the code and "Send code" | `sbx slots code SLOT [--code C]`, or the prompt of `--wait` on a terminal; without a terminal `wait` prints the URL and the `sbx slots code` hint | `submit_code(slot_id, code)`, `wait(on_input=...)` |
 | Run | New Session: Runs on, model and effort pickers from the Slot's catalog; no effort picker when the model lists none (every Antigravity variant) | `sbx sessions create --slot SLOT [--model M] [--effort E]`; the Harness defaults to the Slot's provider | `sessions.create(inference={"mode": "subscription", "machine_slot_id": ...})` |
+
+The Console opens the provider's own `verification_url` but prints only its origin and path: the
+query can be long (Antigravity) or carry the one-time code (Grok Build), and the code is shown only
+in its own element.
 
 `sbx slots code` reads the code from `--code`, a hidden prompt on a terminal, or one line on stdin,
 and prints the Slot as JSON; the code is never echoed. In New Session a Harness without a custom-API

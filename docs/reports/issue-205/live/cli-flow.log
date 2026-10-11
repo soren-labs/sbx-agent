@@ -1,0 +1,30 @@
+
+$ sbx slots providers
+[('codex', 'device_code'), ('antigravity', 'authorization_code'), ('grok', 'device_code')]
+
+$ sbx slots list
+{'total': 2, 'running': 0, 'ready': 2, 'login_pending': 0, 'needs_attention': 0}
+[('Grok Build 6', 'ready'), ('Antigravity 6', 'ready')]
+
+$ sbx slots models $SLOT_ANTIGRAVITY
+ready agy models None [('gemini-3.8-flash-high', []), ('gemini-3.8-flash-medium', []), ('gemini-3.8-flash-low', []), ('gemini-3.7-flash-high', [])] … 14 models
+
+$ sbx slots models $SLOT_GROK
+ready grok agent stdio initialize grok-4.7 [('grok-4.7', ['xhigh', 'high', 'medium', 'low']), ('grok-4.7-build-fast', ['xhigh', 'high', 'medium', 'low']), ('grok-4.6', ['xhigh', 'high', 'medium', 'low']), ('grok-4.5', ['high', 'medium', 'low'])]
+
+$ sbx sessions create --slot $SLOT_ANTIGRAVITY --model gemini-3.8-flash-high --effort low (the pairing the CLI refuses)
+exit=1
+validation_failed {'field': 'harness.effort', 'model': 'gemini-3.8-flash-high', 'supported': []}
+
+$ sbx sessions create --slot $SLOT_ANTIGRAVITY --model gemini-3.8-flash-low --message '… Reply with exactly: SBX_CLI_OK'
+exit=0
+{'provider_id': 'antigravity', 'model': 'gemini-3.8-flash-low', 'effort': None} subscription inference connection: None
+turn: succeeded answered: True usage: {'input_tokens': 11785, 'output_tokens': 6, 'reasoning_tokens': 0, 'cached_input_tokens': 0}
+
+$ sbx sessions create --slot $SLOT_GROK --model grok-4.7-build-fast --effort low --message '… Reply with exactly: SBX_CLI_OK'
+exit=0
+{'provider_id': 'grok', 'model': 'grok-4.7-build-fast', 'effort': 'low'} subscription inference connection: None
+turn: succeeded answered: True usage: {'input_tokens': 6124, 'output_tokens': 33, 'cached_input_tokens': 10112}
+
+$ sbx slots list
+[('Grok Build 6', 'ready', False), ('Antigravity 6', 'ready', False)]

@@ -1,0 +1,283 @@
+{
+  "provider": "antigravity",
+  "started_at": "2026-10-11T05:29:11Z",
+  "slot": {
+    "id": "slot_01a1293cc5787e5581e568fcbcabc2ac",
+    "label": "Antigravity 6",
+    "volume": {
+      "name": "sbx-slot-01a1293cc5787e5581e568fcbcabc2ac",
+      "filesystem": "modal_volume_v2",
+      "managed": true
+    }
+  },
+  "verify_on_fresh_vm": {
+    "status": "ready",
+    "reason": null,
+    "seconds": 28,
+    "login_mode": "verify",
+    "login_state": "succeeded",
+    "real_model_call": true,
+    "cli_version": "1.3.3",
+    "catalog": {
+      "status": "ready",
+      "source": "agy models",
+      "default_model": null,
+      "models": [
+        {
+          "id": "gemini-3.8-flash-high",
+          "name": "Gemini 3.8 Flash (High)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.8-flash-medium",
+          "name": "Gemini 3.8 Flash (Medium)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.8-flash-low",
+          "name": "Gemini 3.8 Flash (Low)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.7-flash-high",
+          "name": "Gemini 3.7 Flash (High)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.7-flash-medium",
+          "name": "Gemini 3.7 Flash (Medium)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.7-flash-low",
+          "name": "Gemini 3.7 Flash (Low)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.6-flash-high",
+          "name": "Gemini 3.6 Flash (High)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.6-flash-medium",
+          "name": "Gemini 3.6 Flash (Medium)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.6-flash-low",
+          "name": "Gemini 3.6 Flash (Low)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.1-pro-high",
+          "name": "Gemini 3.1 Pro (High)",
+          "efforts": []
+        },
+        {
+          "id": "gemini-3.1-pro-low",
+          "name": "Gemini 3.1 Pro (Low)",
+          "efforts": []
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "name": "Claude Sonnet 4.6 (Thinking)",
+          "efforts": []
+        },
+        {
+          "id": "claude-opus-4-6-thinking",
+          "name": "Claude Opus 4.6 (Thinking)",
+          "efforts": []
+        },
+        {
+          "id": "gpt-oss-120b-medium",
+          "name": "GPT-OSS 120B (Medium)",
+          "efforts": []
+        }
+      ]
+    }
+  },
+  "refusals": {
+    "invented_model": {
+      "code": "validation_failed",
+      "details": {
+        "field": "harness.model",
+        "available": [
+          "claude-opus-4-6-thinking",
+          "claude-sonnet-4-6",
+          "gemini-3.1-pro-high",
+          "gemini-3.1-pro-low",
+          "gemini-3.6-flash-high",
+          "gemini-3.6-flash-low",
+          "gemini-3.6-flash-medium",
+          "gemini-3.7-flash-high",
+          "gemini-3.7-flash-low",
+          "gemini-3.7-flash-medium",
+          "gemini-3.8-flash-high",
+          "gemini-3.8-flash-low",
+          "gemini-3.8-flash-medium",
+          "gpt-oss-120b-medium"
+        ]
+      }
+    },
+    "unlisted_effort": {
+      "code": "validation_failed",
+      "details": {
+        "field": "harness.effort",
+        "model": "gemini-3.8-flash-low",
+        "supported": []
+      }
+    },
+    "api_key_next_to_slot": null,
+    "effort_next_to_variant": {
+      "code": "validation_failed",
+      "details": {
+        "field": "harness.effort",
+        "model": "gemini-3.8-flash-low",
+        "supported": []
+      }
+    }
+  },
+  "session_1": {
+    "id": "sess_01a129702c4772d8acf6d222ec391f36",
+    "harness": {
+      "provider_id": "antigravity",
+      "model": "gemini-3.8-flash-low",
+      "effort": null
+    },
+    "inference": {
+      "mode": "subscription",
+      "machine_slot_id": "slot_01a1293cc5787e5581e568fcbcabc2ac"
+    },
+    "inference_connection": null
+  },
+  "task": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 22,
+    "usage": {
+      "source": "antigravity.result",
+      "complete": true,
+      "input_tokens": 35996,
+      "output_tokens": 249,
+      "reasoning_tokens": 0,
+      "cached_input_tokens": 0
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "e51e01a6-ee7c-4768-891f-cbe0738a4401",
+      "credential_health": "ok"
+    },
+    "said_sbx": true,
+    "boot_ids_seen": 1,
+    "event_kinds": {
+      "execution.native_bound": 1,
+      "message.accepted": 1,
+      "message.completed": 1,
+      "message.part_added": 1,
+      "message.part_updated": 10,
+      "message.routed": 1,
+      "tool.completed": 2,
+      "tool.started": 2,
+      "turn.preparing": 1,
+      "turn.queued": 1,
+      "turn.started": 1,
+      "turn.succeeded": 1
+    }
+  },
+  "slot_while_held": {
+    "status": "running",
+    "busy": true
+  },
+  "resume": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 5,
+    "usage": {
+      "source": "antigravity.result",
+      "complete": true,
+      "input_tokens": 48492,
+      "output_tokens": 251,
+      "reasoning_tokens": 0,
+      "cached_input_tokens": 0
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "e51e01a6-ee7c-4768-891f-cbe0738a4401",
+      "credential_health": "ok"
+    },
+    "said_sbx": true,
+    "boot_ids_seen": 1,
+    "event_kinds": {
+      "execution.native_bound": 2,
+      "message.accepted": 2,
+      "message.completed": 2,
+      "message.part_added": 2,
+      "message.part_updated": 11,
+      "message.routed": 2,
+      "tool.completed": 2,
+      "tool.started": 2,
+      "turn.preparing": 2,
+      "turn.queued": 2,
+      "turn.started": 2,
+      "turn.succeeded": 2
+    },
+    "native_resumed": true
+  },
+  "after_release_1": {
+    "status": "ready",
+    "busy": false
+  },
+  "session_2": {
+    "id": "sess_01a12970affe7ff6a1f70a2d1abb7cc6"
+  },
+  "second_vm": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 16,
+    "usage": {
+      "source": "antigravity.result",
+      "complete": true,
+      "input_tokens": 23769,
+      "output_tokens": 109,
+      "reasoning_tokens": 0,
+      "cached_input_tokens": 0
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "a9b5727c-a21f-47b8-bbe5-a4c901110f5f",
+      "credential_health": "ok"
+    },
+    "said_sbx": false,
+    "boot_ids_seen": 1,
+    "event_kinds": {
+      "execution.native_bound": 1,
+      "message.accepted": 1,
+      "message.completed": 1,
+      "message.part_added": 1,
+      "message.part_updated": 2,
+      "message.routed": 1,
+      "tool.completed": 1,
+      "tool.started": 1,
+      "turn.preparing": 1,
+      "turn.queued": 1,
+      "turn.started": 1,
+      "turn.succeeded": 1
+    },
+    "different_vm_than_session_1": true
+  },
+  "cancel": {
+    "state_before_cancel": "running",
+    "turn": "cancelled",
+    "reason": "cancelled_by_user",
+    "seconds": 14
+  },
+  "after_release_2": {
+    "status": "ready",
+    "busy": false,
+    "state_reason": null
+  },
+  "finished_at": "2026-10-11T05:30:49Z"
+}

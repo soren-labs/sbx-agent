@@ -1,0 +1,36 @@
+{
+  "provider": "antigravity",
+  "label": "Antigravity 6",
+  "timeline": [
+    [
+      1,
+      [
+        "login_pending",
+        "login",
+        "starting"
+      ]
+    ],
+    [
+      80,
+      [
+        "login_pending",
+        "login",
+        "verifying"
+      ]
+    ],
+    [
+      92,
+      [
+        "ready",
+        "login",
+        "succeeded"
+      ]
+    ]
+  ],
+  "final": "ready",
+  "state_reason": null,
+  "link_shown": false,
+  "seconds": 92,
+  "real_model_call": true,
+  "models": 14
+}

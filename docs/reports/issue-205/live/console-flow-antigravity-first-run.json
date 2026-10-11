@@ -1,0 +1,267 @@
+{
+  "provider": "antigravity",
+  "steps": [
+    {
+      "name": "clicked_add",
+      "at": "2026-10-11T04:33:31.666Z",
+      "provider": "antigravity"
+    },
+    {
+      "name": "awaiting_person",
+      "at": "2026-10-11T04:33:41.381Z",
+      "label": "Antigravity 6",
+      "method": "authorization_code",
+      "host": "accounts.google.com",
+      "url_length": 704,
+      "pending_file": "/home/ubuntu/sbx-issue205/stage/pending-login-antigravity.json"
+    },
+    {
+      "name": "code_sent",
+      "at": "2026-10-11T04:46:49.490Z",
+      "length": 73
+    },
+    {
+      "name": "verifying_shown",
+      "at": "2026-10-11T04:47:02.278Z"
+    },
+    {
+      "name": "login_finished",
+      "at": "2026-10-11T04:47:14.912Z",
+      "status": "ready"
+    },
+    {
+      "name": "task_finished",
+      "at": "2026-10-11T04:48:01.648Z",
+      "id": "sess_01a12949b64675eca79ef2cbf3bef664",
+      "turn": "failed",
+      "seconds": 20,
+      "picked": {
+        "model": "gemini-3.8-flash-high",
+        "effort": "low"
+      },
+      "harness": {
+        "provider_id": "antigravity",
+        "model": "gemini-3.8-flash-high",
+        "effort": "low"
+      },
+      "inference": {
+        "mode": "subscription",
+        "machine_slot_id": "slot_01a1293cc5787e5581e568fcbcabc2ac"
+      },
+      "inference_connection": null,
+      "usage": {
+        "source": "antigravity.result",
+        "complete": true,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cached_input_tokens": 0
+      },
+      "error": {
+        "code": "provider_failed",
+        "message": "invalid model selection (--model \"gemini-3.8-flash-high\" --effort \"low\"): --model gemini-3.8-flash-high conflicts with --effort=low"
+      }
+    }
+  ],
+  "final": "ready",
+  "slot": {
+    "label": "Antigravity 6",
+    "state_reason": null,
+    "volume": {
+      "name": "sbx-slot-01a1293cc5787e5581e568fcbcabc2ac",
+      "filesystem": "modal_volume_v2",
+      "managed": true
+    },
+    "cli_version": "1.3.3",
+    "verification": {
+      "observed_at": "2026-10-11T04:47:11.156383+00:00",
+      "real_model_call": true
+    },
+    "catalog": {
+      "status": "ready",
+      "source": "agy models",
+      "default_model": null,
+      "effort_scope": "cli",
+      "models": [
+        {
+          "id": "gemini-3.8-flash-high",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.8-flash-medium",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.8-flash-low",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.7-flash-high",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.7-flash-medium",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.7-flash-low",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.6-flash-high",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.6-flash-medium",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.6-flash-low",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.1-pro-high",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gemini-3.1-pro-low",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "claude-opus-4-6-thinking",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "gpt-oss-120b-medium",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ]
+    },
+    "code_still_returned": false,
+    "url_still_returned": false
+  },
+  "session": {
+    "id": "sess_01a12949b64675eca79ef2cbf3bef664",
+    "turn": "failed",
+    "seconds": 20,
+    "picked": {
+      "model": "gemini-3.8-flash-high",
+      "effort": "low"
+    },
+    "harness": {
+      "provider_id": "antigravity",
+      "model": "gemini-3.8-flash-high",
+      "effort": "low"
+    },
+    "inference": {
+      "mode": "subscription",
+      "machine_slot_id": "slot_01a1293cc5787e5581e568fcbcabc2ac"
+    },
+    "inference_connection": null,
+    "usage": {
+      "source": "antigravity.result",
+      "complete": true,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "cached_input_tokens": 0
+    },
+    "error": {
+      "code": "provider_failed",
+      "message": "invalid model selection (--model \"gemini-3.8-flash-high\" --effort \"low\"): --model gemini-3.8-flash-high conflicts with --effort=low"
+    }
+  },
+  "after_release": {
+    "status": "ready",
+    "busy": false
+  },
+  "page_errors": []
+}

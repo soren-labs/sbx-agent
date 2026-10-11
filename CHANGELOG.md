@@ -18,8 +18,23 @@ source for release notes.
   those models and each model's own reasoning efforts (`harness.effort`).
 - Custom API models get a thinking on/off control only where a probe showed the provider's switch
   works and the Harness forwards it (OpenCode with DeepSeek); no graded levels are invented.
+- Machine Slots for Grok Build (`grok`, device login with `grok login --device-auth`) and
+  Antigravity (`antigravity`, Google sign-in: the user opens the link, signs in and pastes the
+  code the browser shows). `GET /api/subscription-providers` lists the providers, and
+  `POST /api/machine-slots/{id}/logins/current/code` sends the pasted code to the waiting CLI. The
+  code is never stored, logged or returned (#205).
+- `sbx slots code SLOT_ID` and `client.slots.submit_code()` send the code shown after an
+  Antigravity sign-in; `sbx slots add --provider grok|antigravity` and `client.slots.wait(...,
+  on_input=...)` complete the flow (#205).
+- Console: "My Cloud Machines" has an "Add machine" menu for Codex, Grok Build and Antigravity;
+  New Session's "Runs on" picker offers each machine's own models and efforts (#205).
+  Antigravity models are listed as the CLI prints them, one per effort level, with no separate
+  effort setting, because the CLI refuses `--effort` next to them (#205).
 
 ### Changed
+- Antigravity's Harness is supported for subscription machines only (it has no API-key mode).
+  `sbx sessions create --slot` now defaults the Harness to the Slot's provider; it was always
+  Codex before (#205).
 - Every Modal sandbox is now a full Linux VM (`runtime="vm"`, Modal SDK `>=1.6.1`). There is one
   runtime for all Modal workloads; existing Modal and inference Connections keep working unchanged.
 - The shared runtime image is built when a Modal Connection is verified instead of on the first
