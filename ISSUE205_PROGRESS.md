@@ -1,14 +1,20 @@
 # Issue #205 progress and handoff
 
 Antigravity (`agy`) and Grok Build (`grok`) subscription Machine Slots, on top of the merged Codex
-implementation (#200-#204). Nothing here has been merged or deployed.
+implementation (#200-#204). **Merged to `main` on 2026-10-11; not deployed.** The sections below
+are the working notes in the order they were written; where an early note conflicts with a later
+one, the later one and `docs/reports/issue-205/README.md` are right.
 
-| PR | Branch | Scope | State |
-| --- | --- | --- | --- |
-| 1 | `feat/issue-205-provider-auth-core` | adapters, login methods, Setup VM supervisor, API, spec | draft, https://github.com/soren-labs/sbx-agent/pull/206 |
-| 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | draft, https://github.com/soren-labs/sbx-agent/pull/207 |
-| 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | draft, https://github.com/soren-labs/sbx-agent/pull/208 |
-| 4 | `feat/issue-205-e2e-docs` (stacked on 3) | staging E2E evidence, docs-site, changelog | draft |
+| PR | Scope | Merge commit |
+| --- | --- | --- |
+| #206 | adapters, login methods, Setup VM supervisor, API, spec | `fd0f243` |
+| #207 | `agy` Harness, Grok subscription mode, catalog, effort | `975bd54` |
+| #208 | Console, SDK, CLI | `1cc1bb7` |
+| #209 | staging E2E evidence, docs-site, changelog | `95abbc7` |
+| #210 | fix for a racy supervisor test that failed on main after the merges | `1d5e3ef` |
+
+CI on `main` failed at `975bd54` and `95abbc7` on that one racy test and is green at `1d5e3ef`.
+The real CLI workflow for both providers was rerun on staging at exactly `1d5e3ef` and passed.
 
 ## Verified on the real CLIs (2026-10-11, isolated HOME, no credentials)
 
@@ -21,7 +27,7 @@ implementation (#200-#204). Nothing here has been merged or deployed.
 | Model catalog | `grok agent stdio` `initialize` -> `_meta.modelState.availableModels[]` with `reasoningEfforts[]` (JSON) | `agy models` (text; format not seen while signed out) |
 | Effort | `--effort` / `--reasoning-effort`, per-model menu | `--effort low\|medium\|high\|xhigh\|max` (binary help; docs list low/medium/high) |
 
-## Not verified yet (needs one real login per provider)
+## Not verified at the time of PR 1 (later verified with approved logins, see the end)
 
 - Antigravity: that the login lands on the Slot Volume under `HOME=/profile` in a VM without D-Bus,
   and survives into a new VM; whether the sign-in screen asks anything after the code is entered.
