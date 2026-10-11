@@ -1,0 +1,44 @@
+# Issue #205 progress and handoff
+
+Antigravity (`agy`) and Grok Build (`grok`) subscription Machine Slots, on top of the merged Codex
+implementation (#200-#204). Nothing here has been merged or deployed.
+
+| PR | Branch | Scope | State |
+| --- | --- | --- | --- |
+| 1 | `feat/issue-205-provider-auth-core` | adapters, login methods, Setup VM supervisor, API, spec | open |
+| 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | not started |
+| 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | not started |
+| 4 | `feat/issue-205-e2e-docs` (stacked on 3) | staging E2E evidence, docs-site, changelog | not started |
+
+## Verified on the real CLIs (2026-10-11, isolated HOME, no credentials)
+
+| | Grok Build `grok` 1.0.50 | Antigravity `agy` 1.3.3 |
+| --- | --- | --- |
+| Subscription login without a browser | `grok login --device-auth`: prints `https://accounts.x.ai/oauth2/device?user_code=...` and an `XXXX-XXXX` code, then polls | no login subcommand; first-run screen "Google OAuth" prints an `accounts.google.com/o/oauth2/auth` URL (redirect `antigravity.google/oauth-callback`) and asks to paste the authorization code |
+| Login storage | `$GROK_HOME/auth.json` (default `~/.grok`) | OS keyring; changelog: bypassed for file storage when no D-Bus session bus exists |
+| Signed-out answer | `grok models`: "You are not authenticated." (exit 0); `grok -p`: exit 1 with a JSON error | `agy models`: "Please sign in" (exit 0); `agy -p` without a terminal did not exit within 40 s |
+| Headless run | `-p`, `--output-format plain\|json\|streaming-json\|streaming-messages-json` | `-p`, `--output-format text\|json\|stream-json` |
+| Model catalog | `grok agent stdio` `initialize` -> `_meta.modelState.availableModels[]` with `reasoningEfforts[]` (JSON) | `agy models` (text; format not seen while signed out) |
+| Effort | `--effort` / `--reasoning-effort`, per-model menu | `--effort low\|medium\|high\|xhigh\|max` (binary help; docs list low/medium/high) |
+
+## Not verified yet (needs one real login per provider)
+
+- Antigravity: that the login lands on the Slot Volume under `HOME=/profile` in a VM without D-Bus,
+  and survives into a new VM; whether the sign-in screen asks anything after the code is entered.
+- Antigravity: the authenticated `agy models` output format (the catalog parser depends on it).
+- Grok: the authenticated `grok models` header (`status_ok` is "Available models", seen signed out)
+  and the subscription catalog from `grok agent stdio`.
+- Both: a real model call on a new Modal `runtime=vm` Worker.
+
+## PR 1 notes
+
+- `runtime/subscriptions/setup.py`: `login_pty` drives a full-screen sign-in under a PTY 4000 columns
+  wide (the URL then prints on one line), types the submitted code once, keeps terminal output in
+  memory only. `status_fail` lets a CLI's signed-out sentence override exit code 0.
+- `POST /api/machine-slots/{id}/logins/current/code`: synchronous relay through
+  `ModalExecutor.setup_input` (stdin of an exec); the code is never persisted.
+- `agy` is installed from the vendor's release archive, SHA-512 pinned in
+  `protocol/capabilities.py` (`HARNESS_CLI_ARCHIVES`); bumping it means copying the new entry from
+  `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
+  (the URL the official `install.sh` reads).
+- `AGY_CLI_DISABLE_AUTO_UPDATE` is set from the name found in the binary; it is not in the public docs.

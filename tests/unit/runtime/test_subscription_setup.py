@@ -203,3 +203,107 @@ def test_catalog_comes_from_the_cli_and_keeps_only_listed_fields(run) -> None:
 def test_missing_catalog_is_reported_as_missing_not_guessed(run) -> None:
     final = run("verify", logged_in=True, catalog="broken")["final"]
     assert final["phase"] == "succeeded" and final["catalog"] is None
+
+
+# A full-screen sign-in like an official CLI's remote login: pick a method, show the URL as
+# a terminal hyperlink, read the authorization code from the terminal.
+FAKE_TUI = r"""
+import pathlib, sys, time
+home = pathlib.Path(__file__).parent
+command = sys.argv[1]
+if command == "status":
+    ok = (home / "logged_in").exists()
+    print("Fetching models...\n" + ("model-a" if ok else "Error: Please sign in to view models."))
+    sys.exit(0)
+assert sys.stdin.isatty(), "the sign-in screen needs a terminal"
+sys.stdout.write("\x1b[2J\x1b[H Welcome. Select login method:\r\n > 1. OAuth\r\n")
+sys.stdout.flush()
+sys.stdin.readline()
+url = "https://signin.example.test/o/oauth2/auth?client_id=abc&state=xyz"
+sys.stdout.write("\x1b[2J\x1b[H Open the URL below:\r\n \x1b]8;;" + url + "\x07" + url
+                 + "\x1b]8;;\x07\r\n \x1b[2mauthorization code...\x1b[0m\r\n")
+sys.stdout.flush()
+code = sys.stdin.readline().strip()
+if code == "4/0AbC-good_code":
+    (home / "logged_in").write_text("1")
+    sys.stdout.write("Signed in.\r\n")
+else:
+    sys.stdout.write("That code did not work.\r\n")
+sys.stdout.flush()
+time.sleep(60)
+"""
+
+
+@pytest.fixture
+def run_pty(run, tmp_path):
+    tui = tmp_path / "tui.py"
+    tui.write_text(FAKE_TUI)
+
+    def start(code: str | None, **spec) -> dict:
+        work = tmp_path / "work"
+        work.mkdir(exist_ok=True)
+        if code is not None:
+            # The control plane writes the submitted code before or after the URL shows.
+            (work / "login-input").write_text(code + "\n")
+        return run(
+            login="unused",
+            spec={
+                "login_argv": [sys.executable, str(tui), "login"],
+                "status_argv": [sys.executable, str(tui), "status"],
+                "status_ok": "",
+                "status_fail": ["please sign in"],
+                "url_pattern": r"https://signin\.example\.test/o/oauth2/\S+",
+                "pty": {
+                    "steps": [{"expect": "Select login method", "send": "\r"}],
+                    "prompt": "authorization code",
+                    "input": "authorization_code",
+                    "accept_seconds": 1.5,
+                },
+                **spec,
+            },
+        )
+
+    return start
+
+
+def test_terminal_sign_in_relays_the_url_and_types_the_submitted_code(run_pty) -> None:
+    result = run_pty("4/0AbC-good_code")
+    waiting = next(s for s in result["seen"] if s["phase"] == "awaiting_user")
+    assert waiting["verification_url"] == (
+        "https://signin.example.test/o/oauth2/auth?client_id=abc&state=xyz"
+    )
+    assert waiting["input"] == "authorization_code" and "user_code" not in waiting
+    assert result["final"]["phase"] == "succeeded"
+    # The submitted code is consumed: not in any published state, not left on disk.
+    assert "4/0AbC-good_code" not in json.dumps(result["seen"])
+    assert not (result["work"] / "login-input").exists()
+    assert not (result["work"] / "login-output").exists()
+    assert "input" not in result["final"]
+
+
+def test_terminal_sign_in_reports_a_code_the_cli_did_not_accept(run_pty) -> None:
+    result = run_pty("4/0AbC-wrong_code")
+    assert result["final"]["phase"] == "failed"
+    assert result["final"]["error"] == "code_rejected"
+    assert "4/0AbC-wrong_code" not in json.dumps(result["seen"])
+
+
+def test_terminal_sign_in_never_types_malformed_input(run_pty) -> None:
+    result = run_pty("4/0AbC-good_code; rm -rf /", deadline_seconds=2)
+    assert result["final"]["phase"] == "expired"
+    assert not (result["work"] / "login-input").exists()
+
+
+def test_terminal_sign_in_expires_when_no_code_arrives(run_pty) -> None:
+    result = run_pty(None, deadline_seconds=1.5)
+    assert [s["phase"] for s in result["seen"]][-2:] == ["awaiting_user", "expired"]
+    assert result["final"]["error"] == "code_expired"
+
+
+def test_signed_out_words_decide_even_when_the_status_command_exits_zero(run) -> None:
+    result = run(
+        "verify",
+        logged_in=True,
+        spec={"status_ok": "", "status_fail": ["logged in using test"]},
+    )
+    assert result["final"]["error"] == "not_logged_in"

@@ -15,16 +15,25 @@ Logging in to the same subscription account twice creates two Slots with two Vol
 independent logins. A Volume backs at most one Slot per Modal Connection. Slots add isolated
 logins; they do not add subscription quota.
 
-Providers are adapters (`control/integrations/subscriptions`). `codex` is the only provider.
-`GET /api/subscription-providers` lists them with `available=false` when the Modal executor is
-not enabled.
+Providers are adapters (`control/integrations/subscriptions`). `GET /api/subscription-providers`
+lists them with their `login_method` and `verification_host`, and `available=false` when the Modal
+executor is not enabled.
+
+| `provider` | Official CLI (pinned in the image) | `login_method` | Official login run in the Setup VM | Login kept under |
+| --- | --- | --- | --- | --- |
+| `codex` | `codex` (npm) | `device_code` | `codex login --device-auth` | `CODEX_HOME=/profile/.codex` |
+| `grok` | `grok` (npm) | `device_code` | `grok login --device-auth` | `GROK_HOME=/profile/.grok` |
+| `antigravity` | `agy` (release archive, SHA-512 pinned) | `authorization_code` | the `agy` first-run sign-in screen, "Google OAuth" | `HOME=/profile` |
+
+Every provider's `HOME` and XDG directories point into the Slot's own Volume, so two Slots never
+share a home, whatever their provider or account. No API key is involved in any of them.
 
 ## What the control plane stores
 
 `machine_slots`: provider, label, optional account alias, Modal Connection, Volume name,
 `volume_managed`, state, holder, safe capabilities (CLI version, verification time).
 `slot_login_attempts`: mode, state, Setup VM handle, verification URL, the one-time user code
-while it still has to be entered, expiry, outcome code.
+while it still has to be entered, expiry, outcome code. A pasted authorization code is not stored.
 
 It never stores, reads, returns or logs the login itself. The official CLI writes it inside the VM
 onto the Slot Volume. The control plane reads only the supervisor's state file
@@ -56,6 +65,9 @@ Attempt `state`: `starting` → `awaiting_user` → `verifying` → `succeeded`,
 3. The attempt becomes `awaiting_user` with the real `verification_url`, `user_code` and
    `code_expires_at` reported by the CLI. The URL and code are returned separately; no deep link is
    invented.
+   For `login_method=authorization_code` there is no `user_code`: the attempt carries
+   `login.input="authorization_code"` and waits for the code the browser displays after sign-in
+   (see below).
 4. The supervisor polls the CLI's own login status. The CLI's status is the authority: a login
    process that exits non-zero does not override an accepted login.
 5. Once logged in it makes one real tool-less model call, records the CLI version, runs
@@ -63,6 +75,30 @@ Attempt `state`: `starting` → `awaiting_user` → `verifying` → `succeeded`,
    as authorized and is reported with `state_reason=usage_limited`.
 6. The Job terminates the Setup VM, confirms it, clears the code and sets the Slot `ready`. There
    is no second save step.
+
+### Sign-in that returns a code (`authorization_code`)
+
+Antigravity's CLI has no login subcommand and no device-code flow. Its documented remote sign-in is
+a terminal screen that prints an `accounts.google.com` URL and asks for the authorization code the
+browser shows afterwards. The supervisor runs that screen under a PTY (no browser, no password, no
+private endpoint), confirms the preselected "Google OAuth" entry, and publishes the URL.
+
+`POST /api/machine-slots/{id}/logins/current/code` `{code}` hands the pasted code to the waiting
+CLI. It is accepted only while the attempt is `awaiting_user` with `login.input` set
+(`invalid_transition` otherwise) and only in the shape of an authorization code
+(`validation_failed`). The code travels from the request to the Setup VM over the executor's exec
+channel on stdin; it is never written to the database, the audit record (which notes only that a
+code was sent), a Job, a log or a response. Inside the VM the supervisor reads it once, deletes it
+and types it into the CLI; terminal output is held in memory only.
+
+After the code is entered the attempt is `verifying`. If the CLI does not report a login within 90
+seconds the attempt fails with `code_rejected` and the Slot is `needs_login`; a new login shows a
+new URL. An unreachable Setup VM answers `executor_unavailable` (retryable) and the same code may
+be sent again.
+
+The CLIs for `grok` and `antigravity` have no login-status command. The supervisor asks
+`grok models` / `agy models` instead; both exit 0 while signed out, so the CLI's own signed-out
+sentence decides.
 
 Failure handling: a denied login or failed verification gives `needs_login`; an unapproved code
 gives `expired`; a vanished Setup VM gives `error` (`setup_vm_lost`). The control plane enforces its
@@ -75,6 +111,7 @@ first confirms VM termination; an unconfirmed termination retries.
 | `POST /api/machine-slots/{id}/logins` | Official login again (re-login). If it does not complete, a previously `ready` Slot stays `ready`. |
 | `POST /api/machine-slots/{id}/verifications` | Check the stored login with one real CLI call on a fresh VM. |
 | `DELETE /api/machine-slots/{id}/logins/current` | Cancel the live attempt and stop its VM. |
+| `POST /api/machine-slots/{id}/logins/current/code` | Send the code the browser displayed (`authorization_code` providers only). |
 | `PATCH /api/machine-slots/{id}` | Rename, change the account alias. |
 | `POST /api/machine-slots/{id}/logout` | Destroy the Slot's Volume; the Slot becomes `needs_login`. Provider-side sessions are not revoked. |
 | `DELETE /api/machine-slots/{id}?confirm=<label>` | Delete the Slot and its Volume. Refused while a Worker holds it. |
