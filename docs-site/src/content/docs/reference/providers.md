@@ -33,7 +33,7 @@ SBX never reads or returns the login and never falls back to an API key.
 | --- | --- | --- | --- | --- | --- | --- |
 | `codex` | `codex` (`@openai/codex`) | Device code: a URL and a one-time code | `auth.openai.com` | `codex app-server model/list`, as the CLI reports it | Per model, from each model's `supportedReasoningEfforts` | Yes (`openai_responses`) |
 | `grok` | `grok` (`@xai-official/grok`) | Device code: a URL and a one-time code | `accounts.x.ai` | `grok agent stdio initialize`, as the CLI reports it | Per model, from each model's effort menu; some models have none | Yes (`openai_chat`); no reasoning effort in this mode |
-| `antigravity` | `agy` | Authorization code: a Google sign-in link, then the code the browser shows, pasted back into SBX | `accounts.google.com` | `agy models`: the ids as printed, with no machine-readable catalog. If the list cannot be read, only the provider default is used | The levels the CLI accepts for `--effort`. They belong to the CLI, so every model offers the same levels | No |
+| `antigravity` | `agy` | Authorization code: a Google sign-in link, then the code the browser shows, pasted back into SBX | `accounts.google.com` | `agy models`: the ids and names as printed, with no machine-readable catalog. If the list cannot be read, only the provider default is used | None as a separate setting. The CLI lists one model per effort level and refuses `--effort` next to it, so the level is chosen with the model | No |
 
 Notes for each subscription provider:
 
@@ -61,9 +61,9 @@ are described in the [cloud machines guide](/guides/cloud-machines/).
 
 `model_discovery` is supported for Codex, Grok Build and Antigravity on a cloud
 machine (the CLI's own catalog). Elsewhere models come from the Connection.
-`effort_settings` is supported for Codex, Grok Build and Antigravity on a cloud
-machine, where the levels come from the selected model or, for Antigravity, from
-the CLI. It is also supported for OpenCode with an API key (thinking off, where
+`effort_settings` is supported for Codex and Grok Build on a cloud machine,
+where the levels come from the selected model. Antigravity has no separate
+effort setting; its models are effort variants. It is also supported for OpenCode with an API key (thinking off, where
 the provider's switch was verified). It is not wired for the other CLIs. `mcp`,
 `skills` and `attachments` are `unknown`: the CLIs have them, SBX does not wire
 them yet.

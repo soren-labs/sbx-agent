@@ -138,18 +138,19 @@ pickers then come from that machine.
   source shown. SBX ships no model list of its own. The three providers differ:
   - **Codex** reports its list with `codex app-server model/list`.
   - **Grok Build** reports its list with `grok agent stdio initialize`.
-  - **Antigravity** prints its list with `agy models`. SBX shows the model ids
-    exactly as the CLI prints them, because the CLI has no machine-readable
-    catalog. If SBX cannot read that list, the machine still works, but only with
-    the provider's default model, and the model picker is not shown.
+  - **Antigravity** prints its list with `agy models`. SBX shows each model by
+    the name the CLI prints, because the CLI has no machine-readable catalog. If
+    SBX cannot read that list, the machine still works, but only with the
+    provider's default model, and the model picker is not shown.
   - If the CLI gave no usable list for any provider, no models are offered and the
     provider default is used.
 - **Reasoning effort** shows the efforts the selected model lists.
   - For **Codex** and **Grok Build** the choices change with the model, and some
     models have no effort choice at all.
-  - For **Antigravity** the efforts are the levels the installed CLI accepts for
-    its `--effort` option. They belong to the CLI, not to a particular model, so
-    every model offers the same levels. The product says so next to the picker.
+  - **Antigravity** has no separate effort choice. Its CLI lists one model per
+    effort level, with the level in the name, for example "(High)" and "(Low)"
+    versions of the same model. Pick the version you want. The CLI refuses an
+    effort setting next to one of these models, so SBX does not offer one.
 - The server refuses a model or effort that is not in the machine's catalog
   (`validation_failed`).
 
@@ -181,7 +182,7 @@ again.
 | How you sign in | Device code: open the page and enter the one-time code. | Device code: open the page and enter the one-time code. | Open the Google sign-in link, sign in, and paste the code the browser shows. |
 | Where sign-in happens | `auth.openai.com`, in your browser | `accounts.x.ai`, in your browser | `accounts.google.com`, in your browser |
 | Where models come from | The signed-in `codex` CLI (`codex app-server model/list`). | The signed-in `grok` CLI (`grok agent stdio initialize`). | The signed-in `agy` CLI's list (`agy models`). If it cannot be read, only the provider default is used. |
-| Reasoning effort | Per model, as each model lists it. | Per model, as each model lists it. Some models have none. | The levels the CLI accepts for `--effort`. The same for every model. |
+| Reasoning effort | Per model, as each model lists it. | Per model, as each model lists it. Some models have none. | No separate setting. Each effort level is its own model in the list. |
 | Custom API key available | Yes, with an OpenAI Responses endpoint. | Yes, with an OpenAI Chat endpoint. | No. Antigravity runs only on a machine. |
 
 ## Thinking control for API-key models

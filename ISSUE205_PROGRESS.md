@@ -106,3 +106,23 @@ control plane 8815, Console 5185. No Slots are left on staging.
 
 Docs-site pages, both changelogs and `examples/subscription_machines.py` were drafted by a Haiku
 subagent from a fact sheet and reviewed; the example has not been run against a live API.
+
+## After the approved logins (2026-10-11, later)
+
+Both official logins were approved by a person on staging ("Grok Build 6", "Antigravity 6").
+
+- Grok Build worked as built. Live: verify on a fresh VM, file + shell task, resume, second VM,
+  cancel all pass.
+- Antigravity's first real task failed: the signed-in CLI lists one model slug per effort variant
+  and refuses `--effort` next to it. The earlier design (CLI-wide effort levels read from
+  `agy --help`) was wrong. Fixed on the PR 2 and PR 3 branches: catalog = printed slug + display
+  name, no effort list; server rejects effort on Antigravity; Harness never passes `--effort`;
+  Console shows no effort picker. The supervisor's `facts` mechanism was removed with it.
+- `tests/fixtures/harnesses/antigravity/success.jsonl` is a recorded real run (ids replaced).
+- Evidence and the requirement map: `docs/reports/issue-205/README.md`, `docs/reports/issue-205/live/`.
+- Staging helpers added outside the repo: `stage/agy_diag.py` (signed-in CLI probe in a VM on the
+  Slot's Volume), `stage/live_accept.py`, `stage/cli_flow.sh`, `pw/ready-shots.mjs`, `pw/task.mjs`.
+- The two signed-in machines are kept on staging so the logins can be re-tested. Sign them out or
+  delete them from the Console when no longer wanted; that destroys their Volumes.
+- The build host is a burstable instance; when it is throttled, time-bounded Console tests can
+  time out locally. CI is the reference for those.

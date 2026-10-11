@@ -27,9 +27,9 @@ rejected with `csrf_failed`.
   The same picker has **Runs on**: your API key or a ready cloud machine. A
   machine offers the models its own login reported and each model's reasoning
   efforts; an API-key model offers a thinking On/Off switch where verified.
-  Antigravity has no API-key mode, so it appears only under **Runs on**. Its
-  effort choices are the levels the CLI accepts, the same for every model, and
-  the picker says so. If SBX cannot read the Antigravity model list, the model
+  Antigravity has no API-key mode, so it appears only under **Runs on**. It
+  has no separate effort picker: its CLI lists one model per effort level, so
+  you choose the level by choosing the model. If SBX cannot read the Antigravity model list, the model
   picker is not shown and the provider default is used.
 - **Session workbench**: the conversation stays on the left while the agent
   works. With Claude Code and Grok Build the reply and any reasoning the model

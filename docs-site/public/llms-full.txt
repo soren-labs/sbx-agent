@@ -613,9 +613,9 @@ rejected with `csrf_failed`.
   The same picker has **Runs on**: your API key or a ready cloud machine. A
   machine offers the models its own login reported and each model's reasoning
   efforts; an API-key model offers a thinking On/Off switch where verified.
-  Antigravity has no API-key mode, so it appears only under **Runs on**. Its
-  effort choices are the levels the CLI accepts, the same for every model, and
-  the picker says so. If SBX cannot read the Antigravity model list, the model
+  Antigravity has no API-key mode, so it appears only under **Runs on**. It
+  has no separate effort picker: its CLI lists one model per effort level, so
+  you choose the level by choosing the model. If SBX cannot read the Antigravity model list, the model
   picker is not shown and the provider default is used.
 - **Session workbench**: the conversation stays on the left while the agent
   works. With Claude Code and Grok Build the reply and any reasoning the model
@@ -1239,7 +1239,7 @@ SBX never reads or returns the login and never falls back to an API key.
 | --- | --- | --- | --- | --- | --- | --- |
 | `codex` | `codex` (`@openai/codex`) | Device code: a URL and a one-time code | `auth.openai.com` | `codex app-server model/list`, as the CLI reports it | Per model, from each model's `supportedReasoningEfforts` | Yes (`openai_responses`) |
 | `grok` | `grok` (`@xai-official/grok`) | Device code: a URL and a one-time code | `accounts.x.ai` | `grok agent stdio initialize`, as the CLI reports it | Per model, from each model's effort menu; some models have none | Yes (`openai_chat`); no reasoning effort in this mode |
-| `antigravity` | `agy` | Authorization code: a Google sign-in link, then the code the browser shows, pasted back into SBX | `accounts.google.com` | `agy models`: the ids as printed, with no machine-readable catalog. If the list cannot be read, only the provider default is used | The levels the CLI accepts for `--effort`. They belong to the CLI, so every model offers the same levels | No |
+| `antigravity` | `agy` | Authorization code: a Google sign-in link, then the code the browser shows, pasted back into SBX | `accounts.google.com` | `agy models`: the ids and names as printed, with no machine-readable catalog. If the list cannot be read, only the provider default is used | None as a separate setting. The CLI lists one model per effort level and refuses `--effort` next to it, so the level is chosen with the model | No |
 
 Notes for each subscription provider:
 
@@ -1267,9 +1267,9 @@ are described in the [cloud machines guide](/guides/cloud-machines/).
 
 `model_discovery` is supported for Codex, Grok Build and Antigravity on a cloud
 machine (the CLI's own catalog). Elsewhere models come from the Connection.
-`effort_settings` is supported for Codex, Grok Build and Antigravity on a cloud
-machine, where the levels come from the selected model or, for Antigravity, from
-the CLI. It is also supported for OpenCode with an API key (thinking off, where
+`effort_settings` is supported for Codex and Grok Build on a cloud machine,
+where the levels come from the selected model. Antigravity has no separate
+effort setting; its models are effort variants. It is also supported for OpenCode with an API key (thinking off, where
 the provider's switch was verified). It is not wired for the other CLIs. `mcp`,
 `skills` and `attachments` are `unknown`: the CLIs have them, SBX does not wire
 them yet.
@@ -1452,6 +1452,7 @@ Source: /troubleshooting/
 | `invalid_transition`: "this login is not waiting for a code" from `sbx slots code` or `submit_code` | A code was sent to a device-code machine (Codex or Grok Build), a code was sent a second time after it was accepted, or no login was waiting for one. Only Antigravity asks for a pasted code, and only while its login waits for it. Check the state with `sbx slots show SLOT_ID`. |
 | Antigravity login ends as expired | The sign-in link or pasted code was not used before the login window closed. Choose **Log in again** for a new link. |
 | Grok Build or Antigravity machine shows **Needs login** after a Session | The provider rejected the stored login during a Turn, or the login was signed out. Choose **Log in again**, then send the Turn again. |
+| Antigravity task fails with `invalid model selection` or an effort is refused | Antigravity's CLI lists one model per effort level and refuses a separate effort next to it. | Choose the model version with the level you want, such as the "(Low)" one, and leave effort unset. With the CLI or SDK, do not pass `--effort` / `effort` for an Antigravity machine. |
 | Antigravity machine has no model picker | SBX could not read the list that `agy models` prints, so the machine works with the provider default only. Choose **Check login and refresh models**. If the list still cannot be read, Sessions use the default model. |
 | Cloud machine shows **Needs login** after it worked | The provider rejected the stored login or it was signed out. Choose **Log in again**. |
 | Cloud machine shows **Error** | The setup VM was lost or the Volume could not be saved. Choose **Check login**; if it persists, check the Modal Connection. |

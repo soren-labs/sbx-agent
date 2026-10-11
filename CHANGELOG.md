@@ -28,6 +28,8 @@ source for release notes.
   on_input=...)` complete the flow (#205).
 - Console: "My Cloud Machines" has an "Add machine" menu for Codex, Grok Build and Antigravity;
   New Session's "Runs on" picker offers each machine's own models and efforts (#205).
+  Antigravity models are listed as the CLI prints them, one per effort level, with no separate
+  effort setting, because the CLI refuses `--effort` next to them (#205).
 
 ### Changed
 - Antigravity's Harness is supported for subscription machines only (it has no API-key mode).

@@ -10,7 +10,7 @@
   "codex_subscription": {
     "turn": "succeeded",
     "reason": null,
-    "seconds": 17,
+    "seconds": 16,
     "answered": true,
     "harness": {
       "provider_id": "codex",
@@ -19,7 +19,7 @@
     },
     "inference": {
       "mode": "subscription",
-      "machine_slot_id": "slot_01a1291a51107739b5c7850b3053612b"
+      "machine_slot_id": "slot_01a1297b17e27760b415d746e85ba134"
     },
     "usage": {
       "source": "codex.turn.completed",
@@ -34,7 +34,7 @@
   "custom_api_opencode": {
     "turn": "succeeded",
     "reason": null,
-    "seconds": 14,
+    "seconds": 15,
     "answered": true,
     "harness": {
       "provider_id": "opencode",
@@ -48,10 +48,10 @@
     "usage": {
       "source": "opencode.step_finish",
       "complete": true,
-      "input_tokens": 5680,
+      "input_tokens": 176,
       "output_tokens": 7,
-      "reasoning_tokens": 20,
-      "cached_input_tokens": 1664
+      "reasoning_tokens": 0,
+      "cached_input_tokens": 7168
     }
   },
   "codex_slot_after": "ready"

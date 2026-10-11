@@ -1,0 +1,41 @@
+{
+  "label": "Antigravity 6",
+  "steps": [],
+  "picked_model": "Gemini 3.8 Flash (Low)",
+  "effort_picker_shown": false,
+  "session": {
+    "id": "sess_01a12976d3fd7f50ab9aeb8a88f8e12d",
+    "turn": "succeeded",
+    "seconds": 44,
+    "harness": {
+      "provider_id": "antigravity",
+      "model": "gemini-3.8-flash-low",
+      "effort": null
+    },
+    "inference": {
+      "mode": "subscription",
+      "machine_slot_id": "slot_01a1293cc5787e5581e568fcbcabc2ac"
+    },
+    "inference_connection": null,
+    "usage": {
+      "source": "antigravity.result",
+      "complete": true,
+      "input_tokens": 35965,
+      "output_tokens": 206,
+      "reasoning_tokens": 0,
+      "cached_input_tokens": 0
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "1f299d2a-344e-4fe3-8009-8447cf982b5e",
+      "credential_health": "ok"
+    }
+  },
+  "answer_on_page_has_sbx": true,
+  "after_release": {
+    "status": "ready",
+    "busy": false
+  },
+  "page_errors": []
+}

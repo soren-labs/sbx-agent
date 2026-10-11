@@ -1,0 +1,239 @@
+{
+  "provider": "grok",
+  "started_at": "2026-10-11T05:30:58Z",
+  "slot": {
+    "id": "slot_01a1293bf93f7c7da0dba2618ea61c7a",
+    "label": "Grok Build 6",
+    "volume": {
+      "name": "sbx-slot-01a1293bf93f7c7da0dba2618ea61c7a",
+      "filesystem": "modal_volume_v2",
+      "managed": true
+    }
+  },
+  "verify_on_fresh_vm": {
+    "status": "ready",
+    "reason": null,
+    "seconds": 18,
+    "login_mode": "verify",
+    "login_state": "succeeded",
+    "real_model_call": true,
+    "cli_version": "grok 1.0.50 (c58f321264ba)",
+    "catalog": {
+      "status": "ready",
+      "source": "grok agent stdio initialize",
+      "default_model": "grok-4.7",
+      "models": [
+        {
+          "id": "grok-4.7",
+          "name": "Grok 4.7",
+          "efforts": [
+            "xhigh",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        {
+          "id": "grok-4.7-build-fast",
+          "name": "Grok 4.7 Fast",
+          "efforts": [
+            "xhigh",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        {
+          "id": "grok-4.6",
+          "name": "Grok 4.6",
+          "efforts": [
+            "xhigh",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        {
+          "id": "grok-4.5",
+          "name": "Grok 4.5",
+          "efforts": [
+            "high",
+            "medium",
+            "low"
+          ]
+        }
+      ]
+    }
+  },
+  "refusals": {
+    "invented_model": {
+      "code": "validation_failed",
+      "details": {
+        "field": "harness.model",
+        "available": [
+          "grok-4.5",
+          "grok-4.6",
+          "grok-4.7",
+          "grok-4.7-build-fast"
+        ]
+      }
+    },
+    "unlisted_effort": {
+      "code": "validation_failed",
+      "details": {
+        "field": "harness.effort",
+        "model": "grok-4.7-build-fast",
+        "supported": [
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ]
+      }
+    },
+    "api_key_next_to_slot": null
+  },
+  "session_1": {
+    "id": "sess_01a12971a82f73b58422f7e8ab113276",
+    "harness": {
+      "provider_id": "grok",
+      "model": "grok-4.7-build-fast",
+      "effort": "low"
+    },
+    "inference": {
+      "mode": "subscription",
+      "machine_slot_id": "slot_01a1293bf93f7c7da0dba2618ea61c7a"
+    },
+    "inference_connection": null
+  },
+  "task": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 18,
+    "usage": {
+      "source": "grok.result",
+      "complete": true,
+      "input_tokens": 21069,
+      "output_tokens": 252,
+      "cached_input_tokens": 11648
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "01a12971-cc99-7963-b330-5e3ba3867a85",
+      "credential_health": "ok"
+    },
+    "said_sbx": true,
+    "boot_ids_seen": 2,
+    "event_kinds": {
+      "execution.native_bound": 1,
+      "message.accepted": 1,
+      "message.completed": 1,
+      "message.part_added": 3,
+      "message.part_updated": 3,
+      "message.routed": 1,
+      "tool.completed": 2,
+      "tool.started": 2,
+      "tool.updated": 4,
+      "turn.preparing": 1,
+      "turn.queued": 1,
+      "turn.started": 1,
+      "turn.succeeded": 1
+    }
+  },
+  "slot_while_held": {
+    "status": "running",
+    "busy": true
+  },
+  "resume": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 6,
+    "usage": {
+      "source": "grok.result",
+      "complete": true,
+      "input_tokens": 6261,
+      "output_tokens": 43,
+      "cached_input_tokens": 10112
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "01a12971-cc99-7963-b330-5e3ba3867a85",
+      "credential_health": "ok"
+    },
+    "said_sbx": true,
+    "boot_ids_seen": 2,
+    "event_kinds": {
+      "execution.native_bound": 2,
+      "message.accepted": 2,
+      "message.completed": 2,
+      "message.part_added": 4,
+      "message.part_updated": 4,
+      "message.routed": 2,
+      "tool.completed": 2,
+      "tool.started": 2,
+      "tool.updated": 4,
+      "turn.preparing": 2,
+      "turn.queued": 2,
+      "turn.started": 2,
+      "turn.succeeded": 2
+    },
+    "native_resumed": true
+  },
+  "after_release_1": {
+    "status": "ready",
+    "busy": false
+  },
+  "session_2": {
+    "id": "sess_01a1297223a871dbbea65a16bb14d1dc"
+  },
+  "second_vm": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 17,
+    "usage": {
+      "source": "grok.result",
+      "complete": true,
+      "input_tokens": 20177,
+      "output_tokens": 94,
+      "cached_input_tokens": 12416
+    },
+    "outcome": {
+      "verdict": "success",
+      "exit_code": 0,
+      "native_id": "01a12972-4ee1-7cb1-a5b8-bee69518b3f9",
+      "credential_health": "ok"
+    },
+    "said_sbx": false,
+    "boot_ids_seen": 2,
+    "event_kinds": {
+      "execution.native_bound": 1,
+      "message.accepted": 1,
+      "message.completed": 1,
+      "message.part_added": 1,
+      "message.part_updated": 2,
+      "message.routed": 1,
+      "tool.completed": 1,
+      "tool.started": 1,
+      "tool.updated": 2,
+      "turn.preparing": 1,
+      "turn.queued": 1,
+      "turn.started": 1,
+      "turn.succeeded": 1
+    },
+    "different_vm_than_session_1": true
+  },
+  "cancel": {
+    "state_before_cancel": "running",
+    "turn": "cancelled",
+    "reason": "cancelled_by_user",
+    "seconds": 14
+  },
+  "after_release_2": {
+    "status": "ready",
+    "busy": false,
+    "state_reason": null
+  },
+  "finished_at": "2026-10-11T05:32:25Z"
+}
