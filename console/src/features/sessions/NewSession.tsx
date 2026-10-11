@@ -492,11 +492,6 @@ export function NewSession({ onPromptChange }: { onPromptChange?: (prompt: strin
               {efforts.length ? (
                 <>
                   <h2>{t(thinkingToggle ? "composer.thinking" : "composer.effort")}</h2>
-                  {slot && catalog?.effort_scope === "cli" ? (
-                    <p className="faint small" data-testid="effort-scope">
-                      {t("composer.effort_cli_levels", { provider: slot.provider_name })}
-                    </p>
-                  ) : null}
                   <div className="picker-options effort-options" data-testid="effort-options">
                     <button
                       type="button"

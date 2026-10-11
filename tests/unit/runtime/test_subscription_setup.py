@@ -232,35 +232,24 @@ def test_catalog_can_sit_at_a_nested_path_of_an_earlier_answer(run, tmp_path) ->
     assert catalog["items"] == [{"modelId": "m-1", "name": "M1", "_meta": {"efforts": ["a"]}}]
 
 
-def test_text_catalog_is_the_printed_lines_and_facts_from_the_cli_itself(run, tmp_path) -> None:
+def test_text_catalog_is_the_lines_the_models_command_printed(run, tmp_path) -> None:
     cli = tmp_path / "models.py"
     cli.write_text(
         "import sys\n"
         "if sys.argv[1] == 'models':\n"
-        "    print('Fetching...\\n\\n  \\x1b[1mmodel-one\\x1b[0m\\n  model-two (default)')\n"
-        "elif sys.argv[1] == 'help':\n"
-        "    print('  --effort   Reasoning effort (low|high)')\n"
+        "    print('Fetching...\\n\\n\\x1b[1mmodel-one\\x1b[0m\\tModel One (High)\\n  model-two')\n"
         "else:\n"
         "    sys.exit(2)\n"
     )
-    base = [sys.executable, str(cli)]
 
-    def catalog(models: str, pattern: str = r"--effort\s[^\n]*\(([a-z|]+)\)"):
-        spec = {
-            "catalog": {
-                "kind": "text",
-                "argv": [*base, models],
-                "facts": {"efforts": {"argv": [*base, "help"], "pattern": pattern}},
-            }
-        }
+    def catalog(command: str):
+        spec = {"catalog": {"kind": "text", "argv": [sys.executable, str(cli), command]}}
         return run("verify", logged_in=True, spec=spec)["final"]["catalog"]
 
     assert catalog("models") == {
-        "lines": ["Fetching...", "model-one", "model-two (default)"],
+        "lines": ["Fetching...", "model-one\tModel One (High)", "model-two"],
         "complete": True,
-        "efforts": "low|high",
     }
-    assert "efforts" not in catalog("models", r"--nothing (\w+)"), "an absent fact stays absent"
     assert catalog("broken") is None, "a failing models command is no catalog"
 
 

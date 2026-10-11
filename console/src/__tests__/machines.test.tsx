@@ -440,15 +440,12 @@ const AGY_CATALOG: SlotCatalog = {
   source: "agy models",
   observed_at: "2026-10-11T09:00:00+00:00",
   cli_version: "1.3.3",
-  default_model: "agy-pro-1",
-  effort_scope: "cli",
-  models: ["agy-pro-1", "agy-flash-2"].map((id, i) => ({
-    id,
-    name: id,
-    description: null,
-    default: i === 0,
-    reasoning: { kind: "levels" as const, default: null, efforts: ["low", "medium", "high"].map((e) => ({ id: e, description: null })) },
-  })),
+  default_model: null,
+  // The CLI lists one slug per effort variant; there is no separate effort.
+  models: [
+    ["agy-pro-1-high", "Agy Pro 1 (High)"],
+    ["agy-pro-1-low", "Agy Pro 1 (Low)"],
+  ].map(([id, name]) => ({ id, name, description: null, default: false, reasoning: { kind: "none" as const, default: null, efforts: [] } })),
 };
 const GROK_CATALOG: SlotCatalog = {
   status: "ready",
@@ -676,28 +673,28 @@ describe("New Session on a Grok Build or Antigravity machine", () => {
     });
   });
 
-  it("runs the Antigravity harness and says its effort levels belong to the CLI", async () => {
+  it("runs the Antigravity harness with a model variant and offers no separate effort", async () => {
     const user = userEvent.setup();
     const { fetch, find } = routes();
     await renderApp(<NewSession />, fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /Antigravity 1/ }));
     expect(screen.getByTestId("model-source")).toHaveTextContent("Models reported by agy models");
-    expect(within(screen.getByTestId("model-options")).getAllByRole("button").map((b) => b.textContent)).toEqual(["agy-pro-1", "agy-flash-2"]);
-    expect(efforts()).toEqual(["Model default", "low", "medium", "high"]);
-    expect(screen.getByTestId("effort-scope")).toHaveTextContent("These are the Antigravity CLI's levels, not a per-model list.");
-    await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "agy-flash-2" }));
-    await user.click(within(screen.getByTestId("effort-options")).getByRole("button", { name: "medium" }));
+    // The CLI's display names carry the effort; the picker shows them as printed.
+    expect(within(screen.getByTestId("model-options")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Agy Pro 1 (High)", "Agy Pro 1 (Low)"]);
+    expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument();
+    await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "Agy Pro 1 (Low)" }));
+    expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: /task/i }), "fix it");
     await user.keyboard("{Control>}{Enter}{/Control}");
     await waitFor(() => expect(find("POST", "/api/workspaces/w1/sessions")).toHaveLength(1));
-    const body = find("POST", "/api/workspaces/w1/sessions")[0].body as { connections?: unknown };
+    const body = find("POST", "/api/workspaces/w1/sessions")[0].body as { connections?: unknown; harness: { effort?: string } };
     expect(body).toMatchObject({
-      harness: { provider_id: "antigravity", model: "agy-flash-2", effort: "medium" },
+      harness: { provider_id: "antigravity", model: "agy-pro-1-low" },
       inference: { mode: "subscription", machine_slot_id: "slot_y" },
     });
+    expect(body.harness.effort).toBeUndefined(); // an effort next to a variant is refused by the CLI
     expect(body.connections).toBeUndefined(); // never an API key next to a subscription
-
   });
 
   it("does not offer Antigravity as a harness for a custom API key", async () => {

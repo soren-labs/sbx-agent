@@ -533,7 +533,6 @@ export const zhCN: Partial<Record<I18nKey, string>> = {
   "composer.source_needs_login": "需要登录",
   "composer.effort": "推理强度",
   "composer.effort_default": "模型默认",
-  "composer.effort_cli_levels": "这些是 {provider} CLI 的档位，而不是按模型列出的清单。CLI 会把所选档位应用到所选模型。",
   "composer.thinking": "思考",
   "composer.thinking_on": "开启（模型默认）",
   "composer.thinking_off": "关闭",

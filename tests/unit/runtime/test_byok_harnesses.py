@@ -374,7 +374,7 @@ def _agy(tmp_path: Path, **overrides) -> TurnContext:
 
 def test_antigravity_turn_runs_print_mode_on_the_slot_profile(tmp_path) -> None:
     harness = HARNESSES["antigravity"]
-    ctx = _agy(tmp_path, model="model-pro-1", effort="high")
+    ctx = _agy(tmp_path, model="model-pro-1-high")
     prepared = harness.prepare(ctx, secrets())
     assert prepared.env["HOME"] == str(tmp_path / "profile"), "agy has no home override"
     assert prepared.env["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"
@@ -385,8 +385,8 @@ def test_antigravity_turn_runs_print_mode_on_the_slot_profile(tmp_path) -> None:
     argv = invocation.argv
     assert argv[argv.index("-p") + 1] == ctx.prompt and invocation.stdin is None
     assert argv[argv.index("--output-format") + 1] == "stream-json"
-    assert argv[argv.index("--model") + 1] == "model-pro-1"
-    assert argv[argv.index("--effort") + 1] == "high"
+    assert argv[argv.index("--model") + 1] == "model-pro-1-high"
+    assert "--effort" not in argv, "the effort is part of the model variant"
     assert invocation.cwd == ctx.worktree
     resumed = harness.resume_turn(
         ctx, prepared, {"provider_id": "antigravity", "native_id": "c-1"}
@@ -411,9 +411,29 @@ def test_antigravity_refuses_everything_but_a_mounted_slot(tmp_path) -> None:
     with pytest.raises(HarnessError) as err:
         harness.prepare(missing, {})
     assert err.value.code == "connection_required"
+    # The signed-in CLI refuses ``--model <variant> --effort <level>``; so does the Harness.
     with pytest.raises(HarnessError) as err:
-        harness.prepare(_agy(tmp_path, effort="ludicrous"), {})
+        harness.prepare(_agy(tmp_path, model="model-pro-1-high", effort="low"), {})
     assert err.value.code == "validation_failed"
+
+
+def test_antigravity_recorded_real_stream_normalizes(tmp_path) -> None:
+    harness = HARNESSES["antigravity"]
+    out, state = replay("antigravity", "success", _agy(tmp_path))
+    kinds = [o["type"] for o in out]
+    assert kinds[0] == "execution.native_bound"
+    assert kinds.count("tool.started") == 2 and kinds.count("tool.completed") == 2
+    shell = next(
+        o["payload"]
+        for o in out
+        if o["type"] == "tool.completed" and o["payload"]["name"] == "run_command"
+    )
+    assert shell["title"] == "cat hello.txt" and shell["output"] == "sbx\r\n"
+    text = "".join(o["payload"]["content"] for o in out if o["type"].startswith("message.part"))
+    assert text.endswith("printed:\n```\nsbx\n```\n")
+    usage = harness.finish(state)[0]["payload"]
+    assert usage["input_tokens"] == 35881 and usage["output_tokens"] == 168
+    assert harness.classify_outcome({"exit_code": 0}, state).verdict == "success"
 
 
 AGY_STREAM = [
@@ -427,7 +447,7 @@ AGY_STREAM = [
             "state": "ACTIVE",
             "step_type": "tool",
             "tool_name": "run_command",
-            "tool_info": {"name": "run_command", "parameters": {"CommandLine": "echo hi"}},
+            "tool_info": {"name": "run_command", "parameters": "{'CommandLine': 'echo hi'}"},
         },
     },
     {
@@ -501,7 +521,8 @@ def test_antigravity_failures_are_classified_and_never_invent_usage(tmp_path) ->
         signed_out.error_code == "credential_invalid" and signed_out.credential_health == "invalid"
     )
     assert outcome("quota exceeded for this plan")[1].error_code == "rate_limited"
-    assert outcome("invalid model selection")[1].error_code == "provider_failed"
+    conflict = "invalid model selection: --model m-high conflicts with --effort=low"
+    assert outcome(conflict, code=1)[1].error_code == "provider_failed"
     silent = harness.new_state(_agy(tmp_path))
     hung = harness.classify_outcome(
         {"exit_code": 1, "stderr_tail": "authentication required"}, silent

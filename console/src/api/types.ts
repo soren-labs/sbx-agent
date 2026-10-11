@@ -461,8 +461,6 @@ export interface SlotCatalog {
   models: SlotModel[];
   default_model: string | null;
   complete?: boolean;
-  /** "cli": the effort levels are the CLI's own, the same for every model. */
-  effort_scope?: "cli" | null;
 }
 /** device_code: confirm a shown code; authorization_code: send back the code the browser shows. */
 export type LoginMethod = "device_code" | "authorization_code";

@@ -61,8 +61,12 @@ GROK_CATALOG = {
 }
 AGY_CATALOG = {
     "complete": True,
-    "efforts": "low|medium|high",
-    "lines": ["Fetching available models...", "* agy-pro-1 (default)", "  agy-flash-2"],
+    "lines": [
+        "Fetching available models...",
+        "agy-pro-1-high\tAgy Pro 1 (High)",
+        "agy-pro-1-low\tAgy Pro 1 (Low)",
+        "agy-plain-2\tAgy Plain 2",
+    ],
 }
 
 

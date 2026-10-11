@@ -693,7 +693,6 @@ export const en = {
   "composer.source_needs_login": "needs login",
   "composer.effort": "Reasoning effort",
   "composer.effort_default": "Model default",
-  "composer.effort_cli_levels": "These are the {provider} CLI's levels, not a per-model list. The CLI applies the level to the chosen model.",
   "composer.thinking": "Thinking",
   "composer.thinking_on": "On (model default)",
   "composer.thinking_off": "Off",
