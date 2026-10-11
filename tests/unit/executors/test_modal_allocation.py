@@ -342,11 +342,11 @@ def test_setup_input_reaches_the_vm_through_stdin_only(env) -> None:
     cloud, executor = env
     handle = executor.setup_start(setup_spec(), "op_setup")
     path = "/tmp/sbx-setup/login-input"
-    assert executor.setup_input(handle, COMPUTE, path, "4/0-pasted-code") is True
-    assert cloud.sandboxes[0].files[path] == "4/0-pasted-code"
-    assert "4/0-pasted-code" not in repr(cloud.execs), "never part of a command line"
+    assert executor.setup_input(handle, COMPUTE, path, "REDACTED-pasted-code") is True
+    assert cloud.sandboxes[0].files[path] == "REDACTED-pasted-code"
+    assert "REDACTED-pasted-code" not in repr(cloud.execs), "never part of a command line"
     cloud.sandboxes[0].alive = False
-    assert executor.setup_input(handle, COMPUTE, path, "4/0-pasted-code") is False
+    assert executor.setup_input(handle, COMPUTE, path, "REDACTED-pasted-code") is False
     assert executor.setup_input({"sandbox_id": "sb-gone"}, COMPUTE, path, "x") is False
 
 
