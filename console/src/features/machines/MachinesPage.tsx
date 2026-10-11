@@ -67,9 +67,11 @@ function StatusPill({ slot }: { slot: MachineSlot }) {
   );
 }
 
-function host(url: string | null): string {
+/** Where a sign-in link goes, without its query: a provider may put a one-time code there. */
+function destination(url: string | null): string {
   try {
-    return new URL(url ?? "").host;
+    const { origin, pathname } = new URL(url ?? "");
+    return origin + pathname;
   } catch {
     return "";
   }
@@ -168,8 +170,8 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
                 <Icon name="external" size={13} />
                 {t("machines.login.open")}
               </a>
-              {/* A sign-in link with a long query is opened, not read: show where it goes. */}
-              <span className="mc-url">{pasting ? host(login.verification_url) : login.verification_url}</span>
+              {/* The link is opened, not read: its query can be long or carry the one-time code. */}
+              <span className="mc-url">{destination(login.verification_url)}</span>
             </li>
             {pasting ? (
               <li>
@@ -193,7 +195,12 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
           </ol>
           <p className="mc-login-wait" role="status">
             <Spinner /> {t(pasting ? "machines.login.waiting_paste" : "machines.login.waiting")}
-            {left ? <span className="mc-expiry"> · {t("machines.login.expires", { time: left })}</span> : null}
+            {left ? (
+              <span className="mc-expiry">
+                {" "}
+                · {t(pasting ? "machines.login.window" : "machines.login.expires", { time: left })}
+              </span>
+            ) : null}
           </p>
         </>
       ) : null}

@@ -27,7 +27,7 @@ mode `0600`. Environment variables override the file.
 | `auth login` | Sign in and store an API key. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
 | `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
-| `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins. See [Machine Slots](#machine-slots). |
+| `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. `create` accepts `--slot`, `--model` and `--effort` for Machine Slots. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
 | `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
@@ -46,19 +46,20 @@ to stderr and exit with status 1.
 
 ## Machine Slots
 
-A Machine Slot is one independent official Codex subscription login. Its
-credentials live on a private Modal Volume in your own Modal workspace, and one
-Slot runs one Session at a time. See [Cloud machines](/guides/cloud-machines/)
-for the concept.
+A Machine Slot is one independent official subscription login: Codex, Grok Build
+or Antigravity. Its credentials live on a private Modal Volume in your own Modal
+workspace, and one Slot runs one Session at a time. See
+[Cloud machines](/guides/cloud-machines/) for the concept.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
 | `slots list` | none | Slots with summary counts and the available providers. |
 | `slots providers` | none | Subscription providers this deployment offers. |
-| `slots add` | `--provider NAME` (default `codex`), `--label TEXT`, `--account-alias TEXT`, `--volume NAME`, `--connection ID`, `--wait`, `--timeout SECONDS` (default `1200`) | Create a Slot and start its official login. `--volume` adopts an existing Modal Volume and only verifies it; SBX never deletes that Volume. `--connection` selects the Modal connection (default: the verified one). |
+| `slots add` | `--provider NAME` (`codex`, `grok` or `antigravity`; default `codex`), `--label TEXT`, `--account-alias TEXT`, `--volume NAME`, `--connection ID`, `--wait`, `--timeout SECONDS` (default `1200`) | Create a Slot and start its official login. `--volume` adopts an existing Modal Volume and only verifies it; SBX never deletes that Volume. `--connection` selects the Modal connection (default: the verified one). |
 | `slots login SLOT_ID` | `--wait`, `--timeout SECONDS` (default `1200`) | Run the official login again. |
 | `slots verify SLOT_ID` | `--wait`, `--timeout SECONDS` (default `1200`) | Re-check the stored login with one real CLI call and refresh the model catalog. |
 | `slots wait SLOT_ID` | `--timeout SECONDS` (default `1200`) | Wait until no login is pending. |
+| `slots code SLOT_ID` | `--code TEXT` (optional) | Send the code the browser showed after an Antigravity sign-in. Without `--code` it prompts without echo on a terminal, or reads one line from stdin. The code is not stored or printed. It is refused for a device-code Slot or when no login is waiting for a code (`invalid_transition`). |
 | `slots show SLOT_ID` | none | One Slot. |
 | `slots models SLOT_ID` | none | The model catalog and each model's reasoning efforts, with its `source`. |
 | `slots cancel-login SLOT_ID` | none | Stop the pending login and its VM. |
@@ -71,17 +72,23 @@ the same rules as `slots wait`. Without `--wait` they return the Slot at once.
 
 ### Sign-in prompt
 
-While a command waits, the sign-in URL and one-time code are printed to
-**stderr**, once, when the login is waiting for your approval:
+While a command waits, the sign-in URL is printed to **stderr**. For a device-code
+provider (Codex, Grok Build) the one-time code is printed too, once, when the login
+is waiting for your approval:
 
 ```text
 Open <verification URL> and enter the code <code> (expires <time>).
 ```
 
+For Antigravity the URL is printed with the words "The browser then shows a code",
+and the code is then asked for: in a terminal it is prompted for without echo;
+without a terminal `wait` prints `Send it with: sbx slots code SLOT_ID` and keeps
+waiting, so send the code from another shell.
+
 Stdout stays machine-readable JSON, so `2>/dev/null` keeps only the JSON. The
 code is never written to stdout. Without `--wait` nothing is printed; the URL
-and code are in the `login` object returned by `slots show` until the code is
-used.
+and, for device-code providers, the code are in the `login` object returned by
+`slots show` until the code is used.
 
 ### Exit codes
 
@@ -101,8 +108,9 @@ they write no JSON to stdout.
 
 - `--slot SLOT_ID` runs the Session on that Slot instead of an inference API
   key. The executor backend defaults to `modal` unless `--backend` is given.
-  `--harness` defaults to `opencode`, and with `--slot` that default is sent as
-  `codex`. Any other `--harness` value is sent as given.
+  Without `--harness`, the Harness is the Slot's provider (`codex`, `grok` or
+  `antigravity`). Without `--slot`, `--harness` defaults to `opencode`. A
+  `--harness` value you give is sent as given.
 - `--model MODEL_ID` selects a model from `sbx slots models`. Without it the
   provider default is used.
 - `--effort LEVEL` selects a reasoning effort that the chosen model lists. An
@@ -110,6 +118,15 @@ they write no JSON to stdout.
   `validation_failed` and exit status `1`.
 
 ```bash
-sbx sessions create --slot SLOT_ID --model MODEL_ID --effort EFFORT \
+sbx sessions create --slot SLOT_ID --model <model-id> --effort <effort> \
   --message "Summarize this repository."
+```
+
+Machine examples for each provider:
+
+```bash
+sbx slots add --provider grok --label "Grok 1" --wait
+sbx slots add --provider antigravity --label "Antigravity 1" --wait
+sbx slots code SLOT_ID                 # Antigravity: prompts for the pasted code
+printf '%s\n' "$CODE" | sbx slots code SLOT_ID   # or one line on stdin
 ```

@@ -200,6 +200,10 @@ keeps the pasted code after sending it.
 | Pasted code (`antigravity`) | URL button (only the host is printed), a field for the code and "Send code" | `sbx slots code SLOT [--code C]`, or the prompt of `--wait` on a terminal; without a terminal `wait` prints the URL and the `sbx slots code` hint | `submit_code(slot_id, code)`, `wait(on_input=...)` |
 | Run | New Session: Runs on, model and effort pickers from the Slot's catalog; a note when `effort_scope` is `cli` | `sbx sessions create --slot SLOT [--model M] [--effort E]`; the Harness defaults to the Slot's provider | `sessions.create(inference={"mode": "subscription", "machine_slot_id": ...})` |
 
+The Console opens the provider's own `verification_url` but prints only its origin and path: the
+query can be long (Antigravity) or carry the one-time code (Grok Build), and the code is shown only
+in its own element.
+
 `sbx slots code` reads the code from `--code`, a hidden prompt on a terminal, or one line on stdin,
 and prints the Slot as JSON; the code is never echoed. In New Session a Harness without a custom-API
 mode (`antigravity`) is offered only through a machine.

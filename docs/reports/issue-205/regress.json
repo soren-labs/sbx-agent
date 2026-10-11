@@ -1,0 +1,58 @@
+{
+  "codex_slot": {
+    "status": "ready",
+    "reason": null,
+    "managed": false,
+    "catalog": "ready",
+    "models": 7,
+    "real_model_call": true
+  },
+  "codex_subscription": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 17,
+    "answered": true,
+    "harness": {
+      "provider_id": "codex",
+      "model": null,
+      "effort": null
+    },
+    "inference": {
+      "mode": "subscription",
+      "machine_slot_id": "slot_01a1291a51107739b5c7850b3053612b"
+    },
+    "usage": {
+      "source": "codex.turn.completed",
+      "complete": true,
+      "input_tokens": 1818,
+      "output_tokens": 10,
+      "cached_input_tokens": 12288,
+      "reasoning_output_tokens": 0,
+      "cache_write_input_tokens": 0
+    }
+  },
+  "custom_api_opencode": {
+    "turn": "succeeded",
+    "reason": null,
+    "seconds": 14,
+    "answered": true,
+    "harness": {
+      "provider_id": "opencode",
+      "model": "deepseek-flash",
+      "effort": null
+    },
+    "inference": {
+      "mode": "custom_api",
+      "machine_slot_id": null
+    },
+    "usage": {
+      "source": "opencode.step_finish",
+      "complete": true,
+      "input_tokens": 5680,
+      "output_tokens": 7,
+      "reasoning_tokens": 20,
+      "cached_input_tokens": 1664
+    }
+  },
+  "codex_slot_after": "ready"
+}

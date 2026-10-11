@@ -7,8 +7,8 @@ implementation (#200-#204). Nothing here has been merged or deployed.
 | --- | --- | --- | --- |
 | 1 | `feat/issue-205-provider-auth-core` | adapters, login methods, Setup VM supervisor, API, spec | draft, https://github.com/soren-labs/sbx-agent/pull/206 |
 | 2 | `feat/issue-205-execution-catalog` (stacked on 1) | `agy` Harness, Grok subscription mode, catalog, effort | draft, https://github.com/soren-labs/sbx-agent/pull/207 |
-| 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | draft |
-| 4 | `feat/issue-205-e2e-docs` (stacked on 3) | staging E2E evidence, docs-site, changelog | not started |
+| 3 | `feat/issue-205-console-sdk-cli` (stacked on 2) | Console, SDK, CLI | draft, https://github.com/soren-labs/sbx-agent/pull/208 |
+| 4 | `feat/issue-205-e2e-docs` (stacked on 3) | staging E2E evidence, docs-site, changelog | draft |
 
 ## Verified on the real CLIs (2026-10-11, isolated HOME, no credentials)
 
@@ -72,3 +72,37 @@ implementation (#200-#204). Nothing here has been merged or deployed.
   glue and its tests were written by a Haiku subagent and reviewed.
 - Browser checks (desktop, 320 px, zh-CN) are still to be done on staging; only Vitest covers the
   new UI so far.
+
+## PR 4 notes and current state (2026-10-11)
+
+Evidence and the requirement map: `docs/reports/issue-205/README.md`.
+
+Verified on staging with real Modal VMs: both official logins reach the step where a person must
+act (Grok: `accounts.x.ai` link and device code; Antigravity: Google link and paste field), a
+made-up Antigravity code ends as `code_rejected`, cancel and delete remove the VM and the Volume,
+Codex on a Slot and a custom API key still work on the new image, zero live sandboxes afterwards.
+
+**Still not verified, blocked on one browser approval per provider:** a real login turning Ready,
+persistence into a new VM, the authenticated catalogs, and a real Turn on `grok` and `agy`.
+
+To finish, with the staging stack up (`~/sbx-issue205/stage/up.sh`):
+
+1. `cd ~/sbx-issue205/pw && node flow.mjs grok "Grok Build" ~/sbx-issue205/evidence/flow-grok`
+   The person reads the link and code from `~/sbx-issue205/stage/pending-login.json` (mode 0600,
+   deleted when the attempt ends) and approves within 15 minutes.
+2. `node flow.mjs antigravity "Antigravity" ~/sbx-issue205/evidence/flow-antigravity`
+   The person opens the link from the same file, signs in, and saves the code the page shows as one
+   line in `~/sbx-issue205/stage/pasted-code`; the script types it into the blurred field.
+3. Each run writes `flow.json` (no codes, no URL queries), screenshots and `flow.webm`, runs one
+   real task on a new VM and releases it. Then `uv run python ~/sbx-issue205/stage/orphans.py`.
+4. Check `flow.json` `slot.catalog` for Antigravity. If `status` is `unavailable`, read the real
+   `agy models` output on the Slot and adjust `parse_catalog` in
+   `control/integrations/subscriptions/antigravity.py`.
+
+Staging files outside the repository: `~/sbx-issue205/stage` (`up.sh`, `seed.py`, `probe_login.py`,
+`regress.py`, `orphans.py`, `user.json`), `~/sbx-issue205/pw` (`lib.mjs`, `shots.mjs`,
+`login-panels.mjs`, `flow.mjs`), raw captures in `~/sbx-issue205/evidence`. Ports: PostgreSQL 54405,
+control plane 8815, Console 5185. No Slots are left on staging.
+
+Docs-site pages, both changelogs and `examples/subscription_machines.py` were drafted by a Haiku
+subagent from a fact sheet and reviewed; the example has not been run against a live API.

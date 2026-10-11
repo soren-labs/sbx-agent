@@ -49,7 +49,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
-| `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `logout`, `delete`, `models`, `wait` |
+| `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `submit_code`, `logout`, `delete`, `models`, `wait` |
 | `operations` | `get` |
 
 Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
@@ -71,28 +71,43 @@ Turn and waiting for a result are never interchangeable.
 ## Machine Slots
 
 `client.slots` manages subscription Machine Slots, each one an independent
-official Codex login. See [Cloud machines](/guides/cloud-machines/) for the
-concept.
+official login to Codex, Grok Build or Antigravity. See
+[Cloud machines](/guides/cloud-machines/) for the concept.
+
+Start by listing the providers this deployment offers:
 
 ```python
 from sbx import SBXClient
 
 client = SBXClient("http://127.0.0.1:8800", api_key="sbx_key_REDACTED")
 
+for provider in client.slots.providers():
+    print(provider["provider_id"], provider["login_method"], provider["verification_host"])
+```
 
+`login_method` is `device_code` (Codex, Grok Build) or `authorization_code`
+(Antigravity). The two need different callbacks in `wait`.
+
+### Device code (Codex, Grok Build)
+
+`on_code` is called once with the `login` object, which carries
+`verification_url` and `user_code`:
+
+```python
 def show_code(login: dict) -> None:
     print(f"Open {login['verification_url']} and enter {login['user_code']}")
 
 
-slot = client.slots.add("codex", label="Laptop", account_alias="team")
+slot = client.slots.add("grok", label="Laptop", account_alias="team")
 ready = client.slots.wait(slot["id"], deadline=1200, on_code=show_code)
 if ready["status"] not in ("ready", "running"):
     raise SystemExit(f"slot is {ready['status']}")
 
-model = client.slots.models(slot["id"])["models"][0]
+catalog = client.slots.models(slot["id"])
+model = catalog["models"][0]
 result = client.sessions.create(
     harness={
-        "provider_id": "codex",
+        "provider_id": slot["provider"],
         "model": model["id"],
         # Any id from model["reasoning"]["efforts"]; "default" may be None.
         **({"effort": e} if (e := model["reasoning"]["default"]) else {}),
@@ -106,17 +121,53 @@ print(result["session_id"])
 
 `wait` returns the Slot whatever its status, so check `status` as shown. It
 raises `SBXError` with code `timeout` if the login is still pending at the
-deadline. `on_code` is called once with the `login` object, which carries
-`verification_url` and `user_code`.
+deadline.
+
+### Pasted code (Antigravity)
+
+Antigravity has no device code. The user signs in to Google in a browser, and the
+browser then shows a code. `on_input` is called once per login attempt with the
+`login` object, which carries `verification_url`. Return the code the user pasted
+(a string) to submit it; return `None` to leave it. SBX does not store the code.
+
+```python
+from getpass import getpass
+
+
+def ask_code(login: dict) -> str | None:
+    print(f"Open {login['verification_url']}, sign in, then copy the code it shows.")
+    return getpass("Code: ").strip() or None
+
+
+slot = client.slots.add("antigravity", label="Work")
+ready = client.slots.wait(slot["id"], deadline=1200, on_input=ask_code)
+```
+
+To send a code yourself, call `submit_code` while the login is waiting for it:
+
+```python
+client.slots.submit_code(slot["id"], "PASTED_CODE")
+```
+
+`submit_code` is refused with `invalid_transition` ("this login is not waiting
+for a code") when the login is a device-code login or no code is wanted.
+
+### Models
+
+`slots.models(slot_id)` returns the catalog as the signed-in CLI reported it,
+with its `source`. Antigravity's `source` is `agy models`. If the list could not
+be read, the result is `{"status": "unavailable", "models": []}`; a Session on
+that machine can then use only the provider default, with no model and no effort.
 
 | Method | Effect |
 | --- | --- |
-| `slots.add(provider="codex", *, label, account_alias, compute_connection_id, volume_name)` | Create a Slot and start its official login. `volume_name` adopts an existing Volume. |
+| `slots.add(provider="codex", *, label, account_alias, compute_connection_id, volume_name)` | Create a Slot and start its official login. `provider` is `codex`, `grok` or `antigravity`. `volume_name` adopts an existing Volume. |
 | `slots.get(slot_id)` | One Slot. |
 | `slots.update(slot_id, **changes)` | Rename (`label`) or set `account_alias`. |
 | `slots.login(slot_id)` | Run the official login again. |
 | `slots.verify(slot_id)` | Re-check the stored login and refresh the model catalog. |
-| `slots.wait(slot_id, *, deadline=1200.0, poll=2.0, on_code=None)` | Wait until no login is pending. |
+| `slots.wait(slot_id, *, deadline=1200.0, poll=2.0, on_code=None, on_input=None)` | Wait until no login is pending. `on_code(login)` fires for device codes; `on_input(login)` fires for pasted codes. |
+| `slots.submit_code(slot_id, code)` | Send the code the browser showed after an Antigravity sign-in. The code is not stored. |
 | `slots.models(slot_id)` | The model catalog and reasoning efforts, or `{"status": "unavailable", "models": []}`. |
 | `slots.cancel_login(slot_id)` | Stop the pending login. |
 | `slots.logout(slot_id)` | Destroy the stored login. The Slot stays. |
@@ -145,4 +196,12 @@ pull request URL.
 ```bash
 SBX_BASE_URL=http://127.0.0.1:8800 SBX_API_KEY=sbx_key_YOUR_KEY \
   python examples/unified_mvp.py owner/repo
+```
+
+`examples/subscription_machines.py` adds a machine for one provider, completes
+its login and prints its models. It can also start one Session on it.
+
+```bash
+SBX_BASE_URL=http://127.0.0.1:8800 SBX_API_KEY=sbx_key_YOUR_KEY \
+  python examples/subscription_machines.py grok
 ```

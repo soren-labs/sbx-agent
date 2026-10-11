@@ -489,6 +489,7 @@ export const zhCN: Partial<Record<I18nKey, string>> = {
   "machines.login.waiting": "等待你批准，本页面会自动更新。",
   "machines.login.waiting_paste": "正在等待登录页面给出的代码。",
   "machines.login.expires": "验证码将在 {time} 后过期",
+  "machines.login.window": "本次登录将在 {time} 后关闭",
   "machines.login.verifying": "已批准。正在用真实请求验证并保存到你的卷…",
   "machines.login.verifying_paste": "代码已发送。正在用真实请求验证并保存到你的卷…",
   "machines.login.cancel": "取消登录",

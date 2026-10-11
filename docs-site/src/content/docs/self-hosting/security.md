@@ -37,7 +37,8 @@ inheriting `os.environ`.
 | GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
 | Inference API key | the CLI process environment for one Turn; CLI config files reference it by variable name only, so it is never written to disk |
 | Subscription login (cloud machine) | a private Modal Volume in the owner's Modal workspace, written by the official CLI; mounted only into that machine's one VM. The control plane never reads, stores or returns it, and it is never in a checkpoint or ChangeSet |
-| Device sign-in code | returned to the Slot's owner while the login is pending, then cleared |
+| Device sign-in code (Codex, Grok Build) | returned to the Slot's owner while the login is pending, then cleared |
+| Pasted sign-in code (Antigravity) | sent once from the request to the waiting CLI in the setup VM over the executor's exec channel, never stored, logged or returned; the VM reads it once and types it into the CLI |
 
 ChangeSets and checkpoints exclude credential files, including `.env`,
 `auth.json` and private keys. Safe templates such as `.env.example` remain

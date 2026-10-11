@@ -613,6 +613,10 @@ rejected with `csrf_failed`.
   The same picker has **Runs on**: your API key or a ready cloud machine. A
   machine offers the models its own login reported and each model's reasoning
   efforts; an API-key model offers a thinking On/Off switch where verified.
+  Antigravity has no API-key mode, so it appears only under **Runs on**. Its
+  effort choices are the levels the CLI accepts, the same for every model, and
+  the picker says so. If SBX cannot read the Antigravity model list, the model
+  picker is not shown and the provider default is used.
 - **Session workbench**: the conversation stays on the left while the agent
   works. With Claude Code and Grok Build the reply and any reasoning the model
   exposes appear as they are generated; the other CLIs report each completed
@@ -628,11 +632,15 @@ rejected with `csrf_failed`.
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
   Services and Child Sessions tabs.
 - **Projects**: reusable repository and environment configuration.
-- **My Cloud Machines**: Codex subscription logins, one per machine. Add a
-  machine with the official sign-in page and a one-time code; the row turns
-  Ready by itself. Compact rows with search, state filter, sort and collapsible
-  groups; expand one to log in again, check the login, rename, sign out or
-  delete. See [Cloud machines](/guides/cloud-machines/).
+- **My Cloud Machines**: subscription logins, one per machine, for Codex, Grok
+  Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
+  each entry says how it signs in. For Codex and Grok Build, open the sign-in
+  page and enter the one-time code. For Antigravity, open the Google sign-in link,
+  sign in, copy the code the browser shows, paste it into the machine's field and
+  choose **Send code**. SBX does not store the code. The row turns Ready by itself.
+  Machines are grouped by provider, with compact rows, search, state filter, sort
+  and collapsible groups. Expand one to log in again, check the login, rename, sign
+  out or delete. See [Cloud machines](/guides/cloud-machines/).
 - **Connections**: add, validate, replace and disconnect, with write-only
   secret fields.
 - **Settings**: identity, API keys (plaintext shown once) and preferences.
@@ -911,7 +919,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
-| `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `logout`, `delete`, `models`, `wait` |
+| `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `submit_code`, `logout`, `delete`, `models`, `wait` |
 | `operations` | `get` |
 
 Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
@@ -933,26 +941,42 @@ Turn and waiting for a result are never interchangeable.
 ## Machine Slots
 
 `client.slots` manages subscription Machine Slots, each one an independent
-official Codex login. See [Cloud machines](/guides/cloud-machines/) for the
-concept.
+official login to Codex, Grok Build or Antigravity. See
+[Cloud machines](/guides/cloud-machines/) for the concept.
+
+Start by listing the providers this deployment offers:
 
 ```python
 from sbx import SBXClient
 
 client = SBXClient("http://127.0.0.1:8800", api_key="sbx_key_REDACTED")
 
+for provider in client.slots.providers():
+    print(provider["provider_id"], provider["login_method"], provider["verification_host"])
+```
+
+`login_method` is `device_code` (Codex, Grok Build) or `authorization_code`
+(Antigravity). The two need different callbacks in `wait`.
+
+### Device code (Codex, Grok Build)
+
+`on_code` is called once with the `login` object, which carries
+`verification_url` and `user_code`:
+
+```python
 def show_code(login: dict) -> None:
     print(f"Open {login['verification_url']} and enter {login['user_code']}")
 
-slot = client.slots.add("codex", label="Laptop", account_alias="team")
+slot = client.slots.add("grok", label="Laptop", account_alias="team")
 ready = client.slots.wait(slot["id"], deadline=1200, on_code=show_code)
 if ready["status"] not in ("ready", "running"):
     raise SystemExit(f"slot is {ready['status']}")
 
-model = client.slots.models(slot["id"])["models"][0]
+catalog = client.slots.models(slot["id"])
+model = catalog["models"][0]
 result = client.sessions.create(
     harness={
-        "provider_id": "codex",
+        "provider_id": slot["provider"],
         "model": model["id"],
         # Any id from model["reasoning"]["efforts"]; "default" may be None.
         **({"effort": e} if (e := model["reasoning"]["default"]) else {}),
@@ -966,17 +990,51 @@ print(result["session_id"])
 
 `wait` returns the Slot whatever its status, so check `status` as shown. It
 raises `SBXError` with code `timeout` if the login is still pending at the
-deadline. `on_code` is called once with the `login` object, which carries
-`verification_url` and `user_code`.
+deadline.
+
+### Pasted code (Antigravity)
+
+Antigravity has no device code. The user signs in to Google in a browser, and the
+browser then shows a code. `on_input` is called once per login attempt with the
+`login` object, which carries `verification_url`. Return the code the user pasted
+(a string) to submit it; return `None` to leave it. SBX does not store the code.
+
+```python
+from getpass import getpass
+
+def ask_code(login: dict) -> str | None:
+    print(f"Open {login['verification_url']}, sign in, then copy the code it shows.")
+    return getpass("Code: ").strip() or None
+
+slot = client.slots.add("antigravity", label="Work")
+ready = client.slots.wait(slot["id"], deadline=1200, on_input=ask_code)
+```
+
+To send a code yourself, call `submit_code` while the login is waiting for it:
+
+```python
+client.slots.submit_code(slot["id"], "PASTED_CODE")
+```
+
+`submit_code` is refused with `invalid_transition` ("this login is not waiting
+for a code") when the login is a device-code login or no code is wanted.
+
+### Models
+
+`slots.models(slot_id)` returns the catalog as the signed-in CLI reported it,
+with its `source`. Antigravity's `source` is `agy models`. If the list could not
+be read, the result is `{"status": "unavailable", "models": []}`; a Session on
+that machine can then use only the provider default, with no model and no effort.
 
 | Method | Effect |
 | --- | --- |
-| `slots.add(provider="codex", *, label, account_alias, compute_connection_id, volume_name)` | Create a Slot and start its official login. `volume_name` adopts an existing Volume. |
+| `slots.add(provider="codex", *, label, account_alias, compute_connection_id, volume_name)` | Create a Slot and start its official login. `provider` is `codex`, `grok` or `antigravity`. `volume_name` adopts an existing Volume. |
 | `slots.get(slot_id)` | One Slot. |
 | `slots.update(slot_id, **changes)` | Rename (`label`) or set `account_alias`. |
 | `slots.login(slot_id)` | Run the official login again. |
 | `slots.verify(slot_id)` | Re-check the stored login and refresh the model catalog. |
-| `slots.wait(slot_id, *, deadline=1200.0, poll=2.0, on_code=None)` | Wait until no login is pending. |
+| `slots.wait(slot_id, *, deadline=1200.0, poll=2.0, on_code=None, on_input=None)` | Wait until no login is pending. `on_code(login)` fires for device codes; `on_input(login)` fires for pasted codes. |
+| `slots.submit_code(slot_id, code)` | Send the code the browser showed after an Antigravity sign-in. The code is not stored. |
 | `slots.models(slot_id)` | The model catalog and reasoning efforts, or `{"status": "unavailable", "models": []}`. |
 | `slots.cancel_login(slot_id)` | Stop the pending login. |
 | `slots.logout(slot_id)` | Destroy the stored login. The Slot stays. |
@@ -1007,6 +1065,14 @@ SBX_BASE_URL=http://127.0.0.1:8800 SBX_API_KEY=sbx_key_YOUR_KEY \
   python examples/unified_mvp.py owner/repo
 ```
 
+`examples/subscription_machines.py` adds a machine for one provider, completes
+its login and prints its models. It can also start one Session on it.
+
+```bash
+SBX_BASE_URL=http://127.0.0.1:8800 SBX_API_KEY=sbx_key_YOUR_KEY \
+  python examples/subscription_machines.py grok
+```
+
 # CLI
 
 Source: /reference/cli/
@@ -1035,7 +1101,7 @@ mode `0600`. Environment variables override the file.
 | `auth login` | Sign in and store an API key. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
 | `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
-| `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins. See [Machine Slots](#machine-slots). |
+| `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. `create` accepts `--slot`, `--model` and `--effort` for Machine Slots. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
 | `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
@@ -1054,19 +1120,20 @@ to stderr and exit with status 1.
 
 ## Machine Slots
 
-A Machine Slot is one independent official Codex subscription login. Its
-credentials live on a private Modal Volume in your own Modal workspace, and one
-Slot runs one Session at a time. See [Cloud machines](/guides/cloud-machines/)
-for the concept.
+A Machine Slot is one independent official subscription login: Codex, Grok Build
+or Antigravity. Its credentials live on a private Modal Volume in your own Modal
+workspace, and one Slot runs one Session at a time. See
+[Cloud machines](/guides/cloud-machines/) for the concept.
 
 | Command | Arguments and flags | Effect |
 | --- | --- | --- |
 | `slots list` | none | Slots with summary counts and the available providers. |
 | `slots providers` | none | Subscription providers this deployment offers. |
-| `slots add` | `--provider NAME` (default `codex`), `--label TEXT`, `--account-alias TEXT`, `--volume NAME`, `--connection ID`, `--wait`, `--timeout SECONDS` (default `1200`) | Create a Slot and start its official login. `--volume` adopts an existing Modal Volume and only verifies it; SBX never deletes that Volume. `--connection` selects the Modal connection (default: the verified one). |
+| `slots add` | `--provider NAME` (`codex`, `grok` or `antigravity`; default `codex`), `--label TEXT`, `--account-alias TEXT`, `--volume NAME`, `--connection ID`, `--wait`, `--timeout SECONDS` (default `1200`) | Create a Slot and start its official login. `--volume` adopts an existing Modal Volume and only verifies it; SBX never deletes that Volume. `--connection` selects the Modal connection (default: the verified one). |
 | `slots login SLOT_ID` | `--wait`, `--timeout SECONDS` (default `1200`) | Run the official login again. |
 | `slots verify SLOT_ID` | `--wait`, `--timeout SECONDS` (default `1200`) | Re-check the stored login with one real CLI call and refresh the model catalog. |
 | `slots wait SLOT_ID` | `--timeout SECONDS` (default `1200`) | Wait until no login is pending. |
+| `slots code SLOT_ID` | `--code TEXT` (optional) | Send the code the browser showed after an Antigravity sign-in. Without `--code` it prompts without echo on a terminal, or reads one line from stdin. The code is not stored or printed. It is refused for a device-code Slot or when no login is waiting for a code (`invalid_transition`). |
 | `slots show SLOT_ID` | none | One Slot. |
 | `slots models SLOT_ID` | none | The model catalog and each model's reasoning efforts, with its `source`. |
 | `slots cancel-login SLOT_ID` | none | Stop the pending login and its VM. |
@@ -1079,17 +1146,23 @@ the same rules as `slots wait`. Without `--wait` they return the Slot at once.
 
 ### Sign-in prompt
 
-While a command waits, the sign-in URL and one-time code are printed to
-**stderr**, once, when the login is waiting for your approval:
+While a command waits, the sign-in URL is printed to **stderr**. For a device-code
+provider (Codex, Grok Build) the one-time code is printed too, once, when the login
+is waiting for your approval:
 
 ```text
 Open <verification URL> and enter the code <code> (expires <time>).
 ```
 
+For Antigravity the URL is printed with the words "The browser then shows a code",
+and the code is then asked for: in a terminal it is prompted for without echo;
+without a terminal `wait` prints `Send it with: sbx slots code SLOT_ID` and keeps
+waiting, so send the code from another shell.
+
 Stdout stays machine-readable JSON, so `2>/dev/null` keeps only the JSON. The
 code is never written to stdout. Without `--wait` nothing is printed; the URL
-and code are in the `login` object returned by `slots show` until the code is
-used.
+and, for device-code providers, the code are in the `login` object returned by
+`slots show` until the code is used.
 
 ### Exit codes
 
@@ -1109,8 +1182,9 @@ they write no JSON to stdout.
 
 - `--slot SLOT_ID` runs the Session on that Slot instead of an inference API
   key. The executor backend defaults to `modal` unless `--backend` is given.
-  `--harness` defaults to `opencode`, and with `--slot` that default is sent as
-  `codex`. Any other `--harness` value is sent as given.
+  Without `--harness`, the Harness is the Slot's provider (`codex`, `grok` or
+  `antigravity`). Without `--slot`, `--harness` defaults to `opencode`. A
+  `--harness` value you give is sent as given.
 - `--model MODEL_ID` selects a model from `sbx slots models`. Without it the
   provider default is used.
 - `--effort LEVEL` selects a reasoning effort that the chosen model lists. An
@@ -1118,8 +1192,17 @@ they write no JSON to stdout.
   `validation_failed` and exit status `1`.
 
 ```bash
-sbx sessions create --slot SLOT_ID --model MODEL_ID --effort EFFORT \
+sbx sessions create --slot SLOT_ID --model <model-id> --effort <effort> \
   --message "Summarize this repository."
+```
+
+Machine examples for each provider:
+
+```bash
+sbx slots add --provider grok --label "Grok 1" --wait
+sbx slots add --provider antigravity --label "Antigravity 1" --wait
+sbx slots code SLOT_ID                 # Antigravity: prompts for the pasted code
+printf '%s\n' "$CODE" | sbx slots code SLOT_ID   # or one line on stdin
 ```
 
 # Providers
@@ -1136,38 +1219,79 @@ Harness support is declared in pinned manifests. The machine-readable table is
 | `claude` | Claude Code — `@anthropic-ai/claude-code` 2.1.295 | supported | `anthropic_messages` |
 | `grok` | Grok Build — `@xai-official/grok` 1.0.50 | supported | `openai_chat` |
 | `commandcode` | Command Code — `command-code` 1.79.2 | supported | `openai_chat`, `anthropic_messages`, `openai_responses` |
+| `antigravity` | Antigravity — `agy` 1.3.3 (release archive) | supported, subscription machines only | none |
 | `devin` | — | disabled | n/a |
-| `antigravity` | — | disabled | n/a |
 
-Every supported Harness runs the vendor's own CLI with an `inference_api`
+Most supported Harnesses run the vendor's own CLI with an `inference_api`
 Connection (bring your own key); the Harness and the model provider are
-independent. Codex can also run on your own subscription login through a
-[cloud machine](/guides/cloud-machines/); the other CLIs use API keys only.
+independent. Three of them can also run on your own subscription login through a
+[cloud machine](/guides/cloud-machines/): Codex, Grok Build and Antigravity. The
+other CLIs use API keys only. Antigravity has no API-key mode, so it runs only on
+a cloud machine.
 
-A disabled provider cannot be selected. Capability values are `supported`,
-`unsupported` or `unknown`, and `unknown` is never treated as supported. For all
-five supported Harnesses `event_stream`, `native_resume`, `native_state_export`
-and `usage` are supported and verified with real Turns; `interrupt`, `steer`,
-`interactive_approval` and `credential_writeback` are not. `model_discovery` is
-supported for Codex only (a cloud machine's own catalog); elsewhere models come
-from the Connection. `effort_settings` is supported for Codex on a cloud machine
-(the levels the selected model lists) and for OpenCode with an API key (thinking
-off, where the provider's switch was verified); it is not wired for the other
-CLIs. `mcp`, `skills` and `attachments` are `unknown`: the CLIs have them, SBX
-does not wire them yet.
+## Subscription providers
+
+A subscription provider signs in with its official CLI inside a temporary VM in
+your own Modal workspace. Each machine is one login on its own private Volume.
+SBX never reads or returns the login and never falls back to an API key.
+
+| Provider | Official CLI | Login method | Sign-in host | Model catalog source | Reasoning effort | Custom API key mode |
+| --- | --- | --- | --- | --- | --- | --- |
+| `codex` | `codex` (`@openai/codex`) | Device code: a URL and a one-time code | `auth.openai.com` | `codex app-server model/list`, as the CLI reports it | Per model, from each model's `supportedReasoningEfforts` | Yes (`openai_responses`) |
+| `grok` | `grok` (`@xai-official/grok`) | Device code: a URL and a one-time code | `accounts.x.ai` | `grok agent stdio initialize`, as the CLI reports it | Per model, from each model's effort menu; some models have none | Yes (`openai_chat`); no reasoning effort in this mode |
+| `antigravity` | `agy` | Authorization code: a Google sign-in link, then the code the browser shows, pasted back into SBX | `accounts.google.com` | `agy models`: the ids as printed, with no machine-readable catalog. If the list cannot be read, only the provider default is used | The levels the CLI accepts for `--effort`. They belong to the CLI, so every model offers the same levels | No |
+
+Notes for each subscription provider:
+
+- **Codex** and **Grok Build** show a sign-in URL and a one-time code. The user
+  opens the URL in a browser and confirms the code there.
+- **Antigravity** has no device code. The user opens the Google sign-in link in a
+  browser and signs in with the Google account. The browser then shows a code.
+  The user pastes that code into SBX (Console, `sbx slots code`, or
+  `client.slots.submit_code`). SBX sends it to the waiting CLI and does not store
+  it. A rejected code leaves the machine at `needs_login` with reason
+  `code_rejected`; a new login gives a new link.
+- The catalog is always the CLI's own answer for that login. Hidden models are
+  dropped, and no model names, plans or quotas are added by SBX.
+
+## Capabilities
+
+Capability values are `supported`, `unsupported` or `unknown`, and `unknown` is
+never treated as supported. For the five Harnesses that were verified with real
+Turns on API keys (OpenCode, Codex, Claude Code, Grok Build and Command Code),
+`event_stream`, `native_resume`, `native_state_export` and `usage` are supported.
+`interrupt`, `steer`, `interactive_approval` and `credential_writeback` are not
+supported for those five. The exact per-provider values are in
+[provider-reference.json](/provider-reference.json). The subscription providers
+are described in the [cloud machines guide](/guides/cloud-machines/).
+
+`model_discovery` is supported for Codex, Grok Build and Antigravity on a cloud
+machine (the CLI's own catalog). Elsewhere models come from the Connection.
+`effort_settings` is supported for Codex, Grok Build and Antigravity on a cloud
+machine, where the levels come from the selected model or, for Antigravity, from
+the CLI. It is also supported for OpenCode with an API key (thinking off, where
+the provider's switch was verified). It is not wired for the other CLIs. `mcp`,
+`skills` and `attachments` are `unknown`: the CLIs have them, SBX does not wire
+them yet.
 
 Notes per CLI:
 
 - **Codex** speaks only the OpenAI Responses API, so the Connection needs an
   `openai_responses` endpoint.
+- **Grok Build** speaks the OpenAI Chat protocol (`openai_chat`) with an API key.
+  On a cloud machine it uses the CLI's own sign-in instead.
+- **Antigravity** has no API-key protocol (`inference_protocols` is empty). It
+  runs only on a cloud machine, under its own sign-in.
 - **Claude Code** speaks only Anthropic Messages (`ANTHROPIC_BASE_URL`); no
   Claude subscription login is involved.
 - **Command Code** runs in its documented local-only BYOK mode
   (`--local-only`): no Command Code account or backend traffic.
 
-Use `GET /api/harnesses` for the installed catalog, `GET /api/models` for
-Connection-scoped model availability and `GET /api/executor-backends` for
-executors. These reads have no side effects.
+A disabled provider cannot be selected. Use `GET /api/harnesses` for the
+installed catalog, `GET /api/models` for Connection-scoped model availability,
+`GET /api/executor-backends` for executors and `GET /api/subscription-providers`
+for the subscription providers this deployment offers. These reads have no side
+effects.
 
 A Harness switch creates a new linked Session with an explicit summary Message.
 SBX never silently translates hidden context between CLIs.
@@ -1272,7 +1396,8 @@ inheriting `os.environ`.
 | GitHub token | the delivery worker, and a clone helper that reads it from a private file (never a URL or argv) |
 | Inference API key | the CLI process environment for one Turn; CLI config files reference it by variable name only, so it is never written to disk |
 | Subscription login (cloud machine) | a private Modal Volume in the owner's Modal workspace, written by the official CLI; mounted only into that machine's one VM. The control plane never reads, stores or returns it, and it is never in a checkpoint or ChangeSet |
-| Device sign-in code | returned to the Slot's owner while the login is pending, then cleared |
+| Device sign-in code (Codex, Grok Build) | returned to the Slot's owner while the login is pending, then cleared |
+| Pasted sign-in code (Antigravity) | sent once from the request to the waiting CLI in the setup VM over the executor's exec channel, never stored, logged or returned; the VM reads it once and types it into the CLI |
 
 ChangeSets and checkpoints exclude credential files, including `.env`,
 `auth.json` and private keys. Safe templates such as `.env.example` remain
@@ -1322,7 +1447,12 @@ Source: /troubleshooting/
 | Connection stays `unverified` | Validation is a background Job; make sure workers run (`serve` runs them). `reauth_required` means the provider rejected the credential: replace it. |
 | Turn waits with `connection_required` or `credential_invalid` | Add or replace the inference API key, Modal or GitHub Connection. For `connection_required` with `inference_protocols`, add an endpoint for one of the listed protocols. |
 | Turn waits with `waiting_capacity` | Connection capacity is in use, or the Session's cloud machine is running another Session; the Turn continues when it frees. |
-| Cloud machine stays **Login pending** | Open the sign-in page and enter the code before it expires. The page updates by itself; if the code expired, choose **Log in again**. |
+| Cloud machine stays **Login pending** | Open the sign-in page and finish it before the code expires. For Codex and Grok Build, enter the one-time code. For Antigravity, paste the code the browser shows and choose **Send code**. The page updates by itself; if the code or link expired, choose **Log in again**. |
+| Antigravity machine shows **Needs login** with the reason `code_rejected` ("The provider did not accept that code") | The pasted code was wrong, already used, or too old. Choose **Log in again** to get a new sign-in link, then paste the newest code the browser shows. |
+| `invalid_transition`: "this login is not waiting for a code" from `sbx slots code` or `submit_code` | A code was sent to a device-code machine (Codex or Grok Build), a code was sent a second time after it was accepted, or no login was waiting for one. Only Antigravity asks for a pasted code, and only while its login waits for it. Check the state with `sbx slots show SLOT_ID`. |
+| Antigravity login ends as expired | The sign-in link or pasted code was not used before the login window closed. Choose **Log in again** for a new link. |
+| Grok Build or Antigravity machine shows **Needs login** after a Session | The provider rejected the stored login during a Turn, or the login was signed out. Choose **Log in again**, then send the Turn again. |
+| Antigravity machine has no model picker | SBX could not read the list that `agy models` prints, so the machine works with the provider default only. Choose **Check login and refresh models**. If the list still cannot be read, Sessions use the default model. |
 | Cloud machine shows **Needs login** after it worked | The provider rejected the stored login or it was signed out. Choose **Log in again**. |
 | Cloud machine shows **Error** | The setup VM was lost or the Volume could not be saved. Choose **Check login**; if it persists, check the Modal Connection. |
 | No models listed for a cloud machine | The CLI gave no catalog. Choose **Check login and refresh models**; Sessions can still run on the provider default. |

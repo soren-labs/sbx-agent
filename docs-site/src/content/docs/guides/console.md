@@ -27,6 +27,10 @@ rejected with `csrf_failed`.
   The same picker has **Runs on**: your API key or a ready cloud machine. A
   machine offers the models its own login reported and each model's reasoning
   efforts; an API-key model offers a thinking On/Off switch where verified.
+  Antigravity has no API-key mode, so it appears only under **Runs on**. Its
+  effort choices are the levels the CLI accepts, the same for every model, and
+  the picker says so. If SBX cannot read the Antigravity model list, the model
+  picker is not shown and the provider default is used.
 - **Session workbench**: the conversation stays on the left while the agent
   works. With Claude Code and Grok Build the reply and any reasoning the model
   exposes appear as they are generated; the other CLIs report each completed
@@ -42,11 +46,15 @@ rejected with `csrf_failed`.
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
   Services and Child Sessions tabs.
 - **Projects**: reusable repository and environment configuration.
-- **My Cloud Machines**: Codex subscription logins, one per machine. Add a
-  machine with the official sign-in page and a one-time code; the row turns
-  Ready by itself. Compact rows with search, state filter, sort and collapsible
-  groups; expand one to log in again, check the login, rename, sign out or
-  delete. See [Cloud machines](/guides/cloud-machines/).
+- **My Cloud Machines**: subscription logins, one per machine, for Codex, Grok
+  Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
+  each entry says how it signs in. For Codex and Grok Build, open the sign-in
+  page and enter the one-time code. For Antigravity, open the Google sign-in link,
+  sign in, copy the code the browser shows, paste it into the machine's field and
+  choose **Send code**. SBX does not store the code. The row turns Ready by itself.
+  Machines are grouped by provider, with compact rows, search, state filter, sort
+  and collapsible groups. Expand one to log in again, check the login, rename, sign
+  out or delete. See [Cloud machines](/guides/cloud-machines/).
 - **Connections**: add, validate, replace and disconnect, with write-only
   secret fields.
 - **Settings**: identity, API keys (plaintext shown once) and preferences.

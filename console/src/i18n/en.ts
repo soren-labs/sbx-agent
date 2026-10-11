@@ -649,6 +649,7 @@ export const en = {
   "machines.login.waiting": "Waiting for your approval. This page updates by itself.",
   "machines.login.waiting_paste": "Waiting for the code from the sign-in page.",
   "machines.login.expires": "code expires in {time}",
+  "machines.login.window": "this sign-in closes in {time}",
   "machines.login.verifying": "Approved. Verifying with a real request and saving to your volume…",
   "machines.login.verifying_paste": "Code sent. Verifying with a real request and saving to your volume…",
   "machines.login.cancel": "Cancel login",

@@ -550,8 +550,8 @@ describe("Three providers", () => {
 
     const open = await screen.findByRole("link", { name: "Open sign-in page" });
     expect(open).toHaveAttribute("href", GOOGLE_URL);
-    // The long sign-in link is opened, not printed; only its host is shown.
-    expect(screen.getByText("accounts.google.com")).toBeInTheDocument();
+    // The long sign-in link is opened, not printed; only where it goes is shown.
+    expect(screen.getByText("https://accounts.google.com/o/oauth2/auth")).toBeInTheDocument();
     expect(screen.queryByText(GOOGLE_URL)).not.toBeInTheDocument();
     expect(screen.queryByTestId("device-code")).not.toBeInTheDocument();
     expect(screen.getByText("Waiting for the code from the sign-in page.")).toBeInTheDocument();
@@ -597,6 +597,42 @@ describe("Three providers", () => {
     expect(await screen.findByRole("textbox", { name: "登录后显示的代码" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发送代码" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "添加云电脑" })).toBeInTheDocument();
+  });
+});
+
+describe("A sign-in link that carries the one-time code", () => {
+  it("opens the provider's own link but never prints the code outside the masked field", async () => {
+    const waiting = slot({
+      id: "slot_g",
+      label: "Grok Build 1",
+      provider: "grok",
+      provider_name: "Grok Build",
+      status: "login_pending",
+      state: "login_pending",
+      capabilities: {},
+      login: {
+        attempt_id: "a1",
+        mode: "login",
+        state: "awaiting_user",
+        method: "device_code",
+        verification_url: "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+        user_code: "ABCD-1234",
+        input: null,
+        code_expires_at: null,
+        error_code: null,
+        started_at: "2026-10-11T09:00:00+00:00",
+        finished_at: null,
+      },
+    });
+    const { fetch } = mockFetch([...identityRoutes, ["GET", "/api/workspaces/w1/machine-slots", { json: listing([waiting], THREE_PROVIDERS) }]]);
+    await renderApp(<MachinesPage />, fetch);
+    const code = await screen.findByTestId("device-code");
+    expect(code).toHaveTextContent("ABCD-1234");
+    expect(screen.getByRole("link", { name: "Open sign-in page" })).toHaveAttribute("href", "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234");
+    expect(screen.getByText("https://accounts.x.ai/oauth2/device")).toBeInTheDocument();
+    // The code is on the page exactly once, in the element captures blur.
+    const elsewhere = document.body.textContent!.replace(code.textContent!, "");
+    expect(elsewhere).not.toContain("ABCD-1234");
   });
 });
 
