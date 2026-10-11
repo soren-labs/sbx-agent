@@ -2,8 +2,8 @@
 
 Subscription only: a Turn runs on a Machine Slot whose Volume holds the official Google
 sign-in. ``agy`` has no home override, so the CLI's ``HOME`` is the Slot profile itself;
-no key or token is passed, read or written here. Verified against Antigravity CLI 1.3.3
-for flags and the documented stream shape:
+no key or token is passed, read or written here. Verified against a signed-in Antigravity
+CLI 1.3.3 (recorded stream in ``tests/fixtures/harnesses/antigravity``):
 
     {"event":"init","conversation_id":...,"init":{...}}
     {"event":"step_update","step_update":{"step_index","state","step_type","text_delta",...}}
@@ -16,6 +16,7 @@ A print-mode run exits non-zero on failure (3 for a model or agent error, with a
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,6 @@ from runtime.harnesses.protocol import (
 from runtime.security.credentials import private_dir
 
 ADAPTER_VERSION = "antigravity-harness/1"
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Signed-out wording of the CLI, in addition to the generic needles.
 AUTH_NEEDLES = (
     "please sign in",
@@ -90,12 +90,13 @@ class AntigravityHarness:
                 "model_discovery": Capability(
                     "supported",
                     "agy models",
-                    "the Machine Slot's authenticated list; text output, slugs only",
+                    "the Machine Slot's authenticated list; text output, slug and display name",
                 ),
                 "effort_settings": Capability(
-                    "supported",
-                    "--effort",
-                    "the CLI's levels, not a per-model list; the CLI resolves a level per model",
+                    "unsupported",
+                    "",
+                    "effort is part of the model: the CLI lists one slug per effort variant and "
+                    "rejects --effort next to it",
                 ),
                 "credential_writeback": Capability(
                     "supported", "", "the CLI refreshes its login on the Machine Slot volume"
@@ -112,11 +113,13 @@ class AntigravityHarness:
         home = Path(profile.get("HOME") or "")
         if not profile.get("HOME") or not home.is_dir():
             raise HarnessError("connection_required", "the machine slot profile is not mounted")
-        if context.effort and context.effort not in EFFORTS:
-            raise HarnessError("validation_failed", "unsupported Antigravity reasoning effort")
+        if context.effort:
+            # ``--model <variant> --effort <level>`` is refused by the CLI (measured, 1.3.3).
+            raise HarnessError(
+                "validation_failed", "Antigravity sets reasoning effort through the model variant"
+            )
         private_dir(context.home)
-        args = ["--effort", context.effort] if context.effort else []
-        return PreparedHarness(home=home, env=base_env(home, **profile), cli_args=args)
+        return PreparedHarness(home=home, env=base_env(home, **profile))
 
     def _argv(
         self, context: TurnContext, prepared: PreparedHarness, conversation: str | None
@@ -248,8 +251,10 @@ class AntigravityHarness:
             return []
         info = step.get("tool_info") if isinstance(step.get("tool_info"), dict) else {}
         name = str(step.get("tool_name") or info.get("name") or "tool")
+        # The CLI prints the parameters as text, e.g. ``{'CommandLine': 'cat hello.txt'}``.
         parameters = info.get("parameters")
-        title = parameters.get("CommandLine") if isinstance(parameters, dict) else None
+        shown = re.search(r"'(?:CommandLine|TargetFile)': '([^']*)'", str(parameters or ""))
+        title = shown.group(1) if shown else None
         payload = {
             "tool_id": key,
             "name": name,

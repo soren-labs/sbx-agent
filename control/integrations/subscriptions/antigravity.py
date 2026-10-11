@@ -25,37 +25,33 @@ _NOISE = ("fetching", "error", "warning", "available models", "models:")
 
 
 def parse_catalog(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Model slugs from the lines ``agy models`` printed; a line that is not a slug is ignored.
+    """Models from the lines ``agy models`` printed: ``<slug><TAB><display name>``.
 
-    ``agy`` has no machine-readable catalog. Its ``--effort`` levels belong to the CLI, not
-    to a model (the CLI resolves a level per model), so every model carries the same levels
-    and the catalog says so with ``effort_scope="cli"``. Nothing is added to what was printed.
+    Verified against a signed-in Antigravity CLI 1.3.3. Reasoning effort is not a separate
+    setting here: the CLI lists one slug per effort variant (``...-high``, ``...-low``) and
+    rejects ``--effort`` next to a variant slug or a model without effort. So every model
+    is offered as printed, with no effort list, and choosing the variant chooses the effort.
+    A line whose first field is not a slug is ignored; nothing is added to what was printed.
     """
-    levels = [
-        {"id": level, "description": None}
-        for level in dict.fromkeys(str(raw.get("efforts") or "").split("|"))
-        if re.fullmatch(r"[a-z]{2,12}", level)
-    ]
     models: list[dict[str, Any]] = []
     for line in raw.get("lines") or []:
         if not isinstance(line, str) or line.lower().startswith(_NOISE):
             continue
         marked = line.startswith(("*", ">")) or "(default)" in line.lower()
-        tokens = line.lstrip("*>-•· \t").split()
-        slug = tokens[0].strip("`\"',") if tokens else ""
+        slug, _, rest = line.lstrip("*>-•· \t").partition("\t")
+        if not rest:
+            slug, _, rest = slug.partition(" ")
+        slug = slug.strip("`\"',")
         if not _SLUG.match(slug) or slug in [m["id"] for m in models]:
             continue
+        name = re.sub(r"\s*\(default\)\s*", " ", rest, flags=re.I).strip()[:120]
         models.append(
             {
                 "id": slug,
-                "name": slug,
+                "name": name or slug,
                 "description": None,
                 "default": marked,
-                "reasoning": {
-                    "kind": "levels" if levels else "none",
-                    "efforts": levels,
-                    "default": None,
-                },
+                "reasoning": {"kind": "none", "efforts": [], "default": None},
             }
         )
     if not models:
@@ -65,7 +61,6 @@ def parse_catalog(raw: dict[str, Any]) -> dict[str, Any] | None:
         "models": models,
         "default_model": defaults[0] if len(defaults) == 1 else None,
         "complete": bool(raw.get("complete")),
-        "effort_scope": "cli" if levels else None,
     }
 
 
@@ -91,10 +86,6 @@ ADAPTER = SubscriptionAdapter(
         "catalog": {
             "kind": "text",
             "argv": ["agy", "models"],
-            # The effort levels the installed CLI accepts, from its own usage text.
-            "facts": {
-                "efforts": {"argv": ["agy", "--help"], "pattern": r"--effort\s[^\n]*\(([a-z|]+)\)"}
-            },
             "timeout": 60,
         },
         "ensure_dirs": [f"{PROFILE_MOUNT}/.gemini"],

@@ -572,10 +572,10 @@
         "status": "supported"
       },
       "effort_settings": {
-        "evidence": "--effort",
-        "limitation": "the CLI's levels, not a per-model list; the CLI resolves a level per model",
+        "evidence": "",
+        "limitation": "effort is part of the model: the CLI lists one slug per effort variant and rejects --effort next to it",
         "mode": "",
-        "status": "supported"
+        "status": "unsupported"
       },
       "event_stream": {
         "evidence": "--output-format stream-json",
@@ -603,7 +603,7 @@
       },
       "model_discovery": {
         "evidence": "agy models",
-        "limitation": "the Machine Slot's authenticated list; text output, slugs only",
+        "limitation": "the Machine Slot's authenticated list; text output, slug and display name",
         "mode": "",
         "status": "supported"
       },
