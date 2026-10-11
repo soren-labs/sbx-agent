@@ -143,7 +143,7 @@
       "account_portable_resume": "unknown",
       "attachments": "unknown",
       "credential_writeback": "supported",
-      "effort_settings": "supported",
+      "effort_settings": "unsupported",
       "event_stream": "supported",
       "interactive_approval": "unsupported",
       "interrupt": "unsupported",

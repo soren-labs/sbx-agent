@@ -695,21 +695,41 @@ def test_grok_slot_runs_grok_sessions_with_each_models_own_efforts(env) -> None:
     assert with_key.status_code == 422, "a subscription Session never also takes an API key"
 
 
-def test_antigravity_slot_offers_the_printed_models_and_the_cli_effort_levels(env) -> None:
+def test_antigravity_slot_offers_the_printed_variants_and_no_separate_effort(env) -> None:
     stack, cloud = env
     user = _user(stack)
     slot = _ready(stack, cloud, user, "antigravity", AGY_CATALOG)
     catalog = slot["capabilities"]["catalog"]
-    assert catalog["source"] == "agy models" and catalog["effort_scope"] == "cli"
-    assert [m["id"] for m in catalog["models"]] == ["agy-pro-1", "agy-flash-2"]
-    assert catalog["default_model"] == "agy-pro-1"
+    assert catalog["source"] == "agy models" and "effort_scope" not in catalog
+    assert [(m["id"], m["name"]) for m in catalog["models"]] == [
+        ("agy-pro-1-high", "Agy Pro 1 (High)"),
+        ("agy-pro-1-low", "Agy Pro 1 (Low)"),
+        ("agy-plain-2", "Agy Plain 2"),
+    ]
+    assert catalog["default_model"] is None
 
-    harness = {"provider_id": "antigravity", "model": "agy-flash-2", "effort": "medium"}
+    harness = {"provider_id": "antigravity", "model": "agy-pro-1-low"}
     created = _session(user, slot, harness=harness)
     assert created.status_code == 202, created.text
-    assert created.json()["session"]["harness"] == harness
-    assert _session(user, slot, harness={**harness, "effort": "max"}).status_code == 422
+    assert created.json()["session"]["harness"] == {**harness, "effort": None}
+    # The CLI refuses an effort next to a variant, so the server never lets one through.
+    conflict = _session(user, slot, harness={**harness, "model": "agy-pro-1-high", "effort": "low"})
+    assert conflict.status_code == 422
+    assert conflict.json()["error"]["details"] == {
+        "field": "harness.effort",
+        "model": "agy-pro-1-high",
+        "supported": [],
+    }
+    assert (
+        _session(user, slot, harness={"provider_id": "antigravity", "effort": "low"}).status_code
+        == 422
+    )
     assert _session(user, slot, harness={**harness, "model": "gemini-made-up"}).status_code == 422
+    turn = user.post(
+        f"/api/sessions/{created.json()['session']['id']}/messages",
+        {"content": "again", "settings": {"effort": "high"}},
+    )
+    assert turn.status_code == 422, "a per-Turn effort is refused the same way"
 
 
 def test_antigravity_without_a_readable_model_list_runs_the_provider_default_only(env) -> None:

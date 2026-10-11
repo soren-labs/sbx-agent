@@ -193,17 +193,12 @@ class Supervisor:
         return found
 
     def _catalog_text(self, spec: dict[str, Any]) -> dict[str, Any] | None:
-        """Printed lines of a models command, plus single facts matched in other output."""
+        """Printed lines of a models command, for a CLI with no machine interface."""
         code, output = self.call(spec["argv"], float(spec.get("timeout", 60)))
         if code != 0:
             return None
         lines = [line.strip()[:300] for line in ANSI.sub("", output).splitlines()]
         found: dict[str, Any] = {"lines": [line for line in lines if line][:200], "complete": True}
-        for name, fact in (spec.get("facts") or {}).items():
-            fact_code, text = self.call(fact["argv"], 20)
-            match = re.search(fact["pattern"], ANSI.sub("", text)) if fact_code == 0 else None
-            if match:
-                found[name] = match.group(1)[:200]
         return found if found["lines"] else None
 
     def logged_in(self) -> bool:

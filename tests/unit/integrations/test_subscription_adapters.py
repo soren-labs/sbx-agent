@@ -120,26 +120,34 @@ def test_grok_catalog_keeps_each_models_own_effort_menu() -> None:
 
 def test_antigravity_catalog_is_only_what_the_cli_printed() -> None:
     adapter = SUBSCRIPTIONS["antigravity"]
+    # The signed-in CLI's format: slug, a tab, the display name; one slug per effort variant.
     raw = {
         "complete": True,
-        "efforts": "low|medium|high",
         "lines": [
             "Fetching available models...",
-            "Available models:",
-            "* model-pro-1 (default)",
-            "  - model-flash-2   Fast model",
+            "model-flash-9-high\tModel Flash 9 (High)",
+            "model-flash-9-low\tModel Flash 9 (Low)",
+            "other-model-4\tOther Model 4 (Thinking)",
             "Some Sentence That Is Not A Slug",
-            "model-pro-1",
+            "model-flash-9-high\tModel Flash 9 (High)",
         ],
     }
     catalog = adapter.catalog(raw)
-    assert [m["id"] for m in catalog["models"]] == ["model-pro-1", "model-flash-2"]
-    assert catalog["default_model"] == "model-pro-1" and catalog["effort_scope"] == "cli"
-    levels = [e["id"] for e in catalog["models"][1]["reasoning"]["efforts"]]
-    assert levels == ["low", "medium", "high"], "the CLI's own --effort levels, nothing added"
-    no_levels = adapter.catalog({**raw, "efforts": None})
-    assert no_levels["models"][0]["reasoning"]["kind"] == "none"
-    assert no_levels["effort_scope"] is None
+    assert [(m["id"], m["name"]) for m in catalog["models"]] == [
+        ("model-flash-9-high", "Model Flash 9 (High)"),
+        ("model-flash-9-low", "Model Flash 9 (Low)"),
+        ("other-model-4", "Other Model 4 (Thinking)"),
+    ]
+    # Effort is the variant itself: no separate effort is offered for any model.
+    assert all(
+        m["reasoning"] == {"kind": "none", "efforts": [], "default": None}
+        for m in catalog["models"]
+    )
+    assert catalog["default_model"] is None, "the CLI marks no default"
+    assert "effort_scope" not in catalog
+    marked = adapter.catalog({"lines": ["* model-a-1 (default)", "  model-b-2   Fast model"]})
+    assert marked["default_model"] == "model-a-1" and marked["models"][0]["name"] == "model-a-1"
+    assert marked["models"][1]["name"] == "Fast model"
     assert adapter.catalog({"lines": ["Error: Please sign in to view available models."]}) is None
     assert adapter.catalog({"lines": ["Gemini Pro", "Claude Sonnet"]}) is None, (
         "names are not slugs"
