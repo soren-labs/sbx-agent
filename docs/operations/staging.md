@@ -76,6 +76,47 @@ The rollout runs automatically when the repository variable
 `STAGING_AUTO_ROLLOUT` is `true`, and for any manual "Run workflow" on `main`.
 Without it, pushes to `main` only build the image.
 
+`STAGING_AUTO_ROLLOUT` is unset: candidates are rolled by a manual run. Turning
+it on, and turning on `REQUIRE_STAGING_ACCEPTANCE` for releases
+(`production-release.md`), are owner decisions. Because `main` has no required
+status checks, enabling automatic rollout means every merged commit reaches
+staging and uses the Cloudflare Pages token without a further gate; protect
+`main` (or add required reviewers to the `staging` environment) first.
+
+### Two digests for one image
+
+The `staging/acceptance` status records the digest of the image manifest that
+the `image` job built (also the digest of the `staging-<git sha>` tag). The
+`staging-current` tag is written with `docker buildx imagetools create`, which
+wraps that manifest in an OCI index, so `staging-current` — and therefore
+`SBX_IMAGE` in `/opt/sbx-staging/release.env` — has a different digest. They are
+the same image: the index has exactly one entry, the accepted manifest.
+
+```bash
+token=$(curl -fsS "https://ghcr.io/token?scope=repository:soren-labs/sbx-agent:pull" | jq -r .token)
+curl -fsS -H "Authorization: Bearer $token" \
+  -H "Accept: application/vnd.oci.image.index.v1+json" \
+  https://ghcr.io/v2/soren-labs/sbx-agent/manifests/staging-current | jq -r '.manifests[].digest'
+```
+
+The commit is verified independently of either digest (image revision label,
+`/healthz`, Console build manifest). Making the two digests literally equal
+needs a change to how the tag is written and is a known follow-up.
+
+### First accepted candidate
+
+Commit `cd715f030eeabff1a9cfe16902bf07c89b7f9d2f` passed the full pipeline on
+2026-10-12 (image, rollout, acceptance, status):
+<https://github.com/soren-labs/sbx-agent/actions/runs/38258018054>. The accepted
+manifest is `sha256:fc3b0ae2d89af164b1f87abf02aa84ebb4b680fd3c4859fcde8ac9609fbdb7c6`.
+
+That acceptance covers the two automated test users: sign-in, isolation, a real
+OpenCode Turn on Modal with a BYOK inference Connection, lease release and the
+staging Console in a browser. It does **not** cover subscription Machine Slots.
+The test users have none, so Codex, Grok and Antigravity Turns are listed as
+pending in the evidence. Slots signed in on the owner's personal account are not
+used by any automation and are not evidence of a subscription Turn.
+
 The `staging` environment (branch policy: `main` only) needs, in addition to the
 test users' credentials:
 
