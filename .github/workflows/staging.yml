@@ -132,11 +132,21 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The staging host polls this tag and rolls itself (deploy/staging/reconcile.sh).
+      # --prefer-index=false copies the manifest as it is; the default would wrap it
+      # in a new index with a different digest than the one that gets accepted.
       - name: Publish the desired staging release
+        shell: bash
         run: |
-          docker buildx imagetools create \
+          set -euo pipefail
+          docker buildx imagetools create --prefer-index=false \
             --tag "$REGISTRY/$IMAGE_NAME:staging-current" \
             "$REGISTRY/$IMAGE_NAME@$IMAGE_DIGEST"
+          published=$(docker buildx imagetools inspect "$REGISTRY/$IMAGE_NAME:staging-current" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          if [ "$published" != "$IMAGE_DIGEST" ]; then
+            echo "staging-current is $published, expected the built image $IMAGE_DIGEST" >&2
+            exit 1
+          fi
 
       - name: Wait until staging serves this commit
         shell: bash

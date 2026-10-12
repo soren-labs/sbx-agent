@@ -83,25 +83,17 @@ status checks, enabling automatic rollout means every merged commit reaches
 staging and uses the Cloudflare Pages token without a further gate; protect
 `main` (or add required reviewers to the `staging` environment) first.
 
-### Two digests for one image
+### One digest
 
-The `staging/acceptance` status records the digest of the image manifest that
-the `image` job built (also the digest of the `staging-<git sha>` tag). The
-`staging-current` tag is written with `docker buildx imagetools create`, which
-wraps that manifest in an OCI index, so `staging-current` — and therefore
-`SBX_IMAGE` in `/opt/sbx-staging/release.env` — has a different digest. They are
-the same image: the index has exactly one entry, the accepted manifest.
+The `staging/acceptance` status records the digest of the image the `image` job
+built. The rollout copies that manifest unchanged to `staging-current` and fails
+if the tag's digest differs, so the same digest appears in the status, behind
+`staging-<git sha>`, behind `staging-current`, and as `SBX_IMAGE` in
+`/opt/sbx-staging/release.env`.
 
-```bash
-token=$(curl -fsS "https://ghcr.io/token?scope=repository:soren-labs/sbx-agent:pull" | jq -r .token)
-curl -fsS -H "Authorization: Bearer $token" \
-  -H "Accept: application/vnd.oci.image.index.v1+json" \
-  https://ghcr.io/v2/soren-labs/sbx-agent/manifests/staging-current | jq -r '.manifests[].digest'
-```
-
-The commit is verified independently of either digest (image revision label,
-`/healthz`, Console build manifest). Making the two digests literally equal
-needs a change to how the tag is written and is a known follow-up.
+The first accepted candidate (`cd715f0`) predates this: its `staging-current` was
+an OCI index (`sha256:561875b2…`) wrapping the accepted manifest
+(`sha256:fc3b0ae2…`), which is why the host recorded a different digest for it.
 
 ### First accepted candidate
 
