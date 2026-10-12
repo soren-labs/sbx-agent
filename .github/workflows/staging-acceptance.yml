@@ -1,11 +1,21 @@
 name: Staging acceptance
 
 # External acceptance of the persistent staging deployment over its public HTTPS
-# URLs. Started manually on main only; never by pull requests, so fork code
-# cannot read the staging credentials. The `staging` environment holds only the
-# two test users' sign-in credentials — no provider tokens.
+# URLs. Called by the Staging workflow after a rollout, or started manually on
+# main. Never triggered by pull requests, so fork code cannot read the staging
+# credentials. The `staging` environment gives this job only the two test
+# users' sign-in credentials — no provider tokens.
 
 on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      called:
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       sha:
@@ -13,8 +23,11 @@ on:
         required: false
         type: string
 
+# A manual run waits for (and blocks) the Staging pipeline. When the pipeline
+# calls this workflow it already holds the `staging` group, so the call gets a
+# group of its own instead of deadlocking on its caller.
 concurrency:
-  group: staging
+  group: ${{ inputs.called && format('staging-call-{0}', github.run_id) || 'staging' }}
   cancel-in-progress: false
 
 permissions:

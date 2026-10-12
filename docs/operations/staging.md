@@ -57,10 +57,40 @@ new random secrets. It refuses to run on a host that has `/opt/sbx-agent`
 (the production layout). Secrets are generated on the host and are not copied
 to GitHub or to any other machine.
 
-## Candidate image
+## Candidate pipeline
 
-`.github/workflows/staging-image.yml` builds the backend image for every commit
-on `main` and pushes it as `ghcr.io/soren-labs/sbx-agent:staging-<git sha>`.
+`.github/workflows/staging.yml` runs for every commit on `main`, one run at a
+time (concurrency group `staging`):
+
+1. **image** — builds the backend image and pushes it as
+   `ghcr.io/soren-labs/sbx-agent:staging-<git sha>`.
+2. **rollout** (`staging` environment) — builds the Console with that commit as
+   its build SHA, deploys it to the Pages project `sbx-agent-staging`, moves the
+   registry tag `staging-current` to the image digest, and waits until both
+   `/healthz` and `build-manifest.json` report the commit.
+3. **acceptance** — the external acceptance described below, against that commit.
+4. **accepted** — sets the commit status `staging/acceptance` to success, with
+   the accepted image digest in its description.
+
+The rollout runs automatically when the repository variable
+`STAGING_AUTO_ROLLOUT` is `true`, and for any manual "Run workflow" on `main`.
+Without it, pushes to `main` only build the image.
+
+The `staging` environment (branch policy: `main` only) needs, in addition to the
+test users' credentials:
+
+- variable `CLOUDFLARE_ACCOUNT_ID`;
+- secret `CLOUDFLARE_API_TOKEN` — a token created for staging only, with the
+  single permission *Account → Cloudflare Pages → Edit*. It is not the
+  production environment's token.
+
+Cloudflare cannot restrict a Pages token to one project, so this token could
+technically deploy to any Pages project in the account, including production's.
+The workflow pins the project name `sbx-agent-staging` and refuses any other; the
+job runs only on `main` inside the `staging` environment and never for pull
+requests. Adding required reviewers to the `staging` environment, or keeping
+staging in a separate Cloudflare account, removes the remaining exposure.
+
 The image digest is printed in the workflow run summary. It can also be read
 from the registry without any Docker plugin:
 
@@ -253,10 +283,10 @@ skip this.
 
 ## Acceptance workflow
 
-`.github/workflows/staging-acceptance.yml` is started manually on `main`
-(`workflow_dispatch`). It runs in the `staging` GitHub environment, which holds
-only the two test users' sign-in credentials, and in the `staging` concurrency
-group so that runs never overlap. It executes the API acceptance above and the
+`.github/workflows/staging-acceptance.yml` is called by the candidate pipeline
+after a rollout and can also be started manually on `main`. It runs in the
+`staging` GitHub environment and never overlaps a rollout or another acceptance
+run. It executes the API acceptance above and the
 browser tests in `console/e2e-staging` (headless Chromium on the runner, signed
 in as test user A on the real staging Console), then uploads the evidence JSON
 and, on failure, the Playwright trace. It is never triggered by pull requests,

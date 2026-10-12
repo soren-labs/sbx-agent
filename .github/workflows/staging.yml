@@ -1,0 +1,185 @@
+name: Staging
+
+# Candidate pipeline for main: build the backend image, roll staging to it
+# (Console and backend from the same commit), run external acceptance, and
+# record the result on the commit. Never runs for pull requests, so code from
+# forks cannot reach staging or its credentials.
+#
+# One run at a time: a rollout and its acceptance are never interleaved with
+# another candidate. GitHub keeps only the newest waiting run.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: soren-labs/sbx-agent
+  # Staging only. The production project is `sbx-agent` and is deployed solely
+  # by the release workflow.
+  PAGES_PROJECT: sbx-agent-staging
+  STAGING_API_URL: https://api-staging.sbx-agent.com
+  STAGING_CONSOLE_URL: https://staging.sbx-agent.com
+
+jobs:
+  image:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `staging-<sha>` never collides with the release workflow's `v*` and
+      # `sha-<sha>` tags, which production resolves to its own digest.
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:staging-${{ github.sha }}
+          build-args: |
+            SBX_VERSION=staging-${{ github.sha }}
+            SBX_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Record candidate
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Staging candidate"
+            echo
+            echo "- git sha: \`${GITHUB_SHA}\`"
+            echo "- image: \`${REGISTRY}/${IMAGE_NAME}@${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Automatic on main once the repository variable STAGING_AUTO_ROLLOUT is
+  # `true`; always available through "Run workflow".
+  rollout:
+    needs: image
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.STAGING_AUTO_ROLLOUT == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      - name: Validate staging deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_ACCOUNT_ID:?staging environment variable CLOUDFLARE_ACCOUNT_ID is required}"
+          : "${CLOUDFLARE_API_TOKEN:?staging environment secret CLOUDFLARE_API_TOKEN is required}"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$PAGES_PROJECT" = "sbx-agent-staging"
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Build Console for this commit
+        working-directory: console
+        env:
+          VITE_BUILD_SHA: ${{ github.sha }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy Console to the staging Pages project
+        working-directory: console
+        run: |
+          npx --yes wrangler@4.148.0 pages deploy dist \
+            --project-name="$PAGES_PROJECT" \
+            --branch=main \
+            --commit-hash="$GITHUB_SHA" \
+            --commit-message="SBX Agent staging $GITHUB_SHA"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The staging host polls this tag and rolls itself (deploy/staging/reconcile.sh).
+      - name: Publish the desired staging release
+        run: |
+          docker buildx imagetools create \
+            --tag "$REGISTRY/$IMAGE_NAME:staging-current" \
+            "$REGISTRY/$IMAGE_NAME@$IMAGE_DIGEST"
+
+      - name: Wait until staging serves this commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            backend=$(curl -fsS "$STAGING_API_URL/healthz" | jq -r '.git_sha' || true)
+            console=$(curl -fsS "$STAGING_CONSOLE_URL/build-manifest.json" | jq -r '.git_sha' || true)
+            if [ "$backend" = "$GITHUB_SHA" ] && [ "$console" = "$GITHUB_SHA" ]; then
+              ready=$(curl -fsS "$STAGING_API_URL/readyz" | jq -r '.ok' || true)
+              if [ "$ready" = "true" ]; then
+                echo "Staging serves $GITHUB_SHA"
+                exit 0
+              fi
+            fi
+            sleep 15
+          done
+          echo "Staging did not converge to $GITHUB_SHA (backend=$backend console=$console)" >&2
+          exit 1
+
+  acceptance:
+    needs: rollout
+    uses: ./.github/workflows/staging-acceptance.yml
+    with:
+      sha: ${{ github.sha }}
+      called: true
+    secrets: inherit
+
+  # The promotion record: the release workflow can require this status on the
+  # commit it is about to release.
+  accepted:
+    needs: [image, acceptance]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Record staging acceptance on the commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state=success \
+            -f context=staging/acceptance \
+            -f description="staging image $IMAGE_DIGEST" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
