@@ -59,12 +59,15 @@ to GitHub or to any other machine.
 
 `.github/workflows/staging-image.yml` builds the backend image for every commit
 on `main` and pushes it as `ghcr.io/soren-labs/sbx-agent:staging-<git sha>`.
-The image digest is printed in the workflow run summary and can be resolved
-from the tag:
+The image digest is printed in the workflow run summary. It can also be read
+from the registry without any Docker plugin:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/soren-labs/sbx-agent:staging-<git sha> \
-  --format '{{.Manifest.Digest}}'
+sha=<git sha>
+token=$(curl -fsS "https://ghcr.io/token?scope=repository:soren-labs/sbx-agent:pull" | jq -r .token)
+curl -fsSI -H "Authorization: Bearer $token" \
+  -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json" \
+  "https://ghcr.io/v2/soren-labs/sbx-agent/manifests/staging-$sha" | grep -i '^docker-content-digest'
 ```
 
 These tags are separate from the `v*` and `sha-*` tags written by the
@@ -94,23 +97,94 @@ ssh sbx-staging 'curl -fsS http://127.0.0.1:8000/readyz'
 ssh sbx-staging 'cat /opt/sbx-staging/release.env.last-good'
 ssh sbx-staging 'sudo docker compose -p sbx-staging ps'
 ssh sbx-staging 'sudo docker compose -p sbx-staging logs --tail=100 sbx'
-ssh -N -L 8000:127.0.0.1:8000 sbx-staging   # private API access from the operator machine
 ```
 
 Both containers use `restart: unless-stopped` and Docker is enabled at boot, so
 the stack returns after a host reboot with the same database volume.
 
-## Public edge (pending)
+## Test users and acceptance
 
-Staging has no public hostname yet. The intended shape mirrors production:
+Staging has two stable test users, each with its own workspace and Connections.
+Their Connections (Modal, BYOK inference, and GitHub for user A) are stored once in
+the staging Vault. A client that runs acceptance therefore needs only the two
+users' sign-in credentials; provider tokens never go to GitHub.
 
-- a staging-only Cloudflare Tunnel on the staging host forwarding
-  `api-staging.sbx-agent.com` to `http://127.0.0.1:8000`;
-- a separate Cloudflare Pages project for the staging Console at
-  `staging.sbx-agent.com`, with `SBX_API_ORIGIN` pointing at the staging API.
+One-time setup from an operator machine (idempotent; safe to re-run):
 
-Creating the tunnel, the DNS records and the Pages project requires Cloudflare
-account access and is an explicit operator step. Production hostnames, the
-production tunnel and the production Pages projects are not reused or changed.
-`SBX_PUBLIC_URL` and `SBX_ALLOWED_ORIGINS` in `/opt/sbx-staging/.env` must match
-the staging Console origin once it exists.
+```bash
+export SBX_STAGING_URL=https://api-staging.sbx-agent.com
+export SBX_STAGING_USER_A_EMAIL=... SBX_STAGING_USER_A_PASSWORD=...
+export SBX_STAGING_USER_B_EMAIL=... SBX_STAGING_USER_B_PASSWORD=...
+export SBX_TEST_MODAL_TOKEN_ID=... SBX_TEST_MODAL_TOKEN_SECRET=...
+export SBX_TEST_INFERENCE_API_KEY=...
+export SBX_TEST_GITHUB_TOKEN=...      # token limited to the E2E test repository
+uv run python -m tests.e2e_staging.bootstrap
+```
+
+Without Resend, verification mail stays on the staging host; the bootstrap reads
+the test user's own verification link through `SBX_STAGING_MAIL_COMMAND` (default:
+an SSH command that prints the stored mail). Exit code `2` means a provider
+credential was not supplied and is still pending.
+
+Acceptance, from any machine that can reach staging:
+
+```bash
+uv run python -m tests.e2e_staging.acceptance
+```
+
+It checks readiness, that the two users cannot read each other's Sessions, Turns
+or Connections, stored Connection health, one real Turn on Modal, lease release,
+and that Sessions from earlier runs are still readable. Every Session it creates
+is released and closed, also when a gate fails, and a lease that is still live at
+the end fails the run. `SBX_STAGING_EXPECT_SHA` additionally requires `/healthz`
+to report that revision. Both scripts refuse to run against production hostnames.
+
+Subscription Machine Slots (Codex, Grok, Antigravity) need a one-time official
+sign-in by the account owner inside the Slot. Until a Slot is signed in, the run
+lists it as `pending`; it is never reported as passed.
+`SBX_STAGING_REQUIRE_SLOTS=codex,...` turns a missing Slot into a failure.
+
+`SBX_STAGING_EXECUTOR=local` runs the same client against the fake-provider
+stack from `tests/e2e_browser/server.py`. That is a rehearsal of the client and
+is labelled as such in its output; it is not staging acceptance.
+
+## Public edge
+
+- `https://api-staging.sbx-agent.com` — a staging-only Cloudflare Tunnel
+  (`cloudflared-sbx-staging.service` on the staging host) forwarding to
+  `http://127.0.0.1:8000`.
+- `https://staging.sbx-agent.com` — the Cloudflare Pages project
+  `sbx-agent-staging`, whose function environment sets
+  `SBX_API_ORIGIN=https://api-staging.sbx-agent.com`, so `/api/*` on the staging
+  Console reaches only the staging API.
+
+`SBX_PUBLIC_URL` and `SBX_ALLOWED_ORIGINS` in `/opt/sbx-staging/.env` are the
+staging Console origin. Production hostnames, the production tunnel and the
+production Pages project `sbx-agent` are separate and are never targeted by
+staging tooling. The tunnel token lives only on the staging host.
+
+External clients use these HTTPS URLs. The operator SSH key for the host does
+not permit port forwarding, and nothing here depends on it.
+
+## Revision check
+
+A candidate is one commit. Before acceptance, both halves must report it:
+
+```bash
+curl -fsS https://api-staging.sbx-agent.com/healthz          # .git_sha  (backend image)
+curl -fsS https://staging.sbx-agent.com/build-manifest.json  # .git_sha  (Console build)
+```
+
+The `Staging acceptance` workflow fails when either differs from the commit it
+was asked to accept.
+
+## Acceptance workflow
+
+`.github/workflows/staging-acceptance.yml` is started manually on `main`
+(`workflow_dispatch`). It runs in the `staging` GitHub environment, which holds
+only the two test users' sign-in credentials, and in the `staging` concurrency
+group so that runs never overlap. It executes the API acceptance above and the
+browser tests in `console/e2e-staging` (headless Chromium on the runner, signed
+in as test user A on the real staging Console), then uploads the evidence JSON
+and, on failure, the Playwright trace. It is never triggered by pull requests,
+so code from forks cannot read the staging credentials or reach staging.
