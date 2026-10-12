@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      statuses: read
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
       version: ${{ steps.meta.outputs.version }}
@@ -69,6 +70,31 @@ jobs:
           }
           echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
           echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+
+      # Promotion gate. Enforced when the repository variable
+      # REQUIRE_STAGING_ACCEPTANCE is `true`: the release commit must carry a
+      # successful `staging/acceptance` status, set by the Staging workflow after
+      # that exact commit was rolled to staging and passed external acceptance.
+      - name: Check staging acceptance of the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.meta.outputs.sha }}
+          REQUIRE_STAGING_ACCEPTANCE: ${{ vars.REQUIRE_STAGING_ACCEPTANCE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Statuses are listed newest first; the newest one for the context decides.
+          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "staging/acceptance")][0].state // "missing"')"
+          echo "staging/acceptance for $RELEASE_SHA: $state"
+          if [ "$state" = "success" ]; then
+            exit 0
+          fi
+          if [ "$REQUIRE_STAGING_ACCEPTANCE" = "true" ]; then
+            echo "Release commit $RELEASE_SHA has not passed staging acceptance" >&2
+            exit 1
+          fi
+          echo "::warning::Release commit has no successful staging acceptance; not enforced (REQUIRE_STAGING_ACCEPTANCE is not 'true')"
 
       - uses: astral-sh/setup-uv@v5
         with:

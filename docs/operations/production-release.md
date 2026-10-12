@@ -23,6 +23,31 @@ under `console/functions/api/` proxies `/api/*` to `https://api.sbx-agent.com`.
 This preserves the existing cookie and CSRF model without enabling cross-origin
 session credentials.
 
+## Staging promotion gate
+
+A release should be cut from a commit that staging has accepted. The Staging
+workflow (`docs/operations/staging.md`) rolls a `main` commit to staging — backend
+image and Console built from that commit — runs external acceptance and then sets
+the commit status `staging/acceptance` to success, with the accepted staging image
+digest in its description.
+
+The release `gate` job reads that status for the release commit:
+
+- repository variable `REQUIRE_STAGING_ACCEPTANCE=true`: the release fails before
+  anything is built or deployed unless the status is `success`;
+- otherwise the result is only reported (a warning when missing), and the release
+  proceeds as before.
+
+What is promoted is the commit. The release still builds its own multi-architecture
+image from that commit, so the production digest recorded in
+`release-manifest.json` differs from the single-architecture staging digest; the
+shared, verified identity is the Git SHA, which production checks on the backend
+image and on the Console and Docs builds.
+
+To release a commit: confirm its `staging/acceptance` status (commit page or
+`gh api repos/soren-labs/sbx-agent/commits/<sha>/statuses`), then publish the
+release from that commit. Rollback is unchanged (see below).
+
 ## GitHub production environment
 
 Create a GitHub environment named `production`. It must contain:
