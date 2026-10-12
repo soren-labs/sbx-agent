@@ -291,6 +291,71 @@ delivered. Two supported paths:
   host and re-run the rollout. The key must not be the production key and is
   never stored in GitHub.
 
+## Owner Slot acceptance
+
+`tests/e2e_staging/owner_slots.py` runs real Turns on the owner's existing,
+signed-in Machine Slots. It is operator-run only: it is not part of any workflow,
+and the owner's key is never stored in GitHub.
+
+What it does for each expected Slot (default `codex=1,grok=2,antigravity=2`):
+checks it is ready, verified and idle; creates a Session pinned to that Slot with
+the model and effort from the Slot's own catalog; runs one short Turn with a
+unique marker and one follow-up Turn in the same Session; confirms the Turn ran on
+a Modal VM, that the Slot was held by this Session's lease, and that the provider
+reported usage; then releases the executor and closes the Session. Slots of the
+same provider run at the same time. Afterwards every Slot must be idle and its
+record and login Volume name unchanged.
+
+What it cannot do: every request passes an allowlist, and the only mutations that
+can leave the process are creating a Session, sending a message, cancelling a
+Turn, releasing a Session's executor and closing a Session. Requests that would
+create, change, verify, sign out, re-login or delete a Slot, or touch Connections,
+keys or the password, are refused before any network traffic
+(`tests/unit/test_owner_slots_acceptance.py`). A busy or not-ready Slot stops the
+run before any Turn starts. The script never reads a login Volume.
+
+### The one owner action: a `write` key
+
+API keys have three scopes: `read`, `write` and `*`. The Console's key form
+creates `*` keys; the acceptance script refuses those by default. A `write` key
+can run Sessions but cannot change the password or create keys. API keys do not
+expire, so the key is revoked after the run.
+
+1. Signed in at `https://staging.sbx-agent.com`, open the browser's developer
+   console on that tab and run:
+
+   ```js
+   const csrf = decodeURIComponent(document.cookie.split("; ").find((c) => c.startsWith("sbx_csrf=")).split("=")[1]);
+   const res = await fetch("/api/api-keys", {
+     method: "POST",
+     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf, "Idempotency-Key": crypto.randomUUID() },
+     body: JSON.stringify({ name: "owner-slot-acceptance", scopes: ["write"] }),
+   });
+   const created = await res.json();
+   await navigator.clipboard.writeText(created.key);
+   console.log(res.status, created.prefix, created.scopes);
+   ```
+
+   This is the Console's own authenticated request with one extra field. The key
+   goes to the clipboard and is not printed.
+2. On the operator machine, store it without putting it in a command line or the
+   shell history — run this, paste, press Enter, then Ctrl-D:
+
+   ```bash
+   mkdir -p ~/.config/sbx-staging && (umask 077 && cat > ~/.config/sbx-staging/owner_api_key)
+   ```
+
+Then the operator runs:
+
+```bash
+export SBX_STAGING_URL=https://api-staging.sbx-agent.com
+uv run python -m tests.e2e_staging.owner_slots          # read-only preflight
+uv run python -m tests.e2e_staging.owner_slots --run    # real Turns on the subscriptions
+```
+
+Afterwards the owner revokes the key in Settings → API keys and the operator
+deletes the file. Each Slot uses two short Turns of its paid subscription.
+
 ## Public edge
 
 - `https://api-staging.sbx-agent.com` — a staging-only Cloudflare Tunnel
