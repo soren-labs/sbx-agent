@@ -70,6 +70,17 @@ jobs:
           SBX_VAULT_KEYS: k1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           SBX_RUNTIME_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
         run: docker compose -f deploy/production/compose.yml config --quiet
+      - name: Validate staging Compose and scripts
+        env:
+          SBX_IMAGE: sbx-agent:ci
+          SBX_POSTGRES_PASSWORD: REDACTED-ci-password
+          SBX_VAULT_KEYS: stg1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          SBX_RUNTIME_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          SBX_PUBLIC_URL: https://staging.example.invalid
+          SBX_ALLOWED_ORIGINS: https://staging.example.invalid
+        run: |
+          docker compose -f deploy/staging/compose.yml config --quiet
+          shellcheck deploy/staging/bootstrap.sh deploy/staging/deploy.sh
       - name: Build production image
         uses: docker/build-push-action@v6
         with:
