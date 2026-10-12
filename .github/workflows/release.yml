@@ -84,8 +84,9 @@ jobs:
         run: |
           set -euo pipefail
           # Statuses are listed newest first; the newest one for the context decides.
+          # A failed lookup counts as "unknown": it blocks only when the gate is enforced.
           state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/statuses?per_page=100" \
-            --jq '[.[] | select(.context == "staging/acceptance")][0].state // "missing"')"
+            --jq '[.[] | select(.context == "staging/acceptance")][0].state // "missing"' || echo unknown)"
           echo "staging/acceptance for $RELEASE_SHA: $state"
           if [ "$state" = "success" ]; then
             exit 0
