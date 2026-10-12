@@ -45,8 +45,10 @@ Generate keys with `openssl rand -base64 32` for a vault key and
 
 ## Health
 
-`GET /healthz` returns `{"ok": true}`. `GET /readyz` returns `503` when the
-database cannot be read.
+`GET /healthz` returns `{"ok": true, "git_sha": ...}`. `git_sha` is the commit the
+container image was built from (the `SBX_GIT_SHA` build argument) and is `null`
+when the control plane runs from a source checkout. `GET /readyz` returns `503`
+when the database cannot be read.
 
 ## Client variables
 

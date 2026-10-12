@@ -17,6 +17,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     SBX_DATA_DIR=/var/lib/sbx \
+    SBX_GIT_SHA=${SBX_GIT_SHA} \
     PATH=/app/.venv/bin:$PATH
 
 RUN apt-get update \

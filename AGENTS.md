@@ -189,6 +189,7 @@ make docs-check     # documentation site build and link checks
 | `SBX_RESEND_API_KEY` | Optional email provider credential; local outbox is used when absent |
 | `SBX_MAIL_FROM` | Required when Resend is enabled; must use a verified sender domain |
 | `SBX_INFERENCE_ALLOW_PRIVATE_URLS` | `1` lets inference Connections target private-network or `http` base URLs; off by default |
+| `SBX_GIT_SHA` | Set by the image build; reported as `git_sha` by `/healthz` to identify the deployed revision |
 
 `tests/conftest.py` strips host credentials (including `SBX_TEST_*` and
 `SBX_BENCHMARK_*`) and isolates HOME/XDG. Tests must receive required configuration
