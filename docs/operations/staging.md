@@ -23,6 +23,7 @@ staging over its public URL. Chromium is never installed on the staging host.
   .env                  # generated on-host by bootstrap.sh, mode 0600
   compose.yml           # deploy/staging/compose.yml
   deploy.sh             # deploy/staging/deploy.sh
+  reconcile.sh          # deploy/staging/reconcile.sh (run by the systemd timer)
   release.env           # image digest + git SHA of the current rollout
   release.env.last-good # last rollout that passed readiness
   backups/              # pg_dump taken before each rollout (last 5 kept)
@@ -43,10 +44,11 @@ agent execution happens on Modal, never on the staging host.
 Run from an operator machine that has SSH access to the staging host:
 
 ```bash
-scp deploy/staging/bootstrap.sh deploy/staging/compose.yml deploy/staging/deploy.sh sbx-staging:/tmp/
-ssh sbx-staging 'sudo sh /tmp/bootstrap.sh \
-  && sudo install -m 0644 /tmp/compose.yml /opt/sbx-staging/compose.yml \
-  && sudo install -m 0755 /tmp/deploy.sh /opt/sbx-staging/deploy.sh'
+ssh sbx-staging 'rm -rf /tmp/sbx-staging && mkdir /tmp/sbx-staging'
+scp deploy/staging/* sbx-staging:/tmp/sbx-staging/
+ssh sbx-staging 'sudo sh /tmp/sbx-staging/bootstrap.sh \
+  && sudo install -m 0644 /tmp/sbx-staging/compose.yml /opt/sbx-staging/compose.yml \
+  && sudo install -m 0755 /tmp/sbx-staging/deploy.sh /opt/sbx-staging/deploy.sh'
 ```
 
 `bootstrap.sh` is idempotent. It installs Docker Engine and the Compose plugin
@@ -75,16 +77,42 @@ production release workflow.
 
 ## Rollout
 
+The host rolls itself. `sbx-staging-reconcile.timer` runs
+`/opt/sbx-staging/reconcile.sh` every minute. The script reads the digest behind
+the public registry tag `ghcr.io/soren-labs/sbx-agent:staging-current`; when it
+differs from the running release it pulls that digest, takes the commit from the
+image's revision label and calls `deploy.sh`. A release that fails to roll out is
+remembered in `reconcile.failed` and is not retried until the tag moves again.
+
+GitHub therefore holds no credential for the staging host and needs no network
+path to it: the only way to change what staging runs is to move
+`staging-current`, which the staging rollout job on `main` does. The operator SSH
+key is not involved.
+
+A rollout recreates the application container, so the API is unavailable for a
+few seconds. Sessions and jobs are durable in PostgreSQL and resume afterwards.
+
+```bash
+ssh sbx-staging 'systemctl list-timers sbx-staging-reconcile.timer --no-pager'
+ssh sbx-staging 'sudo journalctl -u sbx-staging-reconcile.service -n 50 --no-pager'
+```
+
+An operator can still roll a specific image by hand:
+
 ```bash
 ssh sbx-staging 'sudo /opt/sbx-staging/deploy.sh \
   ghcr.io/soren-labs/sbx-agent@sha256:<digest> <git sha>'
 ```
 
-`deploy.sh` accepts only a digest-pinned image, takes a host lock so rollouts
+The timer will move staging back to `staging-current` on its next run unless
+that tag already points at the same digest.
+
+`deploy.sh` accepts only a digest-pinned image from `ghcr.io/soren-labs/sbx-agent`, takes a host lock so rollouts
 cannot overlap, dumps the database, pulls the image, applies migrations, and
 recreates the application container. The rollout is accepted only when
-`/readyz` passes and the running container carries the expected image
-reference and `org.opencontainers.image.revision` label. Otherwise the last
+`/readyz` passes, the running container carries the expected image reference
+and `org.opencontainers.image.revision` label, and `/healthz` reports the
+expected commit. Otherwise the last
 known-good release is restored and the script exits non-zero.
 
 Database migrations are append-only and are not reversed by a rollback; the

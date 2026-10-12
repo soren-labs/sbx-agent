@@ -70,3 +70,14 @@ EOF
 else
   chmod 0600 "$ROOT/.env"
 fi
+
+# Pull-based rollout: installed when the unit files were uploaded next to this
+# script. The timer only acts once a `staging-current` image has been published.
+here=$(dirname "$0")
+if [ -f "$here/reconcile.sh" ] && [ -f "$here/sbx-staging-reconcile.timer" ]; then
+  install -m 0755 "$here/reconcile.sh" "$ROOT/reconcile.sh"
+  install -m 0644 "$here/sbx-staging-reconcile.service" /etc/systemd/system/sbx-staging-reconcile.service
+  install -m 0644 "$here/sbx-staging-reconcile.timer" /etc/systemd/system/sbx-staging-reconcile.timer
+  systemctl daemon-reload
+  systemctl enable --now sbx-staging-reconcile.timer >/dev/null
+fi

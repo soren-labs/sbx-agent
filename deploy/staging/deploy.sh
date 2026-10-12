@@ -18,12 +18,13 @@ IMAGE=${1:?usage: deploy.sh <image-ref> <git-sha>}
 GIT_SHA=${2:?usage: deploy.sh <image-ref> <git-sha>}
 
 case "$IMAGE" in
-  *@sha256:*) ;;
+  ghcr.io/soren-labs/sbx-agent@sha256:*) ;;
   *)
-    # A tag can move between build and deploy. The override exists only for
-    # rehearsing this script with an image loaded directly onto the host.
+    # Only the project's own registry, pinned by digest: a tag can move between
+    # build and deploy. The override exists only for rehearsing this script
+    # with an image loaded directly onto the host.
     if [ "${SBX_STAGING_ALLOW_UNPINNED:-0}" != "1" ]; then
-      echo "Refusing image without a digest: $IMAGE" >&2
+      echo "Refusing image that is not ghcr.io/soren-labs/sbx-agent@sha256:...: $IMAGE" >&2
       exit 1
     fi
     ;;
@@ -115,6 +116,10 @@ actual_image=$(docker inspect "$CONTAINER" --format '{{.Config.Image}}')
 actual_sha=$(docker inspect "$CONTAINER" \
   --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
 [ "$actual_sha" = "$GIT_SHA" ] || rollback "revision mismatch: expected=$GIT_SHA actual=$actual_sha"
+
+# What the API itself reports is what external acceptance will see.
+reported=$(curl -fsS http://127.0.0.1:8000/healthz | python3 -c 'import json,sys; print(json.load(sys.stdin).get("git_sha"))')
+[ "$reported" = "$GIT_SHA" ] || rollback "API reports revision $reported, expected $GIT_SHA"
 
 cp release.env release.env.last-good
 docker image prune -af >/dev/null || true
