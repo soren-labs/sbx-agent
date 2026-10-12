@@ -12,11 +12,6 @@ on:
         description: Commit staging must be running (backend and Console). Defaults to the workflow commit.
         required: false
         type: string
-      verify_revision:
-        description: Require backend and Console to report that commit. Turn off only for a smoke run; such a run does not accept a candidate.
-        required: false
-        type: boolean
-        default: true
 
 concurrency:
   group: staging
@@ -41,7 +36,6 @@ jobs:
       SBX_STAGING_USER_B_EMAIL: ${{ secrets.SBX_STAGING_USER_B_EMAIL }}
       SBX_STAGING_USER_B_PASSWORD: ${{ secrets.SBX_STAGING_USER_B_PASSWORD }}
       CANDIDATE_SHA: ${{ inputs.sha || github.sha }}
-      VERIFY_REVISION: ${{ inputs.verify_revision }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,15 +52,11 @@ jobs:
             echo "- backend reports: \`$backend\`"
             echo "- Console reports: \`$console\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$VERIFY_REVISION" = "true" ]; then
-            if [ "$backend" != "$CANDIDATE_SHA" ] || [ "$console" != "$CANDIDATE_SHA" ]; then
-              echo "Staging is not running candidate $CANDIDATE_SHA (backend=$backend console=$console)" >&2
-              exit 1
-            fi
-            echo "SBX_STAGING_EXPECT_SHA=$CANDIDATE_SHA" >> "$GITHUB_ENV"
-          else
-            echo "- **revision not verified: smoke run, not a candidate acceptance**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$backend" != "$CANDIDATE_SHA" ] || [ "$console" != "$CANDIDATE_SHA" ]; then
+            echo "Staging is not running candidate $CANDIDATE_SHA (backend=$backend console=$console)" >&2
+            exit 1
           fi
+          echo "SBX_STAGING_EXPECT_SHA=$CANDIDATE_SHA" >> "$GITHUB_ENV"
 
       - uses: astral-sh/setup-uv@v5
         with:

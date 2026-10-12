@@ -9,7 +9,8 @@ Subscription Machine Slots that nobody has signed in to are reported as
 
 Environment:
   SBX_STAGING_URL, SBX_STAGING_USER_{A,B}_EMAIL, SBX_STAGING_USER_{A,B}_PASSWORD
-  SBX_STAGING_EXPECT_SHA      optional: required ``git_sha`` reported by /healthz
+  SBX_STAGING_CONSOLE_URL     staging Console origin; its build SHA must equal the backend's
+  SBX_STAGING_EXPECT_SHA      optional: the commit both must report
   SBX_STAGING_EXECUTOR        ``modal`` (default). ``local`` is a rehearsal of this
                               client against a fake-provider stack, not acceptance.
   SBX_STAGING_REQUIRE_SLOTS   comma-separated providers whose ready Slot is mandatory
@@ -105,10 +106,21 @@ def run(url: str, backend: str) -> None:
     ready = httpx.get(url + "/readyz", timeout=15)
     gate("ready", ready.status_code == 200 and ready.json().get("ok") is True)
     expected = os.environ.get("SBX_STAGING_EXPECT_SHA")
-    if expected:
-        gate("revision", health.get("git_sha") == expected, reported=health.get("git_sha"))
-    else:
-        EVIDENCE["notes"]["revision"] = health.get("git_sha")
+    if backend == "modal":
+        # A candidate is one commit: the backend image and the Console build must agree,
+        # and match the requested commit when one is given. Never skipped on staging.
+        console_url = os.environ.get("SBX_STAGING_CONSOLE_URL", "").rstrip("/")
+        if not console_url:
+            raise GateFailed("SBX_STAGING_CONSOLE_URL is required")
+        console = httpx.get(console_url + "/build-manifest.json", timeout=15).json().get("git_sha")
+        api = health.get("git_sha")
+        gate(
+            "revisions_aligned",
+            bool(api) and api == console and expected in (None, "", api),
+            backend=api,
+            console=console,
+            expected=expected,
+        )
 
     a, b = sign_in(url, account("a")), sign_in(url, account("b"))
     gate("sign_in", a.me()["user"]["email_verified"] and b.me()["user"]["email_verified"])

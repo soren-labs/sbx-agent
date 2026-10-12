@@ -136,8 +136,10 @@ It checks readiness, that the two users cannot read each other's Sessions, Turns
 or Connections, stored Connection health, one real Turn on Modal, lease release,
 and that Sessions from earlier runs are still readable. Every Session it creates
 is released and closed, also when a gate fails, and a lease that is still live at
-the end fails the run. `SBX_STAGING_EXPECT_SHA` additionally requires `/healthz`
-to report that revision. Both scripts refuse to run against production hostnames.
+the end fails the run. It also requires the backend (`/healthz`) and the Console
+(`SBX_STAGING_CONSOLE_URL`, `build-manifest.json`) to report the same commit, and
+that commit to equal `SBX_STAGING_EXPECT_SHA` when it is set; this check cannot
+be turned off for staging. Both scripts refuse to run against production hostnames.
 
 Subscription Machine Slots (Codex, Grok, Antigravity) need a one-time official
 sign-in by the account owner inside the Slot. Until a Slot is signed in, the run
@@ -147,6 +149,48 @@ lists it as `pending`; it is never reported as passed.
 `SBX_STAGING_EXECUTOR=local` runs the same client against the fake-provider
 stack from `tests/e2e_browser/server.py`. That is a rehearsal of the client and
 is labelled as such in its output; it is not staging acceptance.
+
+## Owner account
+
+The staging owner may keep one personal, long-lived account on staging for manual
+use. It is separate from the two automated test users:
+
+- its credentials are never placed in GitHub (not in the `staging` environment,
+  not in any workflow) and are not used by any automated test;
+- the acceptance client only touches Sessions it created itself (title prefix
+  `staging-acceptance`) in the two test users' workspaces;
+- provider sign-ins and tokens are entered by the owner in the staging Console
+  and stay in the staging Vault or, for subscriptions, in the Machine Slot's
+  Modal Volume. Nobody copies them elsewhere.
+
+Setup checklist for the owner, all at `https://staging.sbx-agent.com`:
+
+1. Register, then verify the email (see below).
+2. Connections: a Modal workspace used only for staging; BYOK inference
+   (`inference_api`) and/or OpenCode Zen; a GitHub token limited to the E2E test
+   repository.
+3. Machine Slots, each with the provider's official sign-in inside the Slot.
+   Implemented subscription providers: **Codex, Grok, Antigravity**. There is no
+   Claude subscription Slot; Claude models are reachable only through a BYOK
+   inference Connection.
+
+Email verification: staging has `SBX_RESEND_API_KEY` and `SBX_MAIL_FROM` unset,
+so verification mail is written to the outbox on the staging host and is not
+delivered. Two supported paths:
+
+- **One-time link (default).** After registering, an operator with host access
+  runs
+
+  ```bash
+  ssh sbx-staging 'sudo bash -s <email>' < deploy/staging/verification-link.sh
+  ```
+
+  which prints only the newest verification link for that address. The owner
+  opens it once; the token is single-use.
+- **Scoped Resend.** Add `SBX_RESEND_API_KEY` (a sending-only key restricted to
+  a staging sender domain) and `SBX_MAIL_FROM` to `/opt/sbx-staging/.env` on the
+  host and re-run the rollout. The key must not be the production key and is
+  never stored in GitHub.
 
 ## Public edge
 
@@ -175,8 +219,9 @@ curl -fsS https://api-staging.sbx-agent.com/healthz          # .git_sha  (backen
 curl -fsS https://staging.sbx-agent.com/build-manifest.json  # .git_sha  (Console build)
 ```
 
-The `Staging acceptance` workflow fails when either differs from the commit it
-was asked to accept.
+The `Staging acceptance` workflow and the acceptance client fail when the two
+differ from each other or from the commit being accepted. There is no option to
+skip this.
 
 ## Acceptance workflow
 

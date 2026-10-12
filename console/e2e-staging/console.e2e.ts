@@ -11,12 +11,12 @@ test.beforeAll(() => {
   expect(password, "SBX_STAGING_USER_A_PASSWORD is required").not.toBe("");
 });
 
-test("Console build and API report the expected revision", async ({ page, request }) => {
-  test.skip(!expectedSha, "SBX_STAGING_EXPECT_SHA not set");
+test("Console build and API report the same revision", async ({ page, request }) => {
   await page.goto("/login");
-  await expect(page.locator('meta[name="sbx-build-sha"]')).toHaveAttribute("content", expectedSha!);
-  const health = await request.get("/api/healthz");
-  expect((await health.json()).git_sha).toBe(expectedSha);
+  const consoleSha = await page.locator('meta[name="sbx-build-sha"]').getAttribute("content");
+  const apiSha = (await (await request.get("/api/healthz")).json()).git_sha;
+  expect(consoleSha, "Console and backend must be built from one commit").toBe(apiSha);
+  if (expectedSha) expect(apiSha).toBe(expectedSha);
 });
 
 test("test user signs in and reads a persisted acceptance Session", async ({ page }) => {
