@@ -184,6 +184,11 @@ def run(url: str, backend: str) -> None:
     a.sessions.close(sid)
     gate("session_closed", a.sessions.get(sid)["session"]["lifecycle"] != "open")
 
+    if backend == "modal":
+        # A rollout during the run would mean the gates above tested a mix of revisions.
+        now = httpx.get(url + "/healthz", timeout=15).json().get("git_sha")
+        gate("revision_stable", now == health.get("git_sha"), start=health.get("git_sha"), end=now)
+
     slots = {}
     for slot in a.slots.list():
         slots.setdefault(slot["provider"], []).append(slot["status"])
