@@ -8,6 +8,7 @@
 # volume is preserved; a dump is taken before migrations. If the new container
 # does not become ready, the last known-good image is restored.
 set -euo pipefail
+umask 077
 
 ROOT=/opt/sbx-staging
 CONTAINER=sbx-staging-sbx-1
@@ -87,9 +88,9 @@ if compose ps -q postgres | grep -q .; then
 fi
 
 if [ "${SBX_STAGING_ALLOW_UNPINNED:-0}" = "1" ]; then
-  compose pull postgres
+  compose pull --quiet postgres
 else
-  compose pull
+  compose pull --quiet
 fi
 compose up -d postgres
 

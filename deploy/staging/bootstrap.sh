@@ -23,7 +23,7 @@ if [ -e /opt/sbx-agent ]; then
 fi
 
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends docker.io docker-compose-v2 >/dev/null
 fi
