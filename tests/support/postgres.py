@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg
@@ -42,16 +43,16 @@ def _dsn(admin: str, dbname: str) -> str:
     return psycopg.conninfo.make_conninfo(admin, dbname=dbname)
 
 
-@pytest.fixture(scope="session")
-def pg_admin_dsn() -> Iterator[str]:
-    external = os.environ.get("SBX_TEST_DATABASE_URL")
-    if external:
-        _prepare_template(external)
-        yield external
-        return
+class PostgresUnavailable(RuntimeError):
+    """No PostgreSQL server binaries on this machine."""
+
+
+@contextmanager
+def embedded_postgres() -> Iterator[str]:
+    """Run a throwaway cluster on a private socket; yields its admin DSN."""
     bindir = _pg_bin()
     if bindir is None:
-        pytest.skip("PostgreSQL binaries not available; set SBX_TEST_DATABASE_URL")
+        raise PostgresUnavailable("PostgreSQL binaries not available")
     base = Path(tempfile.mkdtemp(prefix="sbxpg-"))
     data, sock = base / "data", base / "sock"
     sock.mkdir()
@@ -103,7 +104,6 @@ def pg_admin_dsn() -> Iterator[str]:
     )
     admin = f"host={sock} port={port} user=sbx dbname=postgres"
     try:
-        _prepare_template(admin)
         yield admin
     finally:
         subprocess.run(
@@ -112,6 +112,25 @@ def pg_admin_dsn() -> Iterator[str]:
             env=env,
         )
         shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def pg_admin_dsn() -> Iterator[str]:
+    external = os.environ.get("SBX_TEST_DATABASE_URL")
+    if external:
+        _prepare_template(external)
+        yield external
+        return
+    try:
+        cluster = embedded_postgres()
+        admin = cluster.__enter__()
+    except PostgresUnavailable:
+        pytest.skip("PostgreSQL binaries not available; set SBX_TEST_DATABASE_URL")
+    try:
+        _prepare_template(admin)
+        yield admin
+    finally:
+        cluster.__exit__(None, None, None)
 
 
 def _prepare_template(admin: str) -> None:

@@ -56,3 +56,20 @@ query/event state. UI restoration evidence and reproduction instructions are in
 [docs/ui-restoration/notes.md](docs/ui-restoration/notes.md). The browser capture
 script intercepts unified API requests in an isolated browser context only; it is
 not imported into the product and does not require cloud credentials.
+
+## Browser tests
+
+`e2e/` holds Playwright tests that drive the built Console in headless Chromium.
+They run against `tests/e2e_browser/server.py`: the real API and Job workers on a
+throwaway PostgreSQL cluster, with fake connector validators and the fake official
+OpenCode CLI. No cloud account or credential is involved, and the product has no
+mock mode.
+
+```bash
+npx playwright install chromium   # once
+make console-e2e                  # from the repository root
+```
+
+Failed runs keep a trace and a screenshot under `test-results/`; CI uploads them as
+the `browser-e2e-report` artifact. Tests create their own users with unique
+`@example.test` addresses, so they can run in parallel and in any order.

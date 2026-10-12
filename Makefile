@@ -1,4 +1,4 @@
-.PHONY: lint test console-check console-dev serve worker migrate openapi docs-dev docs-build docs-check smoke-modal check-connectors mvp-acceptance
+.PHONY: lint test console-check console-e2e console-dev serve worker migrate openapi docs-dev docs-build docs-check smoke-modal check-connectors mvp-acceptance
 
 lint:
 	uv run ruff check . --exclude spike
@@ -14,6 +14,13 @@ console-check:
 	npm --prefix console run typecheck
 	npm --prefix console test
 	npm --prefix console run build
+
+# Headless Chromium against the built Console and a control plane with fake
+# providers. Needs PostgreSQL binaries and `npx playwright install chromium`.
+console-e2e:
+	npm --prefix console ci
+	npm --prefix console run build
+	npm --prefix console run e2e
 
 # Vite dev server on :5174; proxies /api to SBX_API_PROXY_TARGET (default :8800).
 console-dev:
