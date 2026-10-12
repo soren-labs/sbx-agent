@@ -175,6 +175,7 @@ recoverable failure.
 make lint           # ruff check + ruff format --check
 make test           # unit + integration tests with embedded PostgreSQL and no cloud credentials
 make console-check  # Console typecheck + Vitest + production build
+make console-e2e    # Console browser tests (Playwright) against a control plane with fake providers
 make docs-check     # documentation site build and link checks
 ```
 
