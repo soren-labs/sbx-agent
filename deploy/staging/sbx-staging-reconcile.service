@@ -1,0 +1,10 @@
+[Unit]
+Description=Roll SBX staging to the published staging-current image
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/sbx-staging/.env
+
+[Service]
+Type=oneshot
+ExecStart=/opt/sbx-staging/reconcile.sh
+TimeoutStartSec=900

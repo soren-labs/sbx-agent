@@ -115,7 +115,7 @@ jobs:
           SBX_ALLOWED_ORIGINS: https://staging.example.invalid
         run: |
           docker compose -f deploy/staging/compose.yml config --quiet
-          shellcheck deploy/staging/bootstrap.sh deploy/staging/deploy.sh deploy/staging/verification-link.sh
+          shellcheck deploy/staging/bootstrap.sh deploy/staging/deploy.sh deploy/staging/verification-link.sh deploy/staging/reconcile.sh
       - name: Build production image
         uses: docker/build-push-action@v6
         with:
