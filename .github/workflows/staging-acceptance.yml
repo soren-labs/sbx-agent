@@ -1,0 +1,105 @@
+name: Staging acceptance
+
+# External acceptance of the persistent staging deployment over its public HTTPS
+# URLs. Started manually on main only; never by pull requests, so fork code
+# cannot read the staging credentials. The `staging` environment holds only the
+# two test users' sign-in credentials — no provider tokens.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit staging must be running (backend and Console). Defaults to the workflow commit.
+        required: false
+        type: string
+
+concurrency:
+  group: staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SBX_STAGING_URL: https://api-staging.sbx-agent.com
+  SBX_STAGING_CONSOLE_URL: https://staging.sbx-agent.com
+
+jobs:
+  acceptance:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env:
+      SBX_STAGING_USER_A_EMAIL: ${{ secrets.SBX_STAGING_USER_A_EMAIL }}
+      SBX_STAGING_USER_A_PASSWORD: ${{ secrets.SBX_STAGING_USER_A_PASSWORD }}
+      SBX_STAGING_USER_B_EMAIL: ${{ secrets.SBX_STAGING_USER_B_EMAIL }}
+      SBX_STAGING_USER_B_PASSWORD: ${{ secrets.SBX_STAGING_USER_B_PASSWORD }}
+      CANDIDATE_SHA: ${{ inputs.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deployed revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend=$(curl -fsS --retry 3 "$SBX_STAGING_URL/healthz" | jq -r '.git_sha')
+          console=$(curl -fsS --retry 3 "$SBX_STAGING_CONSOLE_URL/build-manifest.json" | jq -r '.git_sha')
+          {
+            echo "### Staging acceptance"
+            echo
+            echo "- candidate: \`$CANDIDATE_SHA\`"
+            echo "- backend reports: \`$backend\`"
+            echo "- Console reports: \`$console\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$backend" != "$CANDIDATE_SHA" ] || [ "$console" != "$CANDIDATE_SHA" ]; then
+            echo "Staging is not running candidate $CANDIDATE_SHA (backend=$backend console=$console)" >&2
+            exit 1
+          fi
+          echo "SBX_STAGING_EXPECT_SHA=$CANDIDATE_SHA" >> "$GITHUB_ENV"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+
+      - name: API acceptance (real Modal Turn, isolation, lease release)
+        env:
+          SBX_STAGING_EVIDENCE: staging-evidence.json
+        run: uv run python -m tests.e2e_staging.acceptance
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+        working-directory: console
+      - run: npx playwright install --with-deps chromium
+        working-directory: console
+      - name: Browser acceptance on the staging Console
+        run: npm run e2e:staging
+        working-directory: console
+
+      - name: Summarize
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -f staging-evidence.json ]; then
+            {
+              echo
+              echo "- result: **$(jq -r '.result' staging-evidence.json)**"
+              jq -r '.pending[] | "- pending: " + .' staging-evidence.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: staging-acceptance
+          path: |
+            staging-evidence.json
+            console/playwright-report-staging
+            console/test-results-staging
+          if-no-files-found: ignore
+          retention-days: 14

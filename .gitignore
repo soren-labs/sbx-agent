@@ -17,6 +17,8 @@ tests/e2e_modal/artifacts/**
 !tests/e2e_modal/artifacts/timings.json
 test-results/
 playwright-report/
+test-results-staging/
+playwright-report-staging/
 playwright-report-modal/
 
 # Local env & secrets (never commit)
