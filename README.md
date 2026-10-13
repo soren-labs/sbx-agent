@@ -1,18 +1,57 @@
-# sbx-agent
+<div align="center">
+  <img src="docs-site/src/assets/logo.svg" width="64" alt="SBX Agent logo" />
 
-SBX runs coding agents as durable **Sessions**. Each Session owns a logical
-Worktree; every Turn runs an official coding CLI (OpenCode, Codex, Claude Code, Grok Build
-or Command Code) with your own inference API key inside
-`sbx-runtime` on a local or Modal Executor. Finished work is captured as an
-immutable **ChangeSet**, shipped by an exact-subject **Delivery** (GitHub pull
-request and gated merge), and can be reviewed by child-Session **Delegations**.
+  # SBX Agent
+
+  **Durable coding-agent sessions on your own keys.**<br />
+  SBX runs the official provider CLIs in isolated sandboxes, lets you watch and
+  steer every step, and ships the exact change you reviewed as a pull request.
+
+  **[Console](https://sbx-agent.com) · [Docs](https://docs.sbx-agent.com) · [API reference](https://docs.sbx-agent.com/api/) · [Quick start](https://docs.sbx-agent.com/getting-started/quick-start/)**
+
+  [![CI](https://github.com/soren-labs/sbx-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/soren-labs/sbx-agent/actions/workflows/ci.yml)
+</div>
+
+<picture>
+  <img src=".github/assets/workbench.png" alt="The SBX session workbench — conversation and live work log on the left, the changes under review on the right" />
+</picture>
+
+## What SBX is
+
+SBX is a control plane for coding agents, not another coding agent. Each
+**Session** is a durable conversation that owns a logical **Worktree**. Every
+**Turn** runs the vendor's own CLI — OpenCode, Codex, Claude Code, Grok Build or
+Command Code — inside `sbx-runtime` on a local or Modal **Executor**, driven by
+*your* inference API key or your *own* CLI subscription on a cloud Machine.
+Finished work is captured as an immutable **ChangeSet** sealed with a subject
+digest, shipped by an exact-subject **Delivery** (GitHub pull request and gated
+merge), and can be reviewed by child-Session **Delegations**.
+
 PostgreSQL is the only business authority; there is one API (`/api`), one
-Console and one SDK/CLI.
+Console and one Python SDK/CLI. The architecture is specified in
+[`docs/architecture/unified/`](docs/architecture/unified/README.md) and the
+implemented contract lives in [`docs/specs/unified/`](docs/specs/unified/README.md).
 
-The architecture is specified in [`docs/architecture/unified/`](docs/architecture/unified/README.md);
-what this implementation actually does is in [`docs/specs/unified/`](docs/specs/unified/README.md).
+## Why
 
-## Run a control plane
+- **Official CLIs, not a wrapper** — vendor CLIs run as their vendors ship them;
+  SBX supervises them and runs no model loop of its own.
+- **Durable sessions** — conversation, Worktree and checkpoints outlive any
+  sandbox; compute is a replaceable ExecutorLease. Reconnect, reload or come
+  back tomorrow and pick up where the agent left off.
+- **Observable and steerable** — every command, edit and model reply streams
+  into the session journal; interrupt, queue or steer with follow-ups at any
+  point.
+- **Exact-subject delivery** — what you reviewed is what ships: ChangeSets carry
+  a subject digest that Delivery and merge both verify.
+- **Credentials stay yours** — secrets are stored encrypted as
+  CredentialVersions, never returned by the API, and reach runtimes only
+  through scoped, per-lease grants.
+
+## Run your own control plane
+
+Requirements: Python 3.12+ ([uv](https://docs.astral.sh/uv/)), Node 22+, and a
+reachable PostgreSQL database.
 
 ```bash
 uv sync
@@ -25,12 +64,11 @@ make console-dev                                  # Console on :5174, proxies /a
 ```
 
 Sign up with email and password, then add Connections in **Settings →
-Connections** (or `sbx connections add`): an inference API key (API key, base URL
-per protocol and model — DeepSeek or any OpenAI/Anthropic-compatible provider) for
-the agent, a Modal token for compute, and a GitHub token for repositories and pull
-requests. The inference key is not tied to a CLI: any Harness that speaks one of
-its protocols can use it. Secrets are stored encrypted as
-CredentialVersions and are never returned by the API.
+Connections** (or `sbx connections add`): an inference API key (base URL per
+protocol and model — DeepSeek or any OpenAI/Anthropic-compatible provider), a
+Modal token for compute, and a GitHub token for repositories and pull requests.
+The inference key is not tied to a CLI: any Harness that speaks one of its
+protocols can use it.
 
 ## SDK and CLI
 
@@ -58,6 +96,16 @@ sbx execute "Fix the flaky test" --project my-project
 
 See [`examples/unified_mvp.py`](examples/unified_mvp.py) for the full
 create → ChangeSet → review → Delivery walkthrough.
+
+## Documentation
+
+| | |
+| --- | --- |
+| Getting started | [Introduction](https://docs.sbx-agent.com/getting-started/introduction/) · [Quick start](https://docs.sbx-agent.com/getting-started/quick-start/) |
+| Guides | [Sessions and Turns](https://docs.sbx-agent.com/guides/sessions-and-turns/) · [Changes and Delivery](https://docs.sbx-agent.com/guides/changes-and-delivery/) · [Cloud machines](https://docs.sbx-agent.com/guides/cloud-machines/) |
+| Reference | [REST API](https://docs.sbx-agent.com/api/) · [Python SDK](https://docs.sbx-agent.com/sdk/python/) · [CLI](https://docs.sbx-agent.com/reference/cli/) |
+| Operating | [Configuration](https://docs.sbx-agent.com/self-hosting/configuration/) · [Security](https://docs.sbx-agent.com/self-hosting/security/) · [Troubleshooting](https://docs.sbx-agent.com/troubleshooting/) |
+| Agent-facing | [llms.txt](https://docs.sbx-agent.com/llms.txt) · [openapi.json](https://docs.sbx-agent.com/openapi.json) |
 
 ## Development
 
