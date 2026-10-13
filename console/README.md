@@ -44,7 +44,7 @@ npm run typecheck && npm test && npm run build
 ## Console presentation and browser evidence
 
 The unified Console uses Inter typography, neutral light/dark surfaces, a desktop
-workspace sidebar and mobile bottom navigation. Login, registration and email
+workspace sidebar and a mobile top bar with a navigation drawer. Login, registration and email
 verification share a responsive auth layout. Auth pages honor the same saved or
 system theme as the workspace. Home keeps the task prominent; expand **Session
 options** for project/repository, model and compute settings. Collapsing those

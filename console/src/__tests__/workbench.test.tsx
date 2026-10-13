@@ -198,7 +198,7 @@ describe("Session workbench", () => {
     await waitFor(() => expect(m.find("POST", "/api/sessions/s1/messages")).toHaveLength(1));
     expect(m.find("POST", "/api/sessions/s1/messages")[0].body).toEqual({ content: "line one\nline two", routing: "queue" });
     await waitFor(() => expect(box.value).toBe(""));
-    await userEvent.click(screen.getByLabelText("Note only"));
+    await userEvent.click(screen.getByRole("button", { name: "Note only" }));
     await userEvent.type(box, "fyi{Enter}");
     await waitFor(() => expect(m.find("POST", "/api/sessions/s1/messages")).toHaveLength(2));
     expect(m.find("POST", "/api/sessions/s1/messages")[1].body).toEqual({ content: "fyi", routing: "note" });

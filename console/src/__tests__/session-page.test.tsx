@@ -95,10 +95,10 @@ describe("Session page", () => {
     expect(screen.getByRole("region", { name: "Details" })).toHaveTextContent("OpenCode");
     expect(m.calls.filter((c) => c.method === "POST")).toHaveLength(0);
     // The conversation stays put while workspace panels switch beside it.
-    for (const tab of ["Overview", "Changes", "Files", "Terminal", "Services", "Child Sessions", "Activity"]) {
-      expect(screen.getByRole("button", { name: tab })).toBeInTheDocument();
+    for (const tab of ["Overview", "Changes", "Files", "Terminal", "Services", "Children", "Activity"]) {
+      expect(screen.getByRole("tab", { name: tab })).toBeInTheDocument();
     }
-    await userEvent.click(screen.getByRole("button", { name: "Activity" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Activity" }));
     expect(screen.getByRole("log", { name: "Conversation" })).toBeInTheDocument();
     // The timeline speaks in words; per-chunk text updates are hidden until asked for.
     const timeline = await screen.findByRole("list", { name: "Events" });

@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import type { Harness, InferenceConfig, InferenceCredential, InferenceProtocol } from "../../api/types";
-import { Field } from "../../components/ui";
 import { useI18n } from "../../i18n";
+import { Button } from "../../ui/Button";
+import { Field, Input, Select } from "../../ui/Field";
 import { harnessesFor, PROTOCOL_NAMES, PROTOCOLS } from "../sessions/harnesses";
 import { PRESETS } from "./presets";
 
@@ -80,23 +81,23 @@ export function InferenceForm({
       aria-label={t(mode === "create" ? "conn.add_aria" : "conn.replace_aria", { kind: t("kind.inference_api") })}
     >
       <div className="form-grid">
-        <Field id={id("preset")} label={t("inference.preset")}>
-          <select id={id("preset")} value={preset} onChange={(e) => choose(e.target.value)}>
+        <Field htmlFor={id("preset")} label={t("inference.preset")}>
+          <Select id={id("preset")} value={preset} onChange={(e) => choose(e.target.value)}>
             {PRESETS.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.id === "custom" ? t("inference.preset_custom") : p.name}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         {mode === "create" ? (
-          <Field id={id("label")} label={t("conn.label")}>
-            <input id={id("label")} value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} />
+          <Field htmlFor={id("label")} label={t("conn.label")}>
+            <Input id={id("label")} value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} />
           </Field>
         ) : null}
       </div>
-      <Field id={id("key")} label={t("inference.api_key")} hint={t("conn.write_only")}>
-        <input
+      <Field htmlFor={id("key")} label={t("inference.api_key")} hint={t("conn.write_only")}>
+        <Input
           id={id("key")}
           type="password"
           autoComplete="new-password"
@@ -106,8 +107,8 @@ export function InferenceForm({
         />
       </Field>
       <div className="form-grid">
-        <Field id={id("model")} label={t("inference.model")} hint={t("inference.model_hint")}>
-          <input
+        <Field htmlFor={id("model")} label={t("inference.model")} hint={t("inference.model_hint")}>
+          <Input
             id={id("model")}
             spellCheck={false}
             placeholder="provider-model-id"
@@ -115,8 +116,8 @@ export function InferenceForm({
             onChange={(e) => setModel(e.target.value)}
           />
         </Field>
-        <Field id={id("models")} label={t("inference.models")} hint={t("inference.models_hint")}>
-          <input id={id("models")} spellCheck={false} value={extra} onChange={(e) => setExtra(e.target.value)} />
+        <Field htmlFor={id("models")} label={t("inference.models")} hint={t("inference.models_hint")}>
+          <Input id={id("models")} spellCheck={false} value={extra} onChange={(e) => setExtra(e.target.value)} />
         </Field>
       </div>
       <fieldset className="protocol-set">
@@ -127,15 +128,11 @@ export function InferenceForm({
           return (
             <Field
               key={p}
-              id={id(p)}
+              htmlFor={id(p)}
               label={PROTOCOL_NAMES[p]}
-              hint={
-                users.length
-                  ? t("inference.used_by", { harnesses: users.join(", ") })
-                  : undefined
-              }
+              hint={users.length ? t("inference.used_by", { harnesses: users.join(", ") }) : undefined}
             >
-              <input
+              <Input
                 id={id(p)}
                 type="url"
                 inputMode="url"
@@ -150,18 +147,18 @@ export function InferenceForm({
         })}
       </fieldset>
       {badUrl ? (
-        <p className="hs-note warn" role="alert">
+        <p className="note note--warn" role="alert">
           {t("inference.bad_url")}
         </p>
       ) : null}
-      <div className="hs-actions">
-        <button type="submit" className="button primary" disabled={!complete || pending}>
+      <div className="mc-actions">
+        <Button type="submit" variant="primary" disabled={!complete || pending}>
           {mode === "create" ? t("conn.connect") : t("conn.replace")}
-        </button>
+        </Button>
         {onCancel ? (
-          <button type="button" className="button ghost" onClick={onCancel}>
+          <Button type="button" variant="ghost" onClick={onCancel}>
             {t("common.cancel")}
-          </button>
+          </Button>
         ) : null}
       </div>
     </form>

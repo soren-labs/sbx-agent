@@ -32,14 +32,18 @@ describe("Settings API keys", () => {
     ]);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    await renderApp(<SettingsPage />, m.fetch);
+    await renderApp(<SettingsPage />, m.fetch, "/settings?tab=keys");
     expect(await screen.findByText("No API keys.")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Key name"), "laptop CLI");
-    await userEvent.click(screen.getByRole("button", { name: "Create key" }));
+    // The create form lives in a dialog behind the "Create key" action.
+    await userEvent.click(screen.getAllByRole("button", { name: "Create key" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Create key" });
+    await userEvent.type(within(dialog).getByLabelText("Key name"), "laptop CLI");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
 
     const reveal = await screen.findByTestId("key-reveal");
     expect(reveal).toHaveTextContent(KEY);
     expect(reveal).toHaveTextContent("Authorization: Bearer sbx_key_REDA…");
+    expect(reveal).toHaveTextContent("You won't see this again");
     await userEvent.click(within(reveal).getByRole("button", { name: "Copy key" }));
     expect(writeText).toHaveBeenCalledWith(KEY);
     expect(await within(reveal).findByRole("button", { name: "Copied" })).toBeInTheDocument();
@@ -53,9 +57,10 @@ describe("Settings API keys", () => {
 
     await userEvent.click(within(list).getByRole("button", { name: "Revoke" }));
     expect(m.find("DELETE", "/api/api-keys/k1")).toHaveLength(0);
-    await userEvent.click(within(list).getByRole("button", { name: "Revoke key" }));
+    const confirm = await screen.findByRole("dialog", { name: "Revoke API key" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Revoke key" }));
     await waitFor(() => expect(m.find("DELETE", "/api/api-keys/k1")).toHaveLength(1));
-    await waitFor(() => expect(list).toHaveTextContent("revoked"));
-    expect(within(list).queryByRole("button", { name: "Revoke" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("list", { name: "API keys" })).toHaveTextContent("revoked"));
+    expect(within(screen.getByRole("list", { name: "API keys" })).queryByRole("button", { name: "Revoke" })).toBeNull();
   });
 });

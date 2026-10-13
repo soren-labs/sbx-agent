@@ -1,9 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
+import { Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Harness, MachineSlot, MachineSlotList, ModelsView, SlotCatalog } from "../api/types";
 import { MachinesPage } from "../features/machines/MachinesPage";
-import { NewSession } from "../features/sessions/NewSession";
+import { NewSessionComposer } from "../features/composer/Composer";
 import { connection, identityRoutes, mockFetch, renderApp, session } from "../test/helpers";
 
 const PROVIDERS: MachineSlotList["providers"] = [
@@ -136,8 +138,8 @@ describe("My Cloud Machines", () => {
     expect(await screen.findByTestId("machine-summary")).toHaveTextContent("18 machines · 1 running · 16 ready · 1 need attention");
     const rows = screen.getAllByTestId("machine-row");
     expect(rows).toHaveLength(18);
-    // Compact by default: every row is collapsed, no login form or detail is rendered.
-    expect(rows.every((r) => within(r).getByRole("button").getAttribute("aria-expanded") === "false")).toBe(true);
+    // Compact by default: every row head is collapsed, no detail is rendered.
+    expect(rows.every((r) => within(r).getAllByRole("button")[0].getAttribute("aria-expanded") === "false")).toBe(true);
     expect(screen.queryByText("Volume")).not.toBeInTheDocument();
     expect(within(rows[0]).getByText("Machine 1")).toBeInTheDocument();
     expect(within(rows[0]).getByText("Ready")).toBeInTheDocument();
@@ -149,7 +151,7 @@ describe("My Cloud Machines", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "attention");
     expect(screen.getAllByTestId("machine-row").map((r) => r.dataset.status)).toEqual(["needs_login"]);
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "running");
-    expect(within(screen.getByTestId("machine-row")).getByText("Running")).toBeInTheDocument();
+    expect(within(screen.getByTestId("machine-row")).getByText("In use")).toBeInTheDocument();
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "all");
     await user.selectOptions(screen.getByRole("combobox", { name: "Sort" }), "status");
     expect(screen.getAllByTestId("machine-row")[0].dataset.status).toBe("running");
@@ -165,18 +167,20 @@ describe("My Cloud Machines", () => {
     await renderApp(<MachinesPage />, fetch);
     const rows = await screen.findAllByTestId("machine-row");
     await user.click(within(rows[0]).getByRole("button", { name: /Machine 1\b/ }));
-    expect(within(rows[0]).getByText("2 models, reported by codex app-server model/list")).toBeInTheDocument();
+    expect(within(rows[0]).getAllByText("2 models, reported by codex app-server model/list").length).toBeGreaterThan(0);
     expect(within(rows[0]).getByText("sbx-slot-slot_1")).toBeInTheDocument();
     const attention = screen.getAllByTestId("machine-row").find((r) => r.dataset.status === "needs_login")!;
     await user.click(within(attention).getByRole("button", { name: /Machine 8/ }));
     expect(within(attention).getByText(/The code expired before it was approved/)).toBeInTheDocument();
-    expect(within(attention).getByRole("button", { name: "Log in" })).toBeInTheDocument();
+    expect(within(attention).getByRole("button", { name: "Sign in" })).toBeInTheDocument();
     // One row open at a time keeps the page compact.
     expect(within(screen.getAllByTestId("machine-row")[0]).getByRole("button", { name: /Machine 1\b/ })).toHaveAttribute("aria-expanded", "false");
     const busy = screen.getAllByTestId("machine-row").find((r) => r.dataset.status === "running")!;
     await user.click(within(busy).getByRole("button", { name: /Machine 4/ }));
     expect(within(busy).getByRole("link", { name: "Open the Session" })).toHaveAttribute("href", "/sessions/s9");
-    expect(within(busy).queryByRole("button", { name: "Delete machine" })).not.toBeInTheDocument();
+    // A busy machine cannot be removed: the menu does not offer it.
+    await user.click(within(busy).getByRole("button", { name: "Machine actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Delete machine" })).not.toBeInTheDocument();
   });
 
   it("adds a machine, shows the real URL and code, and turns Ready by itself with no save step", async () => {
@@ -215,7 +219,10 @@ describe("My Cloud Machines", () => {
     const scrolled = vi.fn();
     Element.prototype.scrollIntoView = scrolled;
     phase = 1;
+    // "Add Codex machine" opens a dialog; submitting it creates the slot.
     await user.click(screen.getByRole("button", { name: "Add Codex machine" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add machine" });
+    await user.click(within(dialog).getByRole("button", { name: "Add machine" }));
     expect(find("POST", "/api/workspaces/w1/machine-slots")[0].body).toEqual({ provider: "codex" });
     expect(await screen.findByText(/Starting a setup machine in your Modal workspace/)).toBeInTheDocument();
     // With many machines the new row opens below the fold, so it is brought into view.
@@ -240,7 +247,7 @@ describe("My Cloud Machines", () => {
     await waitFor(() => expect(screen.getByTestId("machine-row").dataset.status).toBe("ready"), { timeout: 5000 });
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(screen.queryByText("ABCD-12345")).not.toBeInTheDocument();
-    expect(screen.getByText("2 models, reported by codex app-server model/list")).toBeInTheDocument();
+    expect(screen.getAllByText(/2 models, reported by codex app-server model\/list/).length).toBeGreaterThan(0);
   }, 20000);
 
   it("cancels a login and deletes only after the name is typed", async () => {
@@ -260,18 +267,19 @@ describe("My Cloud Machines", () => {
       ["DELETE", "/api/machine-slots/slot_d", { status: 202, json: slot({ id: "slot_d", label: "Old box", status: "deleting" }) }],
     ]);
     await renderApp(<MachinesPage />, fetch);
-    // A login already in progress is opened without hunting for it.
+    // A login already in progress is opened in a dialog without hunting for it.
     expect(await screen.findByTestId("device-code")).toHaveTextContent("WXYZ-99999");
     await user.click(screen.getByRole("button", { name: "Cancel login" }));
     await waitFor(() => expect(find("DELETE", "/api/machine-slots/slot_w/logins/current")).toHaveLength(1));
 
     const row = screen.getAllByTestId("machine-row").find((r) => within(r).queryByText("Old box"))!;
-    await user.click(within(row).getByRole("button", { name: /Old box/ }));
-    await user.click(within(row).getByRole("button", { name: "Delete machine" }));
-    const confirm = within(row).getByRole("button", { name: "Delete machine" });
+    await user.click(within(row).getByRole("button", { name: "Machine actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete machine" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove machine" });
+    const confirm = within(dialog).getByRole("button", { name: "Delete machine" });
     expect(confirm).toBeDisabled();
-    await user.type(within(row).getByRole("textbox", { name: /Type “Old box” to confirm/ }), "Old box");
-    await user.click(within(row).getByRole("button", { name: "Delete machine" }));
+    await user.type(within(dialog).getByRole("textbox", { name: /Type “Old box” to confirm/ }), "Old box");
+    await user.click(within(dialog).getByRole("button", { name: "Delete machine" }));
     await waitFor(() => expect(find("DELETE", "/api/machine-slots/slot_d")).toHaveLength(1));
     expect(find("DELETE", "/api/machine-slots/slot_d")[0].query.get("confirm")).toBe("Old box");
   });
@@ -325,6 +333,22 @@ function models(provider: string): ModelsView {
 }
 const OTHER_CATALOG: SlotCatalog = { ...CATALOG, default_model: "model-z", models: [{ id: "model-z", name: "Model Z", description: null, default: true, reasoning: { kind: "none", default: null, efforts: [] } }] };
 
+function ComposerHost() {
+  const [prompt, setPrompt] = useState("");
+  return <NewSessionComposer prompt={prompt} onPromptChange={setPrompt} />;
+}
+
+function renderComposer(fetch: typeof globalThis.fetch) {
+  return renderApp(
+    <Routes>
+      <Route path="/" element={<ComposerHost />} />
+      <Route path="/sessions/:id" element={<div>opened session</div>} />
+      <Route path="/machines" element={<div>machines page</div>} />
+    </Routes>,
+    fetch,
+  );
+}
+
 function composerRoutes(slots: MachineSlot[], withKey = true) {
   return mockFetch([
     ...identityRoutes,
@@ -347,10 +371,10 @@ describe("New Session on a machine", () => {
   it("offers only the selected machine's reported models and that model's own efforts", async () => {
     const user = userEvent.setup();
     const { fetch, find } = composerRoutes([A, B, BUSY, OUT]);
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     const sources = within(screen.getByTestId("source-options"));
-    expect(sources.getByRole("button", { name: /Custom API key/ })).toHaveAttribute("aria-pressed", "true");
+    expect(sources.getByRole("button", { name: /Custom API key|API key/ })).toHaveAttribute("aria-pressed", "true");
     expect(sources.getByRole("button", { name: /A2.*in use/ })).toBeDisabled();
     // Machines that cannot run are not listed; one link leads to them.
     expect(sources.queryByRole("button", { name: /A3/ })).not.toBeInTheDocument();
@@ -384,28 +408,27 @@ describe("New Session on a machine", () => {
   it("changing the machine changes the model choices, and a model without efforts shows none", async () => {
     const user = userEvent.setup();
     const { fetch } = composerRoutes([A, B]);
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /A1/ }));
     expect(within(screen.getByTestId("model-options")).getAllByRole("button")).toHaveLength(2);
     await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /B1/ }));
     expect(within(screen.getByTestId("model-options")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Model Z"]);
     expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /Reasoning effort/ })).toBeDisabled();
   });
 
   it("gives a custom API model a thinking switch only where it was verified", async () => {
     const user = userEvent.setup();
     const { fetch, find } = composerRoutes([A]);
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     await waitFor(() => expect(within(screen.getByTestId("model-options")).getAllByRole("button").length).toBeGreaterThan(0));
-    // DeepSeek-style binary thinking: On / Off, never low / medium / high.
-    expect(within(screen.getByTestId("effort-options")).getAllByRole("button").map((b) => b.textContent)).toEqual(["On (model default)", "Off"]);
+    // DeepSeek-style binary thinking: on / off, never low / medium / high.
+    expect(within(screen.getByTestId("effort-options")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Thinking on", "Thinking off"]);
     await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "plain" }));
     expect(screen.queryByTestId("effort-options")).not.toBeInTheDocument();
     await user.click(within(screen.getByTestId("model-options")).getByRole("button", { name: "flash" }));
-    await user.click(within(screen.getByTestId("effort-options")).getByRole("button", { name: "Off" }));
+    await user.click(within(screen.getByTestId("effort-options")).getByRole("button", { name: "Thinking off" }));
     await user.type(screen.getByRole("textbox", { name: /task/i }), "fix it");
     await user.keyboard("{Control>}{Enter}{/Control}");
     await waitFor(() => expect(find("POST", "/api/workspaces/w1/sessions")).toHaveLength(1));
@@ -418,7 +441,7 @@ describe("New Session on a machine", () => {
     const user = userEvent.setup();
     const bare = slot({ id: "slot_bare", label: "Bare", capabilities: { catalog: { ...CATALOG, status: "unavailable", models: [], default_model: null } } });
     const { fetch, find } = composerRoutes([bare], false);
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     const chip = await screen.findByTestId("agent-model-chip");
     await waitFor(() => expect(chip).toHaveTextContent("Bare"));
     await user.click(chip);
@@ -505,20 +528,19 @@ describe("Three providers", () => {
     expect(within(screen.getByRole("region", { name: "Codex" })).getByText(/No machine matches/)).toBeInTheDocument();
     await user.selectOptions(screen.getByRole("combobox", { name: "Filter by status" }), "all");
 
-    const add = screen.getByRole("button", { name: "Add machine" });
-    expect(add).toHaveAttribute("aria-expanded", "false");
-    await user.click(add);
-    const menu = within(screen.getByRole("menu", { name: "Choose a provider" }));
-    expect(menu.getAllByRole("menuitem").map((b) => b.querySelector("strong")!.textContent)).toEqual(["Codex", "Antigravity", "Grok Build"]);
-    expect(menu.getByRole("menuitem", { name: /Antigravity/ })).toHaveTextContent("Sign in at accounts.google.com, then paste the code it shows");
-    expect(menu.getByRole("menuitem", { name: /Grok Build/ })).toHaveTextContent("Sign in at accounts.x.ai and confirm a one-time code");
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    // "Add machine" opens a dialog whose provider select names how each signs in.
+    await user.click(screen.getByRole("button", { name: "Add machine" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add machine" });
+    const select = within(dialog).getByRole("combobox", { name: "Provider" });
+    const options = within(select).getAllByRole("option").map((o) => o.textContent);
+    expect(options.map((o) => o?.split(" — ")[0])).toEqual(["Codex", "Antigravity", "Grok Build"]);
+    expect(options[1]).toContain("Sign in at accounts.google.com, then paste the code it shows");
+    expect(options[2]).toContain("Sign in at accounts.x.ai and confirm a one-time code");
 
-    await user.click(add);
-    await user.click(screen.getByRole("menuitem", { name: /Antigravity/ }));
+    await user.selectOptions(select, "antigravity");
+    await user.click(within(dialog).getByRole("button", { name: "Add machine" }));
     expect(find("POST", "/api/workspaces/w1/machine-slots")[0].body).toEqual({ provider: "antigravity" });
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("signs in to Antigravity by pasting the code the browser shows, and never keeps it on the page", async () => {
@@ -576,7 +598,7 @@ describe("Three providers", () => {
 
     phase = 2;
     await waitFor(() => expect(screen.getByTestId("machine-row").dataset.status).toBe("ready"), { timeout: 5000 });
-    expect(screen.getByText("2 models, reported by agy models")).toBeInTheDocument();
+    expect(screen.getAllByText(/2 models, reported by agy models/).length).toBeGreaterThan(0);
   }, 20000);
 
   it("explains a code the provider did not accept", async () => {
@@ -584,7 +606,8 @@ describe("Three providers", () => {
     const rejected = agy({ status: "needs_login", state: "needs_login", state_reason: "code_rejected", login: login("failed", { error_code: "code_rejected" }) });
     const { fetch } = mockFetch([...identityRoutes, ["GET", "/api/workspaces/w1/machine-slots", { json: listing([rejected], THREE_PROVIDERS) }]]);
     await renderApp(<MachinesPage />, fetch);
-    await user.click(within(await screen.findByTestId("machine-row")).getByRole("button"));
+    const row = await screen.findByTestId("machine-row");
+    await user.click(within(row).getByRole("button", { name: /Antigravity 1/ }));
     expect(screen.getByText("The provider did not accept that code. Log in again to get a new sign-in link.")).toBeInTheDocument();
   });
 
@@ -654,7 +677,7 @@ describe("New Session on a Grok Build or Antigravity machine", () => {
   it("runs the Grok harness with the chosen model's own effort menu", async () => {
     const user = userEvent.setup();
     const { fetch, find } = routes();
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /Grok Build 1/ }));
     expect(screen.getByTestId("model-source")).toHaveTextContent("Models reported by grok agent stdio initialize");
@@ -678,7 +701,7 @@ describe("New Session on a Grok Build or Antigravity machine", () => {
   it("runs the Antigravity harness with a model variant and offers no separate effort", async () => {
     const user = userEvent.setup();
     const { fetch, find } = routes();
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     await user.click(within(screen.getByTestId("source-options")).getByRole("button", { name: /Antigravity 1/ }));
     expect(screen.getByTestId("model-source")).toHaveTextContent("Models reported by agy models");
@@ -702,7 +725,7 @@ describe("New Session on a Grok Build or Antigravity machine", () => {
   it("does not offer Antigravity as a harness for a custom API key", async () => {
     const user = userEvent.setup();
     const { fetch } = routes();
-    await renderApp(<NewSession />, fetch);
+    await renderComposer(fetch);
     await user.click(await screen.findByTestId("agent-model-chip"));
     const names = within(screen.getByTestId("harness-options")).getAllByRole("button").map((b) => b.textContent);
     expect(names).toEqual(["OpenCode", "Codex", "Grok Build"]);

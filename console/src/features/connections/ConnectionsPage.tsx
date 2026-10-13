@@ -1,36 +1,41 @@
-import { useEffect, useState, type ReactNode } from "react";
-import type { Connection, ConnectionCredential, ConnectionKind, Harness, InferenceProtocol } from "../../api/types";
-import { Icon } from "../../components/icons";
-import { ErrorNotice, Loading, useAction, when } from "../../components/ui";
+import { useState, type ReactNode } from "react";
+import {
+  ChevronDown,
+  Cpu,
+  Github,
+  KeyRound,
+  MoreHorizontal,
+  Plug,
+  RefreshCw,
+} from "lucide-react";
+import type {
+  Connection,
+  ConnectionCredential,
+  ConnectionKind,
+  InferenceProtocol,
+} from "../../api/types";
 import { useI18n } from "../../i18n";
 import type { I18nKey } from "../../i18n/en";
 import { useAuth } from "../../state/auth";
 import { useApi, useQueryClient } from "../../state/context";
 import { useQuery } from "../../state/query";
 import { useDocumentTitle } from "../../state/title";
+import { Button, IconButton } from "../../ui/Button";
+import { Dialog } from "../../ui/Dialog";
+import { ErrorNotice } from "../../ui/ErrorNotice";
+import { when } from "../../ui/format";
+import { Menu, MenuItem } from "../../ui/Menu";
+import { Pill, StatusDot, type Tone } from "../../ui/Pill";
+import { Spinner } from "../../ui/Spinner";
+import { useAction } from "../../ui/useAction";
+import { PageHeader } from "../../shell/PageHeader";
 import { PROTOCOL_NAMES, PROTOCOLS } from "../sessions/harnesses";
+import { computeSetup, type SetupStatus } from "../setup/checklist";
 import { ConnectionForm } from "./ConnectionForm";
 import { InferenceForm } from "./InferenceForm";
+import { useConnections } from "./useConnections";
 
-const settling = (c: Connection) => c.state === "configured" && (c.health === "verifying" || c.health === "unverified");
-
-export function useConnections() {
-  const api = useApi();
-  const qc = useQueryClient();
-  const { workspace } = useAuth();
-  const w = workspace?.id ?? null;
-  const q = useQuery(w ? ["connections", w] : null, () => api.connections.list(w!));
-  // Validation runs as a server Job: follow it until every Connection has a verdict.
-  const waiting = (q.data?.items ?? []).some(settling);
-  useEffect(() => {
-    if (!waiting || !w) return;
-    const id = setInterval(() => void qc.fetch(["connections", w], () => api.connections.list(w)), 2000);
-    return () => clearInterval(id);
-  }, [waiting, w, qc, api]);
-  return q;
-}
-
-const BADGE: Record<string, "ok" | "warn" | "idle" | "err"> = {
+const HEALTH_TONE: Record<string, Tone> = {
   ready: "ok",
   degraded: "warn",
   verifying: "warn",
@@ -53,79 +58,117 @@ const REASONS: Record<string, I18nKey> = {
   github_rate_limited: "reason.rate_limited",
 };
 
-function HealthBadge({ conn }: { conn: Connection }) {
-  const { t } = useI18n();
-  return (
-    <span className={`hs-badge ${BADGE[conn.health] ?? "idle"}`} data-health={conn.health}>
-      <i /> {t(`health.${conn.health}` as I18nKey)}
-    </span>
-  );
-}
+const SETUP_DOT: Record<SetupStatus, Tone> = {
+  ready: "ok",
+  pending: "warn",
+  attention: "err",
+  missing: "dim",
+};
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="conn-detail">
+    <>
       <dt>{label}</dt>
       <dd>{children}</dd>
-    </div>
+    </>
   );
 }
 
-function ConnectionCard({
+const KIND_TILE: Record<string, ReactNode> = {
+  inference_api: <KeyRound size={16} />,
+  modal: <Cpu size={16} />,
+  github: <Github size={16} />,
+};
+
+function ConnectionRow({
   conn,
-  harnesses,
   onChanged,
+  onReplace,
+  onDisconnect,
 }: {
   conn: Connection;
-  harnesses?: Harness[];
   onChanged: () => void;
+  onReplace: (conn: Connection) => void;
+  onDisconnect: (conn: Connection) => void;
 }) {
   const { t } = useI18n();
   const api = useApi();
-  const [replacing, setReplacing] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-
   const validate = useAction(async (key) => {
     await api.connections.validate(conn.id, { idempotencyKey: key });
-    onChanged();
-  });
-  const replace = useAction(async (key, credential: ConnectionCredential) => {
-    await api.connections.replaceCredential(
-      conn.id,
-      { credential, expected_version: conn.version },
-      { idempotencyKey: key },
-    );
-    setReplacing(false);
-    onChanged();
-  });
-  const disconnect = useAction(async (key) => {
-    await api.connections.disconnect(conn.id, { idempotencyKey: key });
-    setConfirming(false);
     onChanged();
   });
 
   const reason = conn.health_reason;
   const details = (conn.validation?.details ?? {}) as Record<string, unknown>;
-  const probes = (details.endpoints ?? {}) as Partial<Record<InferenceProtocol, { status?: string; http_status?: number }>>;
-  const repositories = Object.entries((details.repositories ?? {}) as Record<string, { visible?: boolean; push?: boolean | null }>);
+  const probes = (details.endpoints ?? {}) as Partial<
+    Record<InferenceProtocol, { status?: string; http_status?: number }>
+  >;
+  const repositories = Object.entries(
+    (details.repositories ?? {}) as Record<string, { visible?: boolean; push?: boolean | null }>,
+  );
   const endpoints = conn.config?.endpoints ?? {};
   const models = conn.catalog?.models ?? (conn.config?.models ?? []).map((id) => ({ id }));
   const needsAttention = conn.health === "degraded" || conn.health === "reauth_required";
+  const settling = conn.state === "configured" && (conn.health === "verifying" || conn.health === "unverified");
+
+  const host = Object.values(endpoints)[0]?.replace(/^https?:\/\//, "").split("/")[0];
+  const sub = [
+    conn.external_identity,
+    conn.kind === "inference_api" ? (host ?? conn.config?.model) : null,
+    conn.kind === "inference_api" && models.length ? t("inference.model_count", { count: models.length }) : null,
+    conn.kind === "github" && repositories.length
+      ? `${repositories.filter(([, a]) => a.visible).length}/${repositories.length} ${t("conn.repositories").toLowerCase()}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <div className="hs-connection-instance" role="group" aria-label={conn.label} data-testid={`connection-${conn.kind}`}>
-      <div className="hs-instance-header">
-        <strong>{conn.label}</strong>
-        <HealthBadge conn={conn} />
+    <div className="lrow" role="group" aria-label={conn.label} data-testid={`connection-${conn.kind}`}>
+      <div className="lrow__line">
+        <span className="lrow__tile" aria-hidden="true">
+          {KIND_TILE[conn.kind] ?? <Plug size={16} />}
+        </span>
+        <div className="lrow__main">
+          <span className="lrow__name">{conn.label}</span>
+          {sub ? <span className="lrow__sub">{sub}</span> : null}
+        </div>
+        <Pill tone={HEALTH_TONE[conn.health] ?? "dim"} title={conn.health}>
+          {t(`health.${conn.health}` as I18nKey)}
+        </Pill>
+        <div className="lrow__aside">
+          {!conn.legacy ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={validate.pending ? <Spinner small /> : <RefreshCw size={13} />}
+              disabled={validate.pending || settling}
+              onClick={() => void validate.run()}
+            >
+              {needsAttention ? t("conn.retry_validation") : t("conn.validate")}
+            </Button>
+          ) : null}
+          <Menu
+            align="end"
+            label={t("conn.actions")}
+            trigger={<IconButton size="sm" label={t("conn.actions")} icon={<MoreHorizontal size={15} />} />}
+          >
+            {!conn.legacy ? (
+              <MenuItem label={t("conn.replace_credential")} onSelect={() => onReplace(conn)} />
+            ) : null}
+            <MenuItem danger label={t("conn.disconnect")} onSelect={() => onDisconnect(conn)} />
+          </Menu>
+        </div>
       </div>
       {reason && conn.health !== "ready" ? (
-        <p className="hs-note warn" role="status">
+        <p className="note note--warn" role="status">
           {REASONS[reason] ? t(REASONS[reason]) : null}
-          <span className="conn-reason-code">
-            {t("conn.reason")}: <code>{reason}</code>
-          </span>
+          <code>
+            {t("conn.reason")}: {reason}
+          </code>
         </p>
       ) : null}
+      {conn.legacy ? <p className="note">{t("conn.legacy_note")}</p> : null}
       <dl className="conn-details">
         {conn.external_identity ? <Detail label={t("conn.identity")}>{conn.external_identity}</Detail> : null}
         {conn.kind === "inference_api" ? (
@@ -140,7 +183,7 @@ function ConnectionCard({
               <Detail key={p} label={PROTOCOL_NAMES[p]}>
                 <code>{endpoints[p]}</code>
                 {probes[p]?.status && probes[p]?.status !== "ready" ? (
-                  <span className="conn-probe err">
+                  <span className="note--err">
                     {" "}
                     · {t("inference.probe_failed", { status: String(probes[p]?.http_status ?? probes[p]?.status) })}
                   </span>
@@ -151,14 +194,15 @@ function ConnectionCard({
         ) : null}
         {repositories.length ? (
           <Detail label={t("conn.repositories")}>
-            <ul className="hs-repo-list">
+            <ul className="conn-repo-list">
               {repositories.map(([name, access]) => (
                 <li key={name}>
-                  <Icon name="branch" size={12} />
+                  <Github size={12} />
                   {name}
                   <span className="faint">
                     {" "}
-                    · {t(access.visible ? (access.push === false ? "conn.repo_read" : "conn.repo_write") : "conn.repo_hidden")}
+                    ·{" "}
+                    {t(access.visible ? (access.push === false ? "conn.repo_read" : "conn.repo_write") : "conn.repo_hidden")}
                   </span>
                 </li>
               ))}
@@ -169,183 +213,245 @@ function ConnectionCard({
           <Detail label={t("conn.validation")}>{when(conn.validation.observed_at)}</Detail>
         ) : null}
       </dl>
-      {conn.legacy ? <p className="hs-note">{t("conn.legacy_note")}</p> : null}
-      <ErrorNotice error={validate.error ?? replace.error ?? disconnect.error} />
-      <div className="hs-instance-actions">
-        {!conn.legacy ? (
-          <button type="button" className="button" disabled={validate.pending || settling(conn)} onClick={() => void validate.run()}>
-            <Icon name="refresh" size={13} />
-            {needsAttention ? t("conn.retry_validation") : t("conn.validate")}
-          </button>
-        ) : null}
-        {!conn.legacy ? (
-          <button type="button" className="button" aria-expanded={replacing} onClick={() => setReplacing((v) => !v)}>
-            {t("conn.replace_credential")}
-          </button>
-        ) : null}
-        {confirming ? (
-          <>
-            <button type="button" className="button danger" disabled={disconnect.pending} onClick={() => void disconnect.run()}>
-              {t("conn.confirm_disconnect")}
-            </button>
-            <button type="button" className="button ghost" onClick={() => setConfirming(false)}>
-              {t("common.cancel")}
-            </button>
-          </>
-        ) : (
-          <button type="button" className="button ghost danger" onClick={() => setConfirming(true)}>
-            {t("conn.disconnect")}
-          </button>
-        )}
-      </div>
-      {replacing && !conn.legacy ? (
-        <div className="hs-token-container">
-          {conn.kind === "inference_api" ? (
-            <InferenceForm
-              mode="replace"
-              initial={conn.config}
-              harnesses={harnesses}
-              pending={replace.pending}
-              onSubmit={(credential) => void replace.run(credential)}
-              onCancel={() => setReplacing(false)}
-            />
-          ) : (
-            <ConnectionForm
-              kind={conn.kind as "modal" | "github"}
-              mode="replace"
-              pending={replace.pending}
-              onSubmit={(credential) => void replace.run(credential)}
-            />
-          )}
-        </div>
-      ) : null}
+      <ErrorNotice error={validate.error} />
     </div>
   );
 }
 
-const SECTIONS: { kind: ConnectionKind; icon: string; title: I18nKey; purpose: I18nKey }[] = [
-  { kind: "inference_api", icon: "sparkle", title: "kind.inference_api", purpose: "kind.inference_api.purpose" },
-  { kind: "modal", icon: "cpu", title: "kind.modal", purpose: "kind.modal.purpose" },
-  { kind: "github", icon: "github", title: "kind.github", purpose: "kind.github.purpose" },
+const SECTIONS: { kind: ConnectionKind; title: I18nKey; purpose: I18nKey }[] = [
+  { kind: "inference_api", title: "kind.inference_api", purpose: "kind.inference_api.purpose" },
+  { kind: "modal", title: "kind.modal", purpose: "kind.modal.purpose" },
+  { kind: "github", title: "kind.github", purpose: "kind.github.purpose" },
 ];
 
 export function ConnectionsPage() {
   const { t } = useI18n();
   useDocumentTitle(t("nav.connections"));
-  const qc = useQueryClient();
   const api = useApi();
-  const { workspace } = useAuth();
+  const qc = useQueryClient();
+  const { workspace, me } = useAuth();
   const w = workspace?.id ?? null;
   const q = useConnections();
   const harnesses = useQuery(["harnesses"], () => api.catalog.harnesses());
   const [adding, setAdding] = useState<ConnectionKind | null>(null);
+  const [replacing, setReplacing] = useState<Connection | null>(null);
+  const [disconnecting, setDisconnecting] = useState<Connection | null>(null);
+  const [legacyOpen, setLegacyOpen] = useState(false);
 
-  // Refetch in place: dropping the list would unmount every card (and any open form).
+  // Refetch in place: dropping the list would unmount every row (and any open form).
   const changed = () => {
     q.refetch();
     qc.invalidate(["models"]);
   };
   const items = (q.data?.items ?? []).filter((c) => c.state !== "revoked");
   const legacy = items.filter((c) => c.legacy);
+  const setup = computeSetup(me, items);
+  const done = setup.items.filter((i) => i.status === "ready").length;
 
   const create = useAction(async (key, kind: ConnectionKind, credential: ConnectionCredential, label: string) => {
     await api.connections.create(w!, { kind, label, credential }, { idempotencyKey: key });
     setAdding(null);
     changed();
   });
+  const replace = useAction(async (key, conn: Connection, credential: ConnectionCredential) => {
+    await api.connections.replaceCredential(conn.id, { credential, expected_version: conn.version }, { idempotencyKey: key });
+    setReplacing(null);
+    changed();
+  });
+  const disconnect = useAction(async (key, conn: Connection) => {
+    await api.connections.disconnect(conn.id, { idempotencyKey: key });
+    setDisconnecting(null);
+    changed();
+  });
 
   return (
-    <div className="hs-page settings-content">
-      <div className="page-eyebrow">{t("conn.eyebrow")}</div>
-      <h1>{t("nav.connections")}</h1>
-      <p className="hs-lead">{t("conn.lead")}</p>
+    <div className="page">
+      <PageHeader title={t("nav.connections")} />
+      <p className="page__lead">{t("conn.lead")}</p>
 
-      {q.loading && !q.data ? <Loading /> : null}
-      <ErrorNotice error={q.error ?? create.error} onRetry={q.error ? q.refetch : undefined} />
+      {q.loading && !q.data ? (
+        <div className="lcard">
+          <div className="lrow__empty">
+            <Spinner small /> {t("common.loading")}
+          </div>
+        </div>
+      ) : null}
+      <ErrorNotice error={q.error ?? create.error ?? replace.error ?? disconnect.error} onRetry={q.error ? q.refetch : undefined} />
 
-      {SECTIONS.map((section, index) => {
-        const mine = items.filter((c) => c.kind === section.kind);
+      {q.data && !setup.complete ? (
+        <div className="setup-card" role="status">
+          <div className="setup-card__head">
+            <span>{t("conn.setup_title")}</span>
+            <span className="setup-card__count">
+              {t("conn.setup_progress", { done, total: setup.items.length })}
+            </span>
+          </div>
+          <ul className="setup-card__items">
+            {setup.items.map((i) => (
+              <li key={i.id}>
+                <a href={`#conn-${i.id}`}>
+                  <StatusDot tone={SETUP_DOT[i.status]} />
+                  {t(`home.setup.${i.id}` as I18nKey)}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {SECTIONS.map((section) => {
+        const mine = items.filter((c) => c.kind === section.kind && !c.legacy);
         const ready = mine.filter((c) => c.health === "ready").length;
-        const open = adding === section.kind || (q.data !== undefined && mine.length === 0);
         return (
           <section
             key={section.kind}
-            className={`settings-section hs-card ${ready ? "is-ready" : ""}`}
+            id={`conn-${section.kind}`}
+            className="page__section"
             aria-label={t(section.title)}
             data-testid={`section-${section.kind}`}
           >
-            <div className="hs-card-head">
-              <span className="hs-card-icon">
-                <Icon name={section.icon} size={20} />
-                <b>{index + 1}</b>
-              </span>
-              <div className="hs-card-title">
-                <h2>{t(section.title)}</h2>
-                <p>{t(section.purpose)}</p>
-              </div>
-              <span className={`hs-badge ${ready ? "ok" : mine.length ? "warn" : "idle"}`}>
-                <i />{" "}
-                {ready
-                  ? t("conn.count_ready", { count: ready })
-                  : mine.length
-                    ? t("conn.none_ready")
-                    : t("conn.not_connected")}
-              </span>
+            <div className="page__section-head">
+              <h2>
+                {t(section.title)}{" "}
+                {q.data ? (
+                  <Pill tone={ready ? "ok" : mine.length ? "warn" : "dim"}>
+                    {ready
+                      ? t("conn.count_ready", { count: ready })
+                      : mine.length
+                        ? t("conn.none_ready")
+                        : t("conn.not_connected")}
+                  </Pill>
+                ) : null}
+              </h2>
+              <p>{t(section.purpose)}</p>
             </div>
-            <div className="hs-card-body">
+            <div className="lcard">
               {mine.map((c) => (
-                <ConnectionCard key={c.id} conn={c} harnesses={harnesses.data?.items} onChanged={changed} />
+                <ConnectionRow
+                  key={c.id}
+                  conn={c}
+                  onChanged={changed}
+                  onReplace={setReplacing}
+                  onDisconnect={setDisconnecting}
+                />
               ))}
-              {mine.length > 0 && !open ? (
-                <div className="hs-actions">
-                  <button type="button" className="button" onClick={() => setAdding(section.kind)}>
-                    <Icon name="plus" size={13} />
-                    {t("conn.add_another")}
-                  </button>
-                </div>
-              ) : null}
-              {open ? (
-                <div className="hs-token-container">
-                  {section.kind === "inference_api" ? (
-                    <InferenceForm
-                      mode="create"
-                      harnesses={harnesses.data?.items}
-                      pending={create.pending}
-                      onSubmit={(credential, label) => void create.run("inference_api", credential, label)}
-                      onCancel={mine.length ? () => setAdding(null) : undefined}
-                    />
-                  ) : (
-                    <ConnectionForm
-                      kind={section.kind}
-                      mode="create"
-                      pending={create.pending}
-                      onSubmit={(credential, label) => void create.run(section.kind, credential, label)}
-                    />
-                  )}
-                </div>
-              ) : null}
+              <div className="lrow__empty">
+                {mine.length ? t("conn.add_another") : t("conn.not_connected")}
+                <Button
+                  size="sm"
+                  variant={mine.length ? "secondary" : "primary"}
+                  onClick={() => setAdding(section.kind)}
+                >
+                  {section.kind === "inference_api" ? t("conn.add_key") : t("conn.connect")}
+                </Button>
+              </div>
             </div>
           </section>
         );
       })}
 
       {legacy.length ? (
-        <section className="settings-section hs-card" aria-label={t("conn.legacy_title")} data-testid="section-legacy">
-          <div className="hs-card-head">
-            <span className="hs-card-icon">
-              <Icon name="clock" size={20} />
-            </span>
-            <div className="hs-card-title">
-              <h2>{t("conn.legacy_title")}</h2>
-              <p>{t("conn.legacy_lead")}</p>
+        <section className="page__section" aria-label={t("conn.legacy_title")} data-testid="section-legacy">
+          <div className="page__section-head">
+            <h2>
+              <button
+                type="button"
+                className="mc-group-head"
+                aria-expanded={legacyOpen}
+                onClick={() => setLegacyOpen((v) => !v)}
+              >
+                <ChevronDown size={14} style={{ transform: legacyOpen ? "none" : "rotate(-90deg)" }} />
+                {t("conn.legacy_title")}
+              </button>
+            </h2>
+            <p>{t("conn.legacy_lead")}</p>
+          </div>
+          {legacyOpen ? (
+            <div className="lcard">
+              {legacy.map((c) => (
+                <ConnectionRow
+                  key={c.id}
+                  conn={c}
+                  onChanged={changed}
+                  onReplace={setReplacing}
+                  onDisconnect={setDisconnecting}
+                />
+              ))}
             </div>
-          </div>
-          <div className="hs-card-body">
-            {legacy.map((c) => (
-              <ConnectionCard key={c.id} conn={c} onChanged={changed} />
-            ))}
-          </div>
+          ) : null}
         </section>
+      ) : null}
+
+      {adding ? (
+        <Dialog
+          title={t("conn.add_aria", { kind: t(SECTIONS.find((s) => s.kind === adding)!.title) })}
+          onClose={() => setAdding(null)}
+          width={480}
+        >
+          {adding === "inference_api" ? (
+            <InferenceForm
+              mode="create"
+              harnesses={harnesses.data?.items}
+              pending={create.pending}
+              onSubmit={(credential, label) => void create.run("inference_api", credential, label)}
+              onCancel={() => setAdding(null)}
+            />
+          ) : (
+            <ConnectionForm
+              kind={adding}
+              mode="create"
+              pending={create.pending}
+              onSubmit={(credential, label) => void create.run(adding, credential, label)}
+            />
+          )}
+        </Dialog>
+      ) : null}
+
+      {replacing ? (
+        <Dialog
+          title={t("conn.replace_aria", { kind: replacing.label })}
+          onClose={() => setReplacing(null)}
+          width={480}
+        >
+          {replacing.kind === "inference_api" ? (
+            <InferenceForm
+              mode="replace"
+              initial={replacing.config}
+              harnesses={harnesses.data?.items}
+              pending={replace.pending}
+              onSubmit={(credential) => void replace.run(replacing, credential)}
+              onCancel={() => setReplacing(null)}
+            />
+          ) : (
+            <ConnectionForm
+              kind={replacing.kind as "modal" | "github"}
+              mode="replace"
+              pending={replace.pending}
+              onSubmit={(credential) => void replace.run(replacing, credential)}
+            />
+          )}
+        </Dialog>
+      ) : null}
+
+      {disconnecting ? (
+        <Dialog
+          title={t("conn.disconnect")}
+          onClose={() => setDisconnecting(null)}
+          width={420}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setDisconnecting(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button variant="danger" disabled={disconnect.pending} onClick={() => void disconnect.run(disconnecting)}>
+                {t("conn.confirm_disconnect")}
+              </Button>
+            </>
+          }
+        >
+          <p>{disconnecting.label}</p>
+          {disconnecting.legacy ? <p className="faint small">{t("conn.legacy_note")}</p> : null}
+        </Dialog>
       ) : null}
     </div>
   );

@@ -1,8 +1,9 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { NewSession } from "../features/sessions/NewSession";
+import { NewSessionComposer } from "../features/composer/Composer";
 import { knownRepositories, modelOptions, pickBackend, pickDefaultModel, pickHarness } from "../features/sessions/defaults";
 import type { Harness, ModelsView } from "../api/types";
 import { connection, identityRoutes, mockFetch, renderApp, session } from "../test/helpers";
@@ -96,53 +97,65 @@ describe("defaults", () => {
   });
 });
 
+function ComposerHost() {
+  const [prompt, setPrompt] = useState("");
+  return <NewSessionComposer prompt={prompt} onPromptChange={setPrompt} />;
+}
+
 describe("new Session composer", () => {
   const routes = (connections = [connection({ kind: "modal" }), connection({ kind: "github" }), CHAT, ANTHROPIC]) =>
     mockFetch([
       ...identityRoutes,
       ["GET", "/api/workspaces/w1/connections", { json: { items: connections } }],
+      ["GET", "/api/workspaces/w1/machine-slots", { json: { items: [], providers: [] } }],
       ["GET", "/api/harnesses", { json: { items: HARNESSES } }],
       ["GET", "/api/executor-backends", { json: { items: [{ kind: "local" }, { kind: "modal" }] } }],
       ["GET", "/api/models", (c) => ({ json: modelsFor(c.query.get("provider_id") ?? "opencode") })],
       ["GET", "/api/workspaces/w1/projects", { json: { items: [] } }],
       ["POST", "/api/workspaces/w1/sessions", { status: 202, json: { session_id: "s9", turn_id: "t1", session: session({ id: "s9" }), event_watermark: 3 } }],
     ]);
-  const render = (m: ReturnType<typeof routes>) =>
+  const render = (m: ReturnType<typeof routes>, route = "/") =>
     renderApp(
       <Routes>
-        <Route path="/" element={<NewSession />} />
+        <Route path="/" element={<ComposerHost />} />
         <Route path="/sessions/:id" element={<div>opened session</div>} />
         <Route path="/connections" element={<div>connections page</div>} />
       </Routes>,
       m.fetch,
+      route,
     );
+
+  const openConfig = async () => userEvent.click(screen.getByRole("button", { name: "Session options" }));
+  const openModel = async () => userEvent.click(screen.getByTestId("agent-model-chip"));
+  const openRepo = async () => {
+    await userEvent.click(screen.getByRole("button", { name: "Add context" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Add repository…" }));
+  };
 
   it("defaults to a drivable Harness, its Connection's model and Modal", async () => {
     const m = routes();
     await render(m);
-    const optionsToggle = screen.getByText("Session options");
-    expect(optionsToggle.closest("details")).not.toHaveAttribute("open");
-    await userEvent.click(optionsToggle);
-    expect(optionsToggle.closest("details")).toHaveAttribute("open");
-    const model = (await screen.findByLabelText("Model")) as HTMLSelectElement;
-    await waitFor(() => expect(model.value).toBe("flash"));
-    expect((screen.getByLabelText("Compute") as HTMLSelectElement).value).toBe("modal");
-    const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
-    expect(harness.value).toBe("opencode");
+    await waitFor(() => expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("OpenCode · flash"));
+
+    await openConfig();
+    expect((await screen.findByLabelText("Compute"))).toHaveValue("modal");
+
+    await openModel();
     // Every enabled official CLI is offered by name; disabled ones are not.
-    expect(within(harness).getAllByRole("option").map((o) => o.textContent)).toEqual([
+    const harnessOptions = await screen.findByTestId("harness-options");
+    expect(within(harnessOptions).getAllByRole("button").map((o) => o.textContent)).toEqual([
       "OpenCode",
       "Codex",
       "Claude Code",
       "Grok Build",
       "Command Code",
     ]);
+    await userEvent.keyboard("{Escape}");
 
-    await userEvent.type(screen.getByLabelText("Repository"), "acme/app");
-    // Clicking outside an open popover dismisses it, like any menu.
+    await openRepo();
+    await userEvent.type(screen.getByLabelText("Select repository"), "acme/app{Enter}");
+
     await userEvent.type(screen.getByLabelText("Task"), "Fix the failing check");
-    expect(optionsToggle.closest("details")).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByLabelText("Task"));
     await userEvent.keyboard("{Control>}{Enter}{/Control}");
 
     await screen.findByText("opened session");
@@ -160,19 +173,16 @@ describe("new Session composer", () => {
   it("switching the Harness re-scopes models to the Connections that CLI can use", async () => {
     const m = routes();
     await render(m);
-    await userEvent.click(screen.getByText("Session options"));
-    const model = (await screen.findByLabelText("Model")) as HTMLSelectElement;
-    await waitFor(() => expect(model.value).toBe("flash"));
-    await userEvent.selectOptions(model, "pro");
-    expect(model.value).toBe("pro");
-
-    await userEvent.selectOptions(screen.getByLabelText("Harness"), "claude");
+    await waitFor(() => expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("OpenCode · flash"));
+    await openModel();
+    await userEvent.click(within(await screen.findByTestId("model-options")).getByRole("button", { name: "pro" }));
+    await userEvent.click(within(screen.getByTestId("harness-options")).getByRole("button", { name: "Claude Code" }));
     // Claude Code speaks only Anthropic Messages: the chat-only key and its models drop out.
-    await waitFor(() => expect(model.value).toBe("sonnet-like"));
-    expect(within(model).getAllByRole("option").map((o) => o.textContent)).toEqual(["sonnet-like"]);
-    expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("Claude Code · sonnet-like");
+    await waitFor(() => expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("Claude Code · sonnet-like"));
+    expect(within(screen.getByTestId("model-options")).getAllByRole("button").map((o) => o.textContent)).toEqual(["sonnet-like"]);
     expect(m.find("GET", "/api/models").map((c) => c.query.get("provider_id"))).toEqual(["opencode", "claude"]);
 
+    await userEvent.keyboard("{Escape}");
     await userEvent.type(screen.getByLabelText("Task"), "hello");
     await userEvent.click(screen.getByRole("button", { name: "Start Session" }));
     await screen.findByText("opened session");
@@ -187,11 +197,12 @@ describe("new Session composer", () => {
   it("pins an explicitly chosen inference Connection and its default model", async () => {
     const m = routes();
     await render(m);
-    await userEvent.click(screen.getByText("Session options"));
-    const pick = (await screen.findByLabelText("Inference connection")) as HTMLSelectElement;
+    await openConfig();
+    const pick = (await screen.findByLabelText("Connection")) as HTMLSelectElement;
     expect(pick.value).toBe("");
     await userEvent.selectOptions(pick, "c_anth");
-    await waitFor(() => expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("sonnet-like"));
+    await waitFor(() => expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("sonnet-like"));
+    await userEvent.keyboard("{Escape}");
     await userEvent.type(screen.getByLabelText("Task"), "hello");
     await userEvent.click(screen.getByRole("button", { name: "Start Session" }));
     await screen.findByText("opened session");
@@ -201,15 +212,17 @@ describe("new Session composer", () => {
     });
   });
 
-  it("explains which protocol is missing when no key can drive the chosen CLI", async () => {
+  it("explains what is missing when no key can drive the chosen CLI", async () => {
     const m = routes([connection({ kind: "modal" }), CHAT]);
     await render(m);
-    await userEvent.click(screen.getByText("Session options"));
-    await userEvent.selectOptions(await screen.findByLabelText("Harness"), "codex");
+    await waitFor(() => expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("OpenCode"));
+    await openModel();
+    await userEvent.click(within(await screen.findByTestId("harness-options")).getByRole("button", { name: "Codex" }));
     const hint = await screen.findByRole("status");
-    expect(hint).toHaveTextContent("Codex needs an inference API key that offers OpenAI Responses.");
-    expect(within(hint).getByRole("link", { name: "Add one in Connections" })).toHaveAttribute("href", "/connections");
-    expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("Codex · No model");
+    expect(hint).toHaveTextContent("No inference source for Codex.");
+    expect(within(hint).getByRole("link", { name: "Add an API key" })).toHaveAttribute("href", "/connections");
+    expect(within(hint).getByRole("link", { name: "sign in on a Machine" })).toHaveAttribute("href", "/machines");
+    expect(screen.getByTestId("agent-model-chip")).toHaveTextContent("Codex · Server default");
   });
 
   it("offers only real repositories and never invents models", async () => {
@@ -221,5 +234,62 @@ describe("new Session composer", () => {
     for (const fake of ["GPT-6.1", "Claude 3.7", "o3-mini", "soren-labs", "big-pickle", "High Effort"]) {
       expect(html).not.toContain(fake);
     }
+  });
+
+  it("preselects ?project= and keeps submit gated until the configuration has loaded", async () => {
+    let releaseConnections!: () => void;
+    const pendingConnections = new Promise<{ json: unknown }>((res) => {
+      releaseConnections = () =>
+        res({ json: { items: [connection({ kind: "modal" }), connection({ kind: "github" }), CHAT, ANTHROPIC] } });
+    });
+    const m = mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/connections", () => pendingConnections],
+      ["GET", "/api/workspaces/w1/machine-slots", { json: { items: [], providers: [] } }],
+      ["GET", "/api/harnesses", { json: { items: HARNESSES } }],
+      ["GET", "/api/executor-backends", { json: { items: [{ kind: "local" }, { kind: "modal" }] } }],
+      ["GET", "/api/models", (c) => ({ json: modelsFor(c.query.get("provider_id") ?? "opencode") })],
+      [
+        "GET",
+        "/api/workspaces/w1/projects",
+        {
+          json: {
+            items: [
+              {
+                id: "p1",
+                workspace_id: "w1",
+                name: "Console",
+                current_version: {
+                  id: "pv1",
+                  project_id: "p1",
+                  ordinal: 3,
+                  spec: { repository: { full_name: "acme/console", base_ref: "main" } },
+                  spec_digest: "sha256:REDACTED",
+                  created_at: "2026-10-01T00:00:00Z",
+                },
+                created_at: "2026-09-01T00:00:00Z",
+                updated_at: "2026-10-05T00:00:00Z",
+              },
+            ],
+          },
+        },
+      ],
+      ["POST", "/api/workspaces/w1/sessions", { status: 202, json: { session_id: "s9", turn_id: "t1", session: session({ id: "s9" }), event_watermark: 3 } }],
+    ]);
+    await render(m, "/?project=p1");
+    const send = screen.getByRole("button", { name: "Start Session" });
+    await userEvent.type(screen.getByLabelText("Task"), "Fix the failing check");
+    // Connections are still in flight: defaults are not trustworthy yet, so send stays disabled.
+    expect(send).toBeDisabled();
+    await act(async () => releaseConnections());
+    await waitFor(() => expect(send).not.toBeDisabled());
+    await openConfig();
+    expect(screen.getByLabelText("Project")).toHaveValue("p1");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(send);
+    await screen.findByText("opened session");
+    const post = m.find("POST", "/api/workspaces/w1/sessions")[0];
+    expect(post.body).toMatchObject({ project_id: "p1", executor: { backend: "modal" } });
+    expect(post.body).not.toHaveProperty("repository");
   });
 });

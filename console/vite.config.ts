@@ -16,16 +16,25 @@ export default defineConfig(({ mode }) => ({
         ),
     },
   ],
-  server: {
-    port: 5174,
-    proxy: {
-      // Single unified business API; no /v1, /v2 or /hosted routes.
-      "/api": {
-        target: loadEnv(mode, ".", "").SBX_API_PROXY_TARGET ?? "http://127.0.0.1:8800",
-        changeOrigin: true,
+  server: (() => {
+    const apiTarget = loadEnv(mode, ".", "").SBX_API_PROXY_TARGET;
+    return {
+      port: 5174,
+      proxy: {
+        // Single unified business API; no /v1, /v2 or /hosted routes.
+        "/api": {
+          target: apiTarget ?? "http://127.0.0.1:8800",
+          changeOrigin: true,
+          // Remote targets (e.g. staging) enforce Origin checks; forward the
+          // target's origin instead of the dev server's. Loopback targets (the
+          // e2e control plane) rely on the real Origin — leave it alone.
+          ...(apiTarget && !/^(localhost|127\.|\[::1\])/.test(new URL(apiTarget).hostname)
+            ? { headers: { Origin: new URL(apiTarget).origin } }
+            : {}),
+        },
       },
-    },
-  },
+    };
+  })(),
   test: {
     environment: "jsdom",
     globals: true,

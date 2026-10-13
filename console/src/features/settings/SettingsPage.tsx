@@ -1,13 +1,27 @@
-import { Icon } from "../../components/icons";
 import { useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Check, Copy, KeyRound, Moon, Plus, Sun, SunMoon } from "lucide-react";
 import type { CreatedApiKey } from "../../api/types";
-import { Empty, ErrorNotice, Field, Loading, useAction, when } from "../../components/ui";
 import { useI18n, type Locale } from "../../i18n";
-import { useApi } from "../../state/context";
+import type { I18nKey } from "../../i18n/en";
+import { useApi, useQueryClient } from "../../state/context";
+import { useAuth } from "../../state/auth";
 import { useQuery } from "../../state/query";
-import { useQueryClient } from "../../state/context";
 import { useDocumentTitle } from "../../state/title";
 import { useTheme, type Theme } from "../../theme";
+import { Button } from "../../ui/Button";
+import { Dialog } from "../../ui/Dialog";
+import { ErrorNotice } from "../../ui/ErrorNotice";
+import { Field, Input, Select } from "../../ui/Field";
+import { when } from "../../ui/format";
+import { Pill } from "../../ui/Pill";
+import { Spinner } from "../../ui/Spinner";
+import { Tabs } from "../../ui/Tabs";
+import { useAction } from "../../ui/useAction";
+import { PageHeader } from "../../shell/PageHeader";
+
+type Tab = "general" | "account" | "keys";
+const TABS: Tab[] = ["general", "account", "keys"];
 
 function PasswordForm() {
   const { t } = useI18n();
@@ -28,46 +42,157 @@ function PasswordForm() {
     void change.run(c, n);
   };
   return (
-    <form className="card" onSubmit={submit} aria-label={t("settings.password")}>
-      <h2>{t("settings.password")}</h2>
-      <Field id="pw-current" label={t("settings.current_password")}>
-        <input id="pw-current" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
-      </Field>
-      <Field id="pw-new" label={t("settings.new_password")} hint={t("auth.password_hint")}>
-        <input id="pw-new" type="password" autoComplete="new-password" minLength={8} required value={next} onChange={(e) => setNext(e.target.value)} />
-      </Field>
-      <ErrorNotice error={change.error} />
-      {done ? <p role="status">{t("settings.password_changed")}</p> : null}
-      <button type="submit" className="btn btn-primary btn-sm" disabled={change.pending}>
-        {t("settings.change_password")}
-      </button>
-    </form>
+    <section className="page__section" aria-label={t("settings.password")}>
+      <div className="page__section-head">
+        <h2>{t("settings.password")}</h2>
+      </div>
+      <form className="lcard" style={{ padding: "12px 16px", gap: 12 }} onSubmit={submit} aria-label={t("settings.password")}>
+        <Field htmlFor="pw-current" label={t("settings.current_password")}>
+          <Input
+            id="pw-current"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+          />
+        </Field>
+        <Field htmlFor="pw-new" label={t("settings.new_password")} hint={t("auth.password_hint")}>
+          <Input
+            id="pw-new"
+            type="password"
+            autoComplete="new-password"
+            minLength={8}
+            required
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+          />
+        </Field>
+        <ErrorNotice error={change.error} />
+        {done ? <p role="status">{t("settings.password_changed")}</p> : null}
+        <div>
+          <Button type="submit" variant="primary" size="sm" disabled={change.pending}>
+            {t("settings.change_password")}
+          </Button>
+        </div>
+      </form>
+    </section>
   );
 }
 
-function ApiKeys() {
+function GeneralTab() {
+  const { t, locale, setLocale } = useI18n();
+  const { theme, setTheme } = useTheme();
+  const themes: { id: Theme; icon: React.ReactNode; label: string; hint: string }[] = [
+    { id: "dark", icon: <Moon size={14} />, label: t("settings.theme_dark"), hint: t("settings.theme_dark_hint") },
+    { id: "light", icon: <Sun size={14} />, label: t("settings.theme_light"), hint: t("settings.theme_light_hint") },
+    { id: "system", icon: <SunMoon size={14} />, label: t("settings.theme_system"), hint: t("settings.theme_system_hint") },
+  ];
+  return (
+    <>
+      <section className="page__section" aria-label={t("settings.appearance")}>
+        <div className="page__section-head">
+          <h2>{t("settings.appearance")}</h2>
+        </div>
+        <div className="lcard">
+          <div className="theme-cards" role="radiogroup" aria-label={t("settings.theme")}>
+            {themes.map((th) => (
+              <button
+                key={th.id}
+                type="button"
+                role="radio"
+                aria-checked={theme === th.id}
+                className="theme-card"
+                onClick={() => setTheme(th.id)}
+              >
+                <span className={`theme-card__preview theme-card__preview--${th.id}`} aria-hidden="true">
+                  <i style={{ width: "30%", height: 8 }} />
+                  <i style={{ width: "50%", height: 8 }} />
+                </span>
+                <span>
+                  <strong>
+                    {th.icon} {th.label}
+                  </strong>
+                  <br />
+                  <span className="faint small">{th.hint}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="lrow">
+            <div className="lrow__line">
+              <div className="lrow__main">
+                <Field htmlFor="set-lang" label={t("settings.language")}>
+                  <Select id="set-lang" value={locale} onChange={(e) => setLocale(e.target.value as Locale)} style={{ maxWidth: 240 }}>
+                    <option value="en">English</option>
+                    <option value="zh-CN">简体中文</option>
+                  </Select>
+                </Field>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function AccountTab() {
+  const { t } = useI18n();
+  const { me } = useAuth();
+  return (
+    <>
+      <section className="page__section" aria-label={t("settings.account")}>
+        <div className="page__section-head">
+          <h2>{t("settings.account")}</h2>
+        </div>
+        <div className="lcard">
+          <div className="lrow">
+            <div className="lrow__line">
+              <div className="lrow__main">
+                <span className="lrow__sub">{t("settings.email")}</span>
+                <span className="lrow__name">{me?.user.email}</span>
+              </div>
+              <Pill tone={me?.user.email_verified ? "ok" : "warn"}>
+                {me?.user.email_verified ? (
+                  <>
+                    <Check size={12} /> {t("settings.verified")}
+                  </>
+                ) : (
+                  t("settings.unverified")
+                )}
+              </Pill>
+            </div>
+          </div>
+        </div>
+      </section>
+      <PasswordForm />
+    </>
+  );
+}
+
+function ApiKeysTab() {
   const { t } = useI18n();
   const api = useApi();
   const qc = useQueryClient();
   const q = useQuery(["api-keys"], () => api.apiKeys.list());
   const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreatedApiKey | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const create = useAction(async (key) => {
     const k = await api.apiKeys.create(name.trim(), { idempotencyKey: key });
     setCreated(k); // plaintext shown once; discarded on dismiss
     setName("");
+    setCreating(false);
     qc.invalidate(["api-keys"]);
   });
   const revoke = useAction(async (key, id: string) => {
     await api.apiKeys.revoke(id, { idempotencyKey: key });
+    setConfirming(null);
     qc.invalidate(["api-keys"]);
   });
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (name.trim()) void create.run();
-  };
-  const [copied, setCopied] = useState(false);
-  const [confirming, setConfirming] = useState<string | null>(null);
   const copy = async () => {
     if (!created) return;
     try {
@@ -77,15 +202,23 @@ function ApiKeys() {
       setCopied(false); // clipboard blocked: the key stays selectable below
     }
   };
-  const active = (q.data?.items ?? []).filter((k) => !k.revoked_at);
-  const revoked = (q.data?.items ?? []).filter((k) => k.revoked_at);
+  const keys = q.data?.items ?? [];
+  const active = keys.filter((k) => !k.revoked_at);
+  const revoked = keys.filter((k) => k.revoked_at);
+
   return (
-    <section className="card" aria-labelledby="keys-h">
-      <h2 id="keys-h">{t("settings.api_keys")}</h2>
-      <p className="muted small">{t("settings.api_keys_intro")}</p>
+    <section className="page__section" aria-label={t("settings.api_keys")}>
+      <div className="page__section-head">
+        <h2>{t("settings.api_keys")}</h2>
+        <p>{t("settings.api_keys_intro")}</p>
+      </div>
+
       {created ? (
         <div className="key-reveal" role="status" data-testid="key-reveal">
-          <div className="n-title">{t("settings.key_once")}</div>
+          <div className="n-title">
+            <strong>{t("settings.key_once")}</strong>
+            <span className="faint small"> {t("settings.key_once_warn")}</span>
+          </div>
           <code className="key-once" tabIndex={0}>
             {created.key}
           </code>
@@ -93,107 +226,164 @@ function ApiKeys() {
             <span className="faint small">{t("settings.key_usage")}</span>
             <code>Authorization: Bearer {created.prefix}…</code>
           </div>
-          <div className="hs-actions">
-            <button type="button" className="button primary" onClick={() => void copy()}>
-              <Icon name={copied ? "check" : "copy"} size={13} />
+          <div className="mc-actions">
+            <Button variant="primary" size="sm" icon={<Copy size={13} />} onClick={() => void copy()}>
               {copied ? t("settings.key_copied") : t("settings.key_copy")}
-            </button>
-            <button
-              type="button"
-              className="button"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => {
                 setCreated(null);
                 setCopied(false);
               }}
             >
               {t("settings.key_dismiss")}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
-      <form className="key-form" onSubmit={submit} aria-label={t("settings.create_key")}>
-        <Field id="key-name" label={t("settings.key_name")}>
-          <input
-            id="key-name"
-            value={name}
-            placeholder={t("settings.key_name_ph")}
-            onChange={(e) => setName(e.target.value)}
-            maxLength={80}
-          />
-        </Field>
-        <button type="submit" className="button primary" disabled={!name.trim() || create.pending}>
-          {t("settings.create_key")}
-        </button>
-      </form>
+
       <ErrorNotice error={create.error ?? revoke.error} />
-      {q.loading && !q.data ? <Loading /> : null}
-      {q.data && !q.data.items.length ? <Empty>{t("settings.no_keys")}</Empty> : null}
-      <ul className="key-list" aria-label={t("settings.api_keys")}>
-        {[...active, ...revoked].map((k) => (
-          <li key={k.id} className={k.revoked_at ? "is-revoked" : ""}>
-            <span className="key-name">
-              <strong>{k.name}</strong>
-              <code>{k.prefix}…</code>
-            </span>
-            <span className="faint small">
-              {k.revoked_at ? `${t("settings.revoked")} ${when(k.revoked_at)}` : when(k.created_at)}
-            </span>
-            {!k.revoked_at ? (
-              confirming === k.id ? (
-                <span className="key-actions">
-                  <button
-                    type="button"
-                    className="button danger"
-                    disabled={revoke.pending}
-                    onClick={() => void revoke.run(k.id).then(() => setConfirming(null))}
-                  >
-                    {t("settings.revoke_confirm")}
-                  </button>
-                  <button type="button" className="button ghost" onClick={() => setConfirming(null)}>
-                    {t("common.cancel")}
-                  </button>
+      {q.loading && !q.data ? <Spinner /> : null}
+      {q.data && !keys.length ? (
+        <div className="lcard">
+          <div className="lrow__empty">
+            {t("settings.no_keys")}
+            <Button size="sm" variant="primary" icon={<Plus size={13} />} onClick={() => setCreating(true)}>
+              {t("settings.create_key")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {keys.length ? (
+        <div className="lcard key-list" role="list" aria-label={t("settings.api_keys")}>
+          {[...active, ...revoked].map((k) => (
+            <div key={k.id} className="lrow" role="listitem">
+              <div className="lrow__line">
+                <span className="lrow__tile" aria-hidden="true">
+                  <KeyRound size={15} />
                 </span>
-              ) : (
-                <button type="button" className="button ghost danger" onClick={() => setConfirming(k.id)}>
-                  {t("settings.revoke")}
-                </button>
-              )
-            ) : null}
-          </li>
-        ))}
-      </ul>
+                <div className="lrow__main">
+                  <span className="lrow__name">{k.name}</span>
+                  <span className="lrow__sub">
+                    <code>{k.prefix}…</code>
+                    {" · "}
+{when(k.created_at)}
+                  </span>
+                </div>
+                {k.revoked_at ? (
+                  <span className="faint small">
+                    {t("settings.revoked")} {when(k.revoked_at)}
+                  </span>
+                ) : (
+                  <div className="lrow__aside">
+                    <Button size="sm" variant="ghost" onClick={() => setConfirming(k.id)}>
+                      {t("settings.revoke")}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+          <div className="lrow__empty">
+            <Button size="sm" variant="secondary" icon={<Plus size={13} />} onClick={() => setCreating(true)}>
+              {t("settings.create_key")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {creating ? (
+        <Dialog title={t("settings.create_key")} onClose={() => setCreating(false)} width={420}>
+          <form
+            aria-label={t("settings.create_key")}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (name.trim()) void create.run();
+            }}
+          >
+            <Field htmlFor="key-name" label={t("settings.key_name")}>
+              <Input
+                id="key-name"
+                value={name}
+                placeholder={t("settings.key_name_ph")}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={80}
+              />
+            </Field>
+            <div className="mc-actions">
+              <Button type="submit" variant="primary" disabled={!name.trim() || create.pending}>
+                {t("settings.create_key")}
+              </Button>
+              <Button variant="ghost" onClick={() => setCreating(false)}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+          </form>
+        </Dialog>
+      ) : null}
+
+      {confirming ? (
+        <Dialog
+          title={t("settings.revoke_title")}
+          onClose={() => setConfirming(null)}
+          width={420}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setConfirming(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                variant="danger"
+                disabled={revoke.pending}
+                onClick={() => void revoke.run(confirming)}
+              >
+                {t("settings.revoke_confirm")}
+              </Button>
+            </>
+          }
+        >
+          <p>{keys.find((k) => k.id === confirming)?.name}</p>
+        </Dialog>
+      ) : null}
     </section>
   );
 }
 
 export function SettingsPage() {
-  const { t, locale, setLocale } = useI18n();
+  const { t } = useI18n();
   useDocumentTitle(t("nav.settings"));
-  const { theme, setTheme } = useTheme();
+  const [params, setParams] = useSearchParams();
+  const raw = params.get("tab");
+  const tab: Tab = TABS.includes(raw as Tab) ? (raw as Tab) : "general";
+  const setTab = (id: string) => setParams(id === "general" ? {} : { tab: id }, { replace: true });
+
   return (
-    <div className="narrow">
-      <h1>{t("nav.settings")}</h1>
-      <p className="page-lead muted">{t("settings.intro")}</p>
-      <section className="card">
-        <h2>{t("settings.appearance")}</h2>
-        <div className="controls">
-          <Field id="set-lang" label={t("settings.language")}>
-            <select id="set-lang" value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
-              <option value="en">English</option>
-              <option value="zh-CN">简体中文</option>
-            </select>
-          </Field>
-          <Field id="set-theme" label={t("settings.theme")}>
-            <select id="set-theme" value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>
-              <option value="system">{t("settings.theme_system")}</option>
-              <option value="light">{t("settings.theme_light")}</option>
-              <option value="dark">{t("settings.theme_dark")}</option>
-            </select>
-          </Field>
+    <div className="page">
+      <PageHeader title={t("nav.settings")} />
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label={t("settings.nav")}>
+          {TABS.map((id) => (
+            <button key={id} type="button" aria-current={tab === id} onClick={() => setTab(id)}>
+              {t(`settings.tab.${id}` as I18nKey)}
+            </button>
+          ))}
+        </nav>
+        <div className="settings-nav--tabs">
+          <Tabs
+            label={t("settings.nav")}
+            items={TABS.map((id) => ({ id, label: t(`settings.tab.${id}` as I18nKey) }))}
+            value={tab}
+            onChange={setTab}
+          />
         </div>
-      </section>
-      <PasswordForm />
-      <ApiKeys />
+        <div className="settings-body">
+          {tab === "general" ? <GeneralTab /> : null}
+          {tab === "account" ? <AccountTab /> : null}
+          {tab === "keys" ? <ApiKeysTab /> : null}
+        </div>
+      </div>
     </div>
   );
 }

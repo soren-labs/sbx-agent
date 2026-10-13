@@ -1,0 +1,250 @@
+.composer {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 14px;
+  transition: border-color var(--ease);
+}
+
+.composer:focus-within {
+  border-color: var(--border-strong);
+}
+
+.composer__context {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  transition:
+    background var(--ease),
+    color var(--ease);
+}
+
+.composer__chip:hover {
+  color: var(--fg);
+  background: var(--bg-4);
+}
+
+.composer__chip svg {
+  flex: none;
+  color: var(--fg-3);
+}
+
+.composer__input {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  resize: none;
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--fg);
+  min-height: 44px;
+  max-height: 220px;
+  padding: 2px 0 6px;
+}
+
+.composer__input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.composer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.composer__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.composer__tools--right {
+  margin-left: auto;
+  gap: 8px;
+}
+
+.composer__anchor {
+  display: inline-block;
+  width: 0;
+  height: 28px;
+}
+
+.composer__model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+  transition:
+    background var(--ease),
+    color var(--ease);
+}
+
+.composer__model-chip:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+.composer__model-chip svg {
+  flex: none;
+  color: var(--fg-3);
+}
+
+.composer__send {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg);
+  transition:
+    background var(--ease),
+    opacity var(--ease);
+}
+
+.composer__send:hover:not(:disabled) {
+  background: var(--fg-2);
+}
+
+html[data-theme="light"] .composer__send:hover:not(:disabled) {
+  background: #3a3a42;
+}
+
+.composer__send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.composer__send .spinner {
+  border-color: rgba(0, 0, 0, 0.25);
+  border-top-color: var(--accent-fg);
+}
+
+.composer__blocked {
+  margin-top: 8px;
+  font-size: var(--text-sm);
+  color: var(--warn);
+}
+
+.composer__blocked a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--border-strong);
+}
+
+/* ---- pickers -------------------------------------------------------------- */
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.picker__search {
+  height: 30px;
+  font-size: var(--text-md);
+}
+
+.picker__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.picker__label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--fg-3);
+  padding: 0 2px;
+}
+
+.picker__options {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.picker__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  font-size: var(--text-md);
+  color: var(--fg);
+  text-align: left;
+  transition: background var(--ease);
+}
+
+.picker__option svg {
+  flex: none;
+  color: var(--fg-3);
+}
+
+.picker__option:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+
+.picker__option:disabled {
+  color: var(--fg-3);
+  cursor: default;
+}
+
+.picker__option-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.picker__check {
+  color: var(--fg) !important;
+}
+
+.picker__note {
+  font-size: var(--text-sm);
+  color: var(--fg-3);
+  padding: 0 2px;
+}
+
+.picker__note a {
+  color: var(--fg-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.picker__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.picker__spacer {
+  flex: 1;
+}

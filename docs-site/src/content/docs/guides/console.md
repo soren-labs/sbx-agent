@@ -41,10 +41,10 @@ rejected with `csrf_failed`.
   thinking, writing, or waiting for the model) with Stop; a finished Turn shows
   its duration and tokens, or the failure with Retry where the server allows it. The workspace panel on the right (or the
   **Workspace** switch on small screens) holds Overview, Changes, Files,
-  Terminal, Services, Child Sessions and Activity.
+  Terminal, Services, Children and Activity.
 - **Sessions**: the list and the Session view with Conversation, Activity,
   Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
-  Services and Child Sessions tabs.
+  Services and Children tabs.
 - **Projects**: reusable repository and environment configuration.
 - **My Cloud Machines**: subscription logins, one per machine, for Codex, Grok
   Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
