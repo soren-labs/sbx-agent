@@ -1,51 +1,184 @@
-/* sbx-agent docs theme — shares the Console's brand tokens. */
+/* sbx-agent docs theme — shares the Console's neutral surfaces and type. */
+
+@import '@fontsource-variable/inter';
 
 :root {
-	--sl-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-		'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-	--sl-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas,
-		monospace;
+	--sl-font:
+		'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+		Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+	--sl-font-mono:
+		ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+	--sl-text-xs: 0.75rem;
+	--sl-text-sm: 0.8125rem;
 
-	/* Dark (Starlight default) */
+	/* Dark (Starlight default) — the Console's canvas. */
 	--sl-color-accent-low: #1e1b4b;
 	--sl-color-accent: #6366f1;
 	--sl-color-accent-high: #c7d2fe;
-	--sl-color-white: #fafafa;
-	--sl-color-gray-1: #e4e4e7;
-	--sl-color-gray-2: #d4d4d8;
-	--sl-color-gray-3: #a1a1aa;
-	--sl-color-gray-4: #71717a;
-	--sl-color-gray-5: #3f3f46;
-	--sl-color-gray-6: #1f1f23;
-	--sl-color-black: #0c0c0f;
+	--sl-color-white: #ededef;
+	--sl-color-gray-1: #d4d4d8;
+	--sl-color-gray-2: #a1a1aa;
+	--sl-color-gray-3: #8a8a94;
+	--sl-color-gray-4: #6b6b74;
+	--sl-color-gray-5: #2b2b30;
+	--sl-color-gray-6: #19191c;
+	--sl-color-gray-7: #111113;
+	--sl-color-black: #0b0b0c;
+
+	--sl-color-bg-nav: var(--sl-color-gray-7);
+	--sl-color-bg-sidebar: var(--sl-color-gray-7);
+	--sl-color-hairline: rgb(255 255 255 / 8%);
+	--sl-text-size-base: 0.9375rem;
+	--sl-border-radius: 0.625rem;
 }
 
 :root[data-theme='light'] {
 	--sl-color-accent-low: #e0e7ff;
 	--sl-color-accent: #4f46e5;
 	--sl-color-accent-high: #312e81;
-	--sl-color-white: #09090b;
-	--sl-color-gray-1: #18181b;
-	--sl-color-gray-2: #27272a;
-	--sl-color-gray-3: #52525b;
-	--sl-color-gray-4: #71717a;
-	--sl-color-gray-5: #d4d4d8;
-	--sl-color-gray-6: #f4f4f5;
+	--sl-color-white: #111113;
+	--sl-color-gray-1: #27272a;
+	--sl-color-gray-2: #5b5b66;
+	--sl-color-gray-3: #71717a;
+	--sl-color-gray-4: #8a8a94;
+	--sl-color-gray-5: #e6e6ea;
+	--sl-color-gray-6: #f0f0f2;
 	--sl-color-gray-7: #fafafa;
 	--sl-color-black: #ffffff;
+	--sl-color-hairline: rgb(0 0 0 / 9%);
 }
 
-/* Splash hero: tighter, product-like. */
+html {
+	scroll-behavior: smooth;
+}
+
+body {
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	font-feature-settings: 'cv11', 'ss01';
+}
+
+/* ---- header ------------------------------------------------------------- */
+
+header.header {
+	backdrop-filter: saturate(140%) blur(12px);
+	background: color-mix(in srgb, var(--sl-color-bg-nav) 82%, transparent);
+	border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.site-title {
+	font-weight: 650;
+	letter-spacing: -0.01em;
+}
+
+/* "Console" call-to-action injected by the SocialIcons override. */
+.sbx-console-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	height: 1.9em;
+	padding: 0 0.75em;
+	margin: 0;
+	margin-left: 0.75em;
+	border-radius: 0.55em;
+	border: 1px solid var(--sl-color-gray-5);
+	background: var(--sl-color-gray-6);
+	color: var(--sl-color-white);
+	font-size: var(--sl-text-sm);
+	font-weight: 500;
+	text-decoration: none;
+	transition:
+		background 0.12s ease,
+		border-color 0.12s ease;
+}
+.sbx-console-link:hover {
+	background: var(--sl-color-gray-5);
+	color: var(--sl-color-white);
+}
+@media (max-width: 50rem) {
+	.sbx-console-link {
+		display: none;
+	}
+}
+
+/* ---- sidebar ------------------------------------------------------------ */
+
+.sidebar-content .top-level > li + li {
+	margin-top: 0.75rem;
+}
+.sidebar-content a {
+	border-radius: 6px;
+}
+.sidebar-content a[aria-current='page'] {
+	font-weight: 550;
+}
+
+/* ---- content ------------------------------------------------------------ */
+
+.sl-markdown-content {
+	line-height: 1.68;
+}
+.sl-markdown-content h1 {
+	font-weight: 650;
+	letter-spacing: -0.03em;
+	line-height: 1.15;
+}
+.sl-markdown-content h2 {
+	font-weight: 620;
+	letter-spacing: -0.02em;
+}
+.sl-markdown-content a:not(:where(.not-content *)) {
+	text-decoration-color: color-mix(in srgb, var(--sl-color-accent) 45%, transparent);
+	text-underline-offset: 3px;
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+	text-decoration-color: var(--sl-color-accent);
+}
+
+.expressive-code .frame {
+	border-radius: var(--sl-border-radius);
+}
+
+/* ---- splash home -------------------------------------------------------- */
+
 .hero {
-	padding-block: clamp(2.5rem, 6vw, 5rem);
+	padding-block: clamp(3rem, 7vw, 6rem);
 }
 .hero h1 {
-	letter-spacing: -0.03em;
-	line-height: 1.05;
+	letter-spacing: -0.035em;
+	line-height: 1.04;
+	font-weight: 650;
 }
 .hero .tagline {
 	max-width: 44rem;
 	color: var(--sl-color-gray-2);
+}
+.hero .actions > .primary {
+	border-radius: 10px;
+}
+.hero .actions > .secondary {
+	border-radius: 10px;
+}
+
+/* Screenshot the hero leads into; rendered smaller than full width. */
+.hero-shot {
+	margin: clamp(2rem, 5vw, 3.5rem) auto 0;
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.75rem;
+	overflow: hidden;
+	box-shadow:
+		0 0 0 1px rgb(0 0 0 / 20%),
+		0 30px 80px -20px rgb(0 0 0 / 55%);
+}
+:root[data-theme='light'] .hero-shot {
+	box-shadow:
+		0 0 0 1px rgb(0 0 0 / 4%),
+		0 30px 80px -24px rgb(17 17 19 / 25%);
+}
+.hero-shot img {
+	display: block;
+	width: 100%;
+	height: auto;
 }
 
 /* Figures used for console screenshots. */
@@ -54,7 +187,9 @@
 	border: 1px solid var(--sl-color-gray-5);
 	border-radius: 0.75rem;
 	overflow: hidden;
-	box-shadow: 0 1px 2px rgb(0 0 0 / 8%), 0 12px 32px rgb(0 0 0 / 12%);
+	box-shadow:
+		0 1px 2px rgb(0 0 0 / 8%),
+		0 12px 32px rgb(0 0 0 / 12%);
 }
 .sbx-shot img {
 	display: block;
