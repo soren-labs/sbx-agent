@@ -68,23 +68,65 @@ describe("restored auth and shell interactions", () => {
       ],
     ]);
     await renderApp(<App />, m.fetch, "/projects");
-    const nav = (await screen.findAllByRole("navigation"))[0];
+    const aside = await screen.findByRole("complementary");
+    const nav = within(aside).getByRole("navigation");
     // Only the current section is marked; there is no invented "Review" queue.
     expect(within(nav).getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "page");
-    expect(within(nav).getByRole("link", { name: "Sessions" })).not.toHaveAttribute("aria-current");
-    expect(within(nav).queryByText("Review")).toBeNull();
+    expect(within(aside).getByRole("link", { name: "Sessions" })).not.toHaveAttribute("aria-current");
+    expect(within(aside).queryByText("Review")).toBeNull();
     // Untitled Sessions are still reachable, and status comes from server activity alone.
-    const untitled = await within(nav).findByRole("link", { name: /Untitled Session/ });
+    const untitled = await within(aside).findByRole("link", { name: /Untitled session/ });
     expect(untitled).toHaveTextContent("Waiting for you");
-    const titled = within(nav).getByRole("link", { name: /Fix the PR template/ });
+    const titled = within(aside).getByRole("link", { name: /Fix the PR template/ });
     expect(titled).toHaveTextContent("Needs attention");
     expect(titled).not.toHaveTextContent("PR ready");
-    await userEvent.type(within(nav).getByLabelText("Search sessions"), "untitled");
-    expect(within(nav).queryByRole("link", { name: /Fix the PR template/ })).toBeNull();
-    expect(within(nav).getByRole("link", { name: /Untitled Session/ })).toBeInTheDocument();
+    // The filter opens from the sessions-section search action and matches the displayed title.
+    await userEvent.click(within(aside).getAllByRole("button", { name: "Search sessions" }).at(-1)!);
+    await userEvent.type(within(aside).getByLabelText("Filter sessions…"), "untitled");
+    expect(within(aside).queryByRole("link", { name: /Fix the PR template/ })).toBeNull();
+    expect(within(aside).getByRole("link", { name: /Untitled session/ })).toBeInTheDocument();
   });
 
-  it("keeps desktop/mobile navigation, theme persistence and logout working", async () => {
+  it("shows harness · model for quiet Sessions and tags Closed only once it is opted in", async () => {
+    const closed = session({
+      id: "s9",
+      lifecycle: "closed",
+      activity: "idle",
+      title: "Old fix",
+      harness: { provider_id: "codex", model: "gpt-5" },
+      updated_at: new Date().toISOString(),
+    });
+    const m = mockFetch([
+      ...identityRoutes,
+      ["GET", "/api/workspaces/w1/connections", { json: { items: [] } }],
+      ["GET", "/api/workspaces/w1/projects", { json: { items: [] } }],
+      [
+        "GET",
+        "/api/workspaces/w1/sessions",
+        (call) => ({
+          json: {
+            items:
+              call.query.get("lifecycle") === "closed"
+                ? [closed]
+                : [session({ id: "s1", title: "Open one", updated_at: new Date().toISOString() })],
+            next_cursor: null,
+          },
+        }),
+      ],
+    ]);
+    await renderApp(<App />, m.fetch, "/");
+    const aside = await screen.findByRole("complementary");
+    // Quiet sessions keep harness · model · time; no "Closed" label in the meta.
+    const open = await within(aside).findByRole("link", { name: /Open one/ });
+    expect(open).toHaveTextContent("OpenCode · big-pickle");
+    await userEvent.click(within(aside).getByRole("button", { name: "Session list options" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Show closed" }));
+    const item = await within(aside).findByRole("link", { name: /Old fix/ });
+    expect(item).toHaveTextContent("Codex · gpt-5");
+    expect(within(item).getByText("Closed")).toHaveClass("session-item__tag");
+  });
+
+  it("keeps navigation, theme persistence and logout working", async () => {
     const m = mockFetch([
       ...identityRoutes,
       ["GET", "/api/workspaces/w1/sessions", { json: { items: [], next_cursor: null } }],
@@ -93,13 +135,17 @@ describe("restored auth and shell interactions", () => {
     ]);
     await renderApp(<App />, m.fetch, "/sessions");
     const navs = screen.getAllByRole("navigation");
-    expect(navs).toHaveLength(2);
-    expect(within(navs[0]).getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
-    await userEvent.click(within(navs[1]).getByRole("link", { name: "Settings" }));
-    await userEvent.selectOptions(screen.getByLabelText("Theme"), "light");
+    expect(navs).toHaveLength(1);
+    const aside = navs[0].closest("aside")!;
+    expect(within(aside).getByRole("link", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
+    await userEvent.click(within(aside).getByRole("link", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Settings", level: 1 });
+    // Theme is chosen on the General tab via radio cards.
+    await userEvent.click(await screen.findByRole("radio", { name: /^Light/ }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
     expect(localStorage.getItem("sbx.console.theme")).toBe("light");
-    await userEvent.click(screen.getAllByRole("button", { name: "Sign out" })[0]);
+    await userEvent.click(within(aside).getByRole("button", { name: "Account" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
     await screen.findByRole("heading", { name: "Sign in" });
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(m.find("POST", "/api/auth/logout")).toHaveLength(1);

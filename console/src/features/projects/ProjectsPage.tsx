@@ -1,11 +1,22 @@
 import { useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
+import { FolderGit2, MoreHorizontal, Plus } from "lucide-react";
 import type { Project, ProjectSpec } from "../../api/types";
-import { Empty, ErrorNotice, Field, Loading, useAction, when } from "../../components/ui";
 import { useI18n } from "../../i18n";
 import { useAuth } from "../../state/auth";
 import { useApi, useQueryClient } from "../../state/context";
 import { useQuery } from "../../state/query";
 import { useDocumentTitle } from "../../state/title";
+import { Button, IconButton } from "../../ui/Button";
+import { Dialog } from "../../ui/Dialog";
+import { EmptyState } from "../../ui/EmptyState";
+import { ErrorNotice } from "../../ui/ErrorNotice";
+import { Field, Input, Select, Textarea } from "../../ui/Field";
+import { when } from "../../ui/format";
+import { Menu, MenuItem } from "../../ui/Menu";
+import { Spinner } from "../../ui/Spinner";
+import { useAction } from "../../ui/useAction";
+import { PageHeader } from "../../shell/PageHeader";
 
 function parseChecks(text: string): { name: string; argv: string[] }[] {
   return text
@@ -27,9 +38,11 @@ function checksText(spec: ProjectSpec | undefined): string {
 function ProjectForm({
   project,
   onDone,
+  onCancel,
 }: {
   project?: Project;
   onDone: () => void;
+  onCancel?: () => void;
 }) {
   const { t } = useI18n();
   const api = useApi();
@@ -53,7 +66,8 @@ function ProjectForm({
         executor: { backend },
       },
     };
-    if (project) await api.projects.publishVersion(project.id, { spec: next, expected_version: project.version }, { idempotencyKey: key });
+    if (project)
+      await api.projects.publishVersion(project.id, { spec: next, expected_version: project.version }, { idempotencyKey: key });
     else await api.projects.create(workspace!.id, { slug: slug.trim(), name: name.trim(), spec: next }, { idempotencyKey: key });
     onDone();
   });
@@ -64,41 +78,60 @@ function ProjectForm({
   return (
     <form onSubmit={submit} aria-label={project ? t("projects.new_version") : t("projects.create")}>
       {!project ? (
-        <div className="controls">
-          <Field id={`${uid}-slug`} label={t("projects.slug")}>
-            <input id={`${uid}-slug`} required pattern="[a-z0-9][a-z0-9-]*" value={slug} onChange={(e) => setSlug(e.target.value)} />
+        <div className="form-grid">
+          <Field htmlFor={`${uid}-slug`} label={t("projects.slug")}>
+            <Input
+              id={`${uid}-slug`}
+              required
+              pattern="[a-z0-9][a-z0-9-]*"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+            />
           </Field>
-          <Field id={`${uid}-name`} label={t("projects.name")}>
-            <input id={`${uid}-name`} required value={name} onChange={(e) => setName(e.target.value)} />
+          <Field htmlFor={`${uid}-name`} label={t("projects.name")}>
+            <Input id={`${uid}-name`} required value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
         </div>
       ) : null}
-      <div className="controls">
-        <Field id={`${uid}-repo`} label={t("composer.repo")}>
-          <input id={`${uid}-repo`} required placeholder="owner/repo" value={repo} onChange={(e) => setRepo(e.target.value)} />
+      <div className="form-grid">
+        <Field htmlFor={`${uid}-repo`} label={t("session.repository")}>
+          <Input
+            id={`${uid}-repo`}
+            required
+            placeholder="owner/repo"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+          />
         </Field>
-        <Field id={`${uid}-ref`} label={t("composer.base_ref")}>
-          <input id={`${uid}-ref`} value={baseRef} onChange={(e) => setBaseRef(e.target.value)} />
+        <Field htmlFor={`${uid}-ref`} label={t("composer.base_ref")}>
+          <Input id={`${uid}-ref`} value={baseRef} onChange={(e) => setBaseRef(e.target.value)} />
         </Field>
       </div>
-      <Field id={`${uid}-checks`} label={t("projects.checks")} hint={t("projects.checks_hint")}>
-        <textarea id={`${uid}-checks`} rows={3} className="mono" value={checks} onChange={(e) => setChecks(e.target.value)} />
+      <Field htmlFor={`${uid}-checks`} label={t("projects.checks")} hint={t("projects.checks_hint")}>
+        <Textarea id={`${uid}-checks`} rows={3} className="mono" value={checks} onChange={(e) => setChecks(e.target.value)} />
       </Field>
-      <div className="controls">
-        <Field id={`${uid}-model`} label={t("composer.model")}>
-          <input id={`${uid}-model`} value={model} onChange={(e) => setModel(e.target.value)} />
+      <div className="form-grid">
+        <Field htmlFor={`${uid}-model`} label={t("composer.model")}>
+          <Input id={`${uid}-model`} value={model} onChange={(e) => setModel(e.target.value)} />
         </Field>
-        <Field id={`${uid}-backend`} label={t("composer.executor")}>
-          <select id={`${uid}-backend`} value={backend} onChange={(e) => setBackend(e.target.value)}>
+        <Field htmlFor={`${uid}-backend`} label={t("composer.compute")}>
+          <Select id={`${uid}-backend`} value={backend} onChange={(e) => setBackend(e.target.value)}>
             <option value="modal">Modal</option>
             <option value="local">Local</option>
-          </select>
+          </Select>
         </Field>
       </div>
       <ErrorNotice error={save.error} />
-      <button type="submit" className="btn btn-primary btn-sm" disabled={save.pending}>
-        {project ? t("projects.publish") : t("projects.create")}
-      </button>
+      <div className="mc-actions">
+        <Button type="submit" variant="primary" disabled={save.pending}>
+          {project ? t("projects.publish") : t("projects.create")}
+        </Button>
+        {onCancel ? (
+          <Button variant="ghost" onClick={onCancel}>
+            {t("common.cancel")}
+          </Button>
+        ) : null}
+      </div>
     </form>
   );
 }
@@ -108,44 +141,79 @@ export function ProjectsPage() {
   useDocumentTitle(t("nav.projects"));
   const api = useApi();
   const qc = useQueryClient();
+  const nav = useNavigate();
   const { workspace } = useAuth();
   const w = workspace?.id ?? null;
   const q = useQuery(w ? ["projects", w] : null, () => api.projects.list(w!));
-  const [editing, setEditing] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [publishing, setPublishing] = useState<Project | null>(null);
   const reload = () => {
-    setEditing(null);
+    setCreating(false);
+    setPublishing(null);
     qc.invalidate(["projects"]);
   };
+
   return (
-    <div className="narrow">
-      <h1>{t("nav.projects")}</h1>
-      <p className="page-lead muted">{t("projects.intro")}</p>
-      {q.loading && !q.data ? <Loading /> : null}
+    <div className="page">
+      <PageHeader
+        title={t("nav.projects")}
+        actions={
+          <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
+            {t("projects.new_dialog")}
+          </Button>
+        }
+      />
+      <p className="page__lead">{t("projects.intro")}</p>
+      {q.loading && !q.data ? <Spinner /> : null}
       <ErrorNotice error={q.error} onRetry={q.refetch} />
-      {q.data && !q.data.items.length ? <Empty>{t("projects.none")}</Empty> : null}
-      <ul className="plain-list">
+      {q.data && !q.data.items.length ? (
+        <EmptyState title={t("projects.none")} action={<Button onClick={() => setCreating(true)}>{t("projects.new_dialog")}</Button>} />
+      ) : null}
+      {q.data?.items.length ? (
+      <div className="lcard">
         {(q.data?.items ?? []).map((p) => (
-          <li key={p.id} className="card" aria-label={p.name}>
-            <div className="row wrap">
-              <strong className="grow">{p.name}</strong>
-              <code className="faint">{p.slug}</code>
+          <div key={p.id} className="lrow" role="group" aria-label={p.name}>
+            <div className="lrow__line">
+              <span className="lrow__tile" aria-hidden="true">
+                <FolderGit2 size={16} />
+              </span>
+              <div className="lrow__main">
+                <span className="lrow__name">{p.name}</span>
+                <span className="lrow__sub">
+                  {p.current_version
+                    ? `${p.current_version.spec.repository.full_name}@${p.current_version.spec.repository.base_ref} · ${t(
+                        "projects.version_n",
+                        { n: p.current_version.ordinal },
+                      )} · ${t("projects.updated")} ${when(p.current_version.created_at)}`
+                    : t("projects.no_version")}
+                </span>
+              </div>
+              <div className="lrow__aside">
+                <Menu
+                  align="end"
+                  label={t("projects.actions")}
+                  trigger={<IconButton size="sm" label={t("projects.actions")} icon={<MoreHorizontal size={15} />} />}
+                >
+                  <MenuItem label={t("projects.new_version")} onSelect={() => setPublishing(p)} />
+                  <MenuItem label={t("projects.start_session")} onSelect={() => nav(`/?project=${p.id}`)} />
+                </Menu>
+              </div>
             </div>
-            <p className="small muted">
-              {p.current_version
-                ? `${p.current_version.spec.repository.full_name}@${p.current_version.spec.repository.base_ref} · v${p.current_version.ordinal} · ${when(p.current_version.created_at)}`
-                : t("projects.no_version")}
-            </p>
-            <button type="button" className="btn btn-sm" aria-expanded={editing === p.id} onClick={() => setEditing(editing === p.id ? null : p.id)}>
-              {t("projects.new_version")}
-            </button>
-            {editing === p.id ? <ProjectForm project={p} onDone={reload} /> : null}
-          </li>
+          </div>
         ))}
-      </ul>
-      <section className="card">
-        <h2>{t("projects.create")}</h2>
-        <ProjectForm onDone={reload} />
-      </section>
+      </div>
+      ) : null}
+
+      {creating ? (
+        <Dialog title={t("projects.new_dialog")} onClose={() => setCreating(false)} width={480}>
+          <ProjectForm onDone={reload} onCancel={() => setCreating(false)} />
+        </Dialog>
+      ) : null}
+      {publishing ? (
+        <Dialog title={t("projects.publish_title")} onClose={() => setPublishing(null)} width={480}>
+          <ProjectForm project={publishing} onDone={reload} onCancel={() => setPublishing(null)} />
+        </Dialog>
+      ) : null}
     </div>
   );
 }

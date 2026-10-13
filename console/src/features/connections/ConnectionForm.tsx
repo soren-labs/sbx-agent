@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import type { ConnectionCredential } from "../../api/types";
-import { Field } from "../../components/ui";
 import { useI18n } from "../../i18n";
+import { Button } from "../../ui/Button";
+import { Field, Input, Textarea } from "../../ui/Field";
 import { buildCredential, kindMeta, type FieldKind } from "./kinds";
 
 /**
@@ -43,14 +44,14 @@ export function ConnectionForm({
       aria-label={t(mode === "create" ? "conn.add_aria" : "conn.replace_aria", { kind: t(meta.title) })}
     >
       {mode === "create" ? (
-        <Field id={id("label")} label={t("conn.label")}>
-          <input id={id("label")} value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} />
+        <Field htmlFor={id("label")} label={t("conn.label")}>
+          <Input id={id("label")} value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} />
         </Field>
       ) : null}
       {meta.fields.map((f) => (
-        <Field key={f.name} id={id(f.name)} label={t(f.label)}>
+        <Field key={f.name} htmlFor={id(f.name)} label={t(f.label)}>
           {f.multiline ? (
-            <textarea
+            <Textarea
               id={id(f.name)}
               className="secret-mask"
               rows={4}
@@ -60,7 +61,7 @@ export function ConnectionForm({
               onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
             />
           ) : (
-            <input
+            <Input
               id={id(f.name)}
               type={f.secret ? "password" : "text"}
               autoComplete={f.secret ? "new-password" : "off"}
@@ -72,9 +73,9 @@ export function ConnectionForm({
         </Field>
       ))}
       <p className="faint small">{t("conn.write_only")}</p>
-      <button type="submit" className="btn btn-primary" disabled={!complete || pending}>
+      <Button type="submit" variant="primary" disabled={!complete || pending}>
         {mode === "create" ? t("conn.connect") : t("conn.replace")}
-      </button>
+      </Button>
     </form>
   );
 }

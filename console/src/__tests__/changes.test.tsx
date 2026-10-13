@@ -2,8 +2,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { ChangeSet, Delivery } from "../api/types";
-import { ChangesPanel } from "../features/changes/ChangesPanel";
-import { DeliveryCard } from "../features/changes/DeliveryCard";
+import { ChangesTab as ChangesPanel, DeliveryCard } from "../features/sessions/tabs/ChangesTab";
 import { identityRoutes, mockFetch, renderApp } from "../test/helpers";
 
 const delivery = (over: Partial<Delivery> = {}): Delivery => ({
@@ -97,9 +96,11 @@ describe("Changes panel", () => {
       ["GET", "/api/changesets/cs1/deliveries", { json: { items: [delivery()] } }],
     ]);
     await renderApp(<ChangesPanel sessionId="s1" />, m.fetch);
-    expect(await screen.findByText("Compute is not running")).toBeInTheDocument();
+    // A captured ChangeSet opens first; the live observation is one scope away.
     expect(await screen.findByText("src/a.ts")).toBeInTheDocument();
     expect(await screen.findByText("Eligible to merge")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("ChangeSet"), "live");
+    expect(await screen.findByText("Compute is not running")).toBeInTheDocument();
     expect(m.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
   });
 
@@ -114,8 +115,10 @@ describe("Changes panel", () => {
       ["POST", "/api/sessions/s1/changesets", { status: 202, json: { changeset: cs, event_watermark: 5 } }],
     ]);
     await renderApp(<ChangesPanel sessionId="s1" />, m.fetch);
+    await userEvent.selectOptions(await screen.findByLabelText("ChangeSet"), "live");
     expect(await screen.findByText("x.ts")).toBeInTheDocument();
     expect(m.find("GET", "/api/changesets/cs1/diff")).toHaveLength(0);
+    await userEvent.selectOptions(screen.getByLabelText("ChangeSet"), "cs1");
     await userEvent.click(await screen.findByRole("button", { name: "Show diff" }));
     expect(await screen.findByLabelText("Diff")).toHaveTextContent("+b");
     await userEvent.click(screen.getByRole("button", { name: "Capture ChangeSet" }));

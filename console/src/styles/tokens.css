@@ -1,0 +1,62 @@
+/* Design tokens — dark is the default canvas; light flips via html[data-theme]. */
+:root {
+  color-scheme: dark;
+  --bg-0: #0b0b0c;
+  --bg-1: #111113;
+  --bg-2: #19191c;
+  --bg-3: #222226;
+  --bg-4: #2b2b30;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --fg: #ededef;
+  --fg-2: #a1a1aa;
+  --fg-3: #6b6b74;
+  --accent: #ededef;
+  --accent-fg: #0b0b0c;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #ef4444;
+  --info: #3b82f6;
+  --run: #a78bfa;
+  --diff-add: #3fb950;
+  --diff-add-bg: rgba(63, 185, 80, 0.14);
+  --diff-del: #f85149;
+  --diff-del-bg: rgba(248, 81, 73, 0.14);
+  --focus: #3b82f6;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --mono-size: 12.5px;
+
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --ease: 120ms ease;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-0: #ffffff;
+  --bg-1: #f7f7f8;
+  --bg-2: #ffffff;
+  --bg-3: #f0f0f2;
+  --bg-4: #e6e6ea;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --fg: #111113;
+  --fg-2: #5b5b66;
+  --fg-3: #8a8a94;
+  --accent: #111113;
+  --accent-fg: #ffffff;
+  --diff-add-bg: rgba(63, 185, 80, 0.14);
+  --diff-del-bg: rgba(248, 81, 73, 0.12);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.12);
+}

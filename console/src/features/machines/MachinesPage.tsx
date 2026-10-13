@@ -1,21 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { ChevronDown, Copy, Cpu, ExternalLink, MoreHorizontal, Plus, Search } from "lucide-react";
 import type { MachineSlot, MachineSlotList, SlotStatus, SubscriptionProvider } from "../../api/types";
-import { Icon, Spinner } from "../../components/icons";
-import { ErrorNotice, Loading, useAction, when } from "../../components/ui";
 import { useI18n } from "../../i18n";
 import type { I18nKey } from "../../i18n/en";
 import { useAuth } from "../../state/auth";
-import { useApi, useQueryClient } from "../../state/context";
-import { useQuery } from "../../state/query";
+import { useApi } from "../../state/context";
 import { useDocumentTitle } from "../../state/title";
-import "./machines.css";
+import { Button, IconButton } from "../../ui/Button";
+import { Dialog } from "../../ui/Dialog";
+import { ErrorNotice } from "../../ui/ErrorNotice";
+import { when } from "../../ui/format";
+import { Menu, MenuItem } from "../../ui/Menu";
+import { Pill, type Tone } from "../../ui/Pill";
+import { Select } from "../../ui/Field";
+import { Spinner } from "../../ui/Spinner";
+import { useAction } from "../../ui/useAction";
+import { PageHeader } from "../../shell/PageHeader";
+import { useMachineSlots } from "./useMachineSlots";
 
-const TONE: Record<SlotStatus, "ok" | "run" | "warn" | "err" | "dim"> = {
+const TONE: Record<SlotStatus, Tone> = {
   ready: "ok",
   running: "run",
   login_pending: "warn",
-  needs_login: "err",
+  needs_login: "warn",
   error: "err",
   deleting: "dim",
 };
@@ -40,30 +48,12 @@ const REASONS: Record<string, I18nKey> = {
   usage_limited: "machines.reason.usage_limited",
 };
 
-/** Slots of the workspace, followed while anything is changing on the server. */
-export function useMachineSlots() {
-  const api = useApi();
-  const qc = useQueryClient();
-  const { workspace } = useAuth();
-  const w = workspace?.id ?? null;
-  const q = useQuery(w ? ["machine-slots", w] : null, () => api.slots.list(w!));
-  const moving = (q.data?.items ?? []).some((s) => s.status === "login_pending" || s.status === "deleting");
-  const busy = (q.data?.items ?? []).some((s) => s.status === "running");
-  useEffect(() => {
-    if (!w || (!moving && !busy)) return;
-    const id = setInterval(() => void qc.fetch(["machine-slots", w], () => api.slots.list(w)), moving ? 2000 : 6000);
-    return () => clearInterval(id);
-  }, [moving, busy, w, qc, api]);
-  return q;
-}
-
 function StatusPill({ slot }: { slot: MachineSlot }) {
   const { t } = useI18n();
   return (
-    <span className={`mc-status tone-${TONE[slot.status] ?? "dim"}`} data-status={slot.status}>
-      <i aria-hidden="true" />
-      {t(`machines.status.${slot.status}` as I18nKey)}
-    </span>
+    <Pill tone={TONE[slot.status] ?? "dim"} title={slot.status}>
+      <span data-status={slot.status}>{t(slot.status === "running" ? "machines.in_use" : (`machines.status.${slot.status}` as I18nKey))}</span>
+    </Pill>
   );
 }
 
@@ -100,7 +90,7 @@ function PasteCode({ slot, onChanged }: { slot: MachineSlot; onChanged: () => vo
   if (sent) {
     return (
       <p className="mc-login-wait" role="status">
-        <Spinner /> {t("machines.login.paste_sent")}
+        <Spinner small /> {t("machines.login.paste_sent")}
       </p>
     );
   }
@@ -124,10 +114,9 @@ function PasteCode({ slot, onChanged }: { slot: MachineSlot; onChanged: () => vo
         value={code}
         onChange={(e) => setCode(e.target.value)}
       />
-      <button type="submit" className="button primary" disabled={send.pending || !code.trim()}>
-        {send.pending ? <Spinner /> : null}
+      <Button type="submit" variant="primary" size="sm" loading={send.pending} disabled={!code.trim()}>
         {t("machines.login.paste_send")}
-      </button>
+      </Button>
       <ErrorNotice error={send.error} />
     </form>
   );
@@ -163,7 +152,7 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
     <div className="mc-login" role="group" aria-label={t("machines.login.title")} data-login-state={login.state}>
       {login.state === "starting" ? (
         <p className="mc-login-wait" role="status">
-          <Spinner /> {t(login.mode === "verify" ? "machines.login.checking" : "machines.login.starting")}
+          <Spinner small /> {t(login.mode === "verify" ? "machines.login.checking" : "machines.login.starting")}
         </p>
       ) : null}
       {login.state === "awaiting_user" ? (
@@ -172,12 +161,12 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
             <li>
               <span>{t("machines.login.step_open", { provider: slot.provider_name })}</span>
               <a
-                className="button primary mc-open"
+                className="btn btn--primary btn--sm mc-open"
                 href={login.verification_url ?? "#"}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                <Icon name="external" size={13} />
+                <ExternalLink size={13} />
                 {t("machines.login.open")}
               </a>
               {/* The link is opened, not read: its query can be long or carry the one-time code. */}
@@ -195,16 +184,15 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
                   <code className="mc-code" data-testid="device-code" aria-label={t("machines.login.code")}>
                     {login.user_code}
                   </code>
-                  <button type="button" className="button" onClick={() => void copy()}>
-                    <Icon name={copied ? "check" : "copy"} size={13} />
+                  <Button size="sm" icon={<Copy size={13} />} onClick={() => void copy()}>
                     {copied ? t("machines.login.copied") : t("machines.login.copy")}
-                  </button>
+                  </Button>
                 </span>
               </li>
             )}
           </ol>
           <p className="mc-login-wait" role="status">
-            <Spinner /> {t(pasting ? "machines.login.waiting_paste" : "machines.login.waiting")}
+            <Spinner small /> {t(pasting ? "machines.login.waiting_paste" : "machines.login.waiting")}
             {left ? (
               <span className="mc-expiry">
                 {" "}
@@ -216,13 +204,14 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
       ) : null}
       {login.state === "verifying" ? (
         <p className="mc-login-wait" role="status">
-          <Spinner /> {t(login.method === "authorization_code" ? "machines.login.verifying_paste" : "machines.login.verifying")}
+          <Spinner small />{" "}
+          {t(login.method === "authorization_code" ? "machines.login.verifying_paste" : "machines.login.verifying")}
         </p>
       ) : null}
       <div className="mc-actions">
-        <button type="button" className="button" disabled={cancel.pending} onClick={() => void cancel.run()}>
+        <Button variant="secondary" disabled={cancel.pending} onClick={() => void cancel.run()}>
           {t("machines.login.cancel")}
-        </button>
+        </Button>
       </div>
       <ErrorNotice error={cancel.error} />
     </div>
@@ -232,36 +221,29 @@ function LoginPanel({ slot, onChanged }: { slot: MachineSlot; onChanged: () => v
 function SlotRow({
   slot,
   open,
+  loginOpen,
   onToggle,
   onChanged,
+  onRename,
+  onDelete,
+  onSignIn,
 }: {
   slot: MachineSlot;
   open: boolean;
+  loginOpen: boolean;
   onToggle: () => void;
   onChanged: () => void;
+  onRename: (slot: MachineSlot) => void;
+  onDelete: (slot: MachineSlot) => void;
+  onSignIn: (slot: MachineSlot) => void;
 }) {
   const { t } = useI18n();
   const api = useApi();
-  const [renaming, setRenaming] = useState(false);
-  const [label, setLabel] = useState(slot.label);
-  const [alias, setAlias] = useState(slot.account_alias ?? "");
-  const [deleting, setDeleting] = useState(false);
-  const [confirm, setConfirm] = useState("");
   const pending = slot.status === "login_pending";
   const catalog = slot.capabilities.catalog;
 
   const act = useAction(async (key, what: "login" | "verify" | "logout") => {
     await api.slots[what](slot.id, { idempotencyKey: key });
-    onChanged();
-  });
-  const rename = useAction(async (key) => {
-    await api.slots.update(slot.id, { label: label.trim(), account_alias: alias.trim() || null }, { idempotencyKey: key });
-    setRenaming(false);
-    onChanged();
-  });
-  const remove = useAction(async (key) => {
-    await api.slots.remove(slot.id, confirm, { idempotencyKey: key });
-    setDeleting(false);
     onChanged();
   });
   const reason = slot.state_reason ?? slot.login?.error_code ?? null;
@@ -270,150 +252,114 @@ function SlotRow({
   const row = useRef<HTMLLIElement>(null);
   // A login that needs the person is brought into view: with many machines it opens below the fold.
   useEffect(() => {
-    if (open && pending) row.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-  }, [open, pending]);
+    if (loginOpen && pending) row.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [loginOpen, pending]);
+
+  const catalogLine =
+    catalog?.status === "ready"
+      ? t("machines.catalog_summary", { count: catalog.models.length, source: catalog.source ?? "" })
+      : slot.status === "ready" || slot.status === "running"
+        ? t("machines.catalog_none")
+        : null;
 
   return (
-    <li ref={row} className={`mc-row ${open ? "open" : ""}`} data-testid="machine-row" data-status={slot.status}>
-      <button type="button" className="mc-row-head" aria-expanded={open} aria-controls={panel} onClick={onToggle}>
-        <span className="mc-icon" aria-hidden="true">
-          <Icon name="machine" size={16} />
-        </span>
-        <span className="mc-name">
-          <strong>{slot.label}</strong>
-          <small>
-            {slot.provider_name}
-            {slot.account_alias ? ` · ${slot.account_alias}` : ""}
-          </small>
-        </span>
+    <li ref={row} className="lrow mc-row" data-open={open} data-testid="machine-row" data-status={slot.status}>
+      <div className="lrow__line">
+        <button
+          type="button"
+          className="mc-row-head"
+          aria-expanded={open}
+          aria-controls={panel}
+          onClick={onToggle}
+        >
+          <span className="lrow__tile" aria-hidden="true">
+            <Cpu size={16} />
+          </span>
+          <span className="lrow__main">
+            <span className="lrow__name">{slot.label}</span>
+            <span className="lrow__sub">
+              {slot.provider_name}
+              {slot.account_alias ? ` · ${slot.account_alias}` : ""}
+            </span>
+            {catalogLine ? <span className="lrow__sub">{catalogLine}</span> : null}
+          </span>
+        </button>
         <StatusPill slot={slot} />
-        <Icon name={open ? "up" : "down"} size={12} />
-      </button>
+        <div className="lrow__aside">
+          {slot.status === "needs_login" || slot.status === "error" ? (
+            <Button size="sm" variant="primary" disabled={act.pending} onClick={() => void act.run("login").then(() => onSignIn(slot))}>
+              {t("machines.sign_in")}
+            </Button>
+          ) : null}
+          {pending ? (
+            <Button size="sm" variant="secondary" onClick={() => onSignIn(slot)}>
+              {t("machines.continue_login")}
+            </Button>
+          ) : null}
+          <Menu
+            align="end"
+            label={t("machines.row_actions")}
+            trigger={<IconButton size="sm" label={t("machines.row_actions")} icon={<MoreHorizontal size={15} />} />}
+          >
+            {!pending && !slot.busy ? (
+              <MenuItem
+                label={t(slot.status === "ready" ? "machines.relogin" : "machines.login_now")}
+                onSelect={() => void act.run("login").then(() => onSignIn(slot))}
+              />
+            ) : null}
+            {slot.status === "ready" ? (
+              <MenuItem label={t("machines.verify")} onSelect={() => void act.run("verify")} />
+            ) : null}
+            {slot.status === "ready" && slot.volume.managed ? (
+              <MenuItem label={t("machines.logout")} onSelect={() => void act.run("logout")} />
+            ) : null}
+            <MenuItem label={t("machines.rename")} onSelect={() => onRename(slot)} />
+            {!slot.busy ? (
+              <MenuItem danger label={t("machines.delete")} onSelect={() => onDelete(slot)} />
+            ) : null}
+          </Menu>
+        </div>
+      </div>
       {open ? (
         <div className="mc-panel" id={panel}>
-          {pending && slot.login ? <LoginPanel slot={slot} onChanged={onChanged} /> : null}
           {!pending && (slot.status === "needs_login" || slot.status === "error") ? (
-            <p className="mc-note err" role="status">
+            <p className="note note--err" role="status">
               {reasonKey ? t(reasonKey) : t("machines.reason.generic", { reason: reason ?? slot.status })}
             </p>
           ) : null}
-          {slot.status === "ready" && reasonKey ? <p className="mc-note warn">{t(reasonKey)}</p> : null}
+          {slot.status === "ready" && reasonKey ? <p className="note note--warn">{t(reasonKey)}</p> : null}
           {slot.status === "running" ? (
-            <p className="mc-note run" role="status">
+            <p className="note note--run" role="status">
               {t("machines.running_note")}{" "}
               {slot.worker ? <Link to={`/sessions/${slot.worker.session_id}`}>{t("machines.open_session")}</Link> : null}
             </p>
           ) : null}
-
-          {renaming ? (
-            <form
-              className="mc-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (label.trim()) void rename.run();
-              }}
-            >
-              <label>
-                {t("machines.name")}
-                <input value={label} maxLength={80} onChange={(e) => setLabel(e.target.value)} autoFocus />
-              </label>
-              <label>
-                {t("machines.alias")}
-                <input value={alias} maxLength={80} placeholder={t("machines.alias_ph")} onChange={(e) => setAlias(e.target.value)} />
-              </label>
-              <div className="mc-actions">
-                <button type="submit" className="button primary" disabled={rename.pending || !label.trim()}>
-                  {t("machines.save")}
-                </button>
-                <button type="button" className="button" onClick={() => setRenaming(false)}>
-                  {t("common.cancel")}
-                </button>
-              </div>
-              <ErrorNotice error={rename.error} />
-            </form>
-          ) : (
-            <dl className="mc-details">
-              <div>
-                <dt>{t("machines.detail.models")}</dt>
-                <dd>
-                  {catalog?.status === "ready"
-                    ? t("machines.detail.models_ready", { count: catalog.models.length, source: catalog.source ?? "" })
-                    : slot.status === "ready" || slot.status === "running"
-                      ? t("machines.detail.models_unavailable")
-                      : "—"}
-                </dd>
-              </div>
-              <div>
-                <dt>{t("machines.detail.verified")}</dt>
-                <dd>{when(slot.verified_at)}</dd>
-              </div>
-              <div>
-                <dt>{t("machines.detail.cli")}</dt>
-                <dd>{slot.capabilities.cli_version ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>{t("machines.detail.volume")}</dt>
-                <dd>
-                  <code>{slot.volume.name}</code>
-                </dd>
-              </div>
-            </dl>
-          )}
-
-          {!renaming && !deleting && slot.status !== "deleting" ? (
-            <div className="mc-actions">
-              {!pending && !slot.busy ? (
-                <button type="button" className="button" disabled={act.pending} onClick={() => void act.run("login")}>
-                  <Icon name="refresh" size={13} />
-                  {t(slot.status === "ready" ? "machines.relogin" : "machines.login_now")}
-                </button>
-              ) : null}
-              {slot.status === "ready" ? (
-                <button type="button" className="button" disabled={act.pending} onClick={() => void act.run("verify")}>
-                  {t("machines.verify")}
-                </button>
-              ) : null}
-              <button type="button" className="button" onClick={() => setRenaming(true)}>
-                {t("machines.rename")}
-              </button>
-              {slot.status === "ready" && slot.volume.managed ? (
-                <button type="button" className="button" disabled={act.pending} onClick={() => void act.run("logout")}>
-                  {t("machines.logout")}
-                </button>
-              ) : null}
-              {!slot.busy ? (
-                <button type="button" className="button danger" onClick={() => setDeleting(true)}>
-                  {t("machines.delete")}
-                </button>
-              ) : null}
+          <dl className="mc-details">
+            <div>
+              <dt>{t("machines.detail.models")}</dt>
+              <dd>
+                {catalog?.status === "ready"
+                  ? t("machines.detail.models_ready", { count: catalog.models.length, source: catalog.source ?? "" })
+                  : slot.status === "ready" || slot.status === "running"
+                    ? t("machines.detail.models_unavailable")
+                    : "—"}
+              </dd>
             </div>
-          ) : null}
-          {deleting ? (
-            <form
-              className="mc-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (confirm === slot.label) void remove.run();
-              }}
-            >
-              <p className="mc-note err">
-                {t(slot.volume.managed ? "machines.delete_warn" : "machines.delete_warn_adopted", { name: slot.label })}
-              </p>
-              <label>
-                {t("machines.delete_confirm", { name: slot.label })}
-                <input value={confirm} onChange={(e) => setConfirm(e.target.value)} autoFocus />
-              </label>
-              <div className="mc-actions">
-                <button type="submit" className="button danger" disabled={confirm !== slot.label || remove.pending}>
-                  {t("machines.delete")}
-                </button>
-                <button type="button" className="button" onClick={() => setDeleting(false)}>
-                  {t("common.cancel")}
-                </button>
-              </div>
-              <ErrorNotice error={remove.error} />
-            </form>
-          ) : null}
+            <div>
+              <dt>{t("machines.detail.verified")}</dt>
+              <dd>{when(slot.verified_at)}</dd>
+            </div>
+            <div>
+              <dt>{t("machines.detail.cli")}</dt>
+              <dd>{slot.capabilities.cli_version ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>{t("machines.detail.volume")}</dt>
+              <dd>
+                <code>{slot.volume.name}</code>
+              </dd>
+            </div>
+          </dl>
           <ErrorNotice error={act.error} />
         </div>
       ) : null}
@@ -427,82 +373,57 @@ function matches(slot: MachineSlot, filter: Filter): boolean {
   return slot.status === filter;
 }
 
-/** One provider: a plain button. Several: a menu that says how each one signs in. */
-function AddMachine({
+/** The "Add machine" dialog: provider select + label, then the official login begins. */
+function AddMachineDialog({
   providers,
-  disabled,
+  pending,
+  onClose,
   onAdd,
 }: {
   providers: SubscriptionProvider[];
-  disabled: boolean;
-  onAdd: (provider: string) => void;
+  pending: boolean;
+  onClose: () => void;
+  onAdd: (provider: string, label: string) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: Event) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", close);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", close);
-    };
-  }, [open]);
-  if (providers.length <= 1) {
-    return (
-      <button
-        type="button"
-        className="button primary"
-        disabled={disabled || providers.length === 0}
-        onClick={() => onAdd(providers[0].provider_id)}
-      >
-        <Icon name="plus" size={13} />
-        {t("machines.add", { provider: providers[0]?.display_name ?? "Codex" })}
-      </button>
-    );
-  }
+  const [provider, setProvider] = useState(providers[0]?.provider_id ?? "");
+  const [label, setLabel] = useState("");
   return (
-    <div className="mc-add" ref={root}>
-      <button
-        type="button"
-        className="button primary"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => setOpen(!open)}
+    <Dialog title={t("machines.add_title")} onClose={onClose} width={480}>
+      <form
+        aria-label={t("machines.add_title")}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (provider) onAdd(provider, label.trim());
+        }}
       >
-        <Icon name="plus" size={13} />
-        {t("machines.add_any")}
-        <Icon name="down" size={12} />
-      </button>
-      {open ? (
-        <ul className="mc-add-menu" role="menu" aria-label={t("machines.add_choose")}>
-          {providers.map((p) => (
-            <li key={p.provider_id} role="none">
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onAdd(p.provider_id);
-                }}
-              >
-                <strong>{p.display_name}</strong>
-                <small>
-                  {t(p.login_method === "authorization_code" ? "machines.add_hint_paste" : "machines.add_hint_code", {
-                    host: p.verification_host,
-                  })}
-                </small>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+        <label className="field">
+          <span className="field__label">{t("machines.provider")}</span>
+          <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+            {providers.map((p) => (
+              <option key={p.provider_id} value={p.provider_id}>
+                {p.display_name} —{" "}
+                {t(p.login_method === "authorization_code" ? "machines.add_hint_paste" : "machines.add_hint_code", {
+                  host: p.verification_host,
+                })}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <label className="field">
+          <span className="field__label">{t("machines.name")}</span>
+          <input className="input" value={label} maxLength={80} onChange={(e) => setLabel(e.target.value)} />
+        </label>
+        <div className="mc-actions">
+          <Button type="submit" variant="primary" disabled={!provider || pending}>
+            {t("machines.add_any")}
+          </Button>
+          <Button variant="ghost" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -518,6 +439,10 @@ export function MachinesPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<Sort>("name");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [loginId, setLoginId] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<MachineSlot | null>(null);
+  const [deleting, setDeleting] = useState<MachineSlot | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]") as string[];
@@ -526,6 +451,9 @@ export function MachinesPage() {
     }
   });
   const seen = useRef(false);
+  const [rnLabel, setRnLabel] = useState("");
+  const [rnAlias, setRnAlias] = useState("");
+  const [delConfirm, setDelConfirm] = useState("");
 
   const toggleGroup = (provider: string) => {
     setCollapsed((current) => {
@@ -535,13 +463,35 @@ export function MachinesPage() {
     });
   };
 
-  const add = useAction(async (key, provider: string) => {
-    const slot = await api.slots.create(w!, { provider }, { idempotencyKey: key });
+  const add = useAction(async (key, provider: string, label: string) => {
+    const slot = await api.slots.create(
+      w!,
+      { provider, ...(label ? { label } : {}) },
+      { idempotencyKey: key },
+    );
+    setAddOpen(false);
     setOpenId(slot.id);
+    setLoginId(slot.id);
     // The new machine must not be hidden by a filter, a search or a collapsed group.
     setFilter("all");
     setSearch("");
     setCollapsed((current) => current.filter((p) => p !== provider));
+    q.refetch();
+  });
+  const rename = useAction(async (key) => {
+    if (!renaming) return;
+    await api.slots.update(
+      renaming.id,
+      { label: rnLabel.trim(), account_alias: rnAlias.trim() || null },
+      { idempotencyKey: key },
+    );
+    setRenaming(null);
+    q.refetch();
+  });
+  const remove = useAction(async (key) => {
+    if (!deleting) return;
+    await api.slots.remove(deleting.id, delConfirm, { idempotencyKey: key });
+    setDeleting(null);
     q.refetch();
   });
 
@@ -550,7 +500,7 @@ export function MachinesPage() {
     if (seen.current || !data) return;
     seen.current = true;
     const pending = data.items.find((s) => s.status === "login_pending");
-    if (pending) setOpenId(pending.id);
+    if (pending) setLoginId(pending.id);
   }, [data]);
 
   const items = useMemo(() => {
@@ -576,20 +526,32 @@ export function MachinesPage() {
     .filter((p) => (data?.items ?? []).some((s) => s.provider === p.provider_id))
     .map((p) => ({ provider: p, slots: items.filter((s) => s.provider === p.provider_id) }));
   const total = data?.summary.total ?? 0;
+  const loginSlot = data?.items.find((s) => s.id === loginId && s.status === "login_pending" && s.login) ?? null;
 
   return (
-    <div className="hs-page settings-content mc-page">
-      <div className="page-eyebrow">{t("machines.eyebrow")}</div>
-      <div className="mc-title">
-        <h1>{t("machines.title")}</h1>
-        <AddMachine providers={available} disabled={add.pending || !w} onAdd={(id) => void add.run(id)} />
-      </div>
-      <p className="hs-lead">{t("machines.lead")}</p>
+    <div className="page">
+      <PageHeader
+        title={t("nav.machines")}
+        actions={
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus size={14} />}
+            disabled={add.pending || !w || available.length === 0}
+            onClick={() => setAddOpen(true)}
+          >
+            {available.length <= 1
+              ? t("machines.add", { provider: available[0]?.display_name ?? "Codex" })
+              : t("machines.add_any")}
+          </Button>
+        }
+      />
+      <p className="page__lead">{t("machines.lead")}</p>
 
-      {q.loading && !data ? <Loading /> : null}
-      <ErrorNotice error={q.error ?? add.error} onRetry={q.error ? q.refetch : undefined} />
+      {q.loading && !data ? <Spinner /> : null}
+      <ErrorNotice error={q.error ?? add.error ?? rename.error ?? remove.error} onRetry={q.error ? q.refetch : undefined} />
       {data && available.length === 0 ? (
-        <p className="mc-note warn" role="status">
+        <p className="note note--warn" role="status">
           {t("machines.unavailable")} <Link to="/connections">{t("machines.connect_modal")}</Link>
         </p>
       ) : null}
@@ -606,7 +568,7 @@ export function MachinesPage() {
           </p>
           <div className="mc-toolbar" role="search">
             <label className="mc-search">
-              <Icon name="search" size={13} />
+              <Search size={13} />
               <input
                 type="search"
                 aria-label={t("machines.search")}
@@ -615,27 +577,27 @@ export function MachinesPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </label>
-            <select aria-label={t("machines.filter")} value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
+            <Select aria-label={t("machines.filter")} value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
               {(["all", "ready", "running", "login_pending", "attention"] as Filter[]).map((f) => (
                 <option key={f} value={f}>
                   {t(`machines.filter.${f}` as I18nKey)}
                 </option>
               ))}
-            </select>
-            <select aria-label={t("machines.sort")} value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+            </Select>
+            <Select aria-label={t("machines.sort")} value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               {(["name", "status", "recent"] as Sort[]).map((s) => (
                 <option key={s} value={s}>
                   {t(`machines.sort.${s}` as I18nKey)}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         </>
       ) : null}
 
       {data && total === 0 && available.length > 0 ? (
         <div className="mc-empty">
-          <Icon name="machine" size={22} />
+          <Cpu size={22} />
           <strong>{t("machines.empty_title")}</strong>
           <p>{t("machines.empty_body")}</p>
         </div>
@@ -648,7 +610,7 @@ export function MachinesPage() {
             const isCollapsed = collapsed.includes(provider.provider_id);
             const body = `machine-group-${provider.provider_id}`;
             return (
-              <section className="mc-group" key={provider.provider_id} aria-label={provider.display_name}>
+              <section className="mc-group page__section" key={provider.provider_id} aria-label={provider.display_name}>
                 <h2>
                   <button
                     type="button"
@@ -657,26 +619,37 @@ export function MachinesPage() {
                     aria-controls={body}
                     onClick={() => toggleGroup(provider.provider_id)}
                   >
-                    <Icon name={isCollapsed ? "right" : "down"} size={12} />
+                    <ChevronDown size={12} style={{ transform: isCollapsed ? "rotate(-90deg)" : "none" }} />
                     <span>{provider.display_name}</span>
                     <small>{t("machines.group_count", { count: all.length, running })}</small>
                   </button>
                 </h2>
                 {!isCollapsed ? (
                   slots.length ? (
-                    <ul className="mc-list" id={body}>
+                    <ul className="lcard mc-list" id={body} style={{ padding: 0, listStyle: "none", margin: 0 }}>
                       {slots.map((slot) => (
                         <SlotRow
                           key={slot.id}
                           slot={slot}
                           open={openId === slot.id}
+                          loginOpen={loginId === slot.id}
                           onToggle={() => setOpenId(openId === slot.id ? null : slot.id)}
                           onChanged={q.refetch}
+                          onRename={(s) => {
+                            setRnLabel(s.label);
+                            setRnAlias(s.account_alias ?? "");
+                            setRenaming(s);
+                          }}
+                          onDelete={(s) => {
+                            setDelConfirm("");
+                            setDeleting(s);
+                          }}
+                          onSignIn={(s) => setLoginId(s.id)}
                         />
                       ))}
                     </ul>
                   ) : (
-                    <p className="mc-note" id={body}>
+                    <p className="note" id={body}>
                       {t("machines.no_match")}
                     </p>
                   )
@@ -685,6 +658,98 @@ export function MachinesPage() {
             );
           })
         : null}
+
+      {addOpen ? (
+        <AddMachineDialog
+          providers={available}
+          pending={add.pending}
+          onClose={() => setAddOpen(false)}
+          onAdd={(provider, label) => void add.run(provider, label)}
+        />
+      ) : null}
+
+      {loginSlot ? (
+        <Dialog title={t("machines.login.title")} onClose={() => setLoginId(null)} width={480}>
+          <LoginPanel
+            slot={loginSlot}
+            onChanged={() => {
+              q.refetch();
+            }}
+          />
+        </Dialog>
+      ) : null}
+
+      {renaming ? (
+        <Dialog title={t("machines.rename")} onClose={() => setRenaming(null)} width={420}>
+          <form
+            className="mc-form"
+            aria-label={t("machines.rename")}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (rnLabel.trim()) void rename.run();
+            }}
+          >
+            <label className="field">
+              <span className="field__label">{t("machines.name")}</span>
+              <input className="input" value={rnLabel} maxLength={80} onChange={(e) => setRnLabel(e.target.value)} autoFocus />
+            </label>
+            <label className="field">
+              <span className="field__label">{t("machines.alias")}</span>
+              <input
+                className="input"
+                value={rnAlias}
+                maxLength={80}
+                placeholder={t("machines.alias_ph")}
+                onChange={(e) => setRnAlias(e.target.value)}
+              />
+            </label>
+            <div className="mc-actions">
+              <Button type="submit" variant="primary" disabled={rename.pending || !rnLabel.trim()}>
+                {t("machines.save")}
+              </Button>
+              <Button variant="ghost" onClick={() => setRenaming(null)}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+          </form>
+        </Dialog>
+      ) : null}
+
+      {deleting ? (
+        <Dialog title={t("machines.remove_title")} onClose={() => setDeleting(null)} width={420}>
+          <form
+            className="mc-form"
+            aria-label={t("machines.remove_title")}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (delConfirm === deleting.label) void remove.run();
+            }}
+          >
+            <p className="note note--err">
+              {t(deleting.volume.managed ? "machines.delete_warn" : "machines.delete_warn_adopted", { name: deleting.label })}
+            </p>
+            <label className="field">
+              <span className="field__label">{t("machines.delete_confirm", { name: deleting.label })}</span>
+              <input
+                className="input"
+                aria-label={t("machines.delete_confirm", { name: deleting.label })}
+                value={delConfirm}
+                onChange={(e) => setDelConfirm(e.target.value)}
+                autoFocus
+              />
+            </label>
+            <div className="mc-actions">
+              <Button type="submit" variant="danger" disabled={delConfirm !== deleting.label || remove.pending}>
+                {t("machines.delete")}
+              </Button>
+              <Button variant="ghost" onClick={() => setDeleting(null)}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+            <ErrorNotice error={remove.error} />
+          </form>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

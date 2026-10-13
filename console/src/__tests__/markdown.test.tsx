@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Markdown } from "../components/Markdown";
+import { Markdown } from "../ui/Markdown";
 
 describe("provider markdown", () => {
   it("preserves mixed Unicode, nested lists, code and GFM tables", () => {

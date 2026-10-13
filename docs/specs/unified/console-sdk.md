@@ -10,7 +10,7 @@
   `Idempotency-Key` headers and reuses the key on retry. One store (`state/`) holds the initial
   snapshot and watermark, replays events by sequence, dedupes by seq, applies part revisions by
   replacement, and resyncs on gaps. Features are Projects, Sessions, Conversation, Activity, Changes
-  (with server merge eligibility and pins), Files, Terminal, Services, Child Sessions, Connections
+  (with server merge eligibility and pins), Files, Terminal, Services, Children, Connections
   (write-only secret inputs, cleared after submit, never stored in web storage), Settings and the
   setup checklist (email/password + inference API key + Modal + GitHub). Session creation
   picks the Harness (official CLI) and a model from the inference Connections that Harness can
@@ -33,7 +33,7 @@
 The Console shares typography and surface tokens across Home, Projects, Sessions,
 Connections, Settings and auth. It supports saved light/dark themes and system
 preference on both anonymous and authenticated pages, a desktop workspace sidebar,
-and mobile top bar/bottom navigation. Route changes reset page scroll. Home's
+and a mobile top bar with a navigation drawer. Route changes reset page scroll. Home's
 **Session options** disclosure retains project/repository, model and executor
 selections while collapsed; task submission and Ctrl/⌘+Enter use the existing
 Session creation command. This presentation does not change routes, request

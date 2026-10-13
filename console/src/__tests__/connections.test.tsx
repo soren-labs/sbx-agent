@@ -59,6 +59,9 @@ describe("connection credential entry", () => {
       ],
     ]);
     await renderApp(<ConnectionsPage />, m.fetch);
+    // The GitHub form lives behind the section's Connect button now (dialog, not inline).
+    const section = await screen.findByTestId("section-github");
+    await userEvent.click(within(section).getByRole("button", { name: "Connect" }));
     const form = await screen.findByRole("form", { name: "Add GitHub (source) connection" });
     const field = form.querySelector("input[type=password]") as HTMLInputElement;
     fireEvent.change(field, { target: { value: SECRET } });
@@ -117,7 +120,7 @@ describe("connection credential entry", () => {
     await waitFor(() => expect(m.find("POST", "/api/connections/c_inference_api/validations")).toHaveLength(1));
   });
 
-  it("adds a generic inference key with per-protocol base URLs and clears the key", async () => {
+  it("builds an inference credential from presets plus typed fields, and validates URLs", async () => {
     const m = mockFetch([
       ...identityRoutes,
       ["GET", "/api/harnesses", { json: { items: HARNESSES } }],
@@ -125,11 +128,11 @@ describe("connection credential entry", () => {
       ["POST", "/api/workspaces/w1/connections", { status: 201, json: connection({ kind: "inference_api" }) }],
     ]);
     await renderApp(<ConnectionsPage />, m.fetch);
+    const section = await screen.findByTestId("section-inference_api");
+    await userEvent.click(within(section).getByRole("button", { name: "Add API key" }));
     const form = await screen.findByRole("form", { name: "Add Inference API key connection" });
     const f = within(form);
-    // The DeepSeek preset is a starting point: every protocol the provider speaks is prefilled.
     expect((f.getByLabelText("OpenAI Chat Completions") as HTMLInputElement).value).toBe("https://api.deepseek.com");
-    expect((f.getByLabelText("Anthropic Messages") as HTMLInputElement).value).toBe("https://api.deepseek.com/anthropic");
     expect((f.getByLabelText("Default model") as HTMLInputElement).value).toBe("deepseek-flash");
     expect(form).toHaveTextContent("Used by OpenCode, Grok Build");
     expect(form).toHaveTextContent("Used by OpenCode, Claude Code");
@@ -181,8 +184,10 @@ describe("connection credential entry", () => {
     ]);
     await renderApp(<ConnectionsPage />, m.fetch);
     const card = await screen.findByRole("group", { name: "DeepSeek" });
-    await userEvent.click(within(card).getByRole("button", { name: "Replace credential…" }));
-    const form = within(card).getByRole("form", { name: "Replace Inference API key credential" });
+    // Secondary actions live behind the row's ⋯ menu now.
+    await userEvent.click(within(card).getByRole("button", { name: "Connection actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Replace credential…" }));
+    const form = screen.getByRole("form", { name: "Replace Inference API key credential" });
     expect((within(form).getByLabelText("OpenAI Chat Completions") as HTMLInputElement).value).toBe("https://api.example.test");
     await userEvent.type(within(form).getByLabelText("API key"), SECRET);
     await userEvent.click(within(form).getByRole("button", { name: "Replace credential" }));
@@ -192,9 +197,12 @@ describe("connection credential entry", () => {
       expected_version: 4,
     });
 
-    await userEvent.click(within(card).getByRole("button", { name: "Disconnect" }));
+    // No DELETE until the confirm dialog is confirmed.
+    await userEvent.click(within(card).getByRole("button", { name: "Connection actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Disconnect" }));
     expect(m.find("DELETE", "/api/connections/c_inference_api")).toHaveLength(0);
-    await userEvent.click(within(card).getByRole("button", { name: "Confirm disconnect" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm disconnect" }));
     await waitFor(() => expect(m.find("DELETE", "/api/connections/c_inference_api")).toHaveLength(1));
   });
 
@@ -210,10 +218,13 @@ describe("connection credential entry", () => {
     ]);
     await renderApp(<ConnectionsPage />, m.fetch);
     const retired = await screen.findByRole("region", { name: "Retired connections" });
+    // The legacy section is collapsed until disclosed.
+    await userEvent.click(within(retired).getByRole("button", { name: "Retired connections" }));
     const card = within(retired).getByRole("group", { name: "old zen" });
-    expect(within(card).queryByRole("button", { name: "Replace credential…" })).toBeNull();
     expect(within(card).queryByRole("button", { name: "Validate" })).toBeNull();
-    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: "Connection actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Replace credential…" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Disconnect" })).toBeInTheDocument();
     const html = document.body.innerHTML;
     for (const gone of ["OpenCode Zen API key", "auth.json", "ChatGPT plan", "Connect Codex", "soren-labs"]) {
       expect(html).not.toContain(gone);
