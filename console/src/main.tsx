@@ -12,6 +12,7 @@ import "./features/home/home.css";
 import "./features/composer/composer.css";
 import "./features/sessions/sessions.css";
 import "./features/pages.css";
+import "./features/landing/landing.css";
 import { I18nProvider } from "./i18n";
 import { AuthProvider } from "./state/auth";
 import { ApiProvider } from "./state/context";

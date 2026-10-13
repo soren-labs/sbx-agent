@@ -4,9 +4,13 @@ import { connectInference, PASSWORD, signInViaApi, uniqueEmail, verificationPath
 test("register, verify the email link and sign in", async ({ page }) => {
   const email = uniqueEmail("signup");
 
-  await page.goto("/");
+  // Deep links still require sign-in; the root is the public product page.
+  await page.goto("/sessions");
   await expect(page).toHaveURL(/\/login$/);
-  await page.getByRole("link", { name: "Create account" }).click();
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Coding agents that ship reviewed pull requests." })).toBeVisible();
+  await page.getByRole("banner").getByRole("link", { name: "Get started" }).click();
+  await expect(page).toHaveURL(/\/register$/);
 
   const register = page.getByRole("form", { name: "Create account" });
   await register.locator("#reg-email").fill(email);
