@@ -20,7 +20,11 @@ test("Console build and API report the same revision", async ({ page, request })
 });
 
 test("test user signs in and reads a persisted acceptance Session", async ({ page }) => {
+  // Anonymous visitors see the product landing page at /; signing in starts
+  // from its header link.
   await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await page.getByRole("link", { name: "Sign in" }).first().click();
   await expect(page).toHaveURL(/\/login$/);
   const login = page.getByRole("form", { name: "Sign in" });
   await login.locator("#login-email").fill(email);
