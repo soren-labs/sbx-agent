@@ -19,8 +19,8 @@ rejected with `csrf_failed`.
 
 ## Pages
 
-- **Home**: the setup checklist (account, inference API key, Modal, GitHub)
-  and the composer for a new Session. Pick the coding CLI (OpenCode, Codex,
+- **Home**: the composer for a new Session, with a one-line setup notice until
+  the account has an inference API key, Modal and GitHub configured. Pick the coding CLI (OpenCode, Codex,
   Claude Code, Grok Build, Command Code) and a model from the inference
   Connections that CLI can use; it defaults to the first CLI your key can drive,
   that Connection's default model, and Modal once a Modal Connection exists.
@@ -42,11 +42,12 @@ rejected with `csrf_failed`.
   its duration and tokens, or the failure with Retry where the server allows it. The workspace panel on the right (or the
   **Workspace** switch on small screens) holds Overview, Changes, Files,
   Terminal, Services, Children and Activity.
-- **Sessions**: the list and the Session view with Conversation, Activity,
-  Changes (ChangeSets, Deliveries, merge eligibility), Files, Terminal,
-  Services and Children tabs.
+- **Sessions**: the list and the Session workbench — the conversation with the
+  live work log on the left and a workspace panel (Overview, Changes, Files,
+  Terminal, Services, Children, Activity) on the right. Visitors who are not
+  signed in see the product landing page at `/` instead.
 - **Projects**: reusable repository and environment configuration.
-- **My Cloud Machines**: subscription logins, one per machine, for Codex, Grok
+- **Machines**: subscription logins, one per machine, for Codex, Grok
   Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
   each entry says how it signs in. For Codex and Grok Build, open the sign-in
   page and enter the one-time code. For Antigravity, open the Google sign-in link,

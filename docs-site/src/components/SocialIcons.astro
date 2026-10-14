@@ -1,0 +1,33 @@
+---
+import config from 'virtual:starlight/user-config';
+import { Icon } from '@astrojs/starlight/components';
+
+const links = config.social || [];
+---
+
+{
+	links.length > 0 && (
+		<>
+			{links.map(({ label, href, icon }) => (
+				<a {href} rel="me" class="sl-flex">
+					<span class="sr-only">{label}</span>
+					<Icon name={icon} />
+				</a>
+			))}
+		</>
+	)
+}
+<a href="https://sbx-agent.com" class="sbx-console-link">Open console</a>
+
+<style>
+	@layer starlight.core {
+		a:not(.sbx-console-link) {
+			color: var(--sl-color-text-accent);
+			padding: 0.5em;
+			margin: -0.5em;
+		}
+		a:not(.sbx-console-link):hover {
+			color: var(--sl-color-white);
+		}
+	}
+</style>

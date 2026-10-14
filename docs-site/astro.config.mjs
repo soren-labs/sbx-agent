@@ -34,6 +34,10 @@ export default defineConfig({
 				baseUrl: 'https://github.com/soren-labs/sbx-agent/edit/main/docs-site/',
 			},
 			customCss: ['./src/styles/theme.css'],
+			components: {
+				// Adds the "Open console" link next to the GitHub icon in the header.
+				SocialIcons: './src/components/SocialIcons.astro',
+			},
 			lastUpdated: true,
 			plugins: [
 				starlightOpenAPI([

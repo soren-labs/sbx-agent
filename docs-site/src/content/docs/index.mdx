@@ -1,5 +1,5 @@
 ---
-title: SBX
+title: SBX Agent
 description: Durable Sessions that run official coding-agent CLIs in isolated executors, with exact-subject review and delivery.
 template: splash
 hero:
@@ -20,15 +20,25 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+import workbench from '../../assets/workbench.png';
 
-<CardGrid>
+<figure class="hero-shot">
+  <img
+    src={workbench.src}
+    width="1440"
+    alt="The SBX session workbench: the conversation and live work log on the left, the changes under review on the right"
+  />
+</figure>
+
+<CardGrid stagger>
+  <Card title="Official CLIs" icon="rocket">
+    SBX supervises the vendor's own CLI — OpenCode, Codex, Claude Code, Grok
+    Build or Command Code — on your own inference API key or CLI subscription.
+    It runs no model loop of its own.
+  </Card>
   <Card title="Session-first" icon="open-book">
     A Session is the durable conversation and work. Compute is a replaceable
     ExecutorLease; the Worktree and its checkpoints outlive any one sandbox.
-  </Card>
-  <Card title="Official CLIs" icon="rocket">
-    SBX supervises the vendor's own CLI (OpenCode, Codex, Claude Code, Grok Build
-    or Command Code) on your own inference API key. It runs no model loop of its own.
   </Card>
   <Card title="Immutable ChangeSets" icon="code-branch">
     Captured changes are sealed with a subject digest. Delivery pushes exactly
