@@ -36,7 +36,9 @@ preference on both anonymous and authenticated pages, a desktop workspace sideba
 and a mobile top bar with a navigation drawer. Route changes reset page scroll. Home's
 **Session options** disclosure retains project/repository, model and executor
 selections while collapsed; task submission and Ctrl/⌘+Enter use the existing
-Session creation command. This presentation does not change routes, request
+Session creation command. The Console root is the only public route: visitors who
+are not signed in see a product landing page there, while every deep link still
+redirects to sign-in. This presentation does not change routes, request
 schemas, server action eligibility, identity, or the query/event store.
 
 ### Session workbench

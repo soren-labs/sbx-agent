@@ -751,6 +751,81 @@ export const en = {
   "settings.nav": "Settings sections",
   "machines.row_actions": "Machine actions",
   "projects.actions": "Project actions",
+
+  "landing.nav.label": "Primary",
+  "landing.nav.product": "Product",
+  "landing.nav.how": "How it works",
+  "landing.nav.developers": "Developers",
+  "landing.nav.docs": "Docs",
+  "landing.nav.language": "中文",
+  "landing.nav.sign_in": "Sign in",
+  "landing.nav.get_started": "Get started",
+  "landing.hero.eyebrow": "Self-host or use sbx-agent.com",
+  "landing.hero.title": "Coding agents that ship reviewed pull requests.",
+  "landing.hero.subtitle":
+    "SBX runs the official coding CLIs in isolated sandboxes as durable sessions. Watch every command and edit, steer with follow-ups, then deliver the exact change you reviewed.",
+  "landing.hero.cta_primary": "Get started",
+  "landing.hero.cta_secondary": "Read the docs",
+  "landing.hero.preview_label": "SBX session workbench: conversation, live work log and the change under review",
+  "landing.clis.label": "Runs the official CLIs you already use",
+  "landing.how.kicker": "How it works",
+  "landing.how.title": "From a sentence to a pull request",
+  "landing.how.subtitle": "Every session follows the same durable path, whether you start it from the Console, the SDK or the CLI.",
+  "landing.how.1.title": "Connect your accounts",
+  "landing.how.1.body":
+    "Add an inference API key, Modal for compute and GitHub for code, or sign in a Machine with your existing CLI subscription.",
+  "landing.how.2.title": "Describe the task",
+  "landing.how.2.body":
+    "SBX starts a sandbox, checks out the repository and runs the CLI. Commands, edits and output stream into the session as they happen.",
+  "landing.how.3.title": "Review and deliver",
+  "landing.how.3.body":
+    "The result is sealed as an immutable ChangeSet. Delivery pushes exactly that change as a pull request, and merge is gated on the same digest.",
+  "landing.f.kicker": "Product",
+  "landing.f.title": "Built for work you can trust",
+  "landing.f.subtitle": "Agents are only useful when their work is observable, recoverable and reviewable.",
+  "landing.f.cli.title": "Official CLIs, not a wrapper",
+  "landing.f.cli.body":
+    "OpenCode, Codex, Claude Code, Grok Build and more run as their vendors ship them. SBX supervises them; it runs no model loop of its own.",
+  "landing.f.durable.title": "Durable sessions",
+  "landing.f.durable.body":
+    "Conversation, worktree and checkpoints outlive any one sandbox. Reconnect, reload or come back tomorrow and pick up where the agent left off.",
+  "landing.f.sandbox.title": "Isolated sandboxes",
+  "landing.f.sandbox.body":
+    "Each session runs on its own executor lease in your Modal workspace or locally, with credentials delivered through scoped grants.",
+  "landing.f.delivery.title": "Exact-subject delivery",
+  "landing.f.delivery.body":
+    "What you reviewed is what ships. ChangeSets carry a subject digest that delivery and merge both verify.",
+  "landing.f.byok.title": "Your keys, your subscriptions",
+  "landing.f.byok.body":
+    "Bring any OpenAI- or Anthropic-compatible API key, or run on Machines signed in with the CLI subscriptions you already pay for.",
+  "landing.f.children.title": "Child sessions for review",
+  "landing.f.children.body":
+    "Delegate a review or a subtask to a child session with its own CLI, and wait on its result before you deliver.",
+  "landing.dev.kicker": "Developers",
+  "landing.dev.title": "One API for the Console, SDK and CLI",
+  "landing.dev.body":
+    "Everything the Console does goes through the same /api surface, with one event journal you can replay from any point.",
+  "landing.dev.b1": "Python SDK and sbx CLI with the same session model",
+  "landing.dev.b2": "Server-sent events with replay from the last sequence",
+  "landing.dev.b3": "Idempotent mutations that are safe to retry",
+  "landing.dev.link": "Explore the SDK",
+  "landing.dev.tabs": "Code examples",
+  "landing.dev.tab_sdk": "Python SDK",
+  "landing.dev.tab_cli": "CLI",
+  "landing.sec.kicker": "Security",
+  "landing.sec.title": "Credentials stay yours",
+  "landing.sec.subtitle": "SBX is designed so that secrets are write-only and every effect is traceable.",
+  "landing.sec.1": "API keys and tokens are stored encrypted and never returned by the API.",
+  "landing.sec.2": "Runtimes receive credentials only through scoped, per-lease grants.",
+  "landing.sec.3": "Run the control plane on your own infrastructure with PostgreSQL as the only authority.",
+  "landing.sec.4": "Every turn, event and delivery is recorded in a durable journal.",
+  "landing.cta.title": "Start your first session",
+  "landing.cta.body": "Create an account, connect a key and hand SBX a task. Or run the control plane yourself.",
+  "landing.cta.primary": "Create an account",
+  "landing.cta.secondary": "Self-hosting guide",
+  "landing.footer.label": "Footer",
+  "landing.footer.tagline": "Durable sessions for official coding agents.",
+  "landing.footer.security": "Security",
 } as const;
 
 export type I18nKey = keyof typeof en;

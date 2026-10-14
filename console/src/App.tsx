@@ -2,6 +2,7 @@ import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { LoginPage, RegisterPage, VerifyEmailPage } from "./features/auth/AuthPages";
 import { ConnectionsPage } from "./features/connections/ConnectionsPage";
 import { HomePage } from "./features/home/HomePage";
+import { LandingPage } from "./features/landing/LandingPage";
 import { MachinesPage } from "./features/machines/MachinesPage";
 import { ProjectsPage } from "./features/projects/ProjectsPage";
 import { SessionPage } from "./features/sessions/SessionPage";
@@ -22,6 +23,8 @@ function RequireAuth() {
       </div>
     );
   }
+  // Visitors who are not signed in see the product page at the root; deep links still go to sign-in.
+  if (status === "anonymous" && loc.pathname === "/") return <LandingPage />;
   if (status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   return <Outlet />;
 }
