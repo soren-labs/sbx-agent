@@ -210,6 +210,41 @@ def test_capture_review_test_deliver_and_merge(env) -> None:
         assert t in types
 
 
+def test_child_with_unstorable_tool_output_still_returns_its_result(env) -> None:
+    """#228 AUD01: the child-success / result-return path that unstorable tool output
+    blocked on staging. The child's tool output carries NUL and a lone surrogate."""
+    stack, user, host, bare, url = env
+    sid, _ = _session(stack, user, url, "build it [write:feature.txt=done]")
+    cs = _ready_changeset(stack, user, sid)
+    result = json.dumps(
+        {
+            "kind": "TestResult",
+            "subject_digest": cs["subject_digest"],
+            "status": "pass",
+            "checks": [],
+        }
+    )
+    odd = json.dumps("pytest output \x00 with a lone \ud800 surrogate")
+    spawned = user.post(
+        f"/api/sessions/{sid}/delegations",
+        {
+            "role": "test",
+            "changeset_id": cs["id"],
+            "instructions": f"[tool-output:{odd}] [result:{result}]",
+        },
+    ).json()
+    view = _delegation(stack, user, spawned["delegation_id"])
+    assert view["result"]["verdict"] == "pass"
+    child_events = user.get(f"/api/sessions/{spawned['child_session_id']}/events").json()["items"]
+    assert any(e["payload"].get("unrepresentable_replaced") == 2 for e in child_events)
+    parent_types = [e["type"] for e in user.get(f"/api/sessions/{sid}/events").json()["items"]]
+    assert "delegation.result_published" in parent_types
+    stuck = stack.db.read(
+        lambda u: [j for j in u.find("jobs", {"kind": "execution.reconcile"}) if j["attempts"] > 50]
+    )
+    assert stuck == []
+
+
 def test_gate_blocks_missing_or_stale_results_and_remote_drift(env) -> None:
     stack, user, host, bare, url = env
     sid, _ = _session(stack, user, url, "v1 [write:feature.txt=one]")

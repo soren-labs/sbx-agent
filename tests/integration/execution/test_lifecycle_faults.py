@@ -239,6 +239,67 @@ def test_lookup_failure_in_allocation_never_creates_blind(stack, fake) -> None:
     assert _lease(stack, sid)["state"] == "allocating"
 
 
+class _WorkerCrash(BaseException):
+    """A worker process dying mid-call: nothing in the worker catches it."""
+
+
+def test_slow_allocation_keeps_its_claim_and_a_crash_is_adopted_once(stack, fake) -> None:
+    """#228 LEGACY198-C, at 1/200 time scale: an allocation lasting more than three claim
+    leases (> 60 s at the production 60 s lease) keeps its claim with no rival dispatch;
+    a worker that dies after the backend created the sandbox leaves a claim that expires,
+    and the successor adopts that sandbox by operation id instead of allocating again.
+    Release then terminates it, so nothing is left running."""
+    principal, sid = _session(stack)
+    stack.worker.lease_seconds = 0.3
+    stack.execution.activate(principal, sid)
+    lease = _lease(stack, sid)
+    op = lease["allocation_operation_id"]
+    rivals: list[Any] = []
+
+    def slow_then_crash(spec: dict[str, Any]) -> None:
+        import time
+
+        from control.jobs import claims
+
+        time.sleep(1.0)
+        rivals.append(claims.claim_next(stack.db, "rival", kinds=["executor.allocate"]))
+        raise _WorkerCrash  # the sandbox exists; the response never reaches the job
+
+    fake.on_allocate = slow_then_crash
+    with pytest.raises(_WorkerCrash):
+        stack.worker.run_once()
+    assert rivals == [None], "the live worker's keepalive held the claim through the slow call"
+    assert fake.count("allocate") == 1 and _lease(stack, sid)["handle"] is None
+    crashed = _jobs(stack, "executor.allocate")
+    assert [(j["state"], j["claim_holder"] is not None) for j in crashed] == [("claimed", True)], [
+        (j["state"], j["claim_holder"]) for j in crashed
+    ]
+    lookups = fake.count("lookup")
+
+    # The dead worker stops renewing: its claim expires and a successor takes the Job.
+    fake.on_allocate = None
+    stack.db.run(
+        lambda u: u.update_where(
+            "jobs",
+            {"kind": "executor.allocate", "state": "claimed"},
+            {"claim_expires_at": u.now() - timedelta(seconds=1)},
+        )
+    )
+    stack.rebuild_worker()
+    _run_due(stack, rounds=1)
+    assert fake.count("allocate") == 1, "adopted by operation id, never allocated twice"
+    assert fake.count("lookup") > lookups, "the successor looked the allocation up"
+    adopted = _lease(stack, sid)
+    assert adopted["handle"] and adopted["handle"]["operation_id"] == op, adopted["state"]
+    assert [a for a in fake.allocations.values() if a["alive"]] == [fake.allocations[op]]
+
+    stack.execution.release(principal, sid)
+    _run_due(stack)
+    assert ("terminate", op) in fake.calls
+    assert fake.allocations[op]["alive"] is False, "cleanup leaves no live sandbox"
+    assert _lease(stack, sid)["state"] in ("released", "lost")
+
+
 def test_lost_allocate_response_is_adopted_by_operation(stack, fake) -> None:
     principal, sid = _session(stack)
     stack.execution.activate(principal, sid)

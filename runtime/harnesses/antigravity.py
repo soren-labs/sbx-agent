@@ -281,7 +281,18 @@ class AntigravityHarness:
     def finish(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         if not state["usage"]:
             return []  # missing usage is absent, never synthetic zero
-        return [obs("usage.observed", source="antigravity.result", complete=True, **state["usage"])]
+        # agy's result.usage is a running total for the native conversation: a resumed
+        # Turn reports its own tokens plus every earlier Turn's (issue #228; samples in
+        # docs/reports/issue-205/live). The control plane turns it into per-Turn usage.
+        return [
+            obs(
+                "usage.observed",
+                source="antigravity.result",
+                complete=True,
+                scope="conversation",
+                **state["usage"],
+            )
+        ]
 
     def classify_outcome(self, evidence: dict[str, Any], state: dict[str, Any]) -> HarnessOutcome:
         if state["mismatch"]:

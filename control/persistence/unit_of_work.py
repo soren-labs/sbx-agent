@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 import psycopg
 from protocol.events import SCHEMA_VERSION, is_known
@@ -17,9 +17,10 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from control.domain.digests import digest_of
-from control.domain.errors import DomainError
+from control.domain.errors import DomainError, StorageRejected
 from control.domain.ids import new_id
 from control.domain.jobs import ACTIVE_JOB_STATES, JOB_KINDS, PRIORITY, TARGET_COLUMNS
+from control.domain.text import storable
 from control.persistence import queries
 from control.security.redaction import find_secret_fields, scrub_value
 
@@ -80,9 +81,13 @@ TABLES = frozenset(
 )
 
 DEDUPE_TTL = timedelta(days=7)
+T = TypeVar("T")
 
 
 def _adapt(value: Any) -> Any:
+    # Last guard at the storage boundary: NUL and lone surrogates would abort the whole
+    # transaction (callers that must account for replacements use ``storable`` first).
+    value = storable(value)[0]
     if isinstance(value, dict) or (
         isinstance(value, list) and value and isinstance(value[0], dict)
     ):
@@ -141,6 +146,20 @@ class UnitOfWork:
     def query_one(self, name: str, **params: Any) -> dict[str, Any] | None:
         rows = self.query(name, **params)
         return rows[0] if rows else None
+
+    def isolated(self, fn: Callable[[], T]) -> T:
+        """Run ``fn`` in a savepoint. A content-dependent rejection rolls back only ``fn``'s
+        writes and raises ``StorageRejected``; the surrounding transaction stays usable."""
+        events, hooks = len(self.events), len(self.after_commit)
+        try:
+            with self.conn.transaction():
+                return fn()
+        except (psycopg.errors.DataError, UnicodeError) as exc:
+            del self.events[events:]
+            del self.after_commit[hooks:]
+            raise StorageRejected(
+                f"{type(exc).__name__}: {str(exc).splitlines()[0][:200]}"
+            ) from exc
 
     # -- typed table helpers ---------------------------------------------------------
     def insert(self, table: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -272,7 +291,7 @@ class UnitOfWork:
         if leaked:
             raise ValueError(f"secret-looking payload fields rejected: {leaked}")
         # Free text (errors, tool output) may embed selected credentials: redact values.
-        payload = scrub_value(payload)
+        payload = storable(scrub_value(payload))[0]
         session_id = session if isinstance(session, str) else session["id"]
         if workspace_id is None:
             workspace_id = session["workspace_id"] if isinstance(session, dict) else None

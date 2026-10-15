@@ -60,6 +60,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "tool.completed",
         "usage.observed",
         "diagnostic.reported",
+        "runtime.evidence_rejected",
         "executor.bound",
         "executor.quiescing",
         "executor.released",

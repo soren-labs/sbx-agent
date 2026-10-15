@@ -62,6 +62,15 @@ class ExecutionSettings:
     allocation_window_seconds: float = 600.0
 
 
+def _lease_stage(lease: dict[str, Any]) -> str:
+    """Startup stage from durable lease facts only. Image resolution and sandbox launch are
+    one backend call, so they are one stage; a recorded handle means the sandbox exists
+    and the runtime handshake is pending."""
+    if lease["state"] == "allocating":
+        return "connecting_runtime" if lease["handle"] else "allocating_sandbox"
+    return lease["state"]
+
+
 def compose_prompt(message: dict[str, Any], turn: dict[str, Any]) -> str:
     texts = [str(p.get("text", "")) for p in message["content"] if p.get("kind") == "text"]
     refs = [p for p in message["content"] if p.get("kind") != "text"]
@@ -170,6 +179,7 @@ class ExecutionService:
                         "image_digest": lease["image_digest"],
                         "protocol_version": lease["protocol_version"],
                         "created_at": lease["created_at"].isoformat(),
+                        "stage": _lease_stage(lease),
                     }
                     for lease in leases
                 ],
@@ -279,7 +289,11 @@ class ExecutionService:
             self._ensure_worktree(ctx, lease)
             created = ctx.commit(lambda uow: self._create_execution(uow, turn_id, lease["id"]))
             if created is None:
-                return Succeeded({"skipped": True})
+                # The Turn left `preparing` while this Job allocated. A cancel in that window
+                # re-enqueued dispatch onto this very Job (same dedupe key), so nothing else
+                # will settle it: do it here (no execution exists, so it ends cancelled).
+                settled = ctx.commit(lambda uow: self._admit(uow, turn_id))
+                return Succeeded({"skipped": True, **(settled.get("result") or {})})
             if created == "wait":
                 return Continue(delay=self.settings.capacity_retry)
             self._start(ctx, created)
