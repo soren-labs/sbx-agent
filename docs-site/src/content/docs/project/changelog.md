@@ -5,6 +5,14 @@ description: Release notes for the unified SBX architecture.
 
 ## Unreleased
 
+- **Workspace files**: truncated or redacted file views are read-only, and saves
+  always need a precondition. **Open or create file** now creates missing files.
+- **Terminal**: terminal create, input and close honour `Idempotency-Key`, so a
+  lost response never runs a command twice. Terminals survive panel switches, can
+  be listed and closed, and render colours instead of raw escape codes.
+- **Changes**: Live changes refreshes on activation, after Turns and on demand;
+  diffs number only source lines and show A/M/D from the patch. Review changes
+  works from every workspace tab.
 - **Modal sandboxes**: every Modal sandbox is a Linux VM, started from a
   prewarmed shared image.
 - **Machine Slots**: each Slot is one official subscription login, kept on a
