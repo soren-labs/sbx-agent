@@ -1,0 +1,107 @@
+{
+  "label": "local-executor-fake-cli",
+  "samples": [
+    {
+      "accepted": 0.081,
+      "session_id": "sess_01a14024a95d7fdf8e96a5d2e15060fa",
+      "bound": 1.111,
+      "provisioning_ms": {
+        "total_ms": 900,
+        "handshake_ms": 16,
+        "runtime_connect_ms": 72
+      },
+      "cli_started": 1.858,
+      "first_content": 1.858,
+      "finished": 1.858,
+      "outcome": "turn.succeeded"
+    },
+    {
+      "accepted": 0.093,
+      "session_id": "sess_01a14024b0a5789c863b41aaef91d3b1",
+      "bound": 0.948,
+      "provisioning_ms": {
+        "total_ms": 670,
+        "handshake_ms": 4,
+        "runtime_connect_ms": 56
+      },
+      "cli_started": 1.734,
+      "first_content": 1.734,
+      "finished": 1.734,
+      "outcome": "turn.succeeded"
+    },
+    {
+      "accepted": 0.064,
+      "session_id": "sess_01a14024b7627bb693b0d87207a9d8a2",
+      "bound": 1.157,
+      "provisioning_ms": {
+        "total_ms": 963,
+        "handshake_ms": 16,
+        "runtime_connect_ms": 67
+      },
+      "cli_started": 2.083,
+      "first_content": 2.083,
+      "finished": 2.503,
+      "outcome": "turn.succeeded"
+    },
+    {
+      "accepted": 0.139,
+      "session_id": "sess_01a14024c1497b6797a0453bb8b92aec",
+      "bound": 1.476,
+      "provisioning_ms": {
+        "total_ms": 1218,
+        "handshake_ms": 4,
+        "runtime_connect_ms": 63
+      },
+      "cli_started": 2.211,
+      "first_content": 2.211,
+      "finished": 2.211,
+      "outcome": "turn.succeeded"
+    },
+    {
+      "accepted": 0.05,
+      "session_id": "sess_01a14024c9d17c899a9f1064e0e2cbf6",
+      "bound": 1.074,
+      "provisioning_ms": {
+        "total_ms": 896,
+        "handshake_ms": 4,
+        "runtime_connect_ms": 142
+      },
+      "cli_started": 1.701,
+      "first_content": 1.701,
+      "finished": 1.971,
+      "outcome": "turn.succeeded"
+    }
+  ],
+  "summary": {
+    "accepted": {
+      "n": 5,
+      "p50": 0.081,
+      "p95": 0.139,
+      "max": 0.139
+    },
+    "bound": {
+      "n": 5,
+      "p50": 1.111,
+      "p95": 1.476,
+      "max": 1.476
+    },
+    "cli_started": {
+      "n": 5,
+      "p50": 1.858,
+      "p95": 2.211,
+      "max": 2.211
+    },
+    "first_content": {
+      "n": 5,
+      "p50": 1.858,
+      "p95": 2.211,
+      "max": 2.211
+    },
+    "finished": {
+      "n": 5,
+      "p50": 1.971,
+      "p95": 2.503,
+      "max": 2.503
+    }
+  }
+}
