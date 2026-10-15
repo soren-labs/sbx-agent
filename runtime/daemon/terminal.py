@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pty
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ class Terminal:
         self, cwd: Path, home: Path, *, scope: str | None = None, startup_dir: Path | None = None
     ) -> None:
         self.id = "pty_" + uuid.uuid4().hex[:16]
+        self.created_at = time.time()
         master, slave = pty.openpty()
         home.mkdir(parents=True, exist_ok=True)
         env = {
@@ -68,15 +70,34 @@ class Terminal:
                     self.base += drop
 
     def read(self, after: int) -> dict[str, Any]:
+        exited = self.proc.poll() is not None
         with self.lock:
             start = max(after, self.base) - self.base
             data = bytes(self.buffer[start:])
             offset = self.base + len(self.buffer)
+        # Offsets stay on UTF-8 boundaries: bytes of a character cut by buffer trimming are
+        # skipped, and a character still arriving waits for the next read instead of being
+        # decoded as replacement characters.
+        head = 0
+        if after < self.base:
+            while head < len(data) and head < 3 and data[head] & 0xC0 == 0x80:
+                head += 1
+        held = 0 if exited else _incomplete_tail(data)
         return {
-            "data": data.decode("utf-8", "replace"),
-            "offset": offset,
-            "closed": self.proc.poll() is not None,
+            "data": data[head : len(data) - held].decode("utf-8", "replace"),
+            "offset": offset - held,
+            "closed": exited,
             "truncated": after < self.base,
+        }
+
+    def describe(self) -> dict[str, Any]:
+        with self.lock:
+            offset = self.base + len(self.buffer)
+        return {
+            "terminal_id": self.id,
+            "created_at": self.created_at,
+            "closed": self.proc.poll() is not None,
+            "offset": offset,
         }
 
     def write(self, data: str) -> None:
@@ -95,3 +116,22 @@ class Terminal:
         except OSError:
             pass
         return True
+
+
+def _incomplete_tail(data: bytes) -> int:
+    """Length of a trailing UTF-8 sequence that is not complete yet (0 when none)."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 == 0x80:
+            continue
+        need = (
+            2
+            if byte & 0xE0 == 0xC0
+            else 3
+            if byte & 0xF0 == 0xE0
+            else 4
+            if byte & 0xF8 == 0xF0
+            else 1
+        )
+        return back if need > back else 0
+    return 0

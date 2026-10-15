@@ -20,7 +20,7 @@ be added later without changing frames.
 | `GET /healthz` | none | liveness only, no data |
 | `POST /rt/hello` | read | lease id/generation, runtime epoch, protocol `{major,minor}`, image digest, Harness manifests, recovered operations, spool watermarks, health |
 | `POST /rt/op` | manage | mutating frame (below) |
-| `POST /rt/query` | read | `operation.status`, `files.list`, `files.read`, `changes.observe`, `health.report` |
+| `POST /rt/query` | read | `operation.status`, `files.list`, `files.read`, `changes.observe`, `service.status`, `service.logs`, `terminal.read`, `terminal.list` (protocol 1.1), `health.report` |
 | `POST /rt/events` | read | spool records after a local sequence, plus the runtime epoch |
 | `POST /rt/ack` | read | advance the acknowledged watermark (only after control committed) |
 
@@ -43,6 +43,18 @@ the same ID with a different body returns `operation_conflict`.
 Kinds implemented: `worktree.restore`, `turn.start`, `turn.cancel`, `files.write`, `check.run`
 (declared argv only), `snapshot.prepare`, `lease.renew`, `runtime.shutdown`. `changes.capture` and
 `changes.apply` are added in the ChangeSet phase. Generic exec does not exist.
+
+User-driven live operations (`files.write`, `terminal.create`, `terminal.input`, `terminal.close`)
+derive their operation ID from the client's `Idempotency-Key`, so a retry after a lost response is
+answered from the journal instead of writing to the file or PTY again. The control plane reports a
+transport failure on these operations as `outcome_unknown` (retry with the same key), a reused key
+with a different body as `idempotency_conflict`, and a replayed operation that never reached a
+verdict (`accepted`/`lost` after a runtime restart) as `outcome_unknown` that a retry cannot settle.
+
+`files.read` returns the save precondition `digest` only for a complete text view. A truncated
+(over 1,000,000 bytes), redacted or binary view has `digest: null`, `editable: false` and
+`readonly_reason` (`truncated`, `redacted` or `binary`), so a partial view cannot be written back
+over the original bytes. `terminal.read` offsets never split a UTF-8 character.
 
 ## Executor boot environment
 

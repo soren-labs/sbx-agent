@@ -31,6 +31,20 @@ class WorktreeError(Exception):
         self.code = code
 
 
+def _utf8_text(data: bytes, truncated: bool) -> str | None:
+    """UTF-8 text of ``data``, or None for binary. A cut at the read limit may split one
+    multi-byte character; that partial tail is dropped instead of declaring binary."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        if truncated and exc.reason == "unexpected end of data" and exc.start >= len(data) - 3:
+            try:
+                return data[: exc.start].decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        return None
+
+
 def git(
     cwd: Path, *args: str, env: dict[str, str] | None = None, check: bool = True, timeout: int = 600
 ) -> subprocess.CompletedProcess[str]:
@@ -162,6 +176,9 @@ class Worktree:
         return out[:1000]
 
     def read(self, rel: str, known: Iterable[str] = ()) -> dict[str, Any]:
+        """A view of one file. ``digest`` (the save precondition) is offered only when the
+        view is the complete, unredacted text: a truncated or redacted view written back
+        must never replace the original bytes."""
         target = safe_join(self.path, rel)
         if not target.is_file():
             raise WorktreeError("not_found", "file not found")
@@ -169,24 +186,29 @@ class Worktree:
             raise WorktreeError("forbidden", "credential-bearing files are not readable")
         full = target.read_bytes()
         redacted = secret_reason(full, known) is not None
-        data = (redact_bytes(full, known) if redacted else full)[:MAX_READ]
-        try:
+        view = redact_bytes(full, known) if redacted else full
+        truncated = len(view) > MAX_READ
+        data = view[:MAX_READ]
+        text = _utf8_text(data, truncated)
+        meta = {"path": rel, "size": len(full), "truncated": truncated, "redacted": redacted}
+        if text is None:
             return {
-                "path": rel,
-                "encoding": "utf-8",
-                "content": data.decode("utf-8"),
-                "truncated": len(full) > MAX_READ,
-                "redacted": redacted,
-                "digest": "sha256:" + hashlib.sha256(full).hexdigest(),
-            }
-        except UnicodeDecodeError:
-            return {
-                "path": rel,
+                **meta,
                 "encoding": "base64",
                 "content": base64.b64encode(data).decode(),
-                "truncated": len(full) > MAX_READ,
-                "redacted": redacted,
+                "digest": None,
+                "editable": False,
+                "readonly_reason": "binary",
             }
+        complete = not truncated and not redacted
+        return {
+            **meta,
+            "encoding": "utf-8",
+            "content": text,
+            "digest": "sha256:" + hashlib.sha256(full).hexdigest() if complete else None,
+            "editable": complete,
+            "readonly_reason": None if complete else ("redacted" if redacted else "truncated"),
+        }
 
     def write(self, rel: str, content: str, expected_digest: str | None) -> dict[str, Any]:
         target = safe_join(self.path, rel)
@@ -197,6 +219,10 @@ class Worktree:
                 else "absent"
             )
             if current != expected_digest:
+                if expected_digest == "absent":
+                    raise WorktreeError("version_conflict", "file already exists")
+                if current == "absent":
+                    raise WorktreeError("version_conflict", "file was deleted since it was read")
                 raise WorktreeError("version_conflict", "file content changed since it was read")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
