@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD17 keyframe 1: Services empty state implies automatic appearance without configuration UI
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD17 keyframe 2: Supplement: project form has no services configuration

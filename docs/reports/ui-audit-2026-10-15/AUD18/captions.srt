@@ -1,0 +1,11 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD18 keyframe 1: Close session menu item does not describe irreversible read-only effect
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD18 keyframe 2: Select Close session; no confirmation dialog is offered
+
+3
+00:00:06,000 --> 00:00:09,000
+AUD18 keyframe 3: Session is immediately Closed and read only after menu click

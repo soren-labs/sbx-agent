@@ -1,0 +1,2 @@
+{"sandbox_id": "sb-01M4ZPNJVXKTA7Q3YCPQSK81CN", "termination_confirmed": true, "observed_status": "terminated"}
+

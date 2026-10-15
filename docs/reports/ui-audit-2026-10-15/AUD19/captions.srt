@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD19 keyframe 1: Captured audit files are marked M
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD19 keyframe 2: Confirmed loaded diff: new file mode shown beside M; metadata lines numbered 0 through 4

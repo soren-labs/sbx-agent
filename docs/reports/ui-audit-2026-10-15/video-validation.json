@@ -1,0 +1,80 @@
+[
+  {
+    "video": "AUD04/aud04-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD05/aud05-keyframes.mp4",
+    "duration_seconds": 9.0,
+    "expected_seconds": 9,
+    "decoded": true
+  },
+  {
+    "video": "AUD08/aud08-keyframes.mp4",
+    "duration_seconds": 9.0,
+    "expected_seconds": 9,
+    "decoded": true
+  },
+  {
+    "video": "AUD09/aud09-keyframes.mp4",
+    "duration_seconds": 9.0,
+    "expected_seconds": 9,
+    "decoded": true
+  },
+  {
+    "video": "AUD10/aud10-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD11/aud11-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD12/aud12-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD15/aud15-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD17/aud17-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD18/aud18-keyframes.mp4",
+    "duration_seconds": 9.0,
+    "expected_seconds": 9,
+    "decoded": true
+  },
+  {
+    "video": "AUD19/aud19-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD21/aud21-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  },
+  {
+    "video": "AUD22/aud22-keyframes.mp4",
+    "duration_seconds": 6.0,
+    "expected_seconds": 6,
+    "decoded": true
+  }
+]

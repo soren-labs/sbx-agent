@@ -1,0 +1,21 @@
+BEGIN
+                   id                   | state |          sandbox_id           
+----------------------------------------+-------+-------------------------------
+ lease_01a13f6ac96e75e49aadd9bd72afe88f | ready | sb-01M4ZPNJVXKTA7Q3YCPQSK81CN
+(1 row)
+
+                  id                  |        kind         |   state    | attempts | last_error_code 
+--------------------------------------+---------------------+------------+----------+-----------------
+ job_01a13f6ae874731385d8f6ddb032a680 | execution.reconcile | failed     |      211 | internal_error
+ job_01a13f7201a47a6b9b3704a12565f27a | execution.reconcile | retry_wait |        8 | internal_error
+ job_01a13f742bf87a259b67dfe0ba27961b | executor.release    | queued     |       27 | 
+(3 rows)
+
+ ordinal |                                          checks                                          
+---------+------------------------------------------------------------------------------------------
+       1 | [{"argv": ["python3", "-c", "\"print(123)\""], "name": "smoke", "timeout_seconds": 600}]
+       2 | [{"argv": ["python3", "-c", "\"print(123)\""], "name": "smoke", "timeout_seconds": 600}]
+(2 rows)
+
+COMMIT
+

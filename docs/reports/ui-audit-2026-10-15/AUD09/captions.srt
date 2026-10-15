@@ -1,0 +1,11 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD09 keyframe 1: Connected terminal has output and command input
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD09 keyframe 2: Navigate away from Terminal to Files
+
+3
+00:00:06,000 --> 00:00:09,000
+AUD09 keyframe 3: Returning loses terminal handle and shows Start terminal

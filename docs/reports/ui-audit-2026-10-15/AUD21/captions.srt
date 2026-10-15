@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD21 keyframe 1: API keys list has no scope labels
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD21 keyframe 2: Create form offers only a name; no scope selector

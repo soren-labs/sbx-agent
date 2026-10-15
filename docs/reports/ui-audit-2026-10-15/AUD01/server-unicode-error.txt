@@ -1,0 +1,53 @@
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/control/application/ingest.py", line 76, in ingest
+    terminal = _apply(uow, lease, epoch, seq, item, payload, hooks) or terminal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/control/application/ingest.py", line 122, in _apply
+    _upsert_part(uow, session, message, kind, payload)
+  File "/app/control/application/ingest.py", line 243, in _upsert_part
+    uow.update("message_parts", existing["id"], values)
+  File "/app/control/persistence/unit_of_work.py", line 223, in update
+    return self._one(query, params + where_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/control/persistence/unit_of_work.py", line 126, in _one
+    return self.conn.execute(query, params).fetchone()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/psycopg/connection.py", line 304, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UntranslatableCharacter: unsupported Unicode escape sequence
+ERROR:sbx.jobs:job job_01a13f7201a47a6b9b3704a12565f27a (execution.reconcile) failed
+  File "/app/control/jobs/worker.py", line 119, in run_once
+    outcome = handler(ctx)
+              ^^^^^^^^^^^^
+  File "/app/control/application/execution.py", line 982, in handle_reconcile
+    result = ctx.commit(
+             ^^^^^^^^^^^
+  File "/app/control/jobs/worker.py", line 54, in commit
+    result = self.db.run(run)
+             ^^^^^^^^^^^^^^^^
+  File "/app/control/persistence/database.py", line 93, in run
+    return fn(uow)
+           ^^^^^^^
+  File "/app/control/jobs/worker.py", line 48, in run
+    result = fn(uow)
+             ^^^^^^^
+  File "/app/control/application/execution.py", line 983, in <lambda>
+    lambda uow: ingest(uow, lease, batch["runtime_epoch"], batch["items"], self.hooks)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/control/application/ingest.py", line 76, in ingest
+    terminal = _apply(uow, lease, epoch, seq, item, payload, hooks) or terminal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/control/application/ingest.py", line 122, in _apply
+    _upsert_part(uow, session, message, kind, payload)
+  File "/app/control/application/ingest.py", line 243, in _upsert_part
+    uow.update("message_parts", existing["id"], values)
+  File "/app/control/persistence/unit_of_work.py", line 223, in update
+    return self._one(query, params + where_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/control/persistence/unit_of_work.py", line 126, in _one
+    return self.conn.execute(query, params).fetchone()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/psycopg/connection.py", line 304, in execute
+    raise ex.with_traceback(None)
+psycopg.errors.UntranslatableCharacter: unsupported Unicode escape sequence
+

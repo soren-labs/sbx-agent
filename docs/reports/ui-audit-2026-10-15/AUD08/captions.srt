@@ -1,0 +1,11 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD08 keyframe 1: Start terminal before executing a harmless status command
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD08 keyframe 2: Run git status and create only an audit marker file
+
+3
+00:00:06,000 --> 00:00:09,000
+AUD08 keyframe 3: Terminal output exposes raw ANSI control sequences

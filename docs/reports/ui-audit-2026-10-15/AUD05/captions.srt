@@ -1,0 +1,11 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD05 keyframe 1: Live changes initially contains the two prior audit files
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD05 keyframe 2: Terminal creates ux-audit-video-marker.txt and confirms execution
+
+3
+00:00:06,000 --> 00:00:09,000
+AUD05 keyframe 3: After terminal file creation, Live changes still contains only the old two files

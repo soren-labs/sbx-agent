@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD10 keyframe 1: ChangeSet defaults to first ready item
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD10 keyframe 2: Selecting No ChangeSet immediately restores first item

@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:03,000
+AUD04 keyframe 1: Enter a nonexistent test path into Open or create file
+
+2
+00:00:03,000 --> 00:00:06,000
+AUD04 keyframe 2: Not found and saving-creates-it hint, but no editor or Save action

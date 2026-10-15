@@ -1,0 +1,274 @@
+[
+  {
+    "id": "AUD21",
+    "step": "API keys list has no scope labels",
+    "path": "AUD21/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/settings?tab=keys",
+    "capturedAt": "2026-10-15T12:29:58.936Z",
+    "attachment": "AUD21/step-01.jpg"
+  },
+  {
+    "id": "AUD21",
+    "step": "Create form offers only a name; no scope selector",
+    "path": "AUD21/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/settings?tab=keys",
+    "capturedAt": "2026-10-15T12:29:59.385Z",
+    "attachment": "AUD21/step-02.jpg"
+  },
+  {
+    "id": "AUD22",
+    "step": "Closed session still offers Retry on cancelled turn",
+    "path": "AUD22/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f839c6279c8812f6e0c9e76342d",
+    "capturedAt": "2026-10-15T12:30:20.437Z",
+    "attachment": "AUD22/step-01.jpg"
+  },
+  {
+    "id": "AUD22",
+    "step": "Retry rejected: invalid_transition because session is closed",
+    "path": "AUD22/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f839c6279c8812f6e0c9e76342d",
+    "capturedAt": "2026-10-15T12:30:32.317Z",
+    "attachment": "AUD22/step-02.jpg"
+  },
+  {
+    "id": "AUD12",
+    "step": "Completed turns are visible but Events says No events yet",
+    "path": "AUD12/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f839c6279c8812f6e0c9e76342d/activity",
+    "capturedAt": "2026-10-15T12:30:41.713Z",
+    "attachment": "AUD12/step-01.jpg"
+  },
+  {
+    "id": "AUD12",
+    "step": "Reload preserves turns but does not load historical events",
+    "path": "AUD12/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f839c6279c8812f6e0c9e76342d/activity",
+    "capturedAt": "2026-10-15T12:30:42.963Z",
+    "attachment": "AUD12/step-02.jpg"
+  },
+  {
+    "id": "AUD11",
+    "step": "From overview, Review changes points to nested overview/changes",
+    "path": "AUD11/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview",
+    "capturedAt": "2026-10-15T12:30:57.590Z",
+    "attachment": "AUD11/step-01.jpg"
+  },
+  {
+    "id": "AUD11",
+    "step": "Click leads to Page not found",
+    "path": "AUD11/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview/changes",
+    "capturedAt": "2026-10-15T12:30:57.914Z",
+    "attachment": "AUD11/step-02.jpg"
+  },
+  {
+    "id": "AUD07",
+    "step": "Repeated cancelled and completed status cards around queued message",
+    "path": "AUD07/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview",
+    "capturedAt": "2026-10-15T12:31:02.862Z",
+    "attachment": "AUD07/step-01.jpg"
+  },
+  {
+    "id": "AUD10",
+    "step": "ChangeSet defaults to first ready item",
+    "path": "AUD10/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/children",
+    "capturedAt": "2026-10-15T12:31:10.034Z",
+    "attachment": "AUD10/step-01.jpg"
+  },
+  {
+    "id": "AUD10",
+    "step": "Selecting No ChangeSet immediately restores first item",
+    "path": "AUD10/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/children",
+    "capturedAt": "2026-10-15T12:31:10.234Z",
+    "attachment": "AUD10/step-02.jpg"
+  },
+  {
+    "id": "AUD17",
+    "step": "Services empty state implies automatic appearance without configuration UI",
+    "path": "AUD17/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/services",
+    "capturedAt": "2026-10-15T12:31:10.538Z",
+    "attachment": "AUD17/step-01.jpg"
+  },
+  {
+    "id": "AUD04",
+    "step": "Enter a nonexistent test path into Open or create file",
+    "path": "AUD04/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/files",
+    "capturedAt": "2026-10-15T12:31:27.001Z",
+    "attachment": "AUD04/step-01.jpg"
+  },
+  {
+    "id": "AUD04",
+    "step": "Not found and saving-creates-it hint, but no editor or Save action",
+    "path": "AUD04/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/files",
+    "capturedAt": "2026-10-15T12:31:31.854Z",
+    "attachment": "AUD04/step-02.jpg"
+  },
+  {
+    "id": "AUD05",
+    "step": "Live changes initially contains the two prior audit files",
+    "path": "AUD05/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/changes",
+    "capturedAt": "2026-10-15T12:31:46.699Z",
+    "attachment": "AUD05/step-01.jpg"
+  },
+  {
+    "id": "AUD08",
+    "step": "Start terminal before executing a harmless status command",
+    "path": "AUD08/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/terminal",
+    "capturedAt": "2026-10-15T12:31:47.058Z",
+    "attachment": "AUD08/step-01.jpg"
+  },
+  {
+    "id": "AUD08",
+    "step": "Run git status and create only an audit marker file",
+    "path": "AUD08/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/terminal",
+    "capturedAt": "2026-10-15T12:31:56.398Z",
+    "attachment": "AUD08/step-02.jpg"
+  },
+  {
+    "id": "AUD08",
+    "step": "Terminal output exposes raw ANSI control sequences",
+    "path": "AUD08/step-03.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/terminal",
+    "capturedAt": "2026-10-15T12:32:06.534Z",
+    "attachment": "AUD08/step-03.jpg"
+  },
+  {
+    "id": "AUD09",
+    "step": "Connected terminal has output and command input",
+    "path": "AUD09/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/terminal",
+    "capturedAt": "2026-10-15T12:32:06.605Z",
+    "attachment": "AUD09/step-01.jpg"
+  },
+  {
+    "id": "AUD05",
+    "step": "Terminal creates ux-audit-video-marker.txt and confirms execution",
+    "path": "AUD05/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/terminal",
+    "capturedAt": "2026-10-15T12:32:06.619Z",
+    "attachment": "AUD05/step-02.jpg"
+  },
+  {
+    "id": "AUD09",
+    "step": "Navigate away from Terminal to Files",
+    "path": "AUD09/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/files",
+    "capturedAt": "2026-10-15T12:32:06.902Z",
+    "attachment": "AUD09/step-02.jpg"
+  },
+  {
+    "id": "AUD09",
+    "step": "Returning loses terminal handle and shows Start terminal",
+    "path": "AUD09/step-03.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/terminal",
+    "capturedAt": "2026-10-15T12:32:07.190Z",
+    "attachment": "AUD09/step-03.jpg"
+  },
+  {
+    "id": "AUD19",
+    "step": "Captured audit files are marked M",
+    "path": "AUD19/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/changes",
+    "capturedAt": "2026-10-15T12:32:13.679Z",
+    "attachment": "AUD19/step-01.jpg"
+  },
+  {
+    "id": "AUD05",
+    "step": "After terminal file creation, Live changes still contains only the old two files",
+    "path": "AUD05/step-03.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/changes",
+    "capturedAt": "2026-10-15T12:32:14.182Z",
+    "attachment": "AUD05/step-03.jpg"
+  },
+  {
+    "id": "AUD19",
+    "step": "Confirmed loaded diff: new file mode shown beside M; metadata lines numbered 0 through 4",
+    "path": "AUD19/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/changes",
+    "capturedAt": "2026-10-15T12:33:08.543Z",
+    "attachment": "AUD19/step-02.jpg"
+  },
+  {
+    "id": "AUD15",
+    "step": "Projectless session offers an enabled PR delivery form",
+    "path": "AUD15/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f5c012b79d2b0ec61ad5e569e9e/changes",
+    "capturedAt": "2026-10-15T12:33:19.500Z",
+    "attachment": "AUD15/step-01.jpg"
+  },
+  {
+    "id": "AUD15",
+    "step": "Request rejected: projectless export is not enabled; no PR is created",
+    "path": "AUD15/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f5c012b79d2b0ec61ad5e569e9e/changes",
+    "capturedAt": "2026-10-15T12:33:38.325Z",
+    "attachment": "AUD15/step-02.jpg"
+  },
+  {
+    "id": "AUD18",
+    "step": "Close session menu item does not describe irreversible read-only effect",
+    "path": "AUD18/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview",
+    "capturedAt": "2026-10-15T12:33:39.951Z",
+    "attachment": "AUD18/step-01.jpg"
+  },
+  {
+    "id": "AUD13",
+    "step": "Archived session header reports Idle while banner explains archive",
+    "path": "AUD13/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview",
+    "capturedAt": "2026-10-15T12:33:48.283Z",
+    "attachment": "AUD13/step-01.jpg"
+  },
+  {
+    "id": "AUD18",
+    "step": "Select Close session; no confirmation dialog is offered",
+    "path": "AUD18/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview",
+    "capturedAt": "2026-10-15T12:34:01.282Z",
+    "attachment": "AUD18/step-02.jpg"
+  },
+  {
+    "id": "AUD18",
+    "step": "Session is immediately Closed and read only after menu click",
+    "path": "AUD18/step-03.jpg",
+    "url": "https://staging.sbx-agent.com/sessions/sess_01a13f6348b47f0ea8f60f0fb4d688cf/overview",
+    "capturedAt": "2026-10-15T12:34:06.937Z",
+    "attachment": "AUD18/step-03.jpg"
+  },
+  {
+    "id": "AUD03",
+    "step": "Supplement only: visible project fields omit services/environment/policy/harness provider",
+    "path": "AUD03/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/projects",
+    "capturedAt": "2026-10-15T12:34:31.240Z",
+    "attachment": "AUD03/step-01.jpg"
+  },
+  {
+    "id": "AUD17",
+    "step": "Supplement: project form has no services configuration",
+    "path": "AUD17/step-02.jpg",
+    "url": "https://staging.sbx-agent.com/projects",
+    "capturedAt": "2026-10-15T12:34:31.251Z",
+    "attachment": "AUD17/step-02.jpg"
+  },
+  {
+    "id": "AUD06",
+    "step": "Supplement only: quoted command entered into name=command args field; no project submitted",
+    "path": "AUD06/step-01.jpg",
+    "url": "https://staging.sbx-agent.com/projects",
+    "capturedAt": "2026-10-15T12:34:31.339Z",
+    "attachment": "AUD06/step-01.jpg"
+  }
+]

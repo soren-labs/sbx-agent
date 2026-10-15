@@ -1,0 +1,52 @@
+[
+  {
+    "group": "G01",
+    "title": "修复工作区文件编辑、终端重试与变更审阅链路",
+    "draft": "groups/01-workspace-files-terminal-changes.md",
+    "aud_ids": [
+      "AUD02",
+      "AUD04",
+      "AUD05",
+      "AUD08",
+      "AUD09",
+      "AUD11",
+      "AUD16",
+      "AUD19"
+    ]
+  },
+  {
+    "group": "G02",
+    "title": "修复会话执行取消、子会话与历史生命周期的一致性",
+    "draft": "groups/02-session-lifecycle-and-history.md",
+    "aud_ids": [
+      "AUD01",
+      "AUD07",
+      "AUD10",
+      "AUD12",
+      "AUD13",
+      "AUD14",
+      "AUD18",
+      "AUD22"
+    ]
+  },
+  {
+    "group": "G03",
+    "title": "保留项目完整配置并对齐检查、服务与交付能力",
+    "draft": "groups/03-project-config-services-delivery.md",
+    "aud_ids": [
+      "AUD03",
+      "AUD06",
+      "AUD15",
+      "AUD17"
+    ]
+  },
+  {
+    "group": "G04",
+    "title": "让 API key 签发可安全重试，并提供明确的权限选择",
+    "draft": "groups/04-api-key-issuance-and-scopes.md",
+    "aud_ids": [
+      "AUD20",
+      "AUD21"
+    ]
+  }
+]

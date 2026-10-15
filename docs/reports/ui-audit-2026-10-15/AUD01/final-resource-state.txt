@@ -1,0 +1,5 @@
+Final read-only database verification, 2026-10-15 UTC
+All ten audit session executor leases: 9 released, 1 lost; none allocating/ready/quiescing.
+Child sess_01a13f6ac90a7d16be69a9a366d7178b: turn cancelled, reason cancelled_by_user, finished_at 2026-10-15 12:10:37.21305+00.
+Child executor.release succeeded, attempts 146. New execution.reconcile succeeded, attempts 14. Earlier reconcile remains failed, attempts 211, internal_error.
+Only sandbox sb-01M4ZPNJVXKTA7Q3YCPQSK81CN was terminated via approved server cleanup. No manual database mutation.
