@@ -6,7 +6,7 @@
 
 已排除未完成渲染的画面与不正确的刷新对照标签。截图中的会话为本次隔离测试；没有完整密码、token 或 API key。原始证据目录不整体打包，只包含本目录的精选附件。
 
-使用：复制 [4 个合并 Issue 草稿](groups/README.md) 中对应组的正文，在 Issue 编辑器拖入该组的 JPG / MP4；文件链接不会自动变成 GitHub 附件。本目录保存四个合并 Issue 的公开附件与复现草稿。
+使用：复制 [4 个合并 Issue 草稿](groups/README.md) 中对应组的正文，在 Issue 编辑器拖入该组的 JPG / MP4；文件链接不会自动变成 GitHub 附件。四组均已发布，证据已链接到固定 GitHub commit。
 
 ## 合并提交计划
 
@@ -41,3 +41,11 @@
 | [AUD20](AUD20/README.md) | 0 | 0 | 源码确认的签发重试风险，未额外签发凭证来复现，无对应 UI 视频。 |
 | [AUD21](AUD21/README.md) | 2 | 1 | 页面可见的 key 前缀是产品公开展示的部分前缀，不包含完整可用凭证。本轮没有再次签发密钥。 |
 | [AUD22](AUD22/README.md) | 2 | 1 | 本次 staging 实测截图；具体动作和页面 URL 见 capture-log.json。 |
+
+
+## 已发布的 GitHub Issue
+
+- [G01 / #227：修复工作区文件编辑、终端重试与变更审阅链路](https://github.com/soren-labs/sbx-agent/issues/227)
+- [G02 / #228：修复会话执行取消、子会话与历史生命周期的一致性](https://github.com/soren-labs/sbx-agent/issues/228)
+- [G03 / #229：保留项目完整配置并对齐检查、服务与交付能力](https://github.com/soren-labs/sbx-agent/issues/229)
+- [G04 / #230：让 API key 签发可安全重试，并提供明确的权限选择](https://github.com/soren-labs/sbx-agent/issues/230)

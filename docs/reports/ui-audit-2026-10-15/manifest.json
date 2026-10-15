@@ -456,8 +456,8 @@
   },
   {
     "path": "README.md",
-    "bytes": 5162,
-    "sha256": "fb7de8ec6e4c5018b509fe2daa608c9cd6642003a1a45a4136754571d1de5af7"
+    "bytes": 5730,
+    "sha256": "a02b8d547628721be4822a29872b24146eda2051b8ea5b9a00e7201219118566"
   },
   {
     "path": "capture-log.json",
@@ -491,8 +491,13 @@
   },
   {
     "path": "groups/README.md",
-    "bytes": 1608,
-    "sha256": "f684ce194d22593dc297bbec5a66232cd41892218cf5ba1d0d9e4fa661931f3b"
+    "bytes": 2160,
+    "sha256": "aa992862a3e286cbed644b3fbd6cee683e91f182b89d8797fdd28f0f951dc98b"
+  },
+  {
+    "path": "publication.md",
+    "bytes": 2613,
+    "sha256": "e5fee4a177a58258e2aa9fd70d11cf38ca0fac60735eb73fe67b4f93aa671059"
   },
   {
     "path": "video-validation.json",
