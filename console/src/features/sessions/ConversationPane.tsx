@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowDown, Check, CircleSlash, RotateCcw, Square, TriangleAlert } from "lucide-react";
 import type { ExecutorView, Message, Session, Turn } from "../../api/types";
@@ -56,9 +56,13 @@ function OutgoingMessage({ out }: { out: Outgoing }) {
   );
 }
 
+/** Whether the Session accepts new work; a fallback for actions a stale Turn still lists. */
+const AcceptsWork = createContext(true);
+
 function TurnActions({ turn, live, ghost }: { turn: Turn; live: SessionLive; ghost?: boolean }) {
   const { t } = useI18n();
   const api = useApi();
+  const acceptsWork = useContext(AcceptsWork);
   const cancel = useAction(async (key) => {
     await api.turns.cancel(turn.id, { idempotencyKey: key });
     live.refresh();
@@ -71,22 +75,23 @@ function TurnActions({ turn, live, ghost }: { turn: Turn; live: SessionLive; gho
     await api.turns.acknowledge(turn.id, { idempotencyKey: key });
     live.refresh();
   });
-  if (!turn.actions.length) return null;
+  const actions = acceptsWork ? turn.actions : turn.actions.filter((a) => a !== "retry");
+  if (!actions.length) return null;
   const variant = ghost ? "ghost" : "secondary";
   return (
     <>
       <span className="turn-actions">
-        {turn.actions.includes("cancel") ? (
+        {actions.includes("cancel") ? (
           <Button size="sm" variant={variant} icon={<Square size={11} />} disabled={cancel.pending} onClick={() => void cancel.run()}>
             {t("conv.cancel_turn")}
           </Button>
         ) : null}
-        {turn.actions.includes("retry") ? (
+        {actions.includes("retry") ? (
           <Button size="sm" variant={variant} icon={<RotateCcw size={12} />} disabled={retry.pending} onClick={() => void retry.run()}>
             {t("conv.retry_turn")}
           </Button>
         ) : null}
-        {turn.actions.includes("acknowledge_unknown") ? (
+        {actions.includes("acknowledge_unknown") ? (
           <Button size="sm" variant={variant} disabled={ack.pending} onClick={() => void ack.run()}>
             {t("conv.ack_unknown")}
           </Button>
@@ -101,12 +106,41 @@ function TurnActions({ turn, live, ghost }: { turn: Turn; live: SessionLive; gho
  * What the live Turn is doing right now, pinned above the composer: the real running
  * step, streaming state or lifecycle stage reported by the server — never a guess.
  */
-function LiveBar({ turn, messages, live, now }: { turn: Turn; messages: Message[]; live: SessionLive; now: number }) {
+/**
+ * Which startup stage a preparing Turn is in, from durable lease facts only (the server's
+ * lease `stage`); never inferred from elapsed time.
+ */
+export function startupStage(turn: Turn, executor: ExecutorView | null): I18nKey {
+  if (turn.reason === "waiting_capacity") return "turn.waiting_capacity";
+  if (turn.state === "queued") return "turn.queued";
+  const lease = executor?.leases.find((l) => ["allocating", "ready"].includes(l.state));
+  if (!lease) return "turn.stage.requesting";
+  if (lease.stage === "allocating_sandbox") return "turn.stage.allocating_sandbox";
+  if (lease.stage === "connecting_runtime") return "turn.stage.connecting_runtime";
+  return "turn.stage.starting_cli";
+}
+
+function LiveBar({
+  turn,
+  messages,
+  live,
+  now,
+  executor,
+}: {
+  turn: Turn;
+  messages: Message[];
+  live: SessionLive;
+  now: number;
+  executor: ExecutorView | null;
+}) {
   const { t } = useI18n();
   const elapsed = useElapsed(turn.started_at ?? turn.created_at, true);
   let label: string;
   let detail = "";
-  if (turn.state === "running") {
+  if (turn.state === "cancelling") {
+    label = t("turn.cancelling");
+    detail = t("turn.cancelling_detail");
+  } else if (turn.state === "running") {
     const doing = activityOf(messages.filter((m) => m.turn_id === turn.id), now);
     if (doing.type === "step") {
       label = t(`work.now.${doing.kind}` as I18nKey);
@@ -115,7 +149,7 @@ function LiveBar({ turn, messages, live, now }: { turn: Turn; messages: Message[
       label = t(doing.type === "thinking" ? "work.thinking" : doing.type === "writing" ? "work.now.writing" : "turn.running");
     }
   } else {
-    label = t(turn.reason === "waiting_capacity" ? "turn.waiting_capacity" : turn.state === "queued" ? "turn.queued" : "turn.preparing");
+    label = t(startupStage(turn, executor));
   }
   return (
     <div className="livebar" role="status" data-state={turn.state} data-testid="turn-status">
@@ -152,6 +186,7 @@ function TurnStatus({ turn, live, latest }: { turn: Turn; live: SessionLive; lat
         {usage ? (
           <span className="turn-status__usage" title={t("turn.usage_title", { cached: formatTokens(cached) })}>
             {t("turn.usage", { input: formatTokens(tokensIn + cached), output: formatTokens(tokensOut) })}
+            {usage.per_turn === false ? ` · ${t("turn.usage_conversation_total")}` : ""}
           </span>
         ) : null}
       </div>
@@ -293,6 +328,13 @@ export function ConversationPane({ session, live, state }: { session: Session; l
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [!!liveTurn]);
+  // A recorded sandbox handle emits no event: while starting up, re-read the lease stage.
+  const preparing = liveTurn?.state === "preparing";
+  useEffect(() => {
+    if (!preparing) return;
+    const id = setInterval(() => live.refresh(["executor"]), 2000);
+    return () => clearInterval(id);
+  }, [preparing, live]);
   const clockNow = Math.max(now, state.messages.reduce((n, m) => m.parts.reduce((k, p) => Math.max(k, p.seen_at ?? 0), n), 0));
   // The optimistic bubble steps aside the moment the server's own Message is in the log.
   const pending = outgoing && !state.messages.some((m) => m.id === outgoing.messageId) ? outgoing : null;
@@ -333,6 +375,7 @@ export function ConversationPane({ session, live, state }: { session: Session; l
   };
 
   return (
+    <AcceptsWork.Provider value={session.lifecycle === "open"}>
     <div className="conv">
       <Banners state={state} live={live} />
       <div className="conv__view">
@@ -372,10 +415,11 @@ export function ConversationPane({ session, live, state }: { session: Session; l
           </button>
         ) : null}
       </div>
-      {liveTurn ? <LiveBar turn={liveTurn} messages={state.messages} live={live} now={clockNow} /> : null}
+      {liveTurn ? <LiveBar turn={liveTurn} messages={state.messages} live={live} now={clockNow} executor={state.executor} /> : null}
       <div className="conv__composer">
         <FollowupComposer sessionId={session.id} live={live} actions={session.actions} liveTurn={liveTurn} onOutgoing={onOutgoing} />
       </div>
     </div>
+    </AcceptsWork.Provider>
   );
 }

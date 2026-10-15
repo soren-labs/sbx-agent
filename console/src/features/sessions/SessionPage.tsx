@@ -7,7 +7,8 @@ import type { I18nKey } from "../../i18n/en";
 import { useApi, useQueryClient } from "../../state/context";
 import { useSessionLive } from "../../state/use-session-live";
 import { useDocumentTitle } from "../../state/title";
-import { IconButton } from "../../ui/Button";
+import { Button, IconButton } from "../../ui/Button";
+import { Dialog } from "../../ui/Dialog";
 import { EmptyState } from "../../ui/EmptyState";
 import { ErrorNotice } from "../../ui/ErrorNotice";
 import { Menu, MenuItem, MenuSeparator } from "../../ui/Menu";
@@ -36,15 +37,79 @@ function statusOf(s: Session, liveTurn: { state: string } | undefined, t: (k: I1
   if (s.lifecycle === "closed") return { label: t("session.status.closed"), tone: "dim" };
   if (liveTurn) {
     return {
-      label: t(liveTurn.state === "running" ? "activity.running" : liveTurn.state === "queued" ? "activity.queued" : "turn.preparing_short"),
+      label: t(
+        liveTurn.state === "running"
+          ? "activity.running"
+          : liveTurn.state === "queued"
+            ? "activity.queued"
+            : liveTurn.state === "cancelling"
+              ? "turn.cancelling_short"
+              : "turn.preparing_short",
+      ),
       tone: "run",
     };
   }
+  // Lifecycle outranks activity: an archived Session is not merely "Idle".
+  if (s.lifecycle === "archived") return { label: t("session.status.archived"), tone: "dim" };
   const key = `activity.${s.activity}` as I18nKey;
   const label = t(key) === key ? s.activity.replaceAll("_", " ") : t(key);
   const a = s.activity;
   const tone: Tone = a === "attention" || /fail|error/.test(a) ? "err" : /await|wait/.test(a) ? "warn" : "dim";
   return { label, tone };
+}
+
+/**
+ * Close is permanent; Archive only hides. The dialog names the Session, says what closing
+ * stops and releases, and offers the reversible Archive next to it.
+ */
+function CloseSessionDialog({
+  session,
+  liveTurns,
+  pending,
+  onCancel,
+  onArchive,
+  onClose,
+}: {
+  session: Session;
+  liveTurns: number;
+  pending: boolean;
+  onCancel: () => void;
+  onArchive: () => Promise<void>;
+  onClose: () => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const title = session.title || t("session.untitled");
+  return (
+    <Dialog
+      title={t("session.close_title", { title })}
+      onClose={onCancel}
+      width={460}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onCancel}>
+            {t("common.cancel")}
+          </Button>
+          {session.actions.includes("archive") ? (
+            <Button variant="secondary" disabled={pending} onClick={() => void onArchive()}>
+              {t("session.archive_instead")}
+            </Button>
+          ) : null}
+          <Button variant="danger" disabled={pending} onClick={() => void onClose()} data-testid="confirm-close">
+            {t("session.close_confirm")}
+          </Button>
+        </>
+      }
+    >
+      <p>{t("session.close_intro")}</p>
+      <ul className="close-consequences">
+        <li>{liveTurns ? t("session.close_stops_turns", { n: liveTurns }) : t("session.close_no_turns")}</li>
+        <li>{t("session.close_releases")}</li>
+        <li>{t("session.close_children")}</li>
+        <li>{t("session.close_read_only")}</li>
+      </ul>
+      <p className="muted small">{t("session.close_archive_hint")}</p>
+    </Dialog>
+  );
 }
 
 export function SessionPage() {
@@ -70,8 +135,9 @@ export function SessionPage() {
 
   const lifecycle = useAction(async (key, kind: "archive" | "unarchive" | "close") => {
     await api.sessions[kind](id, { idempotencyKey: key });
-    live.refresh(["session"]);
+    live.refresh(["session", "turns"]);
   });
+  const [confirmClose, setConfirmClose] = useState(false);
 
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
   const togglePanel = () =>
@@ -206,7 +272,8 @@ export function SessionPage() {
               <MenuItem label={t("session.unarchive")} onSelect={() => void lifecycle.run("unarchive")} />
             ) : null}
             {s.actions.includes("close") ? (
-              <MenuItem label={t("session.close")} danger onSelect={() => void lifecycle.run("close")} />
+              // Never one click: Close is permanent, so it always asks with its consequences.
+              <MenuItem label={t("session.close_ellipsis")} danger onSelect={() => setConfirmClose(true)} />
             ) : null}
             <MenuItem
               label={t("session.copy_id")}
@@ -222,6 +289,22 @@ export function SessionPage() {
         </span>
       </header>
       <ErrorNotice error={lifecycle.error} />
+      {confirmClose ? (
+        <CloseSessionDialog
+          session={s}
+          liveTurns={state.turns.filter((turn) => isLiveTurn(turn)).length}
+          pending={lifecycle.pending}
+          onCancel={() => setConfirmClose(false)}
+          onArchive={async () => {
+            await lifecycle.run("archive");
+            setConfirmClose(false);
+          }}
+          onClose={async () => {
+            await lifecycle.run("close");
+            setConfirmClose(false);
+          }}
+        />
+      ) : null}
 
       <div className="wb-switch" role="tablist" aria-label={t("session.sections")}>
         <button type="button" role="tab" aria-selected={!showPanel} onClick={() => go("conversation")}>

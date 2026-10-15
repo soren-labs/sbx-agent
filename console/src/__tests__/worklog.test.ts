@@ -250,6 +250,30 @@ describe("worklog model", () => {
     ]);
   });
 
+  it("keeps one block per Turn when a queued follow-up interleaves with a reply (issue #228 AUD07)", () => {
+    // t1 runs; the user queues t2 and writes a note before t1's reply exists; t1 is
+    // cancelled, t2 then runs. Ordinals follow arrival, so the messages interleave.
+    const u1 = message([], { id: "u1", ordinal: 1, role: "user", turn_id: "t1" });
+    const u2 = message([], { id: "u2", ordinal: 2, role: "user", turn_id: "t2" });
+    const note = message([], { id: "n1", ordinal: 3, role: "user", turn_id: null, routing: "note" });
+    const a1 = message([text("p", "partial")], { id: "a1", ordinal: 4, turn_id: "t1", state: "completed" });
+    const a2 = message([text("p", "answer")], { id: "a2", ordinal: 5, turn_id: "t2", state: "completed" });
+    const turns = [
+      turn({ id: "t1", state: "cancelled", actions: ["retry"] }),
+      turn({ id: "t2", ordinal: 2, state: "succeeded" }),
+    ];
+    const blocks = blocksOf([u1, u2, note, a1, a2], turns);
+    expect(blocks.map((b) => [b.turn?.id ?? null, b.messages.map((m) => m.id)])).toEqual([
+      ["t1", ["u1", "a1"]],
+      ["t2", ["u2", "a2"]],
+      [null, ["n1"]],
+    ]);
+    // Each Turn appears once, so its outcome card (and Retry) renders once.
+    expect(blocks.filter((b) => b.turn?.id === "t1")).toHaveLength(1);
+    // A refresh delivers the same Messages, possibly in another order: same blocks.
+    expect(blocksOf([a2, note, u2, a1, u1].sort((x, y) => x.ordinal - y.ordinal), turns)).toEqual(blocks);
+  });
+
   it("formats only real measurements", () => {
     expect(secondsBetween("2026-01-01T00:00:00Z", "2026-01-01T00:01:12Z")).toBe(72);
     expect(secondsBetween(null, "2026-01-01T00:01:12Z")).toBeNull();

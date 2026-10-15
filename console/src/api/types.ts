@@ -313,11 +313,26 @@ export interface EventPage {
   next_after: number;
   event_watermark: number;
 }
+export interface EventHistoryPage {
+  items: EventEnvelope[];
+  /** Pass as `before` for older events; null at the start of the journal. */
+  next_before: number | null;
+  event_watermark: number;
+}
 
 // ---- executor -------------------------------------------------------------
 export interface ExecutorView {
   backend: string;
-  leases: { id: string; generation: number; state: string; reason: string | null; quarantined?: boolean }[];
+  leases: {
+    id: string;
+    generation: number;
+    state: string;
+    reason: string | null;
+    quarantined?: boolean;
+    /** allocating_sandbox | connecting_runtime | ready | quiescing | released | lost … */
+    stage?: string;
+    created_at?: string;
+  }[];
   worktree: { id?: string; availability: string; generation: number; base_sha: string | null };
   recovery_point: { snapshot_id: string; generation: number; created_at: string } | null;
   event_watermark?: number;

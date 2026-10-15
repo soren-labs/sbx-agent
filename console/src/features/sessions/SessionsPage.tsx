@@ -1,6 +1,10 @@
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { Plus, Rows3 } from "lucide-react";
 import { useI18n } from "../../i18n";
+import type { I18nKey } from "../../i18n/en";
+import { Field, Input, Select } from "../../ui/Field";
+import { useDebounced } from "../../ui/useDebounced";
 import { useAuth } from "../../state/auth";
 import { useApi } from "../../state/context";
 import { useQuery } from "../../state/query";
@@ -45,15 +49,65 @@ function Row({ s, locale }: { s: Session; locale: string }) {
   );
 }
 
-/** Flat list of the workspace's sessions; the sidebar shows the same data live. */
+const PAGE = 50;
+const SCOPES = ["open", "open,archived", "archived", "closed", "all"] as const;
+type Scope = (typeof SCOPES)[number];
+
+/**
+ * Every Session of the workspace, newest activity first, in keyset pages. The first page
+ * is polled; older pages are appended on demand and deduped by id, so a Session that
+ * moves to the top while paging is neither listed twice nor lost.
+ */
 export function SessionsPage() {
   const { t, locale } = useI18n();
   useDocumentTitle(t("nav.sessions"));
   const api = useApi();
   const { workspace } = useAuth();
   const w = workspace?.id ?? null;
-  const q = useQuery(w ? ["sessions", w, "page"] : null, () => api.sessions.list(w!, { limit: 50 }), { pollMs: 15000 });
-  const items = q.data?.items ?? [];
+  const [params, setParams] = useSearchParams();
+  const [text, setText] = useState(params.get("q") ?? "");
+  const search = useDebounced(text.trim(), 300);
+  const scope = (SCOPES as readonly string[]).includes(params.get("lifecycle") ?? "") ? (params.get("lifecycle") as Scope) : "open";
+  const filters = { ...(scope === "all" ? {} : { lifecycle: scope }), ...(search ? { q: search } : {}) };
+  const q = useQuery(w ? ["sessions", w, "page", scope, search] : null, () => api.sessions.list(w!, { ...filters, limit: PAGE }), {
+    pollMs: 15000,
+  });
+  const [older, setOlder] = useState<{ items: Session[]; cursor: string | null } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState<unknown>(null);
+  useEffect(() => {
+    setOlder(null);
+    setMoreError(null);
+  }, [w, scope, search]);
+  useEffect(() => {
+    const next = new URLSearchParams(params);
+    if (search) next.set("q", search);
+    else next.delete("q");
+    if (next.toString() !== params.toString()) setParams(next, { replace: true });
+  }, [search, params, setParams]);
+  const first = q.data?.items ?? [];
+  const seen = new Set(first.map((s) => s.id));
+  const items = [...first, ...(older?.items ?? []).filter((s) => !seen.has(s.id))];
+  const cursor = older ? older.cursor : (q.data?.next_cursor ?? null);
+  const loadMore = async () => {
+    if (!w || !cursor) return;
+    setLoadingMore(true);
+    setMoreError(null);
+    try {
+      const page = await api.sessions.list(w, { ...filters, limit: PAGE, cursor });
+      setOlder((o) => ({ items: [...(o?.items ?? []), ...page.items], cursor: page.next_cursor }));
+    } catch (e) {
+      setMoreError(e);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  const setScope = (value: Scope) => {
+    const next = new URLSearchParams(params);
+    if (value === "open") next.delete("lifecycle");
+    else next.set("lifecycle", value);
+    setParams(next, { replace: true });
+  };
 
   return (
     <>
@@ -68,6 +122,21 @@ export function SessionsPage() {
         }
       />
       <div className="page">
+        <div className="sessions-filters" role="search">
+          <Field label={t("sessions.search")} htmlFor="sessions-search">
+            <Input id="sessions-search" type="search" value={text} placeholder={t("sessions.search_ph")} onChange={(e) => setText(e.target.value)} />
+          </Field>
+          <Field label={t("sessions.scope")} htmlFor="sessions-scope">
+            <Select id="sessions-scope" value={scope} onChange={(e) => setScope(e.target.value as Scope)}>
+              {SCOPES.map((s) => (
+                <option key={s} value={s}>
+                  {t(`sessions.scope.${s.replace(",", "_")}` as I18nKey)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        <p className="faint small">{t("sessions.search_scope")}</p>
         <ErrorNotice error={q.error} onRetry={q.refetch} />
         {q.loading && !items.length ? (
           <div className="sessions-table">
@@ -91,8 +160,17 @@ export function SessionsPage() {
             ))}
           </div>
         ) : (
-          <EmptyState icon={<Rows3 size={22} />} title={t("sessions.empty")} />
+          <EmptyState icon={<Rows3 size={22} />} title={search ? t("sessions.search_none", { q: search }) : t("sessions.empty")} />
         )}
+        <ErrorNotice error={moreError} onRetry={() => void loadMore()} />
+        {cursor ? (
+          <div className="sessions-more">
+            <Button size="sm" variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
+              {t("sessions.load_more")}
+            </Button>
+            <span className="faint small">{t("sessions.shown", { n: items.length })}</span>
+          </div>
+        ) : null}
       </div>
     </>
   );
