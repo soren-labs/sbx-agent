@@ -33,6 +33,10 @@ test("test user signs in and reads a persisted acceptance Session", async ({ pag
   await expect(page.getByRole("form", { name: "New Session" })).toBeVisible();
 
   await page.goto("/sessions");
+  // The API acceptance deliberately closes the persisted Session. The Sessions
+  // page now defaults to Open only, so search across all lifecycles explicitly.
+  await page.getByRole("combobox", { name: "Show" }).selectOption({ label: "All" });
+  await page.getByRole("searchbox", { name: "Search sessions" }).fill("staging-acceptance");
   const session = page.getByRole("link", { name: /staging-acceptance/ }).first();
   await expect(session).toBeVisible();
   await session.click();
