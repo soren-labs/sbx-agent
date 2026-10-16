@@ -26,7 +26,8 @@ NAMED: dict[str, str] = {
     "sessions.page": """
         SELECT * FROM sessions
         WHERE workspace_id = ANY(%(workspace_ids)s)
-          AND (%(lifecycle)s::text IS NULL OR lifecycle = %(lifecycle)s)
+          AND (%(lifecycles)s::text[] IS NULL OR lifecycle = ANY(%(lifecycles)s::text[]))
+          AND (%(q)s::text IS NULL OR title ILIKE %(q)s ESCAPE '\\' OR id = %(q_id)s)
           AND (%(role)s::text IS NULL OR role = %(role)s)
           AND (%(project_id)s::text IS NULL OR project_id = %(project_id)s)
           AND (%(parent_session_id)s::text IS NULL OR parent_session_id = %(parent_session_id)s)
@@ -55,6 +56,15 @@ NAMED: dict[str, str] = {
           AND (%(turn_id)s::text IS NULL OR turn_id = %(turn_id)s)
           AND seq <= %(upto)s
         ORDER BY seq LIMIT %(limit)s
+    """,
+    "events.before": """
+        SELECT * FROM (
+          SELECT * FROM session_events
+          WHERE session_id = %(session_id)s AND seq < %(before)s
+            AND (%(types)s::text[] IS NULL OR type = ANY(%(types)s::text[]))
+            AND (%(turn_id)s::text IS NULL OR turn_id = %(turn_id)s)
+          ORDER BY seq DESC LIMIT %(limit)s) page
+        ORDER BY seq
     """,
     "events.max_scanned": """
         SELECT coalesce(max(seq), %(after)s) AS seq FROM (

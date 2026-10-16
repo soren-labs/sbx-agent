@@ -611,6 +611,159 @@
   gap: 10px;
 }
 
+.form-grid--3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+/* Project form: exact argv preview, declared services, kept settings and the version diff */
+.argv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.argv__word {
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  padding: 1px 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.argv__word--empty {
+  color: var(--fg-3);
+  border-style: dashed;
+}
+
+.proj-argv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proj-argv-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.proj-argv-list__name {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--fg-2);
+}
+
+.proj-argv-list__warn {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--warn);
+}
+
+.proj-services {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.proj-services legend {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--fg-2);
+  padding: 0 4px;
+}
+
+.proj-services p {
+  margin: 0;
+}
+
+.proj-service {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proj-service__grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr 80px auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.proj-kept__title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.proj-kept__list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg-2);
+}
+
+.proj-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proj-diff__row {
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.proj-diff__row--policy {
+  border-left-color: var(--warn);
+}
+
+.proj-diff__path {
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+}
+
+.proj-diff__values {
+  word-break: break-all;
+}
+
+.proj-diff__values del {
+  color: var(--err);
+}
+
+.proj-diff__values ins {
+  color: var(--ok);
+  text-decoration: none;
+}
+
+.proj-changes__ack {
+  margin-top: 6px;
+  color: var(--warn);
+}
+
+@media (max-width: 640px) {
+  .form-grid--3,
+  .proj-service__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .protocol-set {
   border: 1px solid var(--border);
   border-radius: var(--r-md);

@@ -78,6 +78,34 @@ def test_sdk_execute_follow_up_and_events(env) -> None:
     assert err.value.code == "not_found"
 
 
+def test_sdk_and_cli_export_a_projectless_changeset_patch(env, tmp_path, capsys) -> None:
+    stack, client, *_ = env
+    client.connections.add_inference(
+        ZEN, model="test-model", base_url="https://inference.example.test/v1"
+    )
+    done = client.execute(
+        "notes [write:notes.txt=exported]", executor={"backend": "local"}, deadline=60
+    )
+    cs = client.changesets.capture(done["session_id"])
+    deadline = time.monotonic() + 30
+    while client.changesets.get(cs["id"])["state"] != "ready" and time.monotonic() < deadline:
+        time.sleep(0.1)
+    view = client.changesets.get(cs["id"])
+    assert view["delivery"]["reason"] == "no_repository"
+    assert view["delivery"]["recovery"] == ["download_patch"]
+    data = client.changesets.patch(cs["id"])
+    assert b"notes.txt" in data and b"+exported" in data
+    out = tmp_path / "cs.patch"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("HOME", str(tmp_path))
+        code = cli_main(["changesets", "patch", cs["id"], "-o", str(out)], client=client)
+    assert code == 0 and out.read_bytes() == data
+    assert json.loads(capsys.readouterr().out)["bytes"] == len(data)
+    with pytest.raises(SBXError) as err:
+        client.changesets.patch("cs_does_not_exist")
+    assert err.value.code == "not_found"
+
+
 class _DropFirstResponse(httpx.Client):
     """Forwards the first mutation, then pretends the response was lost."""
 

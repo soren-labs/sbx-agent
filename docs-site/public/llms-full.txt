@@ -391,7 +391,16 @@ that moment. See [Events](/api/events/) for the envelope and endpoint.
   with `Accept: text/event-stream`. Resume with `after=N` or `Last-Event-ID`.
 - Dedupe by `seq`. If the stream drops, reconnect from the last `seq` you
   processed; reconnecting never creates another Turn.
+- Page backwards through history with `?before=N&limit=M`: the newest `M`
+  events below `N`, in `seq` order, plus `next_before` for older ones (`null` at
+  the start of the journal). The Console's Activity tab loads this way after a
+  reload and merges the page with the live stream by `seq`.
 - A cursor ahead of the journal fails with `invalid_cursor`.
+- Tool output that PostgreSQL cannot store (NUL, unpaired surrogates) is stored
+  with each such character replaced by U+FFFD and an `unrepresentable_replaced`
+  count. A record the database still refuses is kept as a
+  `runtime.evidence_rejected` event, so later evidence (and a cancel) is never
+  held back.
 
 ```bash
 sbx sessions events SESSION_ID --after 0 --follow
@@ -407,8 +416,26 @@ wins and the call is a no-op.
 ## Retry
 
 `POST /api/turns/{id}/retries` creates a new Turn from the original Message
-(linked with `retry_of`). Only `failed`, `cancelled` or `interrupted` Turns can
-be retried; otherwise the call returns `invalid_transition`.
+(linked with `retry_of`). Only `failed`, `cancelled` or `interrupted` Turns of an
+open Session can be retried; otherwise the call returns `invalid_transition`. A
+Turn's `actions` list `retry` only when the call would be accepted, so archived
+and closed Sessions never offer it.
+
+## Archive and close
+
+Archive hides a Session from the default lists and can be undone
+(`POST /api/sessions/{id}/unarchives`). Close is permanent: it cancels running
+and queued Turns, releases the Session's compute, cancels child Sessions it
+started, and makes the Session read-only. History, ChangeSets and Deliveries
+stay readable. The Console asks before closing and offers Archive instead.
+
+## Listing and search
+
+`GET /api/workspaces/{id}/sessions` pages by most recent activity
+(`next_cursor`). `lifecycle` takes one state or a comma list
+(`lifecycle=open,archived`); without it every lifecycle is listed. `q` searches
+titles (case-insensitive) and exact Session ids across the whole workspace. The
+Console's lists show open Sessions unless archived or closed ones are asked for.
 
 ## Unknown outcomes
 
@@ -473,6 +500,18 @@ Session only if its working tree equals the ChangeSet baseline; otherwise nothin
 is written.
 
 ## Delivery
+
+Every ChangeSet returned by the API carries a `delivery` object saying whether
+it can be delivered now and, if not, why (`no_repository`,
+`connection_required`, `connection_revoked`, `not_ready`, `no_baseline`,
+`transport_unsupported`) and which recovery actions exist. The delivery request
+is refused for exactly the same reasons. A ChangeSet from a Session without a
+repository cannot be delivered; export it instead:
+
+```bash
+sbx changesets patch cs_123 -o change.patch   # or client.changesets.patch("cs_123")
+git apply --binary change.patch
+```
 
 `POST /api/changesets/{id}/deliveries` requests delivery of exactly that
 ChangeSet. The Delivery Job performs three steps and records each as evidence:
@@ -632,7 +671,17 @@ rejected with `csrf_failed`.
   live work log on the left and a workspace panel (Overview, Changes, Files,
   Terminal, Services, Children, Activity) on the right. Visitors who are not
   signed in see the product landing page at `/` instead.
-- **Projects**: reusable repository and environment configuration.
+- **Projects**: reusable repository and environment configuration. **Publish
+  new version** starts from the current version and changes only what you edit
+  (repository, base ref, agent CLI, model, compute, checks, services); settings
+  the form does not show, such as environment variables, reasoning effort and
+  the delivery policy, are kept and listed. Before publishing, the dialog lists
+  every changed field, and a change to the delivery policy must be confirmed.
+  Checks are one per line as `name=command`; services have a name, a command
+  and an optional port. Commands are split like a POSIX shell
+  (`smoke=python3 -c "print(123)"` runs `python3`, `-c`, `print(123)`), but no
+  shell runs and nothing is expanded: write `sh -c '…'` yourself for pipes or
+  `&&`. The dialog shows the exact arguments of every command.
 - **Machines**: subscription logins, one per machine, for Codex, Grok
   Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
   each entry says how it signs in. For Codex and Grok Build, open the sign-in
@@ -661,10 +710,46 @@ rejected with `csrf_failed`.
   Terminal and Services show a diagnosis instead.
 - Retry buttons name what they retry: Turn, Delivery or validation.
 
+## Services and delivery
+
+- **Services** lists the services declared by the Project version a Session
+  started from; processes the agent or a terminal starts on their own are not
+  listed. A Session without a Project has none. Start, Stop and Logs act on the
+  Session's compute; while compute is not running, Start records the wish and
+  the service starts when the Session next runs.
+- **Changes → Deliveries** shows where a delivery would go (for example "Opens a
+  draft pull request on owner/repo against main"). When delivery is not possible
+  it says why instead of showing a form: a Session without a repository offers
+  **Download patch** (apply it with `git apply --binary`), and a missing or
+  revoked GitHub Connection links to Connections.
+
 ## Limits
 
 The Terminal polls for output. Service preview is not available because no
-preview origin is configured.
+preview origin is configured; a service declared with a preview says so.
+## Workspace files and terminals
+
+- **Open or create file** opens an empty editor for a path that does not exist
+  yet. Saving creates it, and fails with a conflict if someone else created the
+  file in the meantime.
+- Files larger than 1,000,000 bytes, and files whose credential values are
+  hidden, open as read-only previews. Saving a preview would cut the file short
+  or overwrite the hidden values, so these files are changed from the terminal
+  or by the agent.
+- The Terminal is a command console. It shows colours and progress lines, and
+  hides control sequences. Switching panels does not end it. Each terminal can be
+  closed explicitly; **New terminal** starts another. Terminals end when the
+  Session's compute is released.
+- If the connection drops before a command is confirmed, the Terminal says so
+  and offers **Retry same command**. The retry reuses the request key, so the
+  command runs at most once.
+- **Live changes** observes the workspace again when you open it, every few
+  seconds while it is visible, after each Turn, and on **Refresh**.
+
+## Limits
+
+The Terminal polls for output and sends whole lines. Service preview is not
+available because no preview origin is configured.
 
 # API overview
 
@@ -755,7 +840,20 @@ services return `executor_unavailable` when no live lease exists; use
 
 `POST …/services/{name}/preview-grants` exists in the schema but returns an
 error because no dedicated preview origin is configured. Terminals use
-polling (`…/terminals/{id}/input` and `…/output`).
+polling (`…/terminals/{id}/input` and `…/output`). `GET …/terminals` lists the
+terminals the live runtime still holds, and `DELETE …/terminals/{id}` closes one.
+
+## Live files and terminal input
+
+- `PUT /api/sessions/{id}/files` requires `expected_digest`: `"absent"` to create
+  a file, or the `digest` returned by a complete read. A truncated, redacted or
+  binary read returns `digest: null` and `editable: false`, so it cannot be
+  written back.
+- Terminal create, input and close require `Idempotency-Key`. A retry with the
+  same key returns the first result and does not run the command again. The same
+  key with a different body returns `409 idempotency_conflict`. If the runtime
+  did not confirm the operation, the response is `409 outcome_unknown`; retry
+  with the same key to learn the outcome.
 
 # Events
 
@@ -835,8 +933,10 @@ corresponds to an `outcome_unknown` Turn.
 
 ## Errors
 
-`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal, or
-mismatched `after` and `Last-Event-ID`. The Console treats `invalid_cursor` and
+`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal,
+mismatched `after` and `Last-Event-ID`, or `before` combined with `after` or a
+stream. `before=N` (with `limit`) returns the newest events below `N` in `seq`
+order and `next_before` for the page before them. The Console treats `invalid_cursor` and
 `history_reset_required` as the signal to fetch a fresh snapshot instead of
 replaying.
 
@@ -932,7 +1032,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `sessions` | `create`, `list`, `get`, `send`, `close`, `archive`, `executor`, `activate`, `release`, `export`, `events`, `stream` |
 | `messages` | `list` |
 | `turns` | `list`, `get`, `cancel`, `retry`, `acknowledge`, `wait` |
-| `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
+| `changesets` | `list`, `capture`, `get`, `diff`, `patch`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
 | `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `submit_code`, `logout`, `delete`, `models`, `wait` |
@@ -1127,7 +1227,7 @@ mode `0600`. Environment variables override the file.
 | `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. `create` accepts `--slot`, `--model` and `--effort` for Machine Slots. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
-| `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
+| `changesets capture`, `apply`, `show`, `patch` | ChangeSets. `capture --salvage` marks a salvage capture; `patch ID -o FILE` writes the sealed patch for `git apply --binary`. |
 | `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
 | `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
 | `operations show ID` | Long-operation status. |

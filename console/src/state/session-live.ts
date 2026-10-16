@@ -155,6 +155,13 @@ export class SessionLive {
     });
   }
 
+  /** Workspace projections (changes, services, …) refetch on their next render. */
+  private bumpRevisions() {
+    const rev = { ...this.state.revisions };
+    for (const k of Object.keys(rev) as (keyof typeof rev)[]) rev[k] += 1;
+    this.set({ revisions: rev });
+  }
+
   private scheduleRefresh() {
     if (this.refreshTimer) return;
     this.refreshTimer = setTimeout(() => {
@@ -198,6 +205,7 @@ export class SessionLive {
               this.set({ status: "live", error: null });
               // Anything that changed while disconnected is refetched, never guessed.
               this.refresh();
+              this.bumpRevisions();
             }
           },
           onEvent: (e) => {

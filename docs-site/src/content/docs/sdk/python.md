@@ -46,7 +46,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `sessions` | `create`, `list`, `get`, `send`, `close`, `archive`, `executor`, `activate`, `release`, `export`, `events`, `stream` |
 | `messages` | `list` |
 | `turns` | `list`, `get`, `cancel`, `retry`, `acknowledge`, `wait` |
-| `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
+| `changesets` | `list`, `capture`, `get`, `diff`, `patch`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
 | `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `submit_code`, `logout`, `delete`, `models`, `wait` |

@@ -106,7 +106,7 @@ export function WorkspacePanel({
       </nav>
       <div className="wpanel__body">
         {panel === "overview" && <OverviewTab session={session} state={state} live={live} />}
-        {panel === "activity" && <ActivityTab state={state} />}
+        {panel === "activity" && <ActivityTab sessionId={session.id} state={state} />}
         {panel === "changes" && <ChangesTab sessionId={session.id} revision={rev.changes + rev.deliveries} />}
         {panel === "files" && <FilesTab session={session} live={live} rev={rev.changes} />}
         {panel === "terminal" && <TerminalTab sessionId={session.id} sessionClosed={session.lifecycle === "closed"} />}

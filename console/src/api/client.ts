@@ -16,6 +16,7 @@ import type {
   DelegationRole,
   Delivery,
   EventEnvelope,
+  EventHistoryPage,
   EventPage,
   ExecutorBackend,
   ExecutorView,
@@ -33,10 +34,12 @@ import type {
   Project,
   ProjectSpec,
   ProjectVersion,
-  ServiceItem,
+  ServiceList,
+  ServiceLogs,
   Session,
   SessionList,
   SessionSnapshot,
+  TerminalInfo,
   TerminalOutput,
   Turn,
 } from "./types";
@@ -48,7 +51,10 @@ export interface Opts {
 }
 
 export interface SessionFilters {
+  /** One lifecycle or a comma list ("open,archived"); every lifecycle when omitted. */
   lifecycle?: string;
+  /** Title substring or exact id, searched across the whole workspace. */
+  q?: string;
   role?: string;
   parent_session_id?: string;
   project_id?: string;
@@ -178,6 +184,9 @@ export function createApiClient(options: HttpOptions = {}) {
       turns: (s: string) => get<{ items: Turn[] }>(`/api/sessions/${enc(s)}/turns`),
       eventsPage: (s: string, after: number, limit = 500, signal?: AbortSignal) =>
         get<EventPage>(`/api/sessions/${enc(s)}/events`, { after, limit }, signal),
+      /** History: the newest `limit` events below `before` (in seq order) and a cursor further back. */
+      eventsBefore: (s: string, before: number, limit = 100) =>
+        get<EventHistoryPage>(`/api/sessions/${enc(s)}/events`, { before, limit }),
       executor: (s: string) => get<ExecutorView>(`/api/sessions/${enc(s)}/executor`),
       activateExecutor: (s: string, o?: Opts) => post<Accepted>(`/api/sessions/${enc(s)}/executor/activations`, undefined, o),
       releaseExecutor: (s: string, o?: Opts) => post<Accepted>(`/api/sessions/${enc(s)}/executor/releases`, undefined, o),
@@ -248,6 +257,8 @@ export function createApiClient(options: HttpOptions = {}) {
       diff: (cs: string) =>
         get<{ diff: string; truncated?: boolean }>(`/api/changesets/${enc(cs)}/diff`),
       file: (cs: string, path: string) => get<FileContent>(`/api/changesets/${enc(cs)}/files`, { path }),
+      /** Export download (exact `git apply --binary` bytes); a plain same-origin link. */
+      patchUrl: (cs: string) => `${http.baseUrl}/api/changesets/${enc(cs)}/patch`,
     },
 
     deliveries: {
@@ -283,7 +294,10 @@ export function createApiClient(options: HttpOptions = {}) {
     },
 
     terminals: {
+      list: (s: string) => get<{ items: TerminalInfo[] }>(`/api/sessions/${enc(s)}/terminals`),
       create: (s: string, o?: Opts) => post<{ terminal_id: string }>(`/api/sessions/${enc(s)}/terminals`, undefined, o),
+      close: (s: string, t: string, o?: Opts) =>
+        send<{ closed: boolean }>("DELETE", `/api/sessions/${enc(s)}/terminals/${enc(t)}`, undefined, o),
       input: (s: string, t: string, data: string, o?: Opts) =>
         post<unknown>(`/api/sessions/${enc(s)}/terminals/${enc(t)}/input`, { data }, o),
       output: (s: string, t: string, after: number) =>
@@ -291,13 +305,13 @@ export function createApiClient(options: HttpOptions = {}) {
     },
 
     services: {
-      list: (s: string) => get<{ items: ServiceItem[] }>(`/api/sessions/${enc(s)}/services`),
+      list: (s: string) => get<ServiceList>(`/api/sessions/${enc(s)}/services`),
       activate: (s: string, name: string, o?: Opts) =>
         post<Accepted>(`/api/sessions/${enc(s)}/services/${enc(name)}/activations`, undefined, o),
       stop: (s: string, name: string, o?: Opts) =>
         post<Accepted>(`/api/sessions/${enc(s)}/services/${enc(name)}/stops`, undefined, o),
       logs: (s: string, name: string) =>
-        get<{ lines: string[] }>(`/api/sessions/${enc(s)}/services/${enc(name)}/logs`),
+        get<ServiceLogs>(`/api/sessions/${enc(s)}/services/${enc(name)}/logs`),
     },
   };
 }

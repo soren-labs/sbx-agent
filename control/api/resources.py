@@ -235,16 +235,19 @@ def list_sessions(
     parent_session_id: str | None = None,
     limit: int = 50,
     cursor: str | None = None,
+    q: str | None = None,
 ) -> dict[str, Any]:
+    """``lifecycle`` takes one state or a comma list (``open,archived``)."""
     return services(request).queries.sessions(
         principal(request),
         workspace_id,
-        lifecycle=lifecycle,
+        lifecycle=[v for v in lifecycle.split(",") if v] if lifecycle is not None else None,
         role=role,
         project_id=project_id,
         parent_session_id=parent_session_id,
         limit=limit,
         cursor=cursor,
+        q=q,
     )
 
 
@@ -376,9 +379,19 @@ def events(
     types: str | None = None,
     turn_id: str | None = None,
     max_seconds: float = 600,
+    before: int | None = None,
 ) -> Any:
+    """Forward pages (``after``), the live SSE stream, or history pages (``before``: the
+    newest ``limit`` events below that seq, with ``next_before`` for older ones)."""
     who = principal(request)
     queries = services(request).queries
+    if before is not None:
+        if after is not None or "text/event-stream" in request.headers.get("accept", ""):
+            raise DomainError("invalid_cursor", "before pages history; it cannot be combined")
+        type_list = [t for t in (types or "").split(",") if t] or None
+        return queries.events(
+            who, session_id, before=before, limit=limit, types=type_list, turn_id=turn_id
+        )
     last_event_id = request.headers.get("last-event-id")
     if after is not None and last_event_id is not None and str(after) != last_event_id.strip():
         raise DomainError("invalid_cursor", "after and Last-Event-ID disagree")

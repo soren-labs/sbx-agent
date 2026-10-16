@@ -280,7 +280,8 @@ export function countSteps(steps: Step[]): Counts {
   return counts;
 }
 
-export const LIVE_TURN_STATES = ["queued", "preparing", "running"];
+// A cancelling Turn is still live: it has not ended until the runtime confirms the stop.
+export const LIVE_TURN_STATES = ["queued", "preparing", "running", "cancelling"];
 export const isLiveTurn = (turn: Turn | undefined) => !!turn && LIVE_TURN_STATES.includes(turn.state);
 
 export interface TurnBlock {
@@ -288,23 +289,29 @@ export interface TurnBlock {
   messages: Message[];
 }
 
-/** Messages grouped under the Turn they belong to, in conversation order. */
+/**
+ * Exactly one block per Turn, placed where its first Message (the request) appears.
+ * A follow-up queued while an earlier Turn runs gets its ordinal before that Turn's
+ * reply, so grouping only adjacent Messages would split both Turns and render their
+ * outcomes twice. Messages without a Turn (notes) stay where they were written.
+ */
 export function blocksOf(messages: Message[], turns: Turn[]): TurnBlock[] {
   const byId = new Map(turns.map((t) => [t.id, t]));
   const blocks: TurnBlock[] = [];
-  const seen = new Set<string>();
+  const byTurn = new Map<string, TurnBlock>();
   for (const message of messages) {
-    const turn = message.turn_id ? (byId.get(message.turn_id) ?? null) : null;
-    const prev = blocks[blocks.length - 1];
-    if (turn && prev?.turn?.id === turn.id) {
-      prev.messages.push(message);
-    } else {
-      blocks.push({ turn, messages: [message] });
-      if (turn) seen.add(turn.id);
+    const id = message.turn_id;
+    const existing = id ? byTurn.get(id) : undefined;
+    if (existing) {
+      existing.messages.push(message);
+      continue;
     }
+    const block: TurnBlock = { turn: id ? (byId.get(id) ?? null) : null, messages: [message] };
+    blocks.push(block);
+    if (id) byTurn.set(id, block);
   }
   // A Turn the server knows about before any of its Messages arrived.
-  for (const turn of turns) if (!seen.has(turn.id)) blocks.push({ turn, messages: [] });
+  for (const turn of turns) if (!byTurn.has(turn.id)) blocks.push({ turn, messages: [] });
   return blocks;
 }
 

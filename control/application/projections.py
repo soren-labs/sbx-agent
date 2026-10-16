@@ -15,7 +15,8 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
 
-def turn_resource(turn: dict[str, Any]) -> dict[str, Any]:
+def turn_resource(turn: dict[str, Any], *, lifecycle: str) -> dict[str, Any]:
+    """``lifecycle`` is the owning Session's: actions are what the commands would accept."""
     return {
         "id": turn["id"],
         "session_id": turn["session_id"],
@@ -39,11 +40,11 @@ def turn_resource(turn: dict[str, Any]) -> dict[str, Any]:
         "created_at": _iso(turn["created_at"]),
         "started_at": _iso(turn["started_at"]),
         "finished_at": _iso(turn["finished_at"]),
-        "actions": _turn_actions(turn),
+        "actions": _turn_actions(turn, lifecycle),
     }
 
 
-def _turn_actions(turn: dict[str, Any]) -> list[str]:
+def _turn_actions(turn: dict[str, Any], lifecycle: str) -> list[str]:
     state = turn["state"]
     actions = []
     if state in ("queued", "preparing", "running"):
@@ -51,7 +52,8 @@ def _turn_actions(turn: dict[str, Any]) -> list[str]:
     if state in ("failed", "cancelled", "interrupted"):
         if turn["reason"] == "outcome_unknown" and turn["unknown_acknowledged_at"] is None:
             actions.append("acknowledge_unknown")
-        else:
+        elif lifecycle == "open":
+            # retry_turn rejects any other lifecycle (rules.check_accepts_work).
             actions.append("retry")
     return actions
 
@@ -177,15 +179,34 @@ class Queries:
         principal: Principal,
         workspace_id: str,
         *,
-        lifecycle: str | None = None,
+        lifecycle: str | list[str] | None = None,
         role: str | None = None,
         project_id: str | None = None,
         parent_session_id: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
+        q: str | None = None,
     ) -> dict[str, Any]:
+        """Keyset page by (updated_at, id). ``lifecycle`` is one or more states (all when
+        omitted); ``q`` matches the title (case-insensitive substring) or an exact id,
+        across the whole workspace rather than a page already loaded."""
         access.require_workspace(principal, workspace_id)
         limit = max(1, min(int(limit), 200))
+        lifecycles = [lifecycle] if isinstance(lifecycle, str) else lifecycle
+        if lifecycles is not None:
+            unknown = set(lifecycles) - {"open", "archived", "closed"}
+            if unknown or not lifecycles:
+                raise DomainError(
+                    "validation_failed",
+                    "lifecycle must be open, archived and/or closed",
+                    details={"field": "lifecycle"},
+                )
+        search = (q or "").strip()[:200] or None
+        pattern = (
+            "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            if search
+            else None
+        )
         cursor_at = cursor_id = None
         if cursor:
             try:
@@ -198,7 +219,9 @@ class Queries:
             rows = uow.query(
                 "sessions.page",
                 workspace_ids=[workspace_id],
-                lifecycle=lifecycle,
+                lifecycles=lifecycles,
+                q=pattern,
+                q_id=search,
                 role=role,
                 project_id=project_id,
                 parent_session_id=parent_session_id,
@@ -246,10 +269,10 @@ class Queries:
 
     def turns(self, principal: Principal, session_id: str) -> dict[str, Any]:
         def fn(uow: Any) -> dict[str, Any]:
-            access.owned(uow, principal, "sessions", session_id, what="session")
+            session = access.owned(uow, principal, "sessions", session_id, what="session")
             turns = uow.find("turns", {"session_id": session_id}, order="ordinal")
             return {
-                "items": [turn_resource(t) for t in turns],
+                "items": [turn_resource(t, lifecycle=session["lifecycle"]) for t in turns],
                 "event_watermark": uow.watermark(session_id),
             }
 
@@ -259,7 +282,8 @@ class Queries:
         def fn(uow: Any) -> dict[str, Any]:
             turn = access.owned(uow, principal, "turns", turn_id, what="turn")
             executions = uow.find("executions", {"turn_id": turn_id}, order="attempt_ordinal")
-            body = turn_resource(turn)
+            session = uow.get("sessions", turn["session_id"])
+            body = turn_resource(turn, lifecycle=session["lifecycle"])
             body["executions"] = [
                 {
                     "id": e["id"],
@@ -288,14 +312,35 @@ class Queries:
         limit: int = 500,
         types: list[str] | None = None,
         turn_id: str | None = None,
+        before: int | None = None,
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit), 1000))
         if after < 0:
             raise DomainError("invalid_cursor", "after must be >= 0")
+        if before is not None and before < 1:
+            raise DomainError("invalid_cursor", "before must be >= 1")
 
         def fn(uow: Any) -> dict[str, Any]:
             access.owned(uow, principal, "sessions", session_id, what="session")
             watermark = uow.watermark(session_id)
+            if before is not None:
+                # History, newest first in pages but returned in seq order: the most recent
+                # ``limit`` events below ``before``; ``next_before`` pages further back.
+                rows = uow.query(
+                    "events.before",
+                    session_id=session_id,
+                    before=min(before, watermark + 1),
+                    types=types,
+                    turn_id=turn_id,
+                    limit=limit + 1,
+                )
+                more = len(rows) > limit
+                rows = rows[1:] if more else rows
+                return {
+                    "items": [event_envelope(r) for r in rows],
+                    "next_before": int(rows[0]["seq"]) if more and rows else None,
+                    "event_watermark": watermark,
+                }
             if after > watermark:
                 raise DomainError(
                     "invalid_cursor",

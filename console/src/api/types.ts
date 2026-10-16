@@ -155,14 +155,56 @@ export interface ExecutorBackend {
 }
 
 // ---- projects -------------------------------------------------------------
+/** A declared check: an exec argv, never run through a shell. */
+export interface ProjectCheck {
+  name: string;
+  argv: string[];
+  timeout_seconds?: number;
+  [extra: string]: unknown;
+}
+/** A declared service (the Services tab lists exactly these). */
+export interface ProjectService {
+  name: string;
+  argv: string[];
+  cwd?: string;
+  port?: number | null;
+  health?: { path?: string } | null;
+  restart?: string;
+  order?: number;
+  preview?: boolean;
+  [extra: string]: unknown;
+}
+export interface ShipPolicy {
+  transport?: string;
+  base_branch?: string | null;
+  draft?: boolean;
+  automatic_delivery?: boolean;
+  required_results?: { kind: string; count?: number; verdict?: string }[];
+  required_checks?: string[];
+  independence?: string;
+  merge_methods?: string[];
+  require_base_unchanged?: boolean;
+  [extra: string]: unknown;
+}
+/**
+ * A complete ProjectVersion spec as stored (schema 1). Publishing replaces it whole, so
+ * the Console derives a new version from the current one; fields it does not edit, and
+ * fields it does not know, are carried over unchanged.
+ */
 export interface ProjectSpec {
-  repository: { full_name: string; base_ref: string };
-  checks?: { name: string; argv: string[] }[];
+  schema_version?: number;
+  repository: { full_name: string; base_ref: string; provider?: string; clone_url?: string; [extra: string]: unknown } | null;
+  environment?: { env?: Record<string, string>; [extra: string]: unknown };
+  checks?: ProjectCheck[];
+  services?: ProjectService[];
   defaults?: {
-    harness?: { provider_id: string; model?: string; effort?: string };
-    inference?: { mode: "subscription"; machine_slot_id: string };
-    executor?: { backend: string };
+    harness?: { provider_id: string; model?: string; effort?: string; [extra: string]: unknown };
+    executor?: { backend: string; resource_class?: string; [extra: string]: unknown };
+    turn_defaults?: Record<string, unknown>;
+    [extra: string]: unknown;
   };
+  ship_policy?: ShipPolicy;
+  [extra: string]: unknown;
 }
 export interface ProjectVersion {
   id: string;
@@ -317,11 +359,26 @@ export interface EventPage {
   next_after: number;
   event_watermark: number;
 }
+export interface EventHistoryPage {
+  items: EventEnvelope[];
+  /** Pass as `before` for older events; null at the start of the journal. */
+  next_before: number | null;
+  event_watermark: number;
+}
 
 // ---- executor -------------------------------------------------------------
 export interface ExecutorView {
   backend: string;
-  leases: { id: string; generation: number; state: string; reason: string | null; quarantined?: boolean }[];
+  leases: {
+    id: string;
+    generation: number;
+    state: string;
+    reason: string | null;
+    quarantined?: boolean;
+    /** allocating_sandbox | connecting_runtime | ready | quiescing | released | lost … */
+    stage?: string;
+    created_at?: string;
+  }[];
   worktree: { id?: string; availability: string; generation: number; base_sha: string | null };
   recovery_point: { snapshot_id: string; generation: number; created_at: string } | null;
   event_watermark?: number;
@@ -358,6 +415,28 @@ export interface ChangeSet {
   created_at: string;
   sealed_at: string | null;
   files?: ChangeSetFile[];
+  /** Server-evaluated: the same check gates the delivery command. */
+  delivery?: DeliveryCapability;
+}
+export type DeliveryBlockReason =
+  | "not_ready"
+  | "no_repository"
+  | "no_baseline"
+  | "transport_unsupported"
+  | "connection_required"
+  | "connection_revoked";
+export interface DeliveryCapability {
+  available: boolean;
+  reason: DeliveryBlockReason | null;
+  message: string | null;
+  transport: string;
+  repository: string | null;
+  base_branch: string | null;
+  draft: boolean;
+  connection_id: string | null;
+  /** Actions that really exist for this ChangeSet when delivery is not available. */
+  recovery: ("download_patch" | "manage_connections")[];
+  patch_available: boolean;
 }
 export interface Delivery {
   id: string;
@@ -426,12 +505,25 @@ export interface FileContent {
   path: string;
   encoding: string;
   content: string;
-  digest: string;
+  /** Save precondition; null when the view is partial (truncated, redacted or binary). */
+  digest: string | null;
+  size?: number;
+  truncated?: boolean;
+  redacted?: boolean;
+  editable?: boolean;
+  readonly_reason?: "truncated" | "redacted" | "binary" | null;
 }
 export interface TerminalOutput {
   data: string;
   offset: number;
   closed: boolean;
+  truncated?: boolean;
+}
+export interface TerminalInfo {
+  terminal_id: string;
+  created_at: string | null;
+  closed: boolean;
+  offset: number;
 }
 export interface ServiceItem {
   name: string;
@@ -439,7 +531,31 @@ export interface ServiceItem {
   state: string;
   port: number | null;
   preview: boolean | string | null;
+  /** False while this deployment has no preview origin (see `capabilities.preview`). */
+  preview_available?: boolean;
+  observed_at?: string | null;
   lease_live?: boolean;
+}
+/** Where a Session's services are declared: its pinned ProjectVersion, or nowhere. */
+export interface ServiceSource {
+  kind: "project_version" | "none";
+  project_id: string | null;
+  project_name: string | null;
+  project_version_id: string | null;
+  project_version_ordinal: number | null;
+  current_version_id: string | null;
+}
+export interface ServiceList {
+  items: ServiceItem[];
+  source?: ServiceSource;
+  capabilities?: { preview?: { enabled: boolean; reason?: string } };
+  event_watermark?: number;
+}
+export interface ServiceLogs {
+  name?: string;
+  lines: string[];
+  /** False when the service has not been started on the current compute yet. */
+  started?: boolean;
 }
 
 // -- Machine Slots (subscription logins) ---------------------------------------------------

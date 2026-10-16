@@ -6,13 +6,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from control.application.sessions import finish_turn
 from control.domain.digests import digest_of
-from control.domain.errors import DomainError
+from control.domain.errors import DomainError, StorageRejected
 from control.domain.execution import LIVE_EXECUTION_STATES
 from control.domain.ids import new_id
+from control.domain.text import storable
 from control.security.redaction import redact
 
 _PART_EVENTS = ("message.part_added", "message.part_updated")
@@ -52,6 +54,23 @@ def _observed(item: dict[str, Any]) -> datetime | None:
 def ingest(
     uow: Any, lease: dict[str, Any], epoch: str, items: list[dict[str, Any]], hooks: IngestHooks
 ) -> IngestResult:
+    # The batch is applied in one savepoint; only if PostgreSQL refuses some record is it
+    # re-applied one savepoint per record, so a rejection costs nothing on the common path.
+    try:
+        return uow.isolated(lambda: _ingest(uow, lease, epoch, items, hooks, per_item=False))
+    except StorageRejected:
+        return _ingest(uow, lease, epoch, items, hooks, per_item=True)
+
+
+def _ingest(
+    uow: Any,
+    lease: dict[str, Any],
+    epoch: str,
+    items: list[dict[str, Any]],
+    hooks: IngestHooks,
+    *,
+    per_item: bool,
+) -> IngestResult:
     key = {"executor_lease_id": lease["id"], "runtime_epoch": epoch}
     offset = uow.find_one("runtime_ingestion_offsets", key, lock=True)
     if offset is None:
@@ -61,9 +80,11 @@ def ingest(
     applied = 0
     for item in sorted(items, key=lambda i: int(i["local_seq"])):
         seq = int(item["local_seq"])
-        payload = redact(item.get("payload") or {})
+        payload = _storable(redact(item.get("payload") or {}))
         if seq <= acked:
             existing = uow.find_one("session_events", {**key, "local_seq": seq})
+            if existing is not None and existing["type"] == REJECTED:
+                continue  # already settled as rejected evidence
             if existing is not None and _strip(existing["payload"]) != _strip(payload):
                 raise DomainError(
                     "validation_failed",
@@ -73,13 +94,66 @@ def ingest(
             continue
         if seq != acked + 1:
             break  # only contiguous committed evidence is acknowledged
-        terminal = _apply(uow, lease, epoch, seq, item, payload, hooks) or terminal
+        try:
+            apply = partial(_apply, uow, lease, epoch, seq, item, payload, hooks)
+            applied_terminal = uow.isolated(apply) if per_item else apply()
+        except StorageRejected as exc:
+            # One unstorable record must not hold back the evidence behind it (a cancel or
+            # terminal verdict): it is recorded as rejected at the same source tuple and
+            # the watermark moves on.
+            applied_terminal = _reject(uow, lease, epoch, seq, item, str(exc), hooks)
+        terminal = applied_terminal or terminal
         acked = seq
         applied += 1
     uow.update_where(
         "runtime_ingestion_offsets", key, {"acked_local_seq": acked, "updated_at": uow.now()}
     )
     return IngestResult(acked=acked, terminal=terminal, applied=applied)
+
+
+REJECTED = "runtime.evidence_rejected"
+
+
+def _storable(payload: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic storable form; the replacement count stays with the evidence."""
+    clean, replaced = storable(payload)
+    return {**clean, "unrepresentable_replaced": replaced} if replaced else payload
+
+
+def _reject(
+    uow: Any,
+    lease: dict[str, Any],
+    epoch: str,
+    seq: int,
+    item: dict[str, Any],
+    error: str,
+    hooks: IngestHooks,
+) -> bool:
+    execution = uow.get("executions", item.get("execution_id") or "", lock=True)
+    if execution is None or execution["executor_lease_id"] != lease["id"]:
+        raise DomainError("forbidden", "runtime evidence for an execution outside this lease")
+    session = uow.get("sessions", execution["session_id"], lock=True)
+    turn = uow.get("turns", execution["turn_id"], lock=True)
+    uow.append_event(
+        session,
+        REJECTED,
+        {"rejected_type": str(item.get("type"))[:100], "local_seq": seq, "error": error},
+        actor="runtime",
+        source="runtime",
+        turn_id=turn["id"],
+        execution_id=execution["id"],
+        executor_lease_id=lease["id"],
+        lease_generation=lease["generation"],
+        runtime_epoch=epoch,
+        local_seq=seq,
+        observed_at=_observed(item),
+    )
+    if item.get("type") == "execution.stopped" and execution["state"] in LIVE_EXECUTION_STATES:
+        # The stop happened; only its record is unusable. Settle the Turn without claiming
+        # a confirmed stop (a cancel ends interrupted, anything else outcome_unknown).
+        terminalize(uow, session, turn, execution, {"stopped": False}, seq, hooks)
+        return True
+    return False
 
 
 def _strip(payload: dict[str, Any]) -> str:
@@ -154,7 +228,7 @@ def _apply(
     elif kind == "execution.native_bound":
         _bind_native(uow, session, uow.get("executions", execution["id"]), payload)
     elif kind == "usage.observed":
-        uow.update("turns", turn["id"], {"usage": payload})
+        uow.update("turns", turn["id"], {"usage": _turn_usage(uow, execution, turn, payload)})
     elif kind == "diagnostic.reported":
         if payload.get("credential_health") == "invalid" and hooks.credential_health:
             hooks.credential_health(uow, session, execution, "invalid")
@@ -167,6 +241,47 @@ def _apply(
         terminalize(uow, session, turn, uow.get("executions", execution["id"]), payload, seq, hooks)
         return True
     return False
+
+
+_USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens")
+
+
+def _turn_usage(
+    uow: Any, execution: dict[str, Any], turn: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Per-Turn usage. A Harness whose CLI reports a running total for the native
+    conversation (``scope: conversation``) is converted to this Turn's share by subtracting
+    the total the previous Turn of the same conversation reported. Without that baseline
+    (a resumed conversation whose earlier total is unknown) the usage is kept as reported
+    but marked ``per_turn: false`` so session sums never count it twice."""
+    if payload.get("scope") != "conversation":
+        return payload
+    reported = {k: int(payload.get(k) or 0) for k in _USAGE_FIELDS}
+    row = uow.get("executions", execution["id"])
+    binding = (
+        uow.get("native_context_bindings", row["native_binding_id"])
+        if row["native_binding_id"]
+        else None
+    )
+    meta = {k: v for k, v in payload.items() if k not in _USAGE_FIELDS and k != "scope"}
+    if binding is None:
+        return {**meta, **reported, "per_turn": False, "conversation_total": reported}
+    conversation = {"native_id": binding["native_id"], **reported}
+    if binding["execution_id"] == execution["id"]:
+        # This Turn started the native conversation: its total is its own usage.
+        return {**meta, **reported, "per_turn": True, "conversation_total": conversation}
+    previous = None
+    for earlier in uow.find(
+        "turns", {"session_id": turn["session_id"]}, order="ordinal DESC", limit=20
+    ):
+        total = (earlier["usage"] or {}).get("conversation_total") or {}
+        if earlier["ordinal"] < turn["ordinal"] and total.get("native_id") == binding["native_id"]:
+            previous = total
+            break
+    if previous is None:
+        return {**meta, **reported, "per_turn": False, "conversation_total": conversation}
+    delta = {k: max(0, reported[k] - int(previous.get(k) or 0)) for k in _USAGE_FIELDS}
+    return {**meta, **delta, "per_turn": True, "conversation_total": conversation}
 
 
 def _output_message(uow: Any, session: dict[str, Any], turn: dict[str, Any]) -> dict[str, Any]:

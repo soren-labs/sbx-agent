@@ -126,6 +126,17 @@ describe("event reducer", () => {
     s = apply(s, ev(3, "turn.succeeded"), ev(4, "delivery.progressed"));
     expect(s.dirty).toMatchObject({ turns: true, session: true, deliveries: true });
   });
+
+  it("refreshes live changes when a Turn finishes, not on every Turn event (issue #227 AUD05)", () => {
+    let s = seeded();
+    s = apply(s, ev(1, "turn.started"), ev(2, "turn.preparing"));
+    expect(s.dirty.changes).toBe(false);
+    for (const [i, end] of ["turn.succeeded", "turn.failed", "turn.cancelled", "turn.interrupted"].entries()) {
+      s = liveReducer(s, { type: "clear_dirty", keys: ["changes"] });
+      s = apply(s, ev(3 + i, end));
+      expect(s.dirty.changes).toBe(true);
+    }
+  });
 });
 
 describe("SessionLive", () => {

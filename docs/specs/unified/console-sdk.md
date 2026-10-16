@@ -5,7 +5,11 @@
   `/v1`, `/v2` or `/hosted` path. Live surfaces (files, terminal, services) report
   `executor_unavailable` instead of waking compute. Terminals are nested under the Session
   (`/api/sessions/{s}/terminals/{t}/input|output`) and poll for output; this is a documented
-  deviation from a WebSocket attach.
+  deviation from a WebSocket attach. `GET /api/sessions/{s}/terminals` lists the runtime's live
+  terminals and `DELETE …/terminals/{t}` closes one. Terminal create/input/close and file writes
+  require `Idempotency-Key`, which becomes the runtime operation ID: a retry replays, a different
+  body is `idempotency_conflict`, an unconfirmed operation is `outcome_unknown`. File saves need
+  `expected_digest` (`absent` or the digest of a complete read; partial reads carry `null`).
 * **Console** (`console/src`): one typed client (`api/client.ts`), which sends CSRF and
   `Idempotency-Key` headers and reuses the key on retry. One store (`state/`) holds the initial
   snapshot and watermark, replays events by sequence, dedupes by seq, applies part revisions by
@@ -23,6 +27,8 @@
   an unknown outcome raises `OutcomeUnknown`. `create_api_key(name, scopes=None, *,
   idempotency_key=None)` and `revoke_api_key(id)` manage keys; a lost issuance response is retried
   into the same key.
+* **SDK/CLI export**: `changesets.patch(id)` returns the sealed patch bytes;
+  `sbx changesets patch ID -o FILE` writes them (see changes-delivery.md).
 * **CLI** (`sbx`): `auth login` reads the password from stdin or a prompt and stores an API key in a
   0600 config file; `--scope read|write|full` (default `write`) sets the key's scope. `connections add/replace` read secrets from stdin or a file, never argv;
   `inference_api` settings are flags (`--endpoint PROTOCOL=BASE_URL`, `--model`). `sessions create
@@ -96,9 +102,65 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
 * **Workspace panel** (`/sessions/{id}/{overview|changes|files|terminal|services|children|activity}`):
   beside the conversation on wide screens; below 1100 px a Conversation/Workspace switch shows
   one pane. Activity is a worded timeline (event type on hover; per-chunk updates behind a toggle).
+  It loads 100 committed events below the snapshot watermark (`GET …/events?before=`) and older
+  pages on demand, merged with the live stream by `seq`.
+* **Conversation grouping**: one block per Turn, placed at its first Message; a follow-up queued
+  while another Turn runs never splits either Turn, so each outcome renders once. `cancelling` is
+  live ("Stopping"). Startup names the lease `stage` from the executor view
+  (`allocating_sandbox` → `connecting_runtime` → `ready`), re-read every 2 s while preparing.
+* **Session lists**: the sidebar and `/sessions` request `lifecycle=open` unless archived/closed are
+  opted in, search with `q` on the server, and `/sessions` pages with `next_cursor` (deduped by id).
+  Turn `actions` already reflect the Session lifecycle; the Console also hides Retry on a Session
+  that is not open. Close opens a confirmation naming the Session and its consequences, with
+  Archive as the reversible alternative.
+  Links into the panel are absolute (`/sessions/{id}/changes`). Terminal views are kept per Session
+  across panel switches and re-attach to `GET …/terminals` after a reload; output is rendered by a
+  streaming ANSI model (SGR colours, CR/erase overwrite, wide characters, sequences split across
+  chunks), never as raw escapes. A command whose response was lost is shown as unconfirmed and is
+  retried only with the same key. Live changes refetch on activation, every 10 s while visible, on
+  Turn completion and reconnect, and on Refresh; ChangeSet A/M/D comes from the parsed patch.
 * **Connection loss**: the event stream is presumed dead after 40 s without events or server
   heartbeats, or immediately on the browser's `offline` event. The header shows a reconnecting
   banner; on recovery the stream replays after the last applied `seq` and projections refetch.
+
+### Projects, checks and declared services
+
+* **ProjectVersion spec (schema 1).** `POST /api/workspaces/{w}/projects` and
+  `POST /api/projects/{p}/versions` take a *complete* spec; a version replaces the previous one
+  whole. `normalize_spec` validates the known sections (`repository`, `environment`, `checks`,
+  `services`, `defaults`, `ship_policy`) and keeps fields it does not interpret verbatim, at the
+  top level and inside each known object, instead of dropping them; they have no effect until a
+  control plane understands them and must not be secret-shaped (`validation_failed`). The stored
+  form is a fixed point, so republishing it keeps every field and the `spec_digest`. Check and
+  service `argv` is an exec list: the first item names a program, later items may be empty
+  strings, nothing runs through a shell. Service names are unique. Another `schema_version` is
+  refused.
+* **Console Projects form** derives the next version from the stored spec and replaces only the
+  fields it edits (repository, base ref, Agent CLI, model, compute, checks, services). Unknown and
+  undisplayed fields — environment, ship policy, effort, service health/cwd/restart, check
+  timeouts — are carried over; they are summarised as "Kept from version N". Switching the Agent
+  CLI drops that CLI's effort. A delivery base branch that followed the repository base keeps
+  following it. Before publishing, "Changes in this version" lists every changed field path with
+  old → new; publishing needs at least one change, and a change under `ship_policy` must be
+  acknowledged first. An empty repository means a Project without one.
+* **Command syntax** for checks (`name=command`, one per line) and service commands: POSIX shell
+  word splitting and quoting only (`shlex.split`: `'…'` literal, `"…"` with `\"`/`\\` escapes,
+  backslash outside quotes, `''` for an empty argument, adjacent parts join), no expansion, no
+  shell. The text before the first `=` is a name only when it is a plain word. The form shows the
+  exact argv of every line, the line/column of a split error, and a note when an unquoted `&&`,
+  `|`, `;` or redirection would be passed as a literal argument. Shared vectors:
+  `tests/fixtures/argv_syntax.json` (Vitest and the integration test that runs them as checks).
+* **Services tab** lists exactly the services declared by the Session's pinned ProjectVersion
+  (`GET /api/sessions/{s}/services` also returns `source` — project, version, current version —
+  and `capabilities.preview`). The empty state says whether the Session has no Project or the
+  version declares none, that agent/terminal processes are not listed, and links to Projects.
+  Start/Stop reflect desired vs observed state and poll while a Job settles; logs report
+  "not started" (`started: false`) before the first start on the current compute, and an
+  undeclared name is `not_found`. Preview is disabled on every deployment (no preview origin), and
+  a service declared with `preview` says so instead of showing a link.
+* **Changes → Deliveries** renders the server `delivery` capability: when available, the target
+  (`Opens a draft pull request on owner/repo against base`) and the policy's draft default; when
+  not, the reason and only the recovery actions it lists (Download patch, Open Connections).
 
 Current browser evidence is documented in
 [Console UI restoration notes](../../../console/docs/ui-restoration/notes.md).

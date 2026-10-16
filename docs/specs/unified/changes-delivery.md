@@ -28,6 +28,33 @@ Implements RFC 05 and the related RFC 04 tables (migration `0002_changes_deliver
 
 ## Delivery
 
+**Capability.** `GET /api/sessions/{s}/changesets` and `GET /api/changesets/{id}` carry a
+`delivery` object computed by `delivery_capability()` in `control/application/delivery.py`; the
+same function gates `POST /api/changesets/{id}/deliveries`, so a client is never offered a request
+the command is certain to refuse. It reports `available`, `reason`, `transport`, `repository`,
+`base_branch`, the policy's `draft` default, the `connection_id` that would be used and the
+`recovery` actions that really exist:
+
+| `reason` | Refused with | `recovery` |
+| --- | --- | --- |
+| `not_ready` (not sealed) | `stale_subject` | — |
+| `no_repository` (projectless Session) | `unsupported_capability` | `download_patch` |
+| `no_baseline` (no remote base SHA) | `stale_subject` | `download_patch` |
+| `transport_unsupported` (policy `export`/`direct_base`) | `unsupported_capability` | `download_patch` |
+| `connection_required` | `connection_required` | `manage_connections` |
+| `connection_revoked` | `connection_revoked` | `manage_connections` |
+
+The refusal's `details` repeat `reason` and `recovery`. The GitHub Connection is the explicit or
+Session-pinned one, used as is (a revoked pin is never swapped for another identity); a Session
+that pinned none uses the workspace's preferred configured GitHub Connection, chosen as Session
+creation chooses one, so adding a Connection is a real recovery.
+
+**Export.** `GET /api/changesets/{id}/patch` returns the sealed patch bytes (`text/x-diff`,
+`X-Subject-Digest`, attachment) for a `ready` ChangeSet, owner-scoped like every ChangeSet read;
+`git apply --binary` reproduces the change on the same baseline. Capture already refused patches
+with secrets, so the export exposes nothing the diff endpoint did not. SDK
+`changesets.patch(id)`, CLI `sbx changesets patch ID -o FILE`.
+
 1. **Materialize**: fetch the pinned base SHA, apply the patch, verify that the tree equals the
    sealed `tree_sha`, and create a deterministic `commit-tree` (fixed SBX author/committer, the
    ChangeSet `created_at` timestamp, a message with title + ChangeSet id + subject digest).

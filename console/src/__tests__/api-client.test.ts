@@ -96,6 +96,18 @@ describe("api client", () => {
     expect(err.code).toBe("outcome_unknown");
     expect(err.idempotencyKey).toBe(keys[0]);
 
+    // Gateway errors on every attempt are just as uncertain as a dropped connection.
+    const gateway = createApiClient({
+      fetch: (async () =>
+        new Response(JSON.stringify({ error: { code: "internal_error", message: "gateway" } }), { status: 503 })) as typeof fetch,
+      maxRetries: 1,
+      ...fast,
+    });
+    const lost = (await gateway.sessions.sendMessage("s1", { content: "hi" }).catch((e) => e)) as ApiError;
+    expect(lost.code).toBe("outcome_unknown");
+    expect(lost.status).toBe(503);
+    expect(lost.idempotencyKey).toBeTruthy();
+
     // the caller can retry the same logical request with the key it was told about
     await down.sessions.sendMessage("s1", { content: "hi" }, { idempotencyKey: err.idempotencyKey! }).catch(() => undefined);
     expect(keys[3]).toBe(keys[0]);

@@ -110,6 +110,26 @@ class SBXClient:
             return body
         raise AssertionError("unreachable")
 
+    def get_bytes(self, path: str) -> bytes:
+        """A raw (non-JSON) download, such as a ChangeSet patch; errors map like JSON calls."""
+        try:
+            response = self.http.get(path, headers=self._headers(False, None))
+        except httpx.TransportError as exc:
+            raise SBXError("transport_error", type(exc).__name__, retryable=True) from None
+        if response.status_code >= 400:
+            try:
+                err = response.json().get("error") or {}
+            except ValueError:
+                err = {}
+            raise SBXError(
+                err.get("code", "http_error"),
+                err.get("message", response.text[:200]),
+                status=response.status_code,
+                details=err.get("details"),
+                request_id=err.get("request_id"),
+            )
+        return response.content
+
     def get(self, path: str, **params: Any) -> Any:
         return self.request(
             "GET", path, params={k: v for k, v in params.items() if v is not None} or None
@@ -567,6 +587,11 @@ class ChangeSets(_Namespace):
 
     def diff(self, changeset_id: str) -> str:
         return self.c.get(f"/api/changesets/{changeset_id}/diff")["diff"]
+
+    def patch(self, changeset_id: str) -> bytes:
+        """The sealed ChangeSet as an exact binary patch (``git apply --binary``): the export
+        path for ChangeSets that cannot be delivered, e.g. from a Session without a repository."""
+        return self.c.get_bytes(f"/api/changesets/{changeset_id}/patch")
 
     def apply(self, changeset_id: str, destination_session_id: str) -> dict[str, Any]:
         return self.c.post(

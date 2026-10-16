@@ -1,4 +1,4 @@
-import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { LoginPage, RegisterPage, VerifyEmailPage } from "./features/auth/AuthPages";
 import { ConnectionsPage } from "./features/connections/ConnectionsPage";
 import { HomePage } from "./features/home/HomePage";
@@ -31,7 +31,14 @@ function RequireAuth() {
 
 function NotFound() {
   const { t } = useI18n();
-  return <EmptyState title={t("common.not_found")} />;
+  // A mistyped workspace path under a Session still offers the way back to it.
+  const session = useLocation().pathname.match(/^\/sessions\/([^/]+)\//)?.[1];
+  return (
+    <EmptyState
+      title={t("common.not_found")}
+      action={session ? <Link to={`/sessions/${session}`}>{t("common.back_to_session")}</Link> : undefined}
+    />
+  );
 }
 
 export function App() {

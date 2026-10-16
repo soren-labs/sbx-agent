@@ -15,6 +15,7 @@ from control.api.dependencies import (
     services,
 )
 from control.application import access
+from control.application.services import PREVIEW
 from control.domain.errors import DomainError
 
 router = APIRouter()
@@ -46,9 +47,19 @@ def file_upload(request: Request, session_id: str) -> dict[str, Any]:
     )
 
 
+@router.get("/api/sessions/{session_id}/terminals")
+def list_terminals(request: Request, session_id: str) -> dict[str, Any]:
+    """Terminals still held by the live runtime, so a client re-attaches instead of
+    starting another shell."""
+    return services(request).live.list_terminals(principal(request), session_id)
+
+
 @router.post("/api/sessions/{session_id}/terminals", status_code=201)
 def create_terminal(request: Request, session_id: str) -> dict[str, Any]:
-    return services(request).live.create_terminal(mutating_principal(request), session_id)
+    who = mutating_principal(request)
+    return services(request).live.create_terminal(
+        who, session_id, idempotency_key=idempotency_key(request) or ""
+    )
 
 
 @router.post("/api/sessions/{session_id}/terminals/{terminal_id}/input")
@@ -56,7 +67,19 @@ async def terminal_input(request: Request, session_id: str, terminal_id: str) ->
     who = mutating_principal(request)
     body = await json_body(request)
     return services(request).live.terminal_input(
-        who, session_id, terminal_id, str(body.get("data") or "")
+        who,
+        session_id,
+        terminal_id,
+        str(body.get("data") or ""),
+        idempotency_key=idempotency_key(request) or "",
+    )
+
+
+@router.delete("/api/sessions/{session_id}/terminals/{terminal_id}")
+def close_terminal(request: Request, session_id: str, terminal_id: str) -> dict[str, Any]:
+    who = mutating_principal(request)
+    return services(request).live.close_terminal(
+        who, session_id, terminal_id, idempotency_key=idempotency_key(request) or ""
     )
 
 
@@ -103,9 +126,7 @@ def service_logs(request: Request, session_id: str, name: str) -> dict[str, Any]
 def preview_grant(request: Request, session_id: str, name: str) -> dict[str, Any]:
     mutating_principal(request)
     raise DomainError(
-        "unsupported_capability",
-        "preview requires a dedicated preview origin, which this deployment does not configure",
-        details={"capability": "preview"},
+        "unsupported_capability", PREVIEW["reason"], details={"capability": "preview"}
     )
 
 

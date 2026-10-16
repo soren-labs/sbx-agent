@@ -77,7 +77,9 @@ corresponds to an `outcome_unknown` Turn.
 
 ## Errors
 
-`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal, or
-mismatched `after` and `Last-Event-ID`. The Console treats `invalid_cursor` and
+`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal,
+mismatched `after` and `Last-Event-ID`, or `before` combined with `after` or a
+stream. `before=N` (with `limit`) returns the newest events below `N` in `seq`
+order and `next_before` for the page before them. The Console treats `invalid_cursor` and
 `history_reset_required` as the signal to fetch a fresh snapshot instead of
 replaying.
