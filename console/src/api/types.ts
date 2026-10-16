@@ -422,12 +422,25 @@ export interface FileContent {
   path: string;
   encoding: string;
   content: string;
-  digest: string;
+  /** Save precondition; null when the view is partial (truncated, redacted or binary). */
+  digest: string | null;
+  size?: number;
+  truncated?: boolean;
+  redacted?: boolean;
+  editable?: boolean;
+  readonly_reason?: "truncated" | "redacted" | "binary" | null;
 }
 export interface TerminalOutput {
   data: string;
   offset: number;
   closed: boolean;
+  truncated?: boolean;
+}
+export interface TerminalInfo {
+  terminal_id: string;
+  created_at: string | null;
+  closed: boolean;
+  offset: number;
 }
 export interface ServiceItem {
   name: string;

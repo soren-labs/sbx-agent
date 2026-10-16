@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 0
+PROTOCOL_MINOR = 1
 PROTOCOL_VERSION = f"{PROTOCOL_MAJOR}.{PROTOCOL_MINOR}"
 PAYLOAD_SCHEMA_VERSION = 1
 
@@ -51,6 +51,7 @@ QUERY_KINDS = frozenset(
         "service.status",
         "service.logs",
         "terminal.read",
+        "terminal.list",
         "health.report",
     }
 )

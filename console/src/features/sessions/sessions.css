@@ -938,6 +938,7 @@
 
 .chg__toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -1121,6 +1122,10 @@
 
 .diff__line--hunk {
   background: var(--bg-2);
+  color: var(--fg-3);
+}
+
+.diff__line--meta {
   color: var(--fg-3);
 }
 
@@ -1332,6 +1337,55 @@
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.terminal__line {
+  display: block;
+  min-height: 1.45em;
+}
+
+/* SGR colours on the always-dark terminal canvas (xterm-like palette). */
+.term-fg-black { color: #5c5f66; }
+.term-fg-red { color: #f0716b; }
+.term-fg-green { color: #62c879; }
+.term-fg-yellow { color: #e5c15a; }
+.term-fg-blue { color: #6aa5f2; }
+.term-fg-magenta { color: #c98ae8; }
+.term-fg-cyan { color: #5ccfd6; }
+.term-fg-white { color: #d5d6db; }
+.term-fg-bright-black { color: #8b8e96; }
+.term-fg-bright-red { color: #ff8f88; }
+.term-fg-bright-green { color: #82e39a; }
+.term-fg-bright-yellow { color: #ffd978; }
+.term-fg-bright-blue { color: #8fbcff; }
+.term-fg-bright-magenta { color: #dea8ff; }
+.term-fg-bright-cyan { color: #7fe6ec; }
+.term-fg-bright-white { color: #ffffff; }
+.term-fg-default-bg { color: #0b0b0c; }
+.term-bg-black { background: #1d1f23; }
+.term-bg-red { background: #8a2b27; }
+.term-bg-green { background: #23663a; }
+.term-bg-yellow { background: #7a6420; }
+.term-bg-blue { background: #234f8f; }
+.term-bg-magenta { background: #6a3584; }
+.term-bg-cyan { background: #1f6d72; }
+.term-bg-white { background: #b9bbc2; }
+.term-bg-bright-black { background: #3a3d44; }
+.term-bg-bright-red { background: #b8403a; }
+.term-bg-bright-green { background: #2f8a4e; }
+.term-bg-bright-yellow { background: #a68a2c; }
+.term-bg-bright-blue { background: #3268b8; }
+.term-bg-bright-magenta { background: #8b49ad; }
+.term-bg-bright-cyan { background: #2a9299; }
+.term-bg-bright-white { background: #e4e5e9; }
+.term-bg-default-fg { background: #ededef; }
+.term-bold { font-weight: 700; }
+.term-dim { opacity: 0.7; }
+.term-italic { font-style: italic; }
+.term-underline { text-decoration: underline; }
+
+.term-tab__pick {
+  max-width: 220px;
 }
 
 .term-tab__input {
