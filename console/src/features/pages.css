@@ -659,6 +659,56 @@
   gap: 4px;
 }
 
+.key-scope-line {
+  margin: 0;
+}
+
+/* API key access picker: one radio card per scope */
+.scope-picker {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scope-picker legend {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--fg-2);
+  margin-bottom: 6px;
+}
+
+.scope-picker__opt {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.scope-picker__opt--on {
+  border-color: var(--fg-2);
+}
+
+.scope-picker__opt span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scope-picker__opt input {
+  margin-top: 3px;
+}
+
+.key-list .lrow__name .pill {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .key-list .lrow__sub code {
   font-family: var(--font-mono, ui-monospace, monospace);
 }

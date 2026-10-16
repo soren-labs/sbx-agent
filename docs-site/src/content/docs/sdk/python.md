@@ -53,7 +53,13 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `operations` | `get` |
 
 Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
-`models` and the raw `get`, `post` and `request`.
+`revoke_api_key`, `models` and the raw `get`, `post` and `request`.
+
+`create_api_key(name, scopes=["write"])` returns the key's plaintext in `key`
+(`scopes` is `["read"]`, `["write"]` or `["*"]`; omitted means `["*"]`). A lost
+response is retried with the same `Idempotency-Key` and returns the same key.
+If the secret can no longer be shown, it raises `SBXError` with code
+`secret_unavailable`. `details["api_key"]["id"]` is the key to revoke.
 
 ## Events
 

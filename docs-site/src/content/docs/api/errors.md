@@ -23,6 +23,7 @@ All errors use the shape `{"error": {"code", "category", "message", "retryable",
 | `connection_revoked` | credential | 409 | no |
 | `connection_in_use` | credential | 409 | no |
 | `connection_required` | credential | 409 | no |
+| `secret_unavailable` | credential | 409 | no |
 | `waiting_capacity` | capacity | 409 | yes |
 | `quota_exhausted` | capacity | 429 | no |
 | `runtime_incompatible` | runtime | 409 | no |

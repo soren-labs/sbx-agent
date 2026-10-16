@@ -644,7 +644,11 @@ rejected with `csrf_failed`.
   out or delete. See [Cloud machines](/guides/cloud-machines/).
 - **Connections**: add, validate, replace and disconnect, with write-only
   secret fields.
-- **Settings**: identity, API keys (plaintext shown once) and preferences.
+- **Settings**: identity, API keys and preferences. A new key has an access
+  level: Read only, Read & write (default; what scripts and the CLI need) or
+  Full access (can also manage keys). Its secret is shown once. If the
+  response is lost, **Try again** returns the same key instead of a second one.
+  Revoking a key refuses it from its next request.
 
 ## Rules the UI follows
 
@@ -680,15 +684,25 @@ Two methods resolve to the same principal and permissions:
 | API key | `Authorization: Bearer sbx_key_…` | The key's scope must allow the call (see below) |
 | Cookie session | `POST /api/auth/login` sets `sbx_session` (HttpOnly) and `sbx_csrf` | `X-CSRF-Token` header equal to the `sbx_csrf` cookie, and an allowed `Origin` |
 
-Create a key with `POST /api/api-keys` (cookie session). The plaintext is
-returned once and only a hash is stored. `scopes` is a non-empty subset of
-`["*", "write", "read"]` (default `["*"]`; anything else is `422`):
+Create a key with `POST /api/api-keys` (cookie session or a `*` key). The
+plaintext is in the response and only a hash is stored. `scopes` is a non-empty
+subset of `["*", "write", "read"]` (default `["*"]`; anything else is `422`).
+The Console defaults to `write`, which is what scripts and the CLI need:
 
 | Scope | Allows |
 | --- | --- |
 | `read` | `GET` routes only; every mutation returns `403 forbidden` |
 | `write` | reads and all resource mutations |
 | `*` | everything, including minting/revoking API keys and changing the password |
+
+Key creation is safe to retry. A retry with the same `Idempotency-Key` and body
+never mints a second key: within 10 minutes it returns the same key again with
+`"replayed": true`. Later, or once that key is revoked, it returns
+`409 secret_unavailable` with `details.api_key` (the key, without its secret)
+and `details.reason` (`replay_expired` or `revoked`). Revoke that key and create
+a new one with a new `Idempotency-Key`. The server keeps only an encrypted copy
+of the secret for those 10 minutes, then erases it. A revoked key is refused
+from its next request (`401`).
 
 Cookie sessions are always full scope. Login requires a verified email, is
 rate limited to 10 failures per email per 15 minutes (`429 rate_limited`), and
@@ -850,6 +864,7 @@ All errors use the shape `{"error": {"code", "category", "message", "retryable",
 | `connection_revoked` | credential | 409 | no |
 | `connection_in_use` | credential | 409 | no |
 | `connection_required` | credential | 409 | no |
+| `secret_unavailable` | credential | 409 | no |
 | `waiting_capacity` | capacity | 409 | yes |
 | `quota_exhausted` | capacity | 429 | no |
 | `runtime_incompatible` | runtime | 409 | no |
@@ -924,7 +939,13 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `operations` | `get` |
 
 Top-level helpers: `login`, `register`, `verify_email`, `me`, `create_api_key`,
-`models` and the raw `get`, `post` and `request`.
+`revoke_api_key`, `models` and the raw `get`, `post` and `request`.
+
+`create_api_key(name, scopes=["write"])` returns the key's plaintext in `key`
+(`scopes` is `["read"]`, `["write"]` or `["*"]`; omitted means `["*"]`). A lost
+response is retried with the same `Idempotency-Key` and returns the same key.
+If the secret can no longer be shown, it raises `SBXError` with code
+`secret_unavailable`. `details["api_key"]["id"]` is the key to revoke.
 
 ## Events
 
@@ -1091,7 +1112,8 @@ The exact generated help for every command is published as
 | `workspace_id` | `SBX_WORKSPACE_ID` | first workspace of the principal |
 
 `sbx auth login --email you@example.com` reads the password from stdin or a
-prompt, signs in, mints an API key and writes it to
+prompt, signs in, mints an API key (`--scope read|write|full`, default
+`write`: everything except managing API keys and the password) and writes it to
 `$XDG_CONFIG_HOME/sbx/client.json` (default `~/.config/sbx/client.json`) with
 mode `0600`. Environment variables override the file.
 

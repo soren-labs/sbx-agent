@@ -58,7 +58,11 @@ rejected with `csrf_failed`.
   out or delete. See [Cloud machines](/guides/cloud-machines/).
 - **Connections**: add, validate, replace and disconnect, with write-only
   secret fields.
-- **Settings**: identity, API keys (plaintext shown once) and preferences.
+- **Settings**: identity, API keys and preferences. A new key has an access
+  level: Read only, Read & write (default; what scripts and the CLI need) or
+  Full access (can also manage keys). Its secret is shown once. If the
+  response is lost, **Try again** returns the same key instead of a second one.
+  Revoking a key refuses it from its next request.
 
 ## Rules the UI follows
 
