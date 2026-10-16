@@ -12,6 +12,28 @@ from control.domain.identity import Principal
 from control.domain.ids import new_id
 from control.jobs.model import Outcome, Retry, Succeeded
 
+# Preview needs a dedicated preview origin; no deployment configures one yet, so the
+# preview-grants route refuses and every list says so up front.
+PREVIEW = {
+    "enabled": False,
+    "reason": "preview requires a dedicated preview origin, which this deployment does not configure",
+}
+
+
+def declaration_source(uow: Any, session: dict[str, Any]) -> dict[str, Any]:
+    """Where a Session's service declarations come from: its pinned ProjectVersion, if any."""
+    version_id = session.get("project_version_id")
+    version = uow.get("project_versions", version_id) if version_id else None
+    project = uow.get("projects", session["project_id"]) if session.get("project_id") else None
+    return {
+        "kind": "project_version" if version else "none",
+        "project_id": project["id"] if project else None,
+        "project_name": project["name"] if project else None,
+        "project_version_id": version["id"] if version else None,
+        "project_version_ordinal": version["ordinal"] if version else None,
+        "current_version_id": project["current_version_id"] if project else None,
+    }
+
 
 class Services:
     def __init__(self, tx: Any, connector: RuntimeConnector) -> None:
@@ -47,9 +69,15 @@ class Services:
                         "state": inst["state"] if inst else ("offline" if not lease else "stopped"),
                         "observed_at": inst["observed_at"].isoformat() if inst else None,
                         "lease_live": lease is not None,
+                        "preview_available": False,
                     }
                 )
-            return {"items": items, "event_watermark": uow.watermark(session_id)}
+            return {
+                "items": items,
+                "source": declaration_source(uow, session),
+                "capabilities": {"preview": PREVIEW},
+                "event_watermark": uow.watermark(session_id),
+            }
 
         return self.tx.read(fn)
 
@@ -110,17 +138,28 @@ class Services:
         return self.tx.run(fn)
 
     def logs(self, principal: Principal, session_id: str, name: str) -> dict[str, Any]:
-        lease = self.tx.read(
-            lambda uow: (
-                access.owned(uow, principal, "sessions", session_id, what="session"),
-                uow.find_one("executor_leases", {"session_id": session_id, "state": "ready"}),
-            )[1]
-        )
+        def read(uow: Any) -> Any:
+            session = access.owned(uow, principal, "sessions", session_id, what="session")
+            if not any(s["name"] == name for s in session["effective_spec"].get("services") or []):
+                raise DomainError(
+                    "not_found", "service is not declared by this Session's ProjectVersion"
+                )
+            return uow.find_one("executor_leases", {"session_id": session_id, "state": "ready"})
+
+        lease = self.tx.read(read)
         if lease is None:
             raise DomainError("executor_unavailable", "service logs need a live executor")
         try:
-            return self.connector.channel(lease).query("service.logs", name=name)
-        except (RuntimeUnavailable, RuntimeRefused) as exc:
+            return {
+                **self.connector.channel(lease).query("service.logs", name=name),
+                "started": True,
+            }
+        except RuntimeRefused as exc:
+            if exc.code == "not_found":
+                # Declared but not started on this lease yet: there is nothing to show.
+                return {"name": name, "lines": [], "started": False}
+            raise DomainError("executor_unavailable", str(exc)) from exc
+        except RuntimeUnavailable as exc:
             raise DomainError("executor_unavailable", str(exc)) from exc
 
     def handle(self, ctx: Any) -> Outcome:

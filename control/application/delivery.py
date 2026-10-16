@@ -16,6 +16,98 @@ def _iso(v: Any) -> Any:
     return v.isoformat() if hasattr(v, "isoformat") else v
 
 
+GIT_TRANSPORTS = ("git_branch", "pull_request")
+# reason -> (error code a delivery request is refused with, message)
+_REFUSALS = {
+    "not_ready": ("stale_subject", "only sealed ChangeSets can be delivered"),
+    "no_repository": (
+        "unsupported_capability",
+        "this Session has no repository, so its ChangeSets cannot be delivered to Git; "
+        "download the patch instead",
+    ),
+    "no_baseline": ("stale_subject", "ChangeSet has no remote baseline"),
+    "transport_unsupported": ("unsupported_capability", "the ship policy transport is not enabled"),
+    "connection_required": (
+        "connection_required",
+        "a GitHub Connection is required for Git delivery",
+    ),
+    "connection_revoked": ("connection_revoked", "GitHub Connection is revoked"),
+}
+
+
+def _source_connection(
+    uow: Any, cs: dict[str, Any], session: dict[str, Any], explicit: str | None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The GitHub Connection a Delivery would use, or the reason there is none.
+
+    An explicit or Session-pinned Connection is used as is (never silently swapped for
+    another identity). A Session pinned to none uses the workspace's preferred configured
+    GitHub Connection, chosen exactly as Session creation chooses one.
+    """
+    pinned = explicit or session["source_connection_id"]
+    if pinned:
+        con = uow.get("connections", pinned, workspace_ids=[cs["workspace_id"]])
+        if con is None or con["kind"] != "github":
+            return None, "connection_required"
+        if con["config_state"] != "configured":
+            return None, "connection_revoked"
+        return con, None
+    candidates = [
+        c
+        for c in uow.find(
+            "connections",
+            {"workspace_id": cs["workspace_id"], "kind": "github", "config_state": "configured"},
+            order="priority DESC, created_at",
+        )
+        if c["health"] != "reauth_required"
+    ]
+    return (candidates[0], None) if candidates else (None, "connection_required")
+
+
+def delivery_capability(
+    uow: Any, cs: dict[str, Any], session: dict[str, Any], body: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Whether this exact ChangeSet can be delivered now, why not, and what can be done instead.
+
+    The same evaluation gates ``create_in``, so the Console never offers a form the command
+    is certain to refuse.
+    """
+    body = body or {}
+    spec = session["effective_spec"] or {}
+    repo = spec.get("repository")
+    policy = spec.get("ship_policy") or {}
+    transport = body.get("transport") or policy.get("transport") or "pull_request"
+    patch = cs["state"] == "ready" and cs["patch_blob_id"] is not None
+    reason, con = None, None
+    if cs["state"] != "ready":
+        reason = "not_ready"
+    elif not repo:
+        reason = "no_repository"
+    elif cs["baseline_tree"] and cs["base_sha"] is None:
+        reason = "no_baseline"
+    elif transport not in GIT_TRANSPORTS:
+        reason = "transport_unsupported"
+    else:
+        con, reason = _source_connection(uow, cs, session, body.get("connection_id"))
+    recovery = []
+    if reason in ("no_repository", "no_baseline", "transport_unsupported") and patch:
+        recovery.append("download_patch")
+    if reason in ("connection_required", "connection_revoked"):
+        recovery.append("manage_connections")
+    return {
+        "available": reason is None,
+        "reason": reason,
+        "message": _REFUSALS[reason][1] if reason else None,
+        "transport": transport,
+        "repository": repo["full_name"] if repo else None,
+        "base_branch": policy.get("base_branch") or (repo or {}).get("base_ref") or None,
+        "draft": bool(policy.get("draft", True)),
+        "connection_id": con["id"] if con else None,
+        "recovery": recovery,
+        "patch_available": patch,
+    }
+
+
 class Deliveries:
     def __init__(self, tx: Any, broker: Any, git: Any, host: Any, blobs: Any) -> None:
         self.tx = tx
@@ -156,33 +248,22 @@ class Deliveries:
     def create_in(
         self, uow: Any, actor: str, cs: dict[str, Any], body: dict[str, Any], *, authorization: str
     ) -> dict[str, Any]:
-        if cs["state"] != "ready":
-            raise DomainError("stale_subject", "only sealed ChangeSets can be delivered")
         if authorization == "automatic" and not cs["automatic_eligible"]:
             raise DomainError("gate_blocked", "ChangeSet is not eligible for automatic delivery")
         session = uow.get("sessions", cs["session_id"], lock=True)
+        capability = delivery_capability(uow, cs, session, body)
+        if not capability["available"]:
+            code, message = _REFUSALS[capability["reason"]]
+            raise DomainError(
+                code,
+                message,
+                details={"reason": capability["reason"], "recovery": capability["recovery"]},
+            )
         spec = session["effective_spec"]
-        repo = spec.get("repository")
-        if not repo:
-            raise DomainError(
-                "unsupported_capability", "projectless ChangeSets support export only (not enabled)"
-            )
-        if cs["baseline_tree"] and cs["base_sha"] is None:
-            raise DomainError("stale_subject", "ChangeSet has no remote baseline")
+        repo = spec["repository"]
         policy = spec.get("ship_policy") or {}
-        connection_id = body.get("connection_id") or session["source_connection_id"]
-        con = uow.get("connections", connection_id or "", workspace_ids=[cs["workspace_id"]])
-        if con is None or con["kind"] != "github":
-            raise DomainError(
-                "connection_required",
-                "a GitHub Connection is required for Git delivery",
-                details={"kind": "github"},
-            )
-        if con["config_state"] != "configured":
-            raise DomainError("connection_revoked", "GitHub Connection is revoked")
-        transport = body.get("transport") or policy.get("transport") or "pull_request"
-        if transport not in ("git_branch", "pull_request"):
-            raise DomainError("unsupported_capability", f"transport {transport} is not enabled")
+        con = uow.get("connections", capability["connection_id"])
+        transport = capability["transport"]
         d = uow.insert(
             "deliveries",
             {

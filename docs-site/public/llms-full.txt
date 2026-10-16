@@ -501,6 +501,18 @@ is written.
 
 ## Delivery
 
+Every ChangeSet returned by the API carries a `delivery` object saying whether
+it can be delivered now and, if not, why (`no_repository`,
+`connection_required`, `connection_revoked`, `not_ready`, `no_baseline`,
+`transport_unsupported`) and which recovery actions exist. The delivery request
+is refused for exactly the same reasons. A ChangeSet from a Session without a
+repository cannot be delivered; export it instead:
+
+```bash
+sbx changesets patch cs_123 -o change.patch   # or client.changesets.patch("cs_123")
+git apply --binary change.patch
+```
+
 `POST /api/changesets/{id}/deliveries` requests delivery of exactly that
 ChangeSet. The Delivery Job performs three steps and records each as evidence:
 
@@ -659,7 +671,17 @@ rejected with `csrf_failed`.
   live work log on the left and a workspace panel (Overview, Changes, Files,
   Terminal, Services, Children, Activity) on the right. Visitors who are not
   signed in see the product landing page at `/` instead.
-- **Projects**: reusable repository and environment configuration.
+- **Projects**: reusable repository and environment configuration. **Publish
+  new version** starts from the current version and changes only what you edit
+  (repository, base ref, agent CLI, model, compute, checks, services); settings
+  the form does not show, such as environment variables, reasoning effort and
+  the delivery policy, are kept and listed. Before publishing, the dialog lists
+  every changed field, and a change to the delivery policy must be confirmed.
+  Checks are one per line as `name=command`; services have a name, a command
+  and an optional port. Commands are split like a POSIX shell
+  (`smoke=python3 -c "print(123)"` runs `python3`, `-c`, `print(123)`), but no
+  shell runs and nothing is expanded: write `sh -c '…'` yourself for pipes or
+  `&&`. The dialog shows the exact arguments of every command.
 - **Machines**: subscription logins, one per machine, for Codex, Grok
   Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
   each entry says how it signs in. For Codex and Grok Build, open the sign-in
@@ -684,6 +706,23 @@ rejected with `csrf_failed`.
   Terminal and Services show a diagnosis instead.
 - Retry buttons name what they retry: Turn, Delivery or validation.
 
+## Services and delivery
+
+- **Services** lists the services declared by the Project version a Session
+  started from; processes the agent or a terminal starts on their own are not
+  listed. A Session without a Project has none. Start, Stop and Logs act on the
+  Session's compute; while compute is not running, Start records the wish and
+  the service starts when the Session next runs.
+- **Changes → Deliveries** shows where a delivery would go (for example "Opens a
+  draft pull request on owner/repo against main"). When delivery is not possible
+  it says why instead of showing a form: a Session without a repository offers
+  **Download patch** (apply it with `git apply --binary`), and a missing or
+  revoked GitHub Connection links to Connections.
+
+## Limits
+
+The Terminal polls for output. Service preview is not available because no
+preview origin is configured; a service declared with a preview says so.
 ## Workspace files and terminals
 
 - **Open or create file** opens an empty editor for a path that does not exist
@@ -978,7 +1017,7 @@ outcome. It raises `OutcomeUnknown` if the Turn ended with `outcome_unknown` and
 | `sessions` | `create`, `list`, `get`, `send`, `close`, `archive`, `executor`, `activate`, `release`, `export`, `events`, `stream` |
 | `messages` | `list` |
 | `turns` | `list`, `get`, `cancel`, `retry`, `acknowledge`, `wait` |
-| `changesets` | `list`, `capture`, `get`, `diff`, `apply`, `wait_ready` |
+| `changesets` | `list`, `capture`, `get`, `diff`, `patch`, `apply`, `wait_ready` |
 | `deliveries` | `request`, `get`, `retry`, `refresh`, `merge`, `wait` |
 | `delegations` | `spawn`, `get`, `result`, `cancel`, `wait_result` |
 | `slots` | `overview`, `list`, `providers`, `add`, `get`, `update`, `login`, `verify`, `cancel_login`, `submit_code`, `logout`, `delete`, `models`, `wait` |
@@ -1166,7 +1205,7 @@ mode `0600`. Environment variables override the file.
 | `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. `create` accepts `--slot`, `--model` and `--effort` for Machine Slots. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
-| `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
+| `changesets capture`, `apply`, `show`, `patch` | ChangeSets. `capture --salvage` marks a salvage capture; `patch ID -o FILE` writes the sealed patch for `git apply --binary`. |
 | `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
 | `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
 | `operations show ID` | Long-operation status. |

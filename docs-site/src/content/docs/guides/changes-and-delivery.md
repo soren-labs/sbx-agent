@@ -36,6 +36,18 @@ is written.
 
 ## Delivery
 
+Every ChangeSet returned by the API carries a `delivery` object saying whether
+it can be delivered now and, if not, why (`no_repository`,
+`connection_required`, `connection_revoked`, `not_ready`, `no_baseline`,
+`transport_unsupported`) and which recovery actions exist. The delivery request
+is refused for exactly the same reasons. A ChangeSet from a Session without a
+repository cannot be delivered; export it instead:
+
+```bash
+sbx changesets patch cs_123 -o change.patch   # or client.changesets.patch("cs_123")
+git apply --binary change.patch
+```
+
 `POST /api/changesets/{id}/deliveries` requests delivery of exactly that
 ChangeSet. The Delivery Job performs three steps and records each as evidence:
 

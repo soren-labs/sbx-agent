@@ -1,0 +1,184 @@
+{
+  "_comment": "Check/service command syntax shared by console/src/features/projects/argv.ts and tests/integration/api/test_project_config.py. argv equals Python shlex.split(command) (POSIX quoting, no expansion); join(argv) equals shlex.join.",
+  "cases": [
+    {
+      "line": "smoke=python3 -c \"print(123)\"",
+      "name": "smoke",
+      "argv": [
+        "python3",
+        "-c",
+        "print(123)"
+      ],
+      "exit_code": 0,
+      "stdout": "123\n"
+    },
+    {
+      "line": "spaced-path=python3 -c \"import sys; print(sys.argv[1])\" \"dir with space/file.txt\"",
+      "name": "spaced-path",
+      "argv": [
+        "python3",
+        "-c",
+        "import sys; print(sys.argv[1])",
+        "dir with space/file.txt"
+      ],
+      "exit_code": 0,
+      "stdout": "dir with space/file.txt\n"
+    },
+    {
+      "line": "empty-arg=python3 -c \"import sys; print(len(sys.argv), repr(sys.argv[1]))\" ''",
+      "name": "empty-arg",
+      "argv": [
+        "python3",
+        "-c",
+        "import sys; print(len(sys.argv), repr(sys.argv[1]))",
+        ""
+      ],
+      "exit_code": 0,
+      "stdout": "2 ''\n"
+    },
+    {
+      "line": "escapes=python3 -c \"import sys; print('|'.join(sys.argv[1:]))\" a\\ b \"say \\\"hi\\\"\" 'back\\slash' it\\'s",
+      "name": "escapes",
+      "argv": [
+        "python3",
+        "-c",
+        "import sys; print('|'.join(sys.argv[1:]))",
+        "a b",
+        "say \"hi\"",
+        "back\\slash",
+        "it's"
+      ],
+      "exit_code": 0,
+      "stdout": "a b|say \"hi\"|back\\slash|it's\n"
+    },
+    {
+      "line": "equals=python3 -c \"import sys; print(sys.argv[1])\" --flag=a=b",
+      "name": "equals",
+      "argv": [
+        "python3",
+        "-c",
+        "import sys; print(sys.argv[1])",
+        "--flag=a=b"
+      ],
+      "exit_code": 0,
+      "stdout": "--flag=a=b\n"
+    },
+    {
+      "line": "joined=python3 -c \"import sys; print(sys.argv[1])\" --msg=\"hello world\"",
+      "name": "joined",
+      "argv": [
+        "python3",
+        "-c",
+        "import sys; print(sys.argv[1])",
+        "--msg=hello world"
+      ],
+      "exit_code": 0,
+      "stdout": "--msg=hello world\n"
+    },
+    {
+      "line": "python3 -c \"x = 1; print(x + 1)\"",
+      "name": "python3",
+      "argv": [
+        "python3",
+        "-c",
+        "x = 1; print(x + 1)"
+      ],
+      "exit_code": 0,
+      "stdout": "2\n"
+    },
+    {
+      "line": "tabs=python3\t-c\t\"print('tab')\"",
+      "name": "tabs",
+      "argv": [
+        "python3",
+        "-c",
+        "print('tab')"
+      ],
+      "exit_code": 0,
+      "stdout": "tab\n"
+    },
+    {
+      "line": "fails=python3 -c \"assert 1 == 2, 'boom'\"",
+      "name": "fails",
+      "argv": [
+        "python3",
+        "-c",
+        "assert 1 == 2, 'boom'"
+      ],
+      "exit_code": 1,
+      "output_contains": "AssertionError: boom"
+    }
+  ],
+  "errors": [
+    {
+      "line": "bad=python3 -c \"print(1)",
+      "error": "unterminated_quote"
+    },
+    {
+      "line": "bad=python3 -c 'print(1)",
+      "error": "unterminated_quote"
+    },
+    {
+      "line": "bad=python3 trailing\\",
+      "error": "trailing_backslash"
+    },
+    {
+      "line": "bad=",
+      "error": "empty_command"
+    },
+    {
+      "line": "bad=''",
+      "error": "empty_program"
+    }
+  ],
+  "operators": [
+    {
+      "line": "chain=pytest -q && echo ok",
+      "argv": [
+        "pytest",
+        "-q",
+        "&&",
+        "echo",
+        "ok"
+      ],
+      "operators": [
+        "&&"
+      ]
+    },
+    {
+      "line": "pipe=grep -r TODO . | wc -l",
+      "argv": [
+        "grep",
+        "-r",
+        "TODO",
+        ".",
+        "|",
+        "wc",
+        "-l"
+      ],
+      "operators": [
+        "|"
+      ]
+    },
+    {
+      "line": "quoted=python3 -c 'print(1)' '&&'",
+      "argv": [
+        "python3",
+        "-c",
+        "print(1)",
+        "&&"
+      ],
+      "operators": []
+    },
+    {
+      "line": "env=FOO=1 make test",
+      "name": "env",
+      "argv": [
+        "FOO=1",
+        "make",
+        "test"
+      ],
+      "operators": []
+    }
+  ]
+}

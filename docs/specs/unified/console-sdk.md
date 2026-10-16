@@ -25,6 +25,8 @@
   ordinary resources and follows committed events until the Turn is terminal. `turns.wait` and
   `delegations.wait_result` are distinct. Uncertain transport retries reuse the Idempotency-Key, and
   an unknown outcome raises `OutcomeUnknown`.
+* **SDK/CLI export**: `changesets.patch(id)` returns the sealed patch bytes;
+  `sbx changesets patch ID -o FILE` writes them (see changes-delivery.md).
 * **CLI** (`sbx`): `auth login` reads the password from stdin or a prompt and stores an API key in a
   0600 config file. `connections add/replace` read secrets from stdin or a file, never argv;
   `inference_api` settings are flags (`--endpoint PROTOCOL=BASE_URL`, `--model`). `sessions create
@@ -118,6 +120,45 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
 * **Connection loss**: the event stream is presumed dead after 40 s without events or server
   heartbeats, or immediately on the browser's `offline` event. The header shows a reconnecting
   banner; on recovery the stream replays after the last applied `seq` and projections refetch.
+
+### Projects, checks and declared services
+
+* **ProjectVersion spec (schema 1).** `POST /api/workspaces/{w}/projects` and
+  `POST /api/projects/{p}/versions` take a *complete* spec; a version replaces the previous one
+  whole. `normalize_spec` validates the known sections (`repository`, `environment`, `checks`,
+  `services`, `defaults`, `ship_policy`) and keeps fields it does not interpret verbatim, at the
+  top level and inside each known object, instead of dropping them; they have no effect until a
+  control plane understands them and must not be secret-shaped (`validation_failed`). The stored
+  form is a fixed point, so republishing it keeps every field and the `spec_digest`. Check and
+  service `argv` is an exec list: the first item names a program, later items may be empty
+  strings, nothing runs through a shell. Service names are unique. Another `schema_version` is
+  refused.
+* **Console Projects form** derives the next version from the stored spec and replaces only the
+  fields it edits (repository, base ref, Agent CLI, model, compute, checks, services). Unknown and
+  undisplayed fields — environment, ship policy, effort, service health/cwd/restart, check
+  timeouts — are carried over; they are summarised as "Kept from version N". Switching the Agent
+  CLI drops that CLI's effort. A delivery base branch that followed the repository base keeps
+  following it. Before publishing, "Changes in this version" lists every changed field path with
+  old → new; publishing needs at least one change, and a change under `ship_policy` must be
+  acknowledged first. An empty repository means a Project without one.
+* **Command syntax** for checks (`name=command`, one per line) and service commands: POSIX shell
+  word splitting and quoting only (`shlex.split`: `'…'` literal, `"…"` with `\"`/`\\` escapes,
+  backslash outside quotes, `''` for an empty argument, adjacent parts join), no expansion, no
+  shell. The text before the first `=` is a name only when it is a plain word. The form shows the
+  exact argv of every line, the line/column of a split error, and a note when an unquoted `&&`,
+  `|`, `;` or redirection would be passed as a literal argument. Shared vectors:
+  `tests/fixtures/argv_syntax.json` (Vitest and the integration test that runs them as checks).
+* **Services tab** lists exactly the services declared by the Session's pinned ProjectVersion
+  (`GET /api/sessions/{s}/services` also returns `source` — project, version, current version —
+  and `capabilities.preview`). The empty state says whether the Session has no Project or the
+  version declares none, that agent/terminal processes are not listed, and links to Projects.
+  Start/Stop reflect desired vs observed state and poll while a Job settles; logs report
+  "not started" (`started: false`) before the first start on the current compute, and an
+  undeclared name is `not_found`. Preview is disabled on every deployment (no preview origin), and
+  a service declared with `preview` says so instead of showing a link.
+* **Changes → Deliveries** renders the server `delivery` capability: when available, the target
+  (`Opens a draft pull request on owner/repo against base`) and the policy's draft default; when
+  not, the reason and only the recovery actions it lists (Download patch, Open Connections).
 
 Current browser evidence is documented in
 [Console UI restoration notes](../../../console/docs/ui-restoration/notes.md).

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { GitBranch, Camera, RotateCw } from "lucide-react";
-import type { ChangeSet, ChangeSetFile, Delivery } from "../../../api/types";
+import { GitBranch, Camera, Download, RotateCw } from "lucide-react";
+import { Link } from "react-router-dom";
+import type { ChangeSet, ChangeSetFile, Delivery, DeliveryCapability } from "../../../api/types";
 import { isApiError } from "../../../api/errors";
 import { useI18n } from "../../../i18n";
 import type { I18nKey } from "../../../i18n/en";
@@ -347,6 +348,37 @@ export function ChangesTab({ sessionId, revision = 0 }: { sessionId: string; rev
   );
 }
 
+/** Why this ChangeSet cannot be delivered, and only the alternatives that really exist. */
+function DeliveryUnavailable({ cs, capability }: { cs: ChangeSet; capability: DeliveryCapability }) {
+  const { t } = useI18n();
+  const api = useApi();
+  const reason = capability.reason ?? "not_ready";
+  if (reason === "not_ready") return <p className="muted small">{t("delivery.blocked.not_ready")}</p>;
+  return (
+    <div className="notice notice--warn" role="status" data-reason={reason}>
+      <div className="notice__body">
+        <div className="notice__title">{t(`delivery.blocked.${reason}.title` as I18nKey)}</div>
+        <div className="notice__text">
+          {t(`delivery.blocked.${reason}.body` as I18nKey, { repo: capability.repository ?? "", transport: capability.transport })}
+        </div>
+        <div className="chg-detail__recovery">
+          {capability.recovery.includes("download_patch") ? (
+            <a className="btn btn--secondary btn--sm" href={api.changes.patchUrl(cs.id)} download={`${cs.id}.patch`}>
+              <Download size={13} /> {t("delivery.download_patch")}
+            </a>
+          ) : null}
+          {capability.recovery.includes("manage_connections") ? (
+            <Link className="btn btn--secondary btn--sm" to="/connections">
+              {t("delivery.manage_connections")}
+            </Link>
+          ) : null}
+        </div>
+        {capability.recovery.includes("download_patch") ? <p className="faint small">{t("delivery.patch_hint")}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 function ChangeSetDetail({
   cs,
   rev,
@@ -362,7 +394,7 @@ function ChangeSetDetail({
   const api = useApi();
   const qc = useQueryClient();
   const [title, setTitle] = useState("");
-  const [draft, setDraft] = useState(true);
+  const [draftChoice, setDraft] = useState<boolean | null>(null);
   // Diffs stay lazy: fetched on demand (Show diff) or once a file is picked.
   const [showDiff, setShowDiff] = useState(false);
   const wantDiff = showDiff || selectedFile !== null;
@@ -370,6 +402,9 @@ function ChangeSetDetail({
   const diff = useQuery(wantDiff ? ["changeset-diff", cs.id, cs.subject_digest ?? ""] : null, () => api.changes.diff(cs.id));
   const deliveries = useQuery(["deliveries", cs.id, rev], () => api.deliveries.list(cs.id));
   const reload = () => qc.invalidate(["deliveries", cs.id]);
+  // The server's own verdict; an older server without one keeps the previous behaviour.
+  const capability = detail.data?.delivery ?? cs.delivery;
+  const draft = draftChoice ?? capability?.draft ?? true;
   const request = useAction(async (key) => {
     await api.deliveries.request(cs.id, { ...(title.trim() ? { title: title.trim() } : {}), draft }, { idempotencyKey: key });
     reload();
@@ -441,18 +476,39 @@ function ChangeSetDetail({
           <DeliveryCard key={d.id} delivery={d} onChanged={reload} />
         ))}
         {deliveries.data && !deliveries.data.items.length ? <p className="muted small">{t("delivery.none")}</p> : null}
-        <form className="chg-detail__request" onSubmit={submit} aria-label={t("delivery.request")}>
-          <Field label={t("delivery.pr_title")} htmlFor={`dtitle-${cs.id}`}>
-            <Input id={`dtitle-${cs.id}`} value={title} onChange={(e) => setTitle(e.target.value)} />
-          </Field>
-          <label className="small check">
-            <input type="checkbox" checked={draft} onChange={(e) => setDraft(e.target.checked)} />
-            {t("delivery.draft")}
-          </label>
-          <Button size="sm" variant="primary" type="submit" disabled={request.pending || cs.state !== "ready"}>
-            {t("delivery.request")}
-          </Button>
-        </form>
+        {!capability || capability.available ? (
+          <form className="chg-detail__request" onSubmit={submit} aria-label={t("delivery.request")}>
+            {capability?.repository ? (
+              <p className="faint small chg-detail__target">
+                {t(
+                  capability.transport === "git_branch"
+                    ? "delivery.target_branch"
+                    : draft
+                      ? "delivery.target_draft_pr"
+                      : "delivery.target_pr",
+                  { repo: capability.repository, base: capability.base_branch ?? "main" },
+                )}
+              </p>
+            ) : null}
+            <Field
+              label={t(capability?.transport === "git_branch" ? "delivery.commit_title" : "delivery.pr_title")}
+              htmlFor={`dtitle-${cs.id}`}
+            >
+              <Input id={`dtitle-${cs.id}`} value={title} onChange={(e) => setTitle(e.target.value)} />
+            </Field>
+            {capability?.transport !== "git_branch" ? (
+              <label className="small check">
+                <input type="checkbox" checked={draft} onChange={(e) => setDraft(e.target.checked)} />
+                {t("delivery.draft")}
+              </label>
+            ) : null}
+            <Button size="sm" variant="primary" type="submit" disabled={request.pending || cs.state !== "ready"}>
+              {t("delivery.request")}
+            </Button>
+          </form>
+        ) : (
+          <DeliveryUnavailable cs={cs} capability={capability} />
+        )}
         <ErrorNotice error={request.error} />
       </section>
     </div>

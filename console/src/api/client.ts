@@ -33,7 +33,8 @@ import type {
   Project,
   ProjectSpec,
   ProjectVersion,
-  ServiceItem,
+  ServiceList,
+  ServiceLogs,
   Session,
   SessionList,
   SessionSnapshot,
@@ -254,6 +255,8 @@ export function createApiClient(options: HttpOptions = {}) {
       diff: (cs: string) =>
         get<{ diff: string; truncated?: boolean }>(`/api/changesets/${enc(cs)}/diff`),
       file: (cs: string, path: string) => get<FileContent>(`/api/changesets/${enc(cs)}/files`, { path }),
+      /** Export download (exact `git apply --binary` bytes); a plain same-origin link. */
+      patchUrl: (cs: string) => `${http.baseUrl}/api/changesets/${enc(cs)}/patch`,
     },
 
     deliveries: {
@@ -300,13 +303,13 @@ export function createApiClient(options: HttpOptions = {}) {
     },
 
     services: {
-      list: (s: string) => get<{ items: ServiceItem[] }>(`/api/sessions/${enc(s)}/services`),
+      list: (s: string) => get<ServiceList>(`/api/sessions/${enc(s)}/services`),
       activate: (s: string, name: string, o?: Opts) =>
         post<Accepted>(`/api/sessions/${enc(s)}/services/${enc(name)}/activations`, undefined, o),
       stop: (s: string, name: string, o?: Opts) =>
         post<Accepted>(`/api/sessions/${enc(s)}/services/${enc(name)}/stops`, undefined, o),
       logs: (s: string, name: string) =>
-        get<{ lines: string[] }>(`/api/sessions/${enc(s)}/services/${enc(name)}/logs`),
+        get<ServiceLogs>(`/api/sessions/${enc(s)}/services/${enc(name)}/logs`),
     },
   };
 }
