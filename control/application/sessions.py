@@ -469,7 +469,7 @@ class Sessions:
             result_contract=result_contract or body.get("result_contract"),
         )
         response["turn_id"] = turn["id"]
-        response["turn"] = turn_resource(turn)
+        response["turn"] = turn_resource(turn, lifecycle=session["lifecycle"])
         return response
 
     def _check_settings(self, uow: Any, session: dict[str, Any], settings: dict[str, Any]) -> None:
@@ -570,7 +570,10 @@ class Sessions:
         state = turn["state"]
         if rules.TURN.is_terminal(state) or state == "cancelling":
             # A committed verdict wins; repeated intent is idempotent.
-            return {"turn": turn_resource(turn), "event_watermark": uow.watermark(session["id"])}
+            return {
+                "turn": turn_resource(turn, lifecycle=session["lifecycle"]),
+                "event_watermark": uow.watermark(session["id"]),
+            }
         now = uow.now()
         uow.append_event(
             session,
@@ -629,7 +632,10 @@ class Sessions:
                     session_id=session["id"],
                     priority=80,
                 )
-        return {"turn": turn_resource(turn), "event_watermark": uow.watermark(session["id"])}
+        return {
+            "turn": turn_resource(turn, lifecycle=session["lifecycle"]),
+            "event_watermark": uow.watermark(session["id"]),
+        }
 
     def retry_turn(
         self, principal: Principal, turn_id: str, *, idempotency_key: str | None = None
@@ -681,7 +687,7 @@ class Sessions:
             response = {
                 "message_id": message["id"],
                 "turn_id": new_turn["id"],
-                "turn": turn_resource(new_turn),
+                "turn": turn_resource(new_turn, lifecycle=session["lifecycle"]),
                 "event_watermark": uow.watermark(session["id"]),
             }
             uow.dedupe_finish(
@@ -715,7 +721,10 @@ class Sessions:
                 )
             turn = uow.update("turns", turn_id, {"unknown_acknowledged_at": uow.now()})
             schedule_next(uow, session)
-            return {"turn": turn_resource(turn), "event_watermark": uow.watermark(session["id"])}
+            return {
+                "turn": turn_resource(turn, lifecycle=session["lifecycle"]),
+                "event_watermark": uow.watermark(session["id"]),
+            }
 
         return self.tx.run(fn)
 

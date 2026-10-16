@@ -28,6 +28,7 @@ import { Menu, MenuItem } from "../ui/Menu";
 import { Skeleton } from "../ui/Skeleton";
 import { StatusDot } from "../ui/Pill";
 import { formatRelative } from "../ui/format";
+import { useDebounced } from "../ui/useDebounced";
 import { harnessName } from "../features/sessions/harnesses";
 import { activityLabelKey, activityTone } from "../features/sessions/activity";
 import { UserMenu } from "./UserMenu";
@@ -93,26 +94,19 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Archived and closed Sessions are listed only when asked for; search runs on the server
+  // over the whole workspace, not over the recent page already loaded.
+  const lifecycles = ["open", ...(showArchived ? ["archived"] : []), ...(showClosed ? ["closed"] : [])].join(",");
+  const needle = useDebounced(filter.trim(), 250);
   const sessionsQuery = useQuery(
-    w ? ["sessions", w, "nav", showArchived ? "a" : "", showClosed ? "c" : ""] : null,
-    async () => {
-      const pages = await Promise.all([
-        api.sessions.list(w!, { limit: 50 }),
-        ...(showArchived ? [api.sessions.list(w!, { lifecycle: "archived", limit: 50 })] : []),
-        ...(showClosed ? [api.sessions.list(w!, { lifecycle: "closed", limit: 50 })] : []),
-      ]);
-      const seen = new Map<string, Session>();
-      for (const s of pages.flatMap((p) => p.items)) seen.set(s.id, s);
-      return [...seen.values()]
-        .sort((a, b) => (b.updated_at ?? b.created_at ?? "").localeCompare(a.updated_at ?? a.created_at ?? ""))
-        .slice(0, 50);
-    },
+    w ? ["sessions", w, "nav", lifecycles, needle] : null,
+    () => api.sessions.list(w!, { lifecycle: lifecycles, limit: 50, ...(needle ? { q: needle } : {}) }),
     { pollMs: 15000 },
   );
 
-  const all = sessionsQuery.data ?? [];
-  const needle = filter.trim().toLowerCase();
-  const items = needle ? all.filter((s) => (s.title || t("sessions.untitled")).toLowerCase().includes(needle)) : all;
+  const all: Session[] = sessionsQuery.data?.items ?? [];
+  const items = all;
+  const more = Boolean(sessionsQuery.data?.next_cursor);
 
   const openFilter = () => {
     setFilterOpen(true);
@@ -228,8 +222,13 @@ export function AppShell() {
               />
             ))
           ) : (
-            <p className="sidebar__empty">{t("shell.sessions_empty")}</p>
+            <p className="sidebar__empty">{needle ? t("shell.search_none") : t("shell.sessions_empty")}</p>
           )}
+          {more ? (
+            <Link className="sidebar__more" to={needle ? `/sessions?q=${encodeURIComponent(needle)}` : "/sessions"}>
+              {t("shell.all_sessions")}
+            </Link>
+          ) : null}
         </div>
       </div>
 

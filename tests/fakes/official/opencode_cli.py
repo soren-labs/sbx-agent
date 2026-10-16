@@ -5,7 +5,8 @@ recorded from opencode-ai 1.18.34). Directives inside the prompt control behavio
 ``[hang]`` block until killed · ``[slow:N]`` sleep N s mid-stream · ``[fail]`` provider
 error + exit 1 · ``[write:path=text]`` write a file under --dir · ``[recall]`` reply with
 all earlier prompts of the native session · ``[flood:N]`` emit N text frames ·
-``[result:{json}]`` reply with a fenced JSON result block.
+``[result:{json}]`` reply with a fenced JSON result block · ``[tool-output:"json string"]``
+a completed bash tool whose output is the decoded JSON string (NUL, lone surrogates…).
 Native sessions persist in ``$XDG_DATA_HOME/opencode/opencode.db`` (JSON here).
 The key comes from ``$SBX_INFERENCE_API_KEY`` (custom provider config named by
 ``$OPENCODE_CONFIG``) or, for the legacy Zen lane, ``auth.json``; a key starting with
@@ -122,6 +123,28 @@ def main() -> int:
             "title": path,
         }
         emit(base)
+    for match in re.finditer(r'\[tool-output:("(?:[^"\\]|\\.)*")\]', prompt):
+        call = f"call_{uuid.uuid4().hex[:8]}"
+        emit(
+            {
+                "type": "tool_use",
+                "sessionID": sid,
+                "part": {
+                    "type": "tool",
+                    "tool": "bash",
+                    "callID": call,
+                    "id": f"prt_{call}",
+                    "sessionID": sid,
+                    "messageID": msg,
+                    "state": {
+                        "status": "completed",
+                        "input": {"command": "cat odd.bin"},
+                        "output": json.loads(match.group(1)),
+                        "title": "cat odd.bin",
+                    },
+                },
+            }
+        )
     slow = re.search(r"\[slow:(\d+(?:\.\d+)?)\]", prompt)
     if slow:
         time.sleep(float(slow.group(1)))

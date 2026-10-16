@@ -1417,6 +1417,10 @@ paths:
       summary: Spawn
   /api/sessions/{session_id}/events:
     get:
+      description: 'Forward pages (``after``), the live SSE stream, or history pages
+        (``before``: the
+
+        newest ``limit`` events below that seq, with ``next_before`` for older ones).'
       operationId: events_api_sessions__session_id__events_get
       parameters:
       - in: path
@@ -1463,6 +1467,14 @@ paths:
           default: 600
           title: Max Seconds
           type: number
+      - in: query
+        name: before
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Before
       responses:
         '200':
           content:
@@ -2424,6 +2436,7 @@ paths:
       summary: Create Project
   /api/workspaces/{workspace_id}/sessions:
     get:
+      description: '``lifecycle`` takes one state or a comma list (``open,archived``).'
       operationId: list_sessions_api_workspaces__workspace_id__sessions_get
       parameters:
       - in: path
@@ -2479,6 +2492,14 @@ paths:
           - type: string
           - type: 'null'
           title: Cursor
+      - in: query
+        name: q
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Q
       responses:
         '200':
           content:

@@ -89,7 +89,8 @@ function ExecutorCard({ session, executor, live }: { session: Session; executor:
 export function OverviewTab({ session, state, live }: { session: Session; state: SessionLiveState; live: SessionLive }) {
   const { t } = useI18n();
   // Only what the CLI reported: Turns without usage contribute nothing and no cost is guessed.
-  const reported = state.turns.filter((turn) => turn.usage);
+  // A conversation running total that could not be split per Turn is never summed again.
+  const reported = state.turns.filter((turn) => turn.usage && turn.usage.per_turn !== false);
   const tokens = (field: string) => reported.reduce((sum, turn) => sum + (Number((turn.usage as Record<string, unknown>)[field]) || 0), 0);
   return (
     <div className="ov">

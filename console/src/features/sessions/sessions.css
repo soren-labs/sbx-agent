@@ -1,3 +1,30 @@
+.sessions-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.sessions-filters .field:first-child {
+  flex: 1 1 260px;
+}
+
+.sessions-more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.close-consequences {
+  margin: 10px 0;
+  padding-left: 18px;
+  list-style: disc;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .sessions-table {
   margin-top: 16px;
   border: 1px solid var(--border);

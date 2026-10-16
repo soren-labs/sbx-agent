@@ -15,6 +15,7 @@ import type {
   DelegationRole,
   Delivery,
   EventEnvelope,
+  EventHistoryPage,
   EventPage,
   ExecutorBackend,
   ExecutorView,
@@ -48,7 +49,10 @@ export interface Opts {
 }
 
 export interface SessionFilters {
+  /** One lifecycle or a comma list ("open,archived"); every lifecycle when omitted. */
   lifecycle?: string;
+  /** Title substring or exact id, searched across the whole workspace. */
+  q?: string;
   role?: string;
   parent_session_id?: string;
   project_id?: string;
@@ -177,6 +181,9 @@ export function createApiClient(options: HttpOptions = {}) {
       turns: (s: string) => get<{ items: Turn[] }>(`/api/sessions/${enc(s)}/turns`),
       eventsPage: (s: string, after: number, limit = 500, signal?: AbortSignal) =>
         get<EventPage>(`/api/sessions/${enc(s)}/events`, { after, limit }, signal),
+      /** History: the newest `limit` events below `before` (in seq order) and a cursor further back. */
+      eventsBefore: (s: string, before: number, limit = 100) =>
+        get<EventHistoryPage>(`/api/sessions/${enc(s)}/events`, { before, limit }),
       executor: (s: string) => get<ExecutorView>(`/api/sessions/${enc(s)}/executor`),
       activateExecutor: (s: string, o?: Opts) => post<Accepted>(`/api/sessions/${enc(s)}/executor/activations`, undefined, o),
       releaseExecutor: (s: string, o?: Opts) => post<Accepted>(`/api/sessions/${enc(s)}/executor/releases`, undefined, o),

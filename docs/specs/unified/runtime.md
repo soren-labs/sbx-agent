@@ -117,6 +117,13 @@ SQLite WAL with `synchronous=FULL` in the protected state dir (outside the Workt
 * The spool is bounded (`SBX_SPOOL_MAX_UNACKED`). Under pressure the CLI is stopped and diagnosed;
   terminal evidence uses reserved headroom. New Turns are refused until evidence is acknowledged.
 * Known secrets and secret-looking structured fields are redacted before spooling.
+* Ingestion makes evidence storable before it is compared or written: NUL and unpaired surrogates
+  (which PostgreSQL rejects in text and JSONB) become U+FFFD, counted in
+  `unrepresentable_replaced`; the transform is deterministic, so replays still compare equal. A
+  batch is applied in one savepoint; if PostgreSQL still refuses a record, the batch is re-applied
+  per record and the refused one is committed as `runtime.evidence_rejected` at the same source
+  tuple, so the watermark advances and a later cancel or terminal record is never held back. A
+  refused `execution.stopped` still ends the Turn without a confirmed stop.
 
 ## Checkpoints
 
@@ -133,6 +140,13 @@ PTY and socket state is never claimed as restored.
 Harness: `input_tokens` is input that was **not** served from cache, `cached_input_tokens` is
 cache reads, `output_tokens` is output. CLIs that report cached tokens inside their input total
 (Codex, Command Code) are adjusted by the adapter. A Turn whose CLI reported nothing has no usage.
+
+Antigravity's `result.usage` is a running total for the native conversation (the #205 samples: a
+resumed Turn that only recalled one word reported the first Turn's 249 output tokens plus 2), so
+its adapter sends `scope: conversation`. Control stores the Turn's share: the reported total minus
+the total the previous Turn of the same native conversation reported, keeping both in
+`conversation_total`. Without that baseline the usage stays as reported with `per_turn: false`,
+and the Console excludes it from Session sums.
 
 ## Streamed message parts
 

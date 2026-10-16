@@ -98,6 +98,17 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
 * **Workspace panel** (`/sessions/{id}/{overview|changes|files|terminal|services|children|activity}`):
   beside the conversation on wide screens; below 1100 px a Conversation/Workspace switch shows
   one pane. Activity is a worded timeline (event type on hover; per-chunk updates behind a toggle).
+  It loads 100 committed events below the snapshot watermark (`GET …/events?before=`) and older
+  pages on demand, merged with the live stream by `seq`.
+* **Conversation grouping**: one block per Turn, placed at its first Message; a follow-up queued
+  while another Turn runs never splits either Turn, so each outcome renders once. `cancelling` is
+  live ("Stopping"). Startup names the lease `stage` from the executor view
+  (`allocating_sandbox` → `connecting_runtime` → `ready`), re-read every 2 s while preparing.
+* **Session lists**: the sidebar and `/sessions` request `lifecycle=open` unless archived/closed are
+  opted in, search with `q` on the server, and `/sessions` pages with `next_cursor` (deduped by id).
+  Turn `actions` already reflect the Session lifecycle; the Console also hides Retry on a Session
+  that is not open. Close opens a confirmation naming the Session and its consequences, with
+  Archive as the reversible alternative.
   Links into the panel are absolute (`/sessions/{id}/changes`). Terminal views are kept per Session
   across panel switches and re-attach to `GET …/terminals` after a reload; output is rendered by a
   streaming ANSI model (SGR colours, CR/erase overwrite, wide characters, sequences split across
