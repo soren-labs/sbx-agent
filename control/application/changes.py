@@ -9,6 +9,7 @@ from protocol.manifests import canonical_manifest, content_digest, subject_diges
 
 from control.application import access
 from control.application.artifact_secrets import runtime_visible
+from control.application.delivery import delivery_capability
 from control.application.ports import (
     BlobStore,
     RuntimeConnector,
@@ -543,10 +544,10 @@ class Changes:
     # ---------------------------------------------------------------- queries
     def list(self, principal: Principal, session_id: str) -> dict[str, Any]:
         def fn(uow: Any) -> dict[str, Any]:
-            access.owned(uow, principal, "sessions", session_id, what="session")
+            session = access.owned(uow, principal, "sessions", session_id, what="session")
             return {
                 "items": [
-                    changeset_view(c)
+                    {**changeset_view(c), "delivery": delivery_capability(uow, c, session)}
                     for c in uow.find(
                         "changesets", {"session_id": session_id}, order="created_at DESC"
                     )
@@ -558,11 +559,25 @@ class Changes:
     def get(self, principal: Principal, changeset_id: str) -> dict[str, Any]:
         def fn(uow: Any) -> dict[str, Any]:
             cs = access.owned(uow, principal, "changesets", changeset_id, what="changeset")
-            return changeset_view(
-                cs, uow.find("changeset_files", {"changeset_id": changeset_id}, order="path")
-            )
+            return {
+                **changeset_view(
+                    cs, uow.find("changeset_files", {"changeset_id": changeset_id}, order="path")
+                ),
+                "delivery": delivery_capability(uow, cs, uow.get("sessions", cs["session_id"])),
+            }
 
         return self.tx.read(fn)
+
+    def patch(self, principal: Principal, changeset_id: str) -> tuple[dict[str, Any], bytes]:
+        """The sealed ChangeSet's exact binary patch (``git apply --binary``), for export."""
+        cs, blob = self.tx.read(
+            lambda uow: (
+                lambda c: (c, uow.get("blobs", c["patch_blob_id"]) if c["patch_blob_id"] else None)
+            )(access.owned(uow, principal, "changesets", changeset_id, what="changeset"))
+        )
+        if cs["state"] != "ready" or blob is None:
+            raise DomainError("stale_subject", "only a sealed ChangeSet has a patch to export")
+        return cs, self.blobs.get(blob["storage_key"])
 
     def diff(self, principal: Principal, changeset_id: str) -> dict[str, Any]:
         """Historical diff from the immutable manifest; never wakes compute."""

@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from sbx.config import ClientConfig
@@ -168,6 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("changeset_id")
     ap.add_argument("destination_session_id")
     cs.add_parser("show").add_argument("changeset_id")
+    pt = cs.add_parser("patch", help="write the sealed ChangeSet as a git patch file")
+    pt.add_argument("changeset_id")
+    pt.add_argument("--output", "-o", required=True, help="file to write (git apply --binary)")
 
     dl = sub.add_parser("deliveries").add_subparsers(dest="action", required=True)
     rq = dl.add_parser("request")
@@ -415,6 +419,10 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             )
         if action == "apply":
             return client.changesets.apply(args.changeset_id, args.destination_session_id)
+        if action == "patch":
+            data = client.changesets.patch(args.changeset_id)
+            Path(args.output).write_bytes(data)
+            return {"changeset_id": args.changeset_id, "output": args.output, "bytes": len(data)}
         return client.changesets.get(args.changeset_id)
     if cmd == "deliveries":
         if action == "request":

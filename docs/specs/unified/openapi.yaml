@@ -326,6 +326,29 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Changeset File
+  /api/changesets/{changeset_id}/patch:
+    get:
+      description: 'Export: the sealed patch bytes, applicable with ``git apply --binary``.'
+      operationId: changeset_patch_api_changesets__changeset_id__patch_get
+      parameters:
+      - in: path
+        name: changeset_id
+        required: true
+        schema:
+          title: Changeset Id
+          type: string
+      responses:
+        '200':
+          content:
+            text/x-diff: {}
+          description: Binary git patch
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Changeset Patch
   /api/connections/{connection_id}:
     delete:
       operationId: disconnect_api_connections__connection_id__delete

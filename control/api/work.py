@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from control.api.dependencies import (
     idempotency_key,
@@ -60,6 +60,25 @@ def changeset_file(request: Request, changeset_id: str, path: str | None = None)
 @router.get("/api/changesets/{changeset_id}/diff")
 def changeset_diff(request: Request, changeset_id: str) -> dict[str, Any]:
     return services(request).changes.diff(principal(request), changeset_id)
+
+
+@router.get(
+    "/api/changesets/{changeset_id}/patch",
+    response_class=Response,
+    responses={200: {"content": {"text/x-diff": {}}, "description": "Binary git patch"}},
+)
+def changeset_patch(request: Request, changeset_id: str) -> Response:
+    """Export: the sealed patch bytes, applicable with ``git apply --binary``."""
+    cs, data = services(request).changes.patch(principal(request), changeset_id)
+    return Response(
+        data,
+        media_type="text/x-diff",
+        headers={
+            "Content-Disposition": f'attachment; filename="{cs["id"]}.patch"',
+            "X-Subject-Digest": cs["subject_digest"] or "",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/api/changesets/{changeset_id}/applications")

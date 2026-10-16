@@ -15,6 +15,7 @@ from control.api.dependencies import (
     services,
 )
 from control.application import access
+from control.application.services import PREVIEW
 from control.domain.errors import DomainError
 
 router = APIRouter()
@@ -103,9 +104,7 @@ def service_logs(request: Request, session_id: str, name: str) -> dict[str, Any]
 def preview_grant(request: Request, session_id: str, name: str) -> dict[str, Any]:
     mutating_principal(request)
     raise DomainError(
-        "unsupported_capability",
-        "preview requires a dedicated preview origin, which this deployment does not configure",
-        details={"capability": "preview"},
+        "unsupported_capability", PREVIEW["reason"], details={"capability": "preview"}
     )
 
 
