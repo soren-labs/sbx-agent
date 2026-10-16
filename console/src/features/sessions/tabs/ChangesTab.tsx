@@ -1,5 +1,5 @@
-import { useMemo, useState, type FormEvent } from "react";
-import { GitBranch, Camera, Download } from "lucide-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { GitBranch, Camera, Download, RotateCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { ChangeSet, ChangeSetFile, Delivery, DeliveryCapability } from "../../../api/types";
 import { isApiError } from "../../../api/errors";
@@ -7,13 +7,14 @@ import { useI18n } from "../../../i18n";
 import type { I18nKey } from "../../../i18n/en";
 import { useApi, useQueryClient } from "../../../state/context";
 import { useQuery } from "../../../state/query";
-import { Button } from "../../../ui/Button";
+import { Button, IconButton } from "../../../ui/Button";
 import { ErrorNotice } from "../../../ui/ErrorNotice";
 import { Field, Input } from "../../../ui/Field";
 import { Pill, type Tone } from "../../../ui/Pill";
 import { Skeleton } from "../../../ui/Skeleton";
 import { useAction } from "../../../ui/useAction";
 import { when } from "../../../ui/format";
+import { parseUnifiedDiff, type DiffFile } from "../diff";
 
 /** Git porcelain status code as a word; unknown codes stay "changed". */
 export function statusKind(status: string): "new" | "modified" | "deleted" | "renamed" | "changed" {
@@ -25,77 +26,38 @@ export function statusKind(status: string): "new" | "modified" | "deleted" | "re
   return "changed";
 }
 
-const LETTER: Record<string, string> = { new: "A", modified: "M", deleted: "D", renamed: "R", changed: "M" };
+// "changed" is honest about not knowing yet (no patch parsed, or an unusual porcelain code).
+const LETTER: Record<string, string> = { new: "A", modified: "M", deleted: "D", renamed: "R", changed: "•" };
 
-/** Sections of a unified diff, split at file headers; order preserved. */
-function splitDiff(diff: string): { file: string | null; text: string }[] {
-  const lines = diff.split("\n");
-  const sections: { file: string | null; text: string }[] = [];
-  let cur: { file: string | null; lines: string[] } = { file: null, lines: [] };
-  const push = () => {
-    if (cur.lines.length) sections.push({ file: cur.file, text: cur.lines.join("\n") });
-  };
-  for (const line of lines) {
-    if (line.startsWith("diff --git ")) {
-      push();
-      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      cur = { file: m ? m[2] : null, lines: [line] };
-    } else {
-      cur.lines.push(line);
-    }
-  }
-  push();
-  return sections.filter((s) => s.text.trim());
-}
+/** How often the Live view re-observes the worktree while it is on screen. */
+export const LIVE_POLL_MS = 10_000;
 
-/** +/− line counts of one diff section (file headers and +++/--- excluded). */
-function diffCounts(text: string): { add: number; del: number } {
-  let add = 0;
-  let del = 0;
-  for (const line of text.split("\n")) {
-    if (line.startsWith("+") && !line.startsWith("+++")) add++;
-    else if (line.startsWith("-") && !line.startsWith("---")) del++;
-  }
-  return { add, del };
-}
+const ROW_CLASS: Record<string, string> = {
+  meta: "diff__line diff__line--meta",
+  hunk: "diff__line diff__line--hunk",
+  add: "diff__line diff__line--add",
+  del: "diff__line diff__line--del",
+  nonewline: "diff__line diff__line--meta",
+  context: "diff__line",
+};
 
-export function DiffView({ diff, truncated }: { diff: string; truncated?: boolean }) {
+/** Unified diff with real source line numbers: headers and markers carry none. */
+export function DiffView({ diff, files, truncated }: { diff?: string; files?: DiffFile[]; truncated?: boolean }) {
   const { t } = useI18n();
-  let oldNo = 0;
-  let newNo = 0;
+  const parsed = useMemo(() => files ?? parseUnifiedDiff(diff ?? ""), [files, diff]);
   return (
     <div>
       <pre className="diff" aria-label={t("changes.diff")}>
-        {diff.split("\n").map((line, i) => {
-          const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-          if (hunk) {
-            oldNo = Number(hunk[1]);
-            newNo = Number(hunk[2]);
-          }
-          let cls = "";
-          let a = "";
-          let b = "";
-          if (line.startsWith("@@")) {
-            cls = "diff__line diff__line--hunk";
-          } else if (line.startsWith("+") && !line.startsWith("+++")) {
-            cls = "diff__line diff__line--add";
-            b = String(newNo++);
-          } else if (line.startsWith("-") && !line.startsWith("---")) {
-            cls = "diff__line diff__line--del";
-            a = String(oldNo++);
-          } else {
-            a = String(oldNo++);
-            b = String(newNo++);
-          }
-          return (
-            <span key={i} className={cls || "diff__line"}>
-              <span className="diff__no">{a}</span>
-              <span className="diff__no">{b}</span>
-              <span className="diff__code">{line}</span>
+        {parsed.flatMap((f, fi) =>
+          f.rows.map((row, i) => (
+            <span key={`${fi}:${i}`} className={ROW_CLASS[row.kind]} data-kind={row.kind}>
+              <span className="diff__no">{row.old ?? ""}</span>
+              <span className="diff__no">{row.new ?? ""}</span>
+              <span className="diff__code">{row.text}</span>
               {"\n"}
             </span>
-          );
-        })}
+          )),
+        )}
       </pre>
       {truncated ? <p className="faint small">{t("changes.diff_truncated")}</p> : null}
     </div>
@@ -248,14 +210,21 @@ export function DeliveryCard({ delivery: d, onChanged }: { delivery: Delivery; o
   );
 }
 
-/** ChangeSet files carry a word ("modified"), live observations a porcelain code. */
-function fileKind(value: string): ReturnType<typeof statusKind> {
-  return ["new", "modified", "deleted", "renamed", "changed"].includes(value) ? (value as ReturnType<typeof statusKind>) : statusKind(value);
+type Kind = ReturnType<typeof statusKind>;
+
+/**
+ * Live observations carry a porcelain code. A ChangeSet manifest only knows "deleted"
+ * or the entry type ("file", "symlink"): new vs modified comes from the parsed patch.
+ */
+export function fileKind(f: ChangeSetFile | { path: string; status: string }, patch?: DiffFile | null): Kind {
+  if ("status" in f) return statusKind(f.status);
+  if (f.type === "deleted") return "deleted";
+  if (patch) return patch.status;
+  return ["new", "modified", "renamed"].includes(f.type) ? (f.type as Kind) : "changed";
 }
 
-function FileRow({ f, active, counts, onSelect }: { f: ChangeSetFile | { path: string; status: string }; active: boolean; counts?: { add: number; del: number } | null; onSelect: () => void }) {
+function FileRow({ f, kind, active, counts, onSelect }: { f: ChangeSetFile | { path: string; status: string }; kind: Kind; active: boolean; counts?: { add: number; del: number } | null; onSelect: () => void }) {
   const { t } = useI18n();
-  const kind = fileKind("status" in f ? f.status : f.type);
   const name = f.path.split("/").pop() ?? f.path;
   const dir = f.path.slice(0, Math.max(0, f.path.length - name.length - 1));
   return (
@@ -285,18 +254,26 @@ export function ChangesTab({ sessionId, revision = 0 }: { sessionId: string; rev
   const qc = useQueryClient();
   const [selectedSet, setSelectedSet] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const liveQ = useQuery(["changes-live", sessionId, revision], () => api.changes.live(sessionId));
   const sets = useQuery(["changesets", sessionId, revision], () => api.changes.list(sessionId));
+  const items = sets.data?.items ?? [];
+  const current = items.find((c) => c.id === selectedSet) ?? items[0] ?? null;
+  const liveMode = !current || selectedSet === "live";
+  // Terminal commands change the worktree without any event: while the Live view is on
+  // screen it re-observes on activation and at a low rate, and Refresh is explicit.
+  const liveQ = useQuery(["changes-live", sessionId, revision], () => api.changes.live(sessionId), {
+    pollMs: liveMode ? LIVE_POLL_MS : undefined,
+  });
+  const refetchLive = liveQ.refetch;
+  useEffect(() => {
+    if (liveMode) refetchLive();
+  }, [liveMode, refetchLive]);
   const capture = useAction(async (key, origin: "explicit" | "salvage") => {
     const r = await api.changes.capture(sessionId, { origin }, { idempotencyKey: key });
     qc.invalidate(["changesets", sessionId]);
     setSelectedSet(r.changeset.id);
   });
   const unavailable = isApiError(liveQ.error) && liveQ.error.code === "executor_unavailable";
-  const items = sets.data?.items ?? [];
-  const current = items.find((c) => c.id === selectedSet) ?? items[0] ?? null;
   const liveFiles = liveQ.data?.observation.files ?? [];
-  const liveMode = !current || selectedSet === "live";
 
   return (
     <div className="chg">
@@ -317,6 +294,19 @@ export function ChangesTab({ sessionId, revision = 0 }: { sessionId: string; rev
           ))}
         </select>
         <span className="chg__spacer" />
+        {liveMode ? (
+          <IconButton
+            size="sm"
+            icon={<RotateCw size={13} />}
+            label={t("common.refresh")}
+            title={t("changes.refresh_hint")}
+            disabled={liveQ.loading}
+            onClick={() => {
+              refetchLive();
+              sets.refetch();
+            }}
+          />
+        ) : null}
         <Button size="sm" variant="ghost" disabled={capture.pending} onClick={() => void capture.run("salvage")}>
           {t("changes.salvage")}
         </Button>
@@ -343,7 +333,7 @@ export function ChangesTab({ sessionId, revision = 0 }: { sessionId: string; rev
             liveFiles.length ? (
               <ul className="chg__files" aria-label={t("changes.live")}>
                 {liveFiles.map((f) => (
-                  <FileRow key={f.path} f={f} active={false} onSelect={() => undefined} />
+                  <FileRow key={f.path} f={f} kind={fileKind(f)} active={false} onSelect={() => undefined} />
                 ))}
               </ul>
             ) : (
@@ -424,23 +414,14 @@ function ChangeSetDetail({
     void request.run();
   };
   const files = detail.data?.files ?? cs.files ?? [];
-  const sections = useMemo(() => (diff.data ? splitDiff(diff.data.diff) : []), [diff.data]);
-  const counts = useMemo(() => {
-    const map = new Map<string, { add: number; del: number }>();
-    for (const s of sections) if (s.file) map.set(s.file, diffCounts(s.text));
-    return map;
-  }, [sections]);
+  const patches = useMemo(() => (diff.data ? parseUnifiedDiff(diff.data.diff) : []), [diff.data]);
+  const byPath = useMemo(() => new Map(patches.map((p) => [p.path, p])), [patches]);
   const shownFile = files.find((f) => f.path === selectedFile) ? selectedFile : (files[0]?.path ?? null);
-  const shownSection = sections.find((s) => s.file === shownFile) ?? (sections.length === 1 ? sections[0] : null);
-  const totals = useMemo(() => {
-    let add = 0;
-    let del = 0;
-    for (const c of counts.values()) {
-      add += c.add;
-      del += c.del;
-    }
-    return { add, del };
-  }, [counts]);
+  const shownPatch = (shownFile ? byPath.get(shownFile) : undefined) ?? (patches.length === 1 ? patches[0] : null);
+  const totals = useMemo(
+    () => patches.reduce((sum, p) => ({ add: sum.add + p.add, del: sum.del + p.del }), { add: 0, del: 0 }),
+    [patches],
+  );
 
   return (
     <div className="chg-detail">
@@ -466,7 +447,14 @@ function ChangeSetDetail({
           </select>
           <ul className="chg__files" aria-label={t("changes.files_title", { n: files.length })}>
             {files.map((f) => (
-              <FileRow key={f.path} f={f} active={f.path === shownFile} counts={counts.get(f.path) ?? null} onSelect={() => onSelectFile(f.path)} />
+              <FileRow
+                key={f.path}
+                f={f}
+                kind={fileKind(f, byPath.get(f.path))}
+                active={f.path === shownFile}
+                counts={byPath.get(f.path) ?? null}
+                onSelect={() => onSelectFile(f.path)}
+              />
             ))}
           </ul>
         </div>
@@ -478,13 +466,7 @@ function ChangeSetDetail({
           )}
           {wantDiff && diff.loading && !diff.data ? <Skeleton height={66} /> : null}
           {wantDiff ? <ErrorNotice error={diff.error} onRetry={diff.refetch} /> : null}
-          {diff.data ? (
-            shownSection ? (
-              <DiffView diff={shownSection.text} truncated={diff.data.truncated} />
-            ) : (
-              <DiffView diff={diff.data.diff} truncated={diff.data.truncated} />
-            )
-          ) : null}
+          {diff.data ? <DiffView files={shownPatch ? [shownPatch] : patches} truncated={diff.data.truncated} /> : null}
         </div>
       </div>
 

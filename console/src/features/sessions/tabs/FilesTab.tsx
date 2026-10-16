@@ -65,9 +65,11 @@ export function FilesTab({ session, live, rev }: { session: Session; live: Sessi
         sessionId={session.id}
         path={open}
         file={file.data}
-        missing={Boolean(file.error)}
+        // Only a definite not_found opens a blank editor; any other error keeps its own recovery.
+        missing={isApiError(file.error) && file.error.code === "not_found"}
         loading={file.loading}
         onSaved={() => setLocalRev(localRev + 1)}
+        onReload={() => setLocalRev(localRev + 1)}
         onClose={() => setOpen(null)}
         error={file.error}
       />
@@ -143,6 +145,15 @@ export function FilesTab({ session, live, rev }: { session: Session; live: Sessi
   );
 }
 
+/** Why a view cannot be saved back; null when it is the complete text. */
+function readOnlyReason(file: FileContent): "binary" | "truncated" | "redacted" | null {
+  if (file.encoding === "base64") return "binary";
+  if (file.editable === true) return null;
+  if (file.editable === false) return file.readonly_reason ?? (file.redacted ? "redacted" : "truncated");
+  // Runtimes before the explicit flag: a partial view is still never editable.
+  return file.truncated ? "truncated" : file.redacted ? "redacted" : file.digest ? null : "truncated";
+}
+
 function Editor({
   sessionId,
   path,
@@ -151,6 +162,7 @@ function Editor({
   loading,
   error,
   onSaved,
+  onReload,
   onClose,
 }: {
   sessionId: string;
@@ -160,21 +172,27 @@ function Editor({
   loading: boolean;
   error: unknown;
   onSaved: () => void;
+  onReload: () => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
   const api = useApi();
   const [text, setText] = useState(file?.content ?? "");
   const [editing, setEditing] = useState(false);
-  const binary = file?.encoding === "base64";
+  const readOnly = file ? readOnlyReason(file) : null;
+  // A missing path goes straight to a blank editor: that is what "open or create" means.
+  const isEditing = (editing || missing) && !readOnly;
   const save = useAction(async (key) => {
-    await api.files.write(sessionId, { path, content: text, expected_digest: file?.digest ?? "absent" }, { idempotencyKey: key });
+    const expected = missing ? "absent" : file?.digest;
+    if (!expected) throw new Error(t("files.readonly_partial"));
+    await api.files.write(sessionId, { path, content: text, expected_digest: expected }, { idempotencyKey: key });
     setEditing(false);
     onSaved();
   });
+  const conflict = isApiError(save.error) && save.error.code === "version_conflict";
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    void save.run();
+    if (isEditing) void save.run();
   };
   const lines = file ? file.content.split("\n") : [];
   return (
@@ -184,27 +202,58 @@ function Editor({
           {path}
         </Button>
         <span className="files__spacer" />
-        {file && !binary && !editing ? (
+        {file && !readOnly && !isEditing ? (
           <Button size="sm" variant="secondary" icon={<FilePen size={12} />} type="button" onClick={() => setEditing(true)}>
             {t("files.edit")}
           </Button>
         ) : null}
-        {editing ? (
+        {isEditing ? (
           <>
-            <Button size="sm" variant="ghost" icon={<X size={12} />} type="button" onClick={() => setEditing(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<X size={12} />}
+              type="button"
+              onClick={() => (missing ? onClose() : (setEditing(false), setText(file?.content ?? "")))}
+            >
               {t("files.cancel_edit")}
             </Button>
             <Button size="sm" variant="primary" icon={<Check size={12} />} type="submit" disabled={save.pending}>
-              {t("files.save")}
+              {missing ? t("files.create") : t("files.save")}
             </Button>
           </>
         ) : null}
       </div>
-      {loading && !file ? <Skeleton height={66} /> : null}
-      {missing ? <p className="muted small">{t("files.new_hint")}</p> : null}
-      {binary ? (
-        <p className="muted small">{t("files.binary")}</p>
-      ) : editing ? (
+      {loading && !file && !missing ? <Skeleton height={66} /> : null}
+      {missing ? <p className="muted small" data-testid="files-new-hint">{t("files.new_hint")}</p> : null}
+      {file && readOnly ? (
+        <div className="notice notice--warn" role="status" data-testid="files-readonly">
+          <div className="notice__body">
+            <div className="notice__title">{t(`files.readonly.${readOnly}`)}</div>
+            <div className="notice__text">
+              {readOnly === "truncated"
+                ? t("files.readonly.truncated_body", {
+                    // Exact counts: rounded units would print the same number twice.
+                    shown: new TextEncoder().encode(file.content).length.toLocaleString(),
+                    size: file.size != null ? file.size.toLocaleString() : "?",
+                  })
+                : t(`files.readonly.${readOnly}_body`)}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {conflict ? (
+        <div className="notice notice--warn" role="alert">
+          <div className="notice__body">
+            <div className="notice__title">{t(missing ? "files.conflict_created" : "files.conflict_changed")}</div>
+            <div className="notice__text">{t("files.conflict_body")}</div>
+          </div>
+          <Button size="sm" variant="secondary" type="button" onClick={onReload}>
+            {t("files.reload_current")}
+          </Button>
+        </div>
+      ) : null}
+      {readOnly === "binary" ? null : isEditing ? (
         <>
           <label className="sr-only" htmlFor="file-editor">
             {path}
@@ -215,9 +264,10 @@ function Editor({
             rows={14}
             spellCheck={false}
             value={text}
+            autoFocus={missing}
             onChange={(e) => setText(e.target.value)}
           />
-          <ErrorNotice error={save.error ?? (missing ? null : error)} onRetry={() => void save.run()} retryLabel={t("files.retry_save")} />
+          {conflict ? null : <ErrorNotice error={save.error} onRetry={() => void save.run()} retryLabel={t("files.retry_save")} />}
         </>
       ) : file ? (
         <pre className="files__code" aria-label={t("files.view")}>
@@ -229,8 +279,8 @@ function Editor({
             </span>
           ))}
         </pre>
-      ) : (
-        <ErrorNotice error={error} />
+      ) : missing ? null : (
+        <ErrorNotice error={error} onRetry={onReload} />
       )}
     </form>
   );

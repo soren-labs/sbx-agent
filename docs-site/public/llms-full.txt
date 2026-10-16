@@ -391,7 +391,16 @@ that moment. See [Events](/api/events/) for the envelope and endpoint.
   with `Accept: text/event-stream`. Resume with `after=N` or `Last-Event-ID`.
 - Dedupe by `seq`. If the stream drops, reconnect from the last `seq` you
   processed; reconnecting never creates another Turn.
+- Page backwards through history with `?before=N&limit=M`: the newest `M`
+  events below `N`, in `seq` order, plus `next_before` for older ones (`null` at
+  the start of the journal). The Console's Activity tab loads this way after a
+  reload and merges the page with the live stream by `seq`.
 - A cursor ahead of the journal fails with `invalid_cursor`.
+- Tool output that PostgreSQL cannot store (NUL, unpaired surrogates) is stored
+  with each such character replaced by U+FFFD and an `unrepresentable_replaced`
+  count. A record the database still refuses is kept as a
+  `runtime.evidence_rejected` event, so later evidence (and a cancel) is never
+  held back.
 
 ```bash
 sbx sessions events SESSION_ID --after 0 --follow
@@ -407,8 +416,26 @@ wins and the call is a no-op.
 ## Retry
 
 `POST /api/turns/{id}/retries` creates a new Turn from the original Message
-(linked with `retry_of`). Only `failed`, `cancelled` or `interrupted` Turns can
-be retried; otherwise the call returns `invalid_transition`.
+(linked with `retry_of`). Only `failed`, `cancelled` or `interrupted` Turns of an
+open Session can be retried; otherwise the call returns `invalid_transition`. A
+Turn's `actions` list `retry` only when the call would be accepted, so archived
+and closed Sessions never offer it.
+
+## Archive and close
+
+Archive hides a Session from the default lists and can be undone
+(`POST /api/sessions/{id}/unarchives`). Close is permanent: it cancels running
+and queued Turns, releases the Session's compute, cancels child Sessions it
+started, and makes the Session read-only. History, ChangeSets and Deliveries
+stay readable. The Console asks before closing and offers Archive instead.
+
+## Listing and search
+
+`GET /api/workspaces/{id}/sessions` pages by most recent activity
+(`next_cursor`). `lifecycle` takes one state or a comma list
+(`lifecycle=open,archived`); without it every lifecycle is listed. `q` searches
+titles (case-insensitive) and exact Session ids across the whole workspace. The
+Console's lists show open Sessions unless archived or closed ones are asked for.
 
 ## Unknown outcomes
 
@@ -696,6 +723,29 @@ rejected with `csrf_failed`.
 
 The Terminal polls for output. Service preview is not available because no
 preview origin is configured; a service declared with a preview says so.
+## Workspace files and terminals
+
+- **Open or create file** opens an empty editor for a path that does not exist
+  yet. Saving creates it, and fails with a conflict if someone else created the
+  file in the meantime.
+- Files larger than 1,000,000 bytes, and files whose credential values are
+  hidden, open as read-only previews. Saving a preview would cut the file short
+  or overwrite the hidden values, so these files are changed from the terminal
+  or by the agent.
+- The Terminal is a command console. It shows colours and progress lines, and
+  hides control sequences. Switching panels does not end it. Each terminal can be
+  closed explicitly; **New terminal** starts another. Terminals end when the
+  Session's compute is released.
+- If the connection drops before a command is confirmed, the Terminal says so
+  and offers **Retry same command**. The retry reuses the request key, so the
+  command runs at most once.
+- **Live changes** observes the workspace again when you open it, every few
+  seconds while it is visible, after each Turn, and on **Refresh**.
+
+## Limits
+
+The Terminal polls for output and sends whole lines. Service preview is not
+available because no preview origin is configured.
 
 # API overview
 
@@ -776,7 +826,20 @@ services return `executor_unavailable` when no live lease exists; use
 
 `POST …/services/{name}/preview-grants` exists in the schema but returns an
 error because no dedicated preview origin is configured. Terminals use
-polling (`…/terminals/{id}/input` and `…/output`).
+polling (`…/terminals/{id}/input` and `…/output`). `GET …/terminals` lists the
+terminals the live runtime still holds, and `DELETE …/terminals/{id}` closes one.
+
+## Live files and terminal input
+
+- `PUT /api/sessions/{id}/files` requires `expected_digest`: `"absent"` to create
+  a file, or the `digest` returned by a complete read. A truncated, redacted or
+  binary read returns `digest: null` and `editable: false`, so it cannot be
+  written back.
+- Terminal create, input and close require `Idempotency-Key`. A retry with the
+  same key returns the first result and does not run the command again. The same
+  key with a different body returns `409 idempotency_conflict`. If the runtime
+  did not confirm the operation, the response is `409 outcome_unknown`; retry
+  with the same key to learn the outcome.
 
 # Events
 
@@ -856,8 +919,10 @@ corresponds to an `outcome_unknown` Turn.
 
 ## Errors
 
-`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal, or
-mismatched `after` and `Last-Event-ID`. The Console treats `invalid_cursor` and
+`invalid_cursor` (400) for a negative cursor, a cursor ahead of the journal,
+mismatched `after` and `Last-Event-ID`, or `before` combined with `after` or a
+stream. `before=N` (with `limit`) returns the newest events below `N` in `seq`
+order and `next_before` for the page before them. The Console treats `invalid_cursor` and
 `history_reset_required` as the signal to fetch a fresh snapshot instead of
 replaying.
 

@@ -1440,6 +1440,10 @@ paths:
       summary: Spawn
   /api/sessions/{session_id}/events:
     get:
+      description: 'Forward pages (``after``), the live SSE stream, or history pages
+        (``before``: the
+
+        newest ``limit`` events below that seq, with ``next_before`` for older ones).'
       operationId: events_api_sessions__session_id__events_get
       parameters:
       - in: path
@@ -1486,6 +1490,14 @@ paths:
           default: 600
           title: Max Seconds
           type: number
+      - in: query
+        name: before
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Before
       responses:
         '200':
           content:
@@ -1888,6 +1900,36 @@ paths:
           description: Validation Error
       summary: Stop Service
   /api/sessions/{session_id}/terminals:
+    get:
+      description: 'Terminals still held by the live runtime, so a client re-attaches
+        instead of
+
+        starting another shell.'
+      operationId: list_terminals_api_sessions__session_id__terminals_get
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          title: Session Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Terminals Api Sessions  Session Id  Terminals
+                  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Terminals
     post:
       operationId: create_terminal_api_sessions__session_id__terminals_post
       parameters:
@@ -1914,6 +1956,39 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Create Terminal
+  /api/sessions/{session_id}/terminals/{terminal_id}:
+    delete:
+      operationId: close_terminal_api_sessions__session_id__terminals__terminal_id__delete
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          title: Session Id
+          type: string
+      - in: path
+        name: terminal_id
+        required: true
+        schema:
+          title: Terminal Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Close Terminal Api Sessions  Session Id  Terminals  Terminal
+                  Id  Delete
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Close Terminal
   /api/sessions/{session_id}/terminals/{terminal_id}/input:
     post:
       operationId: terminal_input_api_sessions__session_id__terminals__terminal_id__input_post
@@ -2384,6 +2459,7 @@ paths:
       summary: Create Project
   /api/workspaces/{workspace_id}/sessions:
     get:
+      description: '``lifecycle`` takes one state or a comma list (``open,archived``).'
       operationId: list_sessions_api_workspaces__workspace_id__sessions_get
       parameters:
       - in: path
@@ -2439,6 +2515,14 @@ paths:
           - type: string
           - type: 'null'
           title: Cursor
+      - in: query
+        name: q
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Q
       responses:
         '200':
           content:

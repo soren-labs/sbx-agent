@@ -253,6 +253,13 @@
   color: var(--fg-3);
 }
 
+.sidebar__more {
+  display: block;
+  padding: 6px 8px;
+  font-size: var(--text-sm);
+  color: var(--fg-2);
+}
+
 /* ---- footer ---------------------------------------------------------------- */
 .sidebar__footer {
   display: flex;

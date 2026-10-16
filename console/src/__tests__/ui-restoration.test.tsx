@@ -56,14 +56,14 @@ describe("restored auth and shell interactions", () => {
       [
         "GET",
         "/api/workspaces/w1/sessions",
-        {
-          json: {
-            items: [
-              session({ id: "s1", title: "", activity: "awaiting_input", updated_at: new Date().toISOString() }),
-              session({ id: "s2", title: "Fix the PR template", activity: "attention", updated_at: new Date().toISOString() }),
-            ],
-            next_cursor: null,
-          },
+        (call) => {
+          const all = [
+            session({ id: "s1", title: "", activity: "awaiting_input", updated_at: new Date().toISOString() }),
+            session({ id: "s2", title: "Fix the PR template", activity: "attention", updated_at: new Date().toISOString() }),
+          ];
+          // Like the server: q matches stored titles across the whole workspace.
+          const q = (call.query.get("q") ?? "").toLowerCase();
+          return { json: { items: all.filter((s) => s.title.toLowerCase().includes(q)), next_cursor: null } };
         },
       ],
     ]);
@@ -80,11 +80,15 @@ describe("restored auth and shell interactions", () => {
     const titled = within(aside).getByRole("link", { name: /Fix the PR template/ });
     expect(titled).toHaveTextContent("Needs attention");
     expect(titled).not.toHaveTextContent("PR ready");
-    // The filter opens from the sessions-section search action and matches the displayed title.
+    // The default list asks for open Sessions only (issue #228 AUD13).
+    expect(m.find("GET", "/api/workspaces/w1/sessions")[0].query.get("lifecycle")).toBe("open");
+    // The filter opens from the sessions-section search action and searches on the server,
+    // so Sessions beyond the loaded page are found too (AUD14).
     await userEvent.click(within(aside).getAllByRole("button", { name: "Search sessions" }).at(-1)!);
-    await userEvent.type(within(aside).getByLabelText("Filter sessions…"), "untitled");
-    expect(within(aside).queryByRole("link", { name: /Fix the PR template/ })).toBeNull();
-    expect(within(aside).getByRole("link", { name: /Untitled session/ })).toBeInTheDocument();
+    await userEvent.type(within(aside).getByLabelText("Filter sessions…"), "PR template");
+    await waitFor(() => expect(within(aside).queryByRole("link", { name: /Untitled session/ })).toBeNull());
+    expect(within(aside).getByRole("link", { name: /Fix the PR template/ })).toBeInTheDocument();
+    expect(m.find("GET", "/api/workspaces/w1/sessions").some((c) => c.query.get("q") === "PR template")).toBe(true);
   });
 
   it("shows harness · model for quiet Sessions and tags Closed only once it is opted in", async () => {
@@ -103,15 +107,11 @@ describe("restored auth and shell interactions", () => {
       [
         "GET",
         "/api/workspaces/w1/sessions",
-        (call) => ({
-          json: {
-            items:
-              call.query.get("lifecycle") === "closed"
-                ? [closed]
-                : [session({ id: "s1", title: "Open one", updated_at: new Date().toISOString() })],
-            next_cursor: null,
-          },
-        }),
+        (call) => {
+          const wanted = (call.query.get("lifecycle") ?? "open,archived,closed").split(",");
+          const all = [session({ id: "s1", title: "Open one", updated_at: new Date().toISOString() }), closed];
+          return { json: { items: all.filter((s) => wanted.includes(s.lifecycle)), next_cursor: null } };
+        },
       ],
     ]);
     await renderApp(<App />, m.fetch, "/");

@@ -98,3 +98,26 @@ rejected with `csrf_failed`.
 
 The Terminal polls for output. Service preview is not available because no
 preview origin is configured; a service declared with a preview says so.
+## Workspace files and terminals
+
+- **Open or create file** opens an empty editor for a path that does not exist
+  yet. Saving creates it, and fails with a conflict if someone else created the
+  file in the meantime.
+- Files larger than 1,000,000 bytes, and files whose credential values are
+  hidden, open as read-only previews. Saving a preview would cut the file short
+  or overwrite the hidden values, so these files are changed from the terminal
+  or by the agent.
+- The Terminal is a command console. It shows colours and progress lines, and
+  hides control sequences. Switching panels does not end it. Each terminal can be
+  closed explicitly; **New terminal** starts another. Terminals end when the
+  Session's compute is released.
+- If the connection drops before a command is confirmed, the Terminal says so
+  and offers **Retry same command**. The retry reuses the request key, so the
+  command runs at most once.
+- **Live changes** observes the workspace again when you open it, every few
+  seconds while it is visible, after each Turn, and on **Refresh**.
+
+## Limits
+
+The Terminal polls for output and sends whole lines. Service preview is not
+available because no preview origin is configured.

@@ -490,6 +490,9 @@ def test_reads_refuse_credential_paths_and_redact_known_values(rt) -> None:
     notes = rt.post("/rt/query", {"kind": "files.read", "path": "notes.txt"}).json()
     assert notes["redacted"] is True and KEY not in notes["content"]
     assert "REDACTED" in notes["content"]
+    # A redacted view is read-only: no save precondition to echo back over the secret.
+    assert notes["digest"] is None and notes["editable"] is False
+    assert notes["readonly_reason"] == "redacted"
     template = rt.post("/rt/query", {"kind": "files.read", "path": ".env.example"}).json()
     assert template["content"] == "API_KEY=\n" and template["redacted"] is False
 

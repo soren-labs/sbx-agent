@@ -183,7 +183,8 @@ describe("Session workbench", () => {
     await ready;
     const status = await screen.findByTestId("turn-status");
     expect(status).toHaveAttribute("data-state", "preparing");
-    expect(status).toHaveTextContent("Starting the sandbox and coding CLI");
+    // No lease yet: the first real stage, not a generic "starting".
+    expect(status).toHaveTextContent("Requesting compute");
     expect(screen.getByTestId("session-status")).toHaveTextContent("Starting");
   });
 

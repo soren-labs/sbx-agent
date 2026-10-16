@@ -20,7 +20,7 @@ be added later without changing frames.
 | `GET /healthz` | none | liveness only, no data |
 | `POST /rt/hello` | read | lease id/generation, runtime epoch, protocol `{major,minor}`, image digest, Harness manifests, recovered operations, spool watermarks, health |
 | `POST /rt/op` | manage | mutating frame (below) |
-| `POST /rt/query` | read | `operation.status`, `files.list`, `files.read`, `changes.observe`, `health.report` |
+| `POST /rt/query` | read | `operation.status`, `files.list`, `files.read`, `changes.observe`, `service.status`, `service.logs`, `terminal.read`, `terminal.list` (protocol 1.1), `health.report` |
 | `POST /rt/events` | read | spool records after a local sequence, plus the runtime epoch |
 | `POST /rt/ack` | read | advance the acknowledged watermark (only after control committed) |
 
@@ -43,6 +43,18 @@ the same ID with a different body returns `operation_conflict`.
 Kinds implemented: `worktree.restore`, `turn.start`, `turn.cancel`, `files.write`, `check.run`
 (declared argv only), `snapshot.prepare`, `lease.renew`, `runtime.shutdown`. `changes.capture` and
 `changes.apply` are added in the ChangeSet phase. Generic exec does not exist.
+
+User-driven live operations (`files.write`, `terminal.create`, `terminal.input`, `terminal.close`)
+derive their operation ID from the client's `Idempotency-Key`, so a retry after a lost response is
+answered from the journal instead of writing to the file or PTY again. The control plane reports a
+transport failure on these operations as `outcome_unknown` (retry with the same key), a reused key
+with a different body as `idempotency_conflict`, and a replayed operation that never reached a
+verdict (`accepted`/`lost` after a runtime restart) as `outcome_unknown` that a retry cannot settle.
+
+`files.read` returns the save precondition `digest` only for a complete text view. A truncated
+(over 1,000,000 bytes), redacted or binary view has `digest: null`, `editable: false` and
+`readonly_reason` (`truncated`, `redacted` or `binary`), so a partial view cannot be written back
+over the original bytes. `terminal.read` offsets never split a UTF-8 character.
 
 ## Executor boot environment
 
@@ -105,6 +117,13 @@ SQLite WAL with `synchronous=FULL` in the protected state dir (outside the Workt
 * The spool is bounded (`SBX_SPOOL_MAX_UNACKED`). Under pressure the CLI is stopped and diagnosed;
   terminal evidence uses reserved headroom. New Turns are refused until evidence is acknowledged.
 * Known secrets and secret-looking structured fields are redacted before spooling.
+* Ingestion makes evidence storable before it is compared or written: NUL and unpaired surrogates
+  (which PostgreSQL rejects in text and JSONB) become U+FFFD, counted in
+  `unrepresentable_replaced`; the transform is deterministic, so replays still compare equal. A
+  batch is applied in one savepoint; if PostgreSQL still refuses a record, the batch is re-applied
+  per record and the refused one is committed as `runtime.evidence_rejected` at the same source
+  tuple, so the watermark advances and a later cancel or terminal record is never held back. A
+  refused `execution.stopped` still ends the Turn without a confirmed stop.
 
 ## Checkpoints
 
@@ -121,6 +140,13 @@ PTY and socket state is never claimed as restored.
 Harness: `input_tokens` is input that was **not** served from cache, `cached_input_tokens` is
 cache reads, `output_tokens` is output. CLIs that report cached tokens inside their input total
 (Codex, Command Code) are adjusted by the adapter. A Turn whose CLI reported nothing has no usage.
+
+Antigravity's `result.usage` is a running total for the native conversation (the #205 samples: a
+resumed Turn that only recalled one word reported the first Turn's 249 output tokens plus 2), so
+its adapter sends `scope: conversation`. Control stores the Turn's share: the reported total minus
+the total the previous Turn of the same native conversation reported, keeping both in
+`conversation_total`. Without that baseline the usage stays as reported with `per_turn: false`,
+and the Console excludes it from Session sums.
 
 ## Streamed message parts
 

@@ -81,12 +81,15 @@ export function ChildrenTab({ sessionId, revision = 0 }: { sessionId: string; re
   const api = useApi();
   const qc = useQueryClient();
   const [role, setRole] = useState<DelegationRole>("review");
-  const [changesetId, setChangesetId] = useState("");
+  // null: not chosen yet, so the newest ready ChangeSet is the default. "": the user chose
+  // "No ChangeSet", which must survive async loading, refetches and role changes.
+  const [changesetId, setChangesetId] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const list = useQuery(["delegations", sessionId, revision], () => api.delegations.list(sessionId), { pollMs: 8000 });
   const sets = useQuery(["changesets", sessionId, revision], () => api.changes.list(sessionId));
   const ready = (sets.data?.items ?? []).filter((c) => c.state === "ready");
-  const subject = changesetId || ready[0]?.id || "";
+  const chosen = changesetId === "" || ready.some((c) => c.id === changesetId) ? changesetId : null;
+  const subject = chosen ?? ready[0]?.id ?? "";
   const spawn = useAction(async (key) => {
     await api.delegations.spawn(
       sessionId,

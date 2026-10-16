@@ -48,3 +48,8 @@ class DomainError(Exception):
 def not_found(what: str = "resource") -> DomainError:
     # Cross-owner access is reported as absence (RFC 06 access table).
     return DomainError("not_found", f"{what} not found")
+
+
+class StorageRejected(Exception):
+    """PostgreSQL refused a value for its content (not a transient failure); raised by
+    ``UnitOfWork.isolated`` after rolling back only the isolated writes."""

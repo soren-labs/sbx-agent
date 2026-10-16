@@ -29,6 +29,29 @@ description: Release notes for the unified SBX architecture.
   that pinned no GitHub Connection delivers with the workspace's GitHub
   Connection once one is added.
 
+- **Event ingestion**: tool output PostgreSQL cannot store (NUL, unpaired
+  surrogates) no longer stalls a Session; cancel and release always settle. Such
+  characters are stored as U+FFFD and counted; a record the database refuses is
+  kept as `runtime.evidence_rejected`.
+- **Sessions**: lists show open Sessions by default, page past the first 50 and
+  search titles and ids on the server (`lifecycle=open,archived`, `q`). Closing a
+  Session asks first and offers Archive. Closed and archived Sessions no longer
+  offer Retry. Activity loads earlier events after a reload (`before=`).
+- **Conversation**: each Turn shows its result once, even when follow-ups were
+  queued while it ran; a stopping Turn says "Stopping"; startup shows the real
+  stage (requesting compute, starting the sandbox, connecting, starting the CLI).
+- **Children**: choosing "No ChangeSet" sticks.
+- **Antigravity usage**: the CLI reports a running total per conversation; a
+  resumed Turn now records only its own tokens, so session totals no longer
+  double count.
+- **Workspace files**: truncated or redacted file views are read-only, and saves
+  always need a precondition. **Open or create file** now creates missing files.
+- **Terminal**: terminal create, input and close honour `Idempotency-Key`, so a
+  lost response never runs a command twice. Terminals survive panel switches, can
+  be listed and closed, and render colours instead of raw escape codes.
+- **Changes**: Live changes refreshes on activation, after Turns and on demand;
+  diffs number only source lines and show A/M/D from the patch. Review changes
+  works from every workspace tab.
 - **Modal sandboxes**: every Modal sandbox is a Linux VM, started from a
   prewarmed shared image.
 - **Machine Slots**: each Slot is one official subscription login, kept on a
