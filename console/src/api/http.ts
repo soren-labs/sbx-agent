@@ -120,9 +120,12 @@ export class Http {
       err.idempotencyKey = key;
       throw err;
     }
+    // Every attempt failed in transit (network, 502-504): the mutation may have been
+    // applied. Callers keep the key for a retry only on this code, so it is never the
+    // gateway's own code.
     const outcomeUnknown = new ApiError({
       status: last?.status ?? 0,
-      code: last && last.status !== 0 ? last.code : "outcome_unknown",
+      code: "outcome_unknown",
       category: "transport",
       message: "The request may or may not have been applied. Retry to reuse the same request key.",
       retryable: true,

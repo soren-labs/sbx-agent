@@ -5,7 +5,11 @@
   `/v1`, `/v2` or `/hosted` path. Live surfaces (files, terminal, services) report
   `executor_unavailable` instead of waking compute. Terminals are nested under the Session
   (`/api/sessions/{s}/terminals/{t}/input|output`) and poll for output; this is a documented
-  deviation from a WebSocket attach.
+  deviation from a WebSocket attach. `GET /api/sessions/{s}/terminals` lists the runtime's live
+  terminals and `DELETE …/terminals/{t}` closes one. Terminal create/input/close and file writes
+  require `Idempotency-Key`, which becomes the runtime operation ID: a retry replays, a different
+  body is `idempotency_conflict`, an unconfirmed operation is `outcome_unknown`. File saves need
+  `expected_digest` (`absent` or the digest of a complete read; partial reads carry `null`).
 * **Console** (`console/src`): one typed client (`api/client.ts`), which sends CSRF and
   `Idempotency-Key` headers and reuses the key on retry. One store (`state/`) holds the initial
   snapshot and watermark, replays events by sequence, dedupes by seq, applies part revisions by
@@ -105,6 +109,12 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
   Turn `actions` already reflect the Session lifecycle; the Console also hides Retry on a Session
   that is not open. Close opens a confirmation naming the Session and its consequences, with
   Archive as the reversible alternative.
+  Links into the panel are absolute (`/sessions/{id}/changes`). Terminal views are kept per Session
+  across panel switches and re-attach to `GET …/terminals` after a reload; output is rendered by a
+  streaming ANSI model (SGR colours, CR/erase overwrite, wide characters, sequences split across
+  chunks), never as raw escapes. A command whose response was lost is shown as unconfirmed and is
+  retried only with the same key. Live changes refetch on activation, every 10 s while visible, on
+  Turn completion and reconnect, and on Refresh; ChangeSet A/M/D comes from the parsed patch.
 * **Connection loss**: the event stream is presumed dead after 40 s without events or server
   heartbeats, or immediately on the browser's `offline` event. The header shows a reconnecting
   banner; on recovery the stream replays after the last applied `seq` and projections refetch.

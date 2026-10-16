@@ -37,6 +37,7 @@ import type {
   Session,
   SessionList,
   SessionSnapshot,
+  TerminalInfo,
   TerminalOutput,
   Turn,
 } from "./types";
@@ -288,7 +289,10 @@ export function createApiClient(options: HttpOptions = {}) {
     },
 
     terminals: {
+      list: (s: string) => get<{ items: TerminalInfo[] }>(`/api/sessions/${enc(s)}/terminals`),
       create: (s: string, o?: Opts) => post<{ terminal_id: string }>(`/api/sessions/${enc(s)}/terminals`, undefined, o),
+      close: (s: string, t: string, o?: Opts) =>
+        send<{ closed: boolean }>("DELETE", `/api/sessions/${enc(s)}/terminals/${enc(t)}`, undefined, o),
       input: (s: string, t: string, data: string, o?: Opts) =>
         post<unknown>(`/api/sessions/${enc(s)}/terminals/${enc(t)}/input`, { data }, o),
       output: (s: string, t: string, after: number) =>

@@ -179,7 +179,9 @@ function TurnStatus({ turn, live, latest }: { turn: Turn; live: SessionLive; lat
           {took !== null ? t("turn.succeeded_in", { time: formatDuration(took) }) : t("turn.succeeded")}
         </span>
         {latest ? (
-          <Link className="turn-status__link" to="changes">
+          // Absolute: the conversation also renders under /sessions/:id/:tab on desktop,
+          // where a relative "changes" would resolve to /:tab/changes (no such route).
+          <Link className="turn-status__link" to={`/sessions/${live.sessionId}/changes`}>
             {t("turn.view_changes")}
           </Link>
         ) : null}

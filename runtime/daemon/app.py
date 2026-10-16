@@ -637,6 +637,8 @@ class RuntimeDaemon:
                 "name": svc.decl["name"],
                 "lines": list(svc.logs)[-int(body.get("limit") or 200) :],
             }
+        if kind == "terminal.list":
+            return {"items": [term.describe() for term in self.terminals.values()]}
         if kind == "terminal.read":
             term = self.terminals.get(body.get("terminal_id") or "")
             if term is None:

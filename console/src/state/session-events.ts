@@ -79,6 +79,9 @@ function mergeMessage(local: Message | undefined, server: Message): Message {
 const EVENT_DIRTY: [RegExp, (keyof Dirty)[]][] = [
   [/^message\.(accepted|routed|completed)$/, ["messages", "session"]],
   [/^turn\./, ["turns", "session", "messages"]],
+  // An agent's file edits emit no event of their own: a finished Turn refreshes the
+  // live observation and ChangeSets.
+  [/^turn\.(succeeded|failed|cancelled|interrupted|completed)$/, ["changes"]],
   [/^(session|execution|usage)\./, ["session"]],
   [/^(executor|worktree|snapshot)\./, ["session", "executor", "changes"]],
   [/^changeset\./, ["changes"]],

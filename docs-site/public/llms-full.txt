@@ -684,10 +684,29 @@ rejected with `csrf_failed`.
   Terminal and Services show a diagnosis instead.
 - Retry buttons name what they retry: Turn, Delivery or validation.
 
+## Workspace files and terminals
+
+- **Open or create file** opens an empty editor for a path that does not exist
+  yet. Saving creates it, and fails with a conflict if someone else created the
+  file in the meantime.
+- Files larger than 1,000,000 bytes, and files whose credential values are
+  hidden, open as read-only previews. Saving a preview would cut the file short
+  or overwrite the hidden values, so these files are changed from the terminal
+  or by the agent.
+- The Terminal is a command console. It shows colours and progress lines, and
+  hides control sequences. Switching panels does not end it. Each terminal can be
+  closed explicitly; **New terminal** starts another. Terminals end when the
+  Session's compute is released.
+- If the connection drops before a command is confirmed, the Terminal says so
+  and offers **Retry same command**. The retry reuses the request key, so the
+  command runs at most once.
+- **Live changes** observes the workspace again when you open it, every few
+  seconds while it is visible, after each Turn, and on **Refresh**.
+
 ## Limits
 
-The Terminal polls for output. Service preview is not available because no
-preview origin is configured.
+The Terminal polls for output and sends whole lines. Service preview is not
+available because no preview origin is configured.
 
 # API overview
 
@@ -768,7 +787,20 @@ services return `executor_unavailable` when no live lease exists; use
 
 `POST …/services/{name}/preview-grants` exists in the schema but returns an
 error because no dedicated preview origin is configured. Terminals use
-polling (`…/terminals/{id}/input` and `…/output`).
+polling (`…/terminals/{id}/input` and `…/output`). `GET …/terminals` lists the
+terminals the live runtime still holds, and `DELETE …/terminals/{id}` closes one.
+
+## Live files and terminal input
+
+- `PUT /api/sessions/{id}/files` requires `expected_digest`: `"absent"` to create
+  a file, or the `digest` returned by a complete read. A truncated, redacted or
+  binary read returns `digest: null` and `editable: false`, so it cannot be
+  written back.
+- Terminal create, input and close require `Idempotency-Key`. A retry with the
+  same key returns the first result and does not run the command again. The same
+  key with a different body returns `409 idempotency_conflict`. If the runtime
+  did not confirm the operation, the response is `409 outcome_unknown`; retry
+  with the same key to learn the outcome.
 
 # Events
 

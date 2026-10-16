@@ -78,4 +78,17 @@ services return `executor_unavailable` when no live lease exists; use
 
 `POST …/services/{name}/preview-grants` exists in the schema but returns an
 error because no dedicated preview origin is configured. Terminals use
-polling (`…/terminals/{id}/input` and `…/output`).
+polling (`…/terminals/{id}/input` and `…/output`). `GET …/terminals` lists the
+terminals the live runtime still holds, and `DELETE …/terminals/{id}` closes one.
+
+## Live files and terminal input
+
+- `PUT /api/sessions/{id}/files` requires `expected_digest`: `"absent"` to create
+  a file, or the `digest` returned by a complete read. A truncated, redacted or
+  binary read returns `digest: null` and `editable: false`, so it cannot be
+  written back.
+- Terminal create, input and close require `Idempotency-Key`. A retry with the
+  same key returns the first result and does not run the command again. The same
+  key with a different body returns `409 idempotency_conflict`. If the runtime
+  did not confirm the operation, the response is `409 outcome_unknown`; retry
+  with the same key to learn the outcome.
