@@ -1,7 +1,9 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Check, Copy, KeyRound, Moon, Plus, Sun, SunMoon } from "lucide-react";
-import type { CreatedApiKey } from "../../api/types";
+import type { ApiKey, ApiKeyScope, CreatedApiKey } from "../../api/types";
+import { isApiError } from "../../api/errors";
+import { randomKey } from "../../api/http";
 import { useI18n, type Locale } from "../../i18n";
 import type { I18nKey } from "../../i18n/en";
 import { useApi, useQueryClient } from "../../state/context";
@@ -171,26 +173,94 @@ function AccountTab() {
   );
 }
 
+const SCOPES: { id: ApiKeyScope; label: I18nKey; hint: I18nKey }[] = [
+  { id: "read", label: "settings.scope.read", hint: "settings.scope.read_hint" },
+  { id: "write", label: "settings.scope.write", hint: "settings.scope.write_hint" },
+  { id: "*", label: "settings.scope.full", hint: "settings.scope.full_hint" },
+];
+
+/** The broadest scope a key holds, as a label ("*" > write > read). */
+function scopeOf(scopes: string[]): (typeof SCOPES)[number] | null {
+  for (const id of ["*", "write", "read"] as const) if (scopes.includes(id)) return SCOPES.find((s) => s.id === id)!;
+  return null;
+}
+
+function ScopePill({ scopes }: { scopes: string[] }) {
+  const { t } = useI18n();
+  const s = scopeOf(scopes);
+  return (
+    <Pill tone={s?.id === "*" ? "warn" : "dim"} title={scopes.join(", ")}>
+      {s ? t(s.label) : scopes.join(", ")}
+    </Pill>
+  );
+}
+
+/** Network failure or gateway 502-504 after retries: the key may have been minted. */
+const uncertain = (e: unknown) =>
+  isApiError(e) && (e.code === "outcome_unknown" || e.status === 0 || [502, 503, 504].includes(e.status));
+
 function ApiKeysTab() {
   const { t } = useI18n();
   const api = useApi();
   const qc = useQueryClient();
   const q = useQuery(["api-keys"], () => api.apiKeys.list());
   const [name, setName] = useState("");
+  const [scope, setScope] = useState<ApiKeyScope>("write");
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreatedApiKey | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const create = useAction(async (key) => {
-    const k = await api.apiKeys.create(name.trim(), { idempotencyKey: key });
-    setCreated(k); // plaintext shown once; discarded on dismiss
-    setName("");
+  // One Idempotency-Key per create request, kept while its outcome is unknown: retrying it
+  // returns the key the server already minted instead of minting a second one.
+  const issuance = useRef<string | null>(null);
+  const [issuing, setIssuing] = useState(false);
+  const [createError, setCreateError] = useState<unknown>(null);
+  const [orphan, setOrphan] = useState<ApiKey | null>(null);
+  const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
+  const pendingOutcome = issuance.current !== null && uncertain(createError);
+
+  const create = async () => {
+    const key = (issuance.current ??= randomKey());
+    setIssuing(true);
+    setCreateError(null);
+    try {
+      const k = await api.apiKeys.create(name.trim(), [scope], { idempotencyKey: key });
+      issuance.current = null;
+      setCreated(k); // plaintext shown once; discarded on dismiss
+      setCopied(false);
+      setName("");
+      setScope("write");
+      setCreating(false);
+      setUnconfirmed(null);
+    } catch (e) {
+      if (!uncertain(e)) issuance.current = null;
+      if (isApiError(e) && e.code === "secret_unavailable") {
+        setOrphan(((e.details ?? {}) as { api_key?: ApiKey }).api_key ?? null);
+        setCreating(false);
+      } else setCreateError(e);
+    } finally {
+      setIssuing(false);
+      qc.invalidate(["api-keys"]);
+    }
+  };
+  const closeCreate = () => {
+    // Leaving while the outcome is unknown: say so where the list is.
+    if (pendingOutcome) setUnconfirmed(name.trim());
+    issuance.current = null;
+    setCreateError(null);
     setCreating(false);
-    qc.invalidate(["api-keys"]);
-  });
+  };
   const revoke = useAction(async (key, id: string) => {
     await api.apiKeys.revoke(id, { idempotencyKey: key });
     setConfirming(null);
+    qc.invalidate(["api-keys"]);
+  });
+  const reissue = useAction(async (key, old: ApiKey) => {
+    await api.apiKeys.revoke(old.id, { idempotencyKey: key });
+    setOrphan(null);
+    setName(old.name);
+    setScope((scopeOf(old.scopes)?.id ?? "write") as ApiKeyScope);
+    setCreating(true);
     qc.invalidate(["api-keys"]);
   });
   const copy = async () => {
@@ -205,6 +275,7 @@ function ApiKeysTab() {
   const keys = q.data?.items ?? [];
   const active = keys.filter((k) => !k.revoked_at);
   const revoked = keys.filter((k) => k.revoked_at);
+  const createdScope = created ? scopeOf(created.scopes) : null;
 
   return (
     <section className="page__section" aria-label={t("settings.api_keys")}>
@@ -226,6 +297,11 @@ function ApiKeysTab() {
             <span className="faint small">{t("settings.key_usage")}</span>
             <code>Authorization: Bearer {created.prefix}…</code>
           </div>
+          {createdScope ? (
+            <p className="faint small key-scope-line">
+              {t("settings.key_access", { scope: t(createdScope.label) })} {t(createdScope.hint)}
+            </p>
+          ) : null}
           <div className="mc-actions">
             <Button variant="primary" size="sm" icon={<Copy size={13} />} onClick={() => void copy()}>
               {copied ? t("settings.key_copied") : t("settings.key_copy")}
@@ -244,7 +320,53 @@ function ApiKeysTab() {
         </div>
       ) : null}
 
-      <ErrorNotice error={create.error ?? revoke.error} />
+      {orphan ? (
+        <div className="notice notice--warn" role="alert" data-testid="key-orphan">
+          <div className="notice__body">
+            <div className="notice__title">{t("settings.key_orphan_title", { name: orphan.name })}</div>
+            <div className="notice__text">{t(orphan.revoked_at ? "settings.key_orphan_revoked" : "settings.key_orphan_body")}</div>
+            <div className="mc-actions">
+              {orphan.revoked_at ? (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => {
+                    setName(orphan.name);
+                    setOrphan(null);
+                    setCreating(true);
+                  }}
+                >
+                  {t("settings.create_key")}
+                </Button>
+              ) : (
+                <Button size="sm" variant="primary" disabled={reissue.pending} onClick={() => void reissue.run(orphan)}>
+                  {t("settings.key_orphan_reissue")}
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => setOrphan(null)}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+            <ErrorNotice error={reissue.error} />
+          </div>
+        </div>
+      ) : null}
+
+      {unconfirmed !== null ? (
+        <div className="notice notice--warn" role="status">
+          <div className="notice__body">
+            <div className="notice__title">{t("settings.key_unconfirmed_title")}</div>
+            <div className="notice__text">{t("settings.key_unconfirmed_body", { name: unconfirmed })}</div>
+            <div className="mc-actions">
+              <Button size="sm" variant="ghost" onClick={() => setUnconfirmed(null)}>
+                {t("settings.key_unconfirmed_dismiss")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <ErrorNotice error={revoke.error} />
       {q.loading && !q.data ? <Spinner /> : null}
       {q.data && !keys.length ? (
         <div className="lcard">
@@ -259,17 +381,19 @@ function ApiKeysTab() {
       {keys.length ? (
         <div className="lcard key-list" role="list" aria-label={t("settings.api_keys")}>
           {[...active, ...revoked].map((k) => (
-            <div key={k.id} className="lrow" role="listitem">
+            <div key={k.id} className="lrow" role="listitem" aria-label={k.name}>
               <div className="lrow__line">
                 <span className="lrow__tile" aria-hidden="true">
                   <KeyRound size={15} />
                 </span>
                 <div className="lrow__main">
-                  <span className="lrow__name">{k.name}</span>
+                  <span className="lrow__name">
+                    {k.name} <ScopePill scopes={k.scopes} />
+                  </span>
                   <span className="lrow__sub">
                     <code>{k.prefix}…</code>
                     {" · "}
-{when(k.created_at)}
+                    {when(k.created_at)}
                   </span>
                 </div>
                 {k.revoked_at ? (
@@ -295,12 +419,12 @@ function ApiKeysTab() {
       ) : null}
 
       {creating ? (
-        <Dialog title={t("settings.create_key")} onClose={() => setCreating(false)} width={420}>
+        <Dialog title={t("settings.create_key")} onClose={closeCreate} width={480}>
           <form
             aria-label={t("settings.create_key")}
             onSubmit={(e) => {
               e.preventDefault();
-              if (name.trim()) void create.run();
+              if (name.trim()) void create();
             }}
           >
             <Field htmlFor="key-name" label={t("settings.key_name")}>
@@ -310,13 +434,36 @@ function ApiKeysTab() {
                 placeholder={t("settings.key_name_ph")}
                 onChange={(e) => setName(e.target.value)}
                 maxLength={80}
+                disabled={pendingOutcome}
               />
             </Field>
+            <fieldset className="scope-picker" disabled={pendingOutcome}>
+              <legend>{t("settings.key_access_label")}</legend>
+              {SCOPES.map((s) => (
+                <label key={s.id} className={s.id === scope ? "scope-picker__opt scope-picker__opt--on" : "scope-picker__opt"}>
+                  <input type="radio" name="key-scope" value={s.id} checked={s.id === scope} onChange={() => setScope(s.id)} />
+                  <span>
+                    <strong>{t(s.label)}</strong>
+                    <span className="faint small">{t(s.hint)}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            {pendingOutcome ? (
+              <div className="notice notice--warn" role="alert">
+                <div className="notice__body">
+                  <div className="notice__title">{t("settings.key_uncertain_title")}</div>
+                  <div className="notice__text">{t("settings.key_uncertain_body")}</div>
+                </div>
+              </div>
+            ) : (
+              <ErrorNotice error={createError} />
+            )}
             <div className="mc-actions">
-              <Button type="submit" variant="primary" disabled={!name.trim() || create.pending}>
-                {t("settings.create_key")}
+              <Button type="submit" variant="primary" disabled={!name.trim() || issuing}>
+                {pendingOutcome ? t("settings.key_retry_same") : t("settings.create_key")}
               </Button>
-              <Button variant="ghost" onClick={() => setCreating(false)}>
+              <Button variant="ghost" onClick={closeCreate}>
                 {t("common.cancel")}
               </Button>
             </div>
@@ -345,6 +492,7 @@ function ApiKeysTab() {
           }
         >
           <p>{keys.find((k) => k.id === confirming)?.name}</p>
+          <p className="faint small">{t("settings.revoke_body")}</p>
         </Dialog>
       ) : null}
     </section>

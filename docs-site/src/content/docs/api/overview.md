@@ -17,15 +17,25 @@ Two methods resolve to the same principal and permissions:
 | API key | `Authorization: Bearer sbx_key_…` | The key's scope must allow the call (see below) |
 | Cookie session | `POST /api/auth/login` sets `sbx_session` (HttpOnly) and `sbx_csrf` | `X-CSRF-Token` header equal to the `sbx_csrf` cookie, and an allowed `Origin` |
 
-Create a key with `POST /api/api-keys` (cookie session). The plaintext is
-returned once and only a hash is stored. `scopes` is a non-empty subset of
-`["*", "write", "read"]` (default `["*"]`; anything else is `422`):
+Create a key with `POST /api/api-keys` (cookie session or a `*` key). The
+plaintext is in the response and only a hash is stored. `scopes` is a non-empty
+subset of `["*", "write", "read"]` (default `["*"]`; anything else is `422`).
+The Console defaults to `write`, which is what scripts and the CLI need:
 
 | Scope | Allows |
 | --- | --- |
 | `read` | `GET` routes only; every mutation returns `403 forbidden` |
 | `write` | reads and all resource mutations |
 | `*` | everything, including minting/revoking API keys and changing the password |
+
+Key creation is safe to retry. A retry with the same `Idempotency-Key` and body
+never mints a second key: within 10 minutes it returns the same key again with
+`"replayed": true`. Later, or once that key is revoked, it returns
+`409 secret_unavailable` with `details.api_key` (the key, without its secret)
+and `details.reason` (`replay_expired` or `revoked`). Revoke that key and create
+a new one with a new `Idempotency-Key`. The server keeps only an encrypted copy
+of the secret for those 10 minutes, then erases it. A revoked key is refused
+from its next request (`401`).
 
 Cookie sessions are always full scope. Login requires a verified email, is
 rate limited to 10 failures per email per 15 minutes (`429 rate_limited`), and

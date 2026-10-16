@@ -6,10 +6,12 @@ hashes; plaintext keys/tokens are returned exactly once.
 
 from __future__ import annotations
 
+import base64
 from datetime import timedelta
 from typing import Any, Protocol
 
 from control.application import access
+from control.domain.digests import canonical_json, digest_of
 from control.domain.errors import DomainError
 from control.domain.identity import API_KEY_SCOPES, Principal, check_password, normalize_email
 from control.domain.ids import new_id
@@ -21,9 +23,14 @@ from control.security.passwords import (
     token_hash,
     verify_password,
 )
+from control.security.vault import Sealed
 
 MAX_FAILURES = 10
 API_KEY_PREFIX = "sbx_key_"
+# A retried create (same Idempotency-Key and body) gets the same key's plaintext back only
+# within this window, from a vault-sealed copy that is erased afterwards. Later retries get
+# `secret_unavailable` with the key's metadata so the client can revoke and reissue.
+ISSUANCE_REPLAY_WINDOW = timedelta(minutes=10)
 
 
 class Mailer(Protocol):
@@ -43,12 +50,17 @@ class Identity:
         public_url: str,
         session_ttl: timedelta = timedelta(days=14),
         token_ttl: timedelta = timedelta(hours=24),
+        vault: Any = None,
+        replay_window: timedelta = ISSUANCE_REPLAY_WINDOW,
     ) -> None:
         self.tx = tx
         self.mailer = mailer
         self.public_url = public_url.rstrip("/")
         self.session_ttl = session_ttl
         self.token_ttl = token_ttl
+        # Seals the short-lived issuance replay copy; without one, retries never see plaintext.
+        self.vault = vault
+        self.replay_window = replay_window
 
     # -- registration / verification ------------------------------------------------
     def register(self, email: str, password: str) -> dict[str, Any]:
@@ -372,7 +384,16 @@ class Identity:
         return self.tx.run(fn)
 
     # -- API keys -----------------------------------------------------------------------
-    def create_api_key(self, principal: Principal, body: dict[str, Any]) -> dict[str, Any]:
+    def create_api_key(
+        self, principal: Principal, body: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        """Mint one key per (user, Idempotency-Key); a retry returns that key, never a second.
+
+        The response to the first attempt carries the plaintext. A retry with the same key and
+        body within the replay window gets the same plaintext again (from a vault-sealed copy);
+        after the window, or once the key is revoked, it gets ``secret_unavailable`` with the
+        key's metadata. The same Idempotency-Key with another body is ``idempotency_conflict``.
+        """
         name = str(body.get("name") or "").strip()[:80]
         if not name:
             raise DomainError("validation_failed", "name is required", details={"field": "name"})
@@ -390,19 +411,42 @@ class Identity:
         if not principal.can("*"):
             raise DomainError("forbidden", "only full-scope principals can mint API keys")
         scopes = sorted(set(scopes))
+        request_digest = digest_of({"name": name, "scopes": scopes})
         key = new_token(API_KEY_PREFIX)
+        key_id = new_id("api_key")
+        sealed = None
+        if idempotency_key and self.vault is not None:
+            sealed = self._seal_replay(principal.user_id, key_id, idempotency_key, key)
 
-        def fn(uow: Any) -> dict[str, Any]:
+        def fn(uow: Any) -> tuple[dict[str, Any], bool]:
+            # Serializes issuance per user, so a concurrent retry sees the committed key.
+            uow.get("users", principal.user_id, lock=True)
+            if idempotency_key:
+                prior = uow.find_one(
+                    "api_keys", {"user_id": principal.user_id, "issuance_key": idempotency_key}
+                )
+                if prior is not None:
+                    if prior["issuance_digest"] != request_digest:
+                        raise DomainError(
+                            "idempotency_conflict",
+                            "Idempotency-Key was reused with a different request body",
+                            details={"command": "api_keys.create"},
+                        )
+                    return prior, False
             row = uow.insert(
                 "api_keys",
                 {
-                    "id": new_id("api_key"),
+                    "id": key_id,
                     "user_id": principal.user_id,
                     "workspace_id": principal.default_workspace_id,
                     "name": name,
                     "key_hash": token_hash(key),
                     "display_prefix": key[:14],
                     "scopes": scopes,
+                    "issuance_key": idempotency_key,
+                    "issuance_digest": request_digest if idempotency_key else None,
+                    "replay_sealed": sealed,
+                    "replay_until": uow.now() + self.replay_window if sealed else None,
                 },
             )
             uow.audit(
@@ -413,10 +457,77 @@ class Identity:
                 result="ok",
                 workspace_id=row["workspace_id"],
             )
-            return self._key_view(row)
+            return row, True
 
-        view = self.tx.run(fn)
-        return {**view, "key": key}
+        row, minted = self.tx.run(fn)
+        if minted:
+            return {**self._key_view(row), "key": key}
+        return self._replay(principal, row)
+
+    def _replay_aad(self, user_id: str, key_id: str, idempotency_key: str) -> bytes:
+        return canonical_json(
+            {
+                "purpose": "api_key_issuance_replay",
+                "user_id": user_id,
+                "api_key_id": key_id,
+                "issuance_key": idempotency_key,
+            }
+        )
+
+    def _seal_replay(
+        self, user_id: str, key_id: str, idempotency_key: str, key: str
+    ) -> dict[str, Any]:
+        s = self.vault.seal({"key": key}, self._replay_aad(user_id, key_id, idempotency_key))
+        return {
+            "key_id": s.key_id,
+            "nonce": base64.b64encode(s.nonce).decode(),
+            "ciphertext": base64.b64encode(s.ciphertext).decode(),
+        }
+
+    def _replay(self, principal: Principal, row: dict[str, Any]) -> dict[str, Any]:
+        """The outcome of an earlier attempt with this Idempotency-Key."""
+        view = self._key_view(row)
+        live = self.tx.read(
+            lambda uow: (
+                row["replay_sealed"] is not None
+                and row["replay_until"] is not None
+                and row["replay_until"] > uow.now()
+            )
+        )
+        if row["revoked_at"] is None and live and self.vault is not None:
+            box = row["replay_sealed"]
+            key = self.vault.open(
+                Sealed(
+                    box["key_id"],
+                    base64.b64decode(box["nonce"]),
+                    base64.b64decode(box["ciphertext"]),
+                ),
+                self._replay_aad(principal.user_id, row["id"], row["issuance_key"]),
+            )["key"]
+            self.tx.run(
+                lambda uow: uow.audit(
+                    actor=principal.user_id,
+                    action="api_key.create_replayed",
+                    target_kind="api_key",
+                    target_id=row["id"],
+                    result="ok",
+                    workspace_id=row["workspace_id"],
+                )
+            )
+            return {**view, "key": key, "replayed": True}
+        raise DomainError(
+            "secret_unavailable",
+            "this key was already created by an earlier attempt and its secret can no longer "
+            "be shown; revoke it and create a new key",
+            details={
+                "api_key": view,
+                "reason": "revoked" if row["revoked_at"] is not None else "replay_expired",
+            },
+        )
+
+    def purge_issuance_replays(self) -> int:
+        """Erase sealed replay copies whose window has passed (run by the timer loop)."""
+        return len(self.tx.run(lambda uow: uow.query("api_keys.purge_replays")))
 
     @staticmethod
     def _key_view(row: dict[str, Any]) -> dict[str, Any]:
@@ -442,7 +553,12 @@ class Identity:
             row = uow.find_one("api_keys", {"id": key_id, "user_id": principal.user_id}, lock=True)
             if row is None:
                 raise DomainError("not_found", "api key not found")
-            row = uow.update("api_keys", key_id, {"revoked_at": row["revoked_at"] or uow.now()})
+            row = uow.update(
+                "api_keys",
+                key_id,
+                # A revoked key's replay copy is useless and is erased with it.
+                {"revoked_at": row["revoked_at"] or uow.now(), "replay_sealed": None},
+            )
             uow.audit(
                 actor=principal.user_id,
                 action="api_key.revoke",

@@ -39,7 +39,19 @@ Losing every vault key makes stored CredentialVersions undecryptable.
 * API key scopes are `*` > `write` > `read` (validated at mint; unknown stored scopes grant
   nothing). Every mutating route requires `write` (`*` for API-key management and password
   changes) and every read requires `read`; a missing scope is `403 forbidden` before any effect.
-  Cookie sessions are full scope.
+  Cookie sessions are full scope. The Console offers the three as Read only, Read & write
+  (default) and Full access; `sbx auth login --scope` defaults to `write`; an API create without
+  `scopes` stays `["*"]`.
+* Key issuance (`POST /api/api-keys`) requires `Idempotency-Key` and is idempotent per
+  (user, Idempotency-Key), enforced by a unique index and a per-user row lock: a retry never mints
+  a second key. Same key with another body (name trimmed, scopes as a set) is
+  `409 idempotency_conflict`. The plaintext is never stored. Only a vault-sealed copy (AAD binds
+  purpose, user, key id and Idempotency-Key) is kept for 10 minutes, so a retry inside that window
+  returns the same key with `replayed: true` (audited `api_key.create_replayed`). The timer loop
+  erases expired copies and revoking a key erases its copy. A retry after that is
+  `409 secret_unavailable` with `details.api_key` (the key's view, no secret) and `details.reason`
+  (`replay_expired` | `revoked`); the client revokes that key and creates a new one with a new
+  Idempotency-Key. Revocation takes effect on the next request.
 * Changing or resetting a password bumps `auth_epoch`, which revokes cookie sessions.
 
 ## Connections

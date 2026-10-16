@@ -47,7 +47,9 @@ def test_register_verify_login_and_principal_parity(stack) -> None:
         headers={"X-CSRF-Token": csrf, "Origin": "https://evil.example"},
     )
     assert bad_origin.json()["error"]["code"] == "csrf_failed"
-    created = http.post("/api/api-keys", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
+    created = http.post(
+        "/api/api-keys", json={"name": "ci"}, headers={"X-CSRF-Token": csrf, "Idempotency-Key": "c"}
+    )
     assert created.status_code == 201
     key = created.json()["key"]
     listed = http.get("/api/api-keys").json()["items"]
@@ -58,7 +60,9 @@ def test_register_verify_login_and_principal_parity(stack) -> None:
     # API keys need no CSRF; cookie auth does.
     assert (
         bearer.post(
-            "/api/api-keys", json={"name": "x"}, headers={"Authorization": f"Bearer {key}"}
+            "/api/api-keys",
+            json={"name": "x"},
+            headers={"Authorization": f"Bearer {key}", "Idempotency-Key": "x"},
         ).status_code
         == 201
     )

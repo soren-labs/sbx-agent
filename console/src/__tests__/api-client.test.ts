@@ -14,8 +14,8 @@ describe("api client", () => {
     ]);
     const api = createApiClient({ fetch: m.fetch, ...fast });
     await api.auth.login("a@b.c", "pw");
-    await api.apiKeys.create("one");
-    await api.apiKeys.create("two");
+    await api.apiKeys.create("one", ["write"]);
+    await api.apiKeys.create("two", ["read"]);
     await api.apiKeys.list();
 
     const [login, one, two, list] = m.calls;

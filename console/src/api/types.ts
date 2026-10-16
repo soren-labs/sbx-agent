@@ -35,6 +35,8 @@ export interface LoginResult extends Me {
   csrf_token: string;
   expires_at: string;
 }
+/** "read" queries only; "write" also changes resources; "*" also manages API keys. */
+export type ApiKeyScope = "read" | "write" | "*";
 export interface ApiKey {
   id: string;
   name: string;
@@ -44,8 +46,10 @@ export interface ApiKey {
   revoked_at: string | null;
 }
 export interface CreatedApiKey extends ApiKey {
-  /** Plaintext, returned exactly once. */
+  /** Plaintext: in the create response only (and its short same-key replay window). */
   key: string;
+  /** True when this response replays an earlier attempt with the same Idempotency-Key. */
+  replayed?: boolean;
 }
 
 // ---- connections ----------------------------------------------------------

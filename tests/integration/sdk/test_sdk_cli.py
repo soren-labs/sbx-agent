@@ -195,7 +195,9 @@ def test_cli_reads_secrets_from_stdin_and_never_prints_them(
     stored = json.load(open(path))
     assert stored["api_key"].startswith("sbx_key_") and stored["api_key"] not in json.dumps(result)
     keyed = SBXClient("http://testserver", stored["api_key"], http=stack.client())
-    assert keyed.me()["auth"]["via"] == "api_key"
+    # The CLI stores a least-privilege key: write, not key management.
+    assert result["scopes"] == ["write"]
+    assert keyed.me()["auth"] == {"via": "api_key", "scopes": ["write"]}
     assert cli_main(["sessions", "show", "sess_nope"], client=keyed) == 1
     assert "not_found" in capsys.readouterr().err
 

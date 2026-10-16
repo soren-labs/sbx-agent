@@ -4,6 +4,7 @@ import { SseParser, parseEnvelope } from "./sse";
 import type {
   Accepted,
   ApiKey,
+  ApiKeyScope,
   ChangeSet,
   Connection,
   ConnectionCredential,
@@ -104,7 +105,8 @@ export function createApiClient(options: HttpOptions = {}) {
 
     apiKeys: {
       list: () => get<{ items: ApiKey[] }>("/api/api-keys"),
-      create: (name: string, o?: Opts) => post<CreatedApiKey>("/api/api-keys", { name }, o),
+      /** Retried with the same Idempotency-Key, the server returns the key it already minted. */
+      create: (name: string, scopes: ApiKeyScope[], o?: Opts) => post<CreatedApiKey>("/api/api-keys", { name, scopes }, o),
       revoke: (id: string, o?: Opts) => send<ApiKey>("DELETE", `/api/api-keys/${enc(id)}`, undefined, o),
     },
 

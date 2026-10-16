@@ -16,7 +16,8 @@ The exact generated help for every command is published as
 | `workspace_id` | `SBX_WORKSPACE_ID` | first workspace of the principal |
 
 `sbx auth login --email you@example.com` reads the password from stdin or a
-prompt, signs in, mints an API key and writes it to
+prompt, signs in, mints an API key (`--scope read|write|full`, default
+`write`: everything except managing API keys and the password) and writes it to
 `$XDG_CONFIG_HOME/sbx/client.json` (default `~/.config/sbx/client.json`) with
 mode `0600`. Environment variables override the file.
 

@@ -5,6 +5,13 @@ description: Release notes for the unified SBX architecture.
 
 ## Unreleased
 
+- **API keys**: creating a key is safe to retry. A lost response returns the
+  same key on retry instead of a second live key. After 10 minutes a retry
+  returns `secret_unavailable` instead of a new key. The Console asks for an
+  access level (Read only, Read & write, Full access) and shows each key's
+  scope. `sbx auth login --scope` defaults to `write`. The SDK adds `scopes=`
+  and `revoke_api_key`. `POST /api/api-keys` now needs an `Idempotency-Key`,
+  like every other mutation.
 - **Project versions keep their whole configuration**: publishing a new version
   from the Console changes only the fields you edit. Services, environment
   variables, reasoning effort, the agent CLI, the delivery policy and fields the

@@ -693,6 +693,30 @@ export const en = {
   "settings.key_copied": "Copied",
   "settings.key_name_ph": "e.g. laptop CLI",
   "settings.revoke_confirm": "Revoke key",
+  "settings.scope.read": "Read only",
+  "settings.scope.read_hint": "Can view Projects, Sessions, ChangeSets, Deliveries and Connections. Cannot change anything.",
+  "settings.scope.write": "Read & write",
+  "settings.scope.write_hint":
+    "What scripts and the sbx CLI need: create and run Sessions, manage Projects, Connections, deliveries and merges. Cannot create or revoke API keys or change your password.",
+  "settings.scope.full": "Full access",
+  "settings.scope.full_hint":
+    "Everything you can do in the Console, including creating and revoking API keys. Use only for tools that manage keys.",
+  "settings.key_access_label": "Access",
+  "settings.key_access": "Access: {scope}.",
+  "settings.key_uncertain_title": "The key may have been created",
+  "settings.key_uncertain_body":
+    "The response did not arrive. Try again: the same request returns the key if it was created, and never creates a second one.",
+  "settings.key_retry_same": "Try again",
+  "settings.key_orphan_title": "\u201c{name}\u201d was created, but its secret can no longer be shown",
+  "settings.key_orphan_body":
+    "An earlier attempt created this key and its one-time secret did not reach you. Nothing can recover it: revoke the key and create a new one.",
+  "settings.key_orphan_revoked": "An earlier attempt created this key, and it is already revoked. Create a new key.",
+  "settings.key_orphan_reissue": "Revoke it and create a new key",
+  "settings.key_unconfirmed_title": "A key may have been created",
+  "settings.key_unconfirmed_body":
+    "Creating \u201c{name}\u201d got no response. If a key with that name is in the list below and you never saw its secret, revoke it.",
+  "settings.key_unconfirmed_dismiss": "Dismiss",
+  "settings.revoke_body": "Requests that use this key are refused immediately. This cannot be undone.",
   "projects.none": "No Projects yet.",
   "projects.create": "Create Project",
   "projects.new_version": "Publish new version",
