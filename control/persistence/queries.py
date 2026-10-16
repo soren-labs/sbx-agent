@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 NAMED: dict[str, str] = {
+    # Identity ---------------------------------------------------------------------
+    "api_keys.purge_replays": """
+        UPDATE api_keys SET replay_sealed = NULL
+        WHERE replay_sealed IS NOT NULL AND replay_until <= now()
+        RETURNING id
+    """,
     # Jobs -------------------------------------------------------------------------
     "jobs.claimable": """
         SELECT * FROM jobs

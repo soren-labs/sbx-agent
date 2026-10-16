@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
         "login", help="email/password sign-in; password read from stdin or prompt"
     )
     login.add_argument("--email", required=True)
+    login.add_argument(
+        "--scope",
+        choices=("read", "write", "full"),
+        default="write",
+        help="scope of the stored API key (default write: everything but API keys/password)",
+    )
 
     sub.add_parser("harnesses", help="official CLI Harnesses and the protocols they accept")
 
@@ -333,10 +339,15 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             stdin.readline().rstrip("\n") if not stdin.isatty() else getpass.getpass("Password: ")
         )
         client.login(args.email, password)
-        key = client.create_api_key("sbx-cli")
+        key = client.create_api_key("sbx-cli", ["*" if args.scope == "full" else args.scope])
         cfg = ClientConfig.load()
         cfg.base_url, cfg.api_key = client.base_url, key["key"]
-        return {"signed_in": args.email, "api_key_prefix": key["prefix"], "config": str(cfg.save())}
+        return {
+            "signed_in": args.email,
+            "api_key_prefix": key["prefix"],
+            "scopes": key["scopes"],
+            "config": str(cfg.save()),
+        }
     if cmd == "harnesses":
         return client.harnesses()
     if cmd == "projects":

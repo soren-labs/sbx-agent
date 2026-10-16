@@ -137,8 +137,24 @@ class SBXClient:
     def me(self) -> dict[str, Any]:
         return self.get("/api/me")
 
-    def create_api_key(self, name: str) -> dict[str, Any]:
-        return self.post("/api/api-keys", {"name": name})
+    def create_api_key(
+        self, name: str, scopes: list[str] | None = None, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        """Mint an API key; its plaintext ``key`` is in this response only.
+
+        ``scopes`` is ``["read"]`` (queries only), ``["write"]`` (also changes Sessions,
+        Projects, Connections and deliveries) or ``["*"]`` (also API keys and password);
+        omitted means ``["*"]``. Transport retries reuse one Idempotency-Key, so a lost response
+        never mints a second key. If the plaintext can no longer be replayed this raises
+        ``SBXError("secret_unavailable")`` whose ``details["api_key"]`` names the key to revoke.
+        """
+        body: dict[str, Any] = {"name": name}
+        if scopes is not None:
+            body["scopes"] = list(scopes)
+        return self.post("/api/api-keys", body, idempotency_key=idempotency_key)
+
+    def revoke_api_key(self, key_id: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/api/api-keys/{key_id}")
 
     @property
     def workspace_id(self) -> str:

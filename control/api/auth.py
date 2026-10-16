@@ -10,6 +10,7 @@ from control.api.dependencies import (
     CSRF_COOKIE,
     SESSION_COOKIE,
     check_origin,
+    idempotency_key,
     json_body,
     mutating_principal,
     principal,
@@ -111,7 +112,10 @@ def list_keys(request: Request) -> dict[str, Any]:
 @router.post("/api/api-keys", status_code=201)
 async def create_key(request: Request) -> dict[str, Any]:
     who = mutating_principal(request, scope="*")
-    return services(request).identity.create_api_key(who, await json_body(request))
+    # Required: issuance is idempotent per key, so a lost response can be retried safely.
+    return services(request).identity.create_api_key(
+        who, await json_body(request), idempotency_key=idempotency_key(request)
+    )
 
 
 @router.delete("/api/api-keys/{key_id}")

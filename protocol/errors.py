@@ -18,6 +18,7 @@ ERROR_CODES: dict[str, tuple[str, int, bool]] = {
     "connection_revoked": ("credential", 409, False),
     "connection_in_use": ("credential", 409, False),
     "connection_required": ("credential", 409, False),
+    "secret_unavailable": ("credential", 409, False),
     "waiting_capacity": ("capacity", 409, True),
     "quota_exhausted": ("capacity", 429, False),
     "runtime_incompatible": ("runtime", 409, False),

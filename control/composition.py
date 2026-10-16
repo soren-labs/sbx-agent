@@ -197,7 +197,7 @@ def build_services(
         config=config,
         tx=db,
         catalog=catalog,
-        identity=Identity(db, mailer, public_url=config.public_url),
+        identity=Identity(db, mailer, public_url=config.public_url, vault=vault),
         projects=Projects(db),
         connections=connections,
         slots=slots,
@@ -260,6 +260,7 @@ def start_workers(services: Services, stop: threading.Event) -> list[threading.T
                     services.tx, idle_seconds=services.config.idle_release_seconds
                 )
                 enqueue_quarantine_releases(services.tx)
+                services.identity.purge_issuance_replays()
             except Exception:
                 log.exception("timer failure")
 
