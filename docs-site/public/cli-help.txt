@@ -110,10 +110,11 @@ options:
   --project PROJECT
 
 ===== sbx changesets =====
-usage: sbx changesets [-h] {capture,apply,show} ...
+usage: sbx changesets [-h] {capture,apply,show,patch} ...
 
 positional arguments:
-  {capture,apply,show}
+  {capture,apply,show,patch}
+    patch               write the sealed ChangeSet as a git patch file
 
 options:
   -h, --help            show this help message and exit

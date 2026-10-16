@@ -30,7 +30,7 @@ mode `0600`. Environment variables override the file.
 | `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
 | `sessions create`, `list`, `show`, `send`, `events`, `cancel`, `continue`, `close`, `export` | Sessions and Turns. `create` accepts `--slot`, `--model` and `--effort` for Machine Slots. |
 | `execute PROMPT [--session ID] [--project ID]` | Create or continue a Session and follow the Turn. |
-| `changesets capture`, `apply`, `show` | ChangeSets. `capture --salvage` marks a salvage capture. |
+| `changesets capture`, `apply`, `show`, `patch` | ChangeSets. `capture --salvage` marks a salvage capture; `patch ID -o FILE` writes the sealed patch for `git apply --binary`. |
 | `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
 | `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
 | `operations show ID` | Long-operation status. |

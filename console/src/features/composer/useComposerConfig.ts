@@ -85,7 +85,7 @@ export function useComposerConfig() {
   const backend = slot ? "modal" : (backendOverride ?? pickBackend(connections.data?.items, backends.data?.items));
   const repos = knownRepositories(
     connections.data?.items,
-    (projects.data?.items ?? []).flatMap((p) => (p.current_version ? [p.current_version.spec.repository.full_name] : [])),
+    (projects.data?.items ?? []).flatMap((p) => (p.current_version?.spec.repository ? [p.current_version.spec.repository.full_name] : [])),
   );
   const blocked = !slot && models.data !== undefined && usable.length === 0;
   // Sending before the source data arrives picks defaults (e.g. backend "local")

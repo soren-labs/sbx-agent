@@ -1093,6 +1093,24 @@
   gap: 8px;
 }
 
+.chg-detail__target {
+  margin: 0;
+}
+
+.chg-detail__recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chg-detail__recovery .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
 .diff {
   margin: 0;
   background: var(--bg-1);
@@ -1351,6 +1369,10 @@
 }
 
 /* ---- services ---------------------------------------------------------------- */
+
+.svc__source {
+  margin: 0 0 8px;
+}
 
 .svc__list {
   list-style: none;

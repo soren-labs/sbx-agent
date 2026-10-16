@@ -46,7 +46,17 @@ rejected with `csrf_failed`.
   live work log on the left and a workspace panel (Overview, Changes, Files,
   Terminal, Services, Children, Activity) on the right. Visitors who are not
   signed in see the product landing page at `/` instead.
-- **Projects**: reusable repository and environment configuration.
+- **Projects**: reusable repository and environment configuration. **Publish
+  new version** starts from the current version and changes only what you edit
+  (repository, base ref, agent CLI, model, compute, checks, services); settings
+  the form does not show, such as environment variables, reasoning effort and
+  the delivery policy, are kept and listed. Before publishing, the dialog lists
+  every changed field, and a change to the delivery policy must be confirmed.
+  Checks are one per line as `name=command`; services have a name, a command
+  and an optional port. Commands are split like a POSIX shell
+  (`smoke=python3 -c "print(123)"` runs `python3`, `-c`, `print(123)`), but no
+  shell runs and nothing is expanded: write `sh -c '…'` yourself for pipes or
+  `&&`. The dialog shows the exact arguments of every command.
 - **Machines**: subscription logins, one per machine, for Codex, Grok
   Build and Antigravity. Choose **Add machine** and pick a provider from the menu;
   each entry says how it signs in. For Codex and Grok Build, open the sign-in
@@ -71,7 +81,20 @@ rejected with `csrf_failed`.
   Terminal and Services show a diagnosis instead.
 - Retry buttons name what they retry: Turn, Delivery or validation.
 
+## Services and delivery
+
+- **Services** lists the services declared by the Project version a Session
+  started from; processes the agent or a terminal starts on their own are not
+  listed. A Session without a Project has none. Start, Stop and Logs act on the
+  Session's compute; while compute is not running, Start records the wish and
+  the service starts when the Session next runs.
+- **Changes → Deliveries** shows where a delivery would go (for example "Opens a
+  draft pull request on owner/repo against main"). When delivery is not possible
+  it says why instead of showing a form: a Session without a repository offers
+  **Download patch** (apply it with `git apply --binary`), and a missing or
+  revoked GitHub Connection links to Connections.
+
 ## Limits
 
 The Terminal polls for output. Service preview is not available because no
-preview origin is configured.
+preview origin is configured; a service declared with a preview says so.
