@@ -7,6 +7,7 @@ supervisor's state file.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -72,7 +73,10 @@ def test_official_login_flows_to_ready_without_a_second_step(env) -> None:
     waiting = _get(user, slot)
     assert waiting["status"] == "login_pending" and waiting["login"]["state"] == "awaiting_user"
     assert waiting["login"]["verification_url"] == URL and waiting["login"]["user_code"] == CODE
-    assert waiting["login"]["code_expires_at"].startswith("2099-01-01")
+    # Compare the instant, not the rendered offset: PostgreSQL returns timestamps in the
+    # server's session timezone, so the same moment may read back as 2098-12-31T19:00-05:00.
+    expires = datetime.fromisoformat(waiting["login"]["code_expires_at"])
+    assert expires == datetime(2099, 1, 1, tzinfo=UTC)
 
     cloud.vm_for(slot)["state"].update(phase="verifying")
     cloud.vm_for(slot)["state"].pop("user_code")

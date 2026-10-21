@@ -1,6 +1,6 @@
 # SBX 开源版：Mac Codex 接手说明
 
-日期：2026-10-21。状态：Mac 工作区及两机订阅调用已验证；Ubuntu 系统开发包仍待一次 sudo，完整 Linux 后端验收尚未完成。
+日期：2026-10-21。状态：Mac 与 Ubuntu 的工作区、两机订阅调用、Ubuntu 的 `make lint`／`make test` 已验证（ENV 分支修复一项时区相关测试后通过，记录见 ENVIRONMENT_NOTES.md）。Docker daemon 访问未通过；B1 由另一会话在独立工作树进行中，未完成。
 
 ## 本轮范围与接手原则
 
@@ -34,27 +34,27 @@
 | 项目 | 实测结果 |
 | --- | --- |
 | Mac 正式工作区、分支、基线 | `/Users/soren/Developer/sbx-agent`；`setup/oss-environment-20261021`；基线 `c0aed37d731121a39c7c41eb4ba47229d8fbe081` |
-| Ubuntu 工作区 | `/home/dev/Developer/sbx-agent` **尚未 clone**。续办脚本将创建同名准备分支，并导入 Mac 的 Git bundle，带上这些交接文件 |
+| Ubuntu 工作区 | `/home/dev/Developer/sbx-agent` 已创建：分支 `setup/oss-environment-20261021`，基线 `aa532f2a`（续办脚本从 Mac bundle 创建），创建后工作区干净 |
 | Git 基线与交付 | 本轮以 `c0aed37` 为基线；环境工作保存在本地准备分支，不自动更新生产。接手时用 `git log -1` 读取实际交接提交 |
 | Mac → Ubuntu SSH | 别名 `ubuntu-dev`，已反复新建 SSH 会话并完成远程命令与订阅调用；使用现有 SSH key 和主机记录 |
 | Mac 工具 | Python **3.12.15**、uv **0.13.1**、Node **24.22.0**、npm **11.19.1**、PostgreSQL **17.11** 已安装 |
 | Ubuntu 用户级工具 | Python **3.12.15**、uv **0.13.4**、Node **22.23.3**、npm **10.9.9** 已就绪 |
-| Ubuntu 系统依赖 | Git／PostgreSQL／Docker 等等待用户执行 sudo 安装脚本；不记为开发环境全部就绪 |
+| Ubuntu 系统依赖 | 系统安装脚本已完成：Git 2.53.0、PostgreSQL 18.6、Docker CLI 29.1.3、Compose 2.40.3；**Docker daemon 拒绝 dev 用户访问**，不记为 Docker 可用 |
 | Mac Codex | **0.162.1**；ChatGPT 订阅已登录；真实最小调用 **通过** |
 | Mac Claude Code | **2.1.292**；Claude Pro 已登录；真实最小调用 **通过** |
 | Ubuntu Codex | **0.163.0**；ChatGPT 订阅登录、真实最小调用 **通过**；使用官方支持的远端 auth cache 迁移，凭证只保存在设备认证目录 |
 | Ubuntu Claude Code | **2.1.306**；用户已完成 Claude Pro 官方授权，真实最小调用 **通过** |
 | Mac 仓库依赖 | `uv sync --frozen --python 3.12`、Console 与 Docs 的锁定 `npm ci` **通过** |
 | Mac 开发检查 | `make lint`、Console typecheck、Console build **通过**。完整后端测试受 Linux runtime 限制；Console 测试有不稳定失败，见下方基线说明 |
-| Ubuntu 仓库依赖与检查 | 尚未开始；需系统依赖、clone 与分支准备完成后执行 |
+| Ubuntu 仓库依赖与检查 | 续办脚本已完成锁定依赖安装与 `make lint`（通过）；`make test` 首次 567 passed／1 failed／1 skipped，失败为时区相关断言，ENV 分支修复后 568 passed／1 skipped |
 | 长任务持续运行、重连 | Mac 已验证 Claude 原生 `--bg` 返回会话 ID，另一次命令可读取完成输出，并已停止冒烟会话。Ubuntu 的持续任务验证状态见 `ENVIRONMENT_NOTES.md` |
-| 剩余人工步骤 | **一项：Ubuntu sudo 安装系统开发包**。两机两家开发 CLI 的订阅调用均已通过，无需重复登录 |
+| 剩余人工步骤 | Docker daemon 访问（`dev` 不在 `docker` 组；属用户决定，本批次不处理）。系统包 sudo 已完成；两机两家开发 CLI 的订阅调用均已通过，无需重复登录 |
 
 **环境机登录成功不等于 SBX 产品已经支持该订阅。**开发工具直接登录的验证，与用户从 SBX 发起订阅任务的端到端验证，是两个不同交付项。
 
 开发机的 CLI 版本也不等于 SBX 运行镜像的锁定版本；环境准备不自动修改产品中的 harness 版本声明。
 
-## 当前需要用户完成的一项操作
+## 原 sudo 操作（已完成，保留作记录）
 
 Ubuntu 的系统开发包需要本机 sudo 密码。在 Mac 终端执行下面第一条命令，按系统提示输入；密码不用发到聊天。第二条命令不需要 sudo，可由接手的 Mac Codex 执行。
 

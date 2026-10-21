@@ -15,7 +15,7 @@
 本轮使用基线 `c0aed37d731121a39c7c41eb4ba47229d8fbe081`（2026-10-16）。接手时复核真实状态：
 
 - Mac 正式仓库：`/Users/soren/Developer/sbx-agent`；分支 `setup/oss-environment-20261021`。
-- Ubuntu 计划仓库：`/home/dev/Developer/sbx-agent`；当前**尚未 clone**。系统依赖完成后，续办脚本创建 `setup/oss-environment-20261021` 并导入 Mac 交接分支；执行后以 `git log -1` 记录实际 HEAD。
+- Ubuntu 计划仓库：`/home/dev/Developer/sbx-agent`；已 clone 并创建 `setup/oss-environment-20261021`（基线 `aa532f2a`，含 Mac 交接分支）；工作区干净。
 - 两台机器的 Codex（ChatGPT）和 Claude Code（Claude Pro）认证及真实最小调用全部通过；这只是开发环境验证。
 - Mac 锁定依赖、lint、Console 类型检查与构建通过；完整 runtime 测试需要 Linux，旧 Console 测试有不稳定失败。准确记录见 `CODEX_HANDOFF.md`。
 - 当前只剩 Ubuntu sudo 系统包安装需要人工。随后由代理运行已准备的续办脚本，完成 clone、依赖及 Linux 验证；不能把 sudo 完成等同于 ENV 已验收。
@@ -48,7 +48,7 @@
 - 配好必要工具、SSH、独立 checkout 和仓库锁定依赖，保留原工作区、审计资料及未提交原型。
 - 用官方方式完成 Codex／Claude Code 开发订阅认证；已登录、调用成功、等待用户分别记录。
 - 提供工具版本、准确路径、分支、基线、检查结果和持续任务重连方式。
-- **当前状态：** Mac 环境和两机两家订阅调用已验证；Ubuntu 系统依赖／正式仓库／Linux 后端测试待 sudo 后续办。现有测试限制单独记录。
+- **当前状态：** Mac 与 Ubuntu 的环境、两机两家订阅调用及 Ubuntu Linux 的 `make lint`／`make test` 已验证（ENV 修复一项时区相关断言后 568 passed／1 skipped）。Docker daemon 访问未通过，列为用户决定事项。详见 ENVIRONMENT_NOTES.md 的 2026-10-21 验证记录。
 - **完成条件：** 交接表无含糊的“已配置”；每项有实测结果，未完成项有下一步。开发机登录不算 B3 完成。
 
 ## B1：自托管服务端可用基线
