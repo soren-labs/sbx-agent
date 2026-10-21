@@ -1,8 +1,9 @@
 # B1 acceptance record: self-hosted control plane baseline
 
-Date: 2026-10-21. Package: B1. Implementer: Ubuntu Claude Code (Opus 5.5). Status: **ready for
-independent Codex acceptance** (not yet accepted). Branch `feat/oss-b1-selfhost-20261021`,
-based on `12deab4` (ENV integration ref, PR #236). No push, no PR, no production resource used.
+Date: 2026-10-21. Package: B1. Implementer: Ubuntu Claude Code (Opus 5.5 high). Status:
+**accepted by Mac Codex for the documented B1 scope**. Branch
+`feat/oss-b1-selfhost-20261021`, based on `12deab4` (ENV integration ref, PR #236).
+No production resource used. GitHub CI remains a separate PR gate.
 
 ## Completed behaviour
 
@@ -53,8 +54,13 @@ Run on Ubuntu 26.04 / PostgreSQL 18.6 / Python 3.12.15 with a fresh `HOME`/XDG r
   `/proc/PID/environ`, DB error categories, unreachable server), `tests/integration/sdk/
   test_diagnostics.py` (diagnose categories against the real API), `test_unified_config.py`
   additions. `tests/conftest.py` also strips the new server variables.
-* `make lint`, `make test`, `make docs-check`: results in the coordinator results file
-  (`b1-complete.txt`).
+* Ubuntu `make lint` and `make docs-check` passed. Full `make test`: **610 passed,
+  1 skipped**, exit 0. The skip is the existing environment probe from the ENV baseline.
+* Mac Codex independently reviewed the cumulative diff against `12deab4`, checked the
+  real acceptance transcript and re-ran the real-process lifecycle and SDK diagnosis tests
+  on Ubuntu: **8 passed** (`tests/integration/selfhost/test_server_lifecycle.py` and
+  `tests/integration/sdk/test_diagnostics.py`). `git diff --check` passed. No reproducible
+  P0/P1 finding remains in the supported B1 workflow.
 
 ## Keepalive claim regression (Mac failure recorded in ENVIRONMENT_NOTES.md)
 
@@ -79,6 +85,8 @@ renew exception, and renewal period is `lease/3` plus renew latency.
 
 ## Next steps
 
-Codex: review the cumulative diff from `12deab4`, re-run the acceptance script steps, and decide
-on the keepalive P2 note. B2 can build on the config file / data dir / `sbx status` categories;
-B4 can reuse `SBXClient.diagnose()` and `ClientConfig` unchanged.
+The keepalive observation remains a non-blocking follow-up; no defect was reproduced in
+Linux acceptance, so it does not justify broadening B1. B2 can build on the config file /
+data dir / `sbx status` categories; B4 can reuse `SBXClient.diagnose()` and `ClientConfig`.
+Remote resource execution and real subscription Turns are still accepted under B2/B3,
+and actual Codex/Claude MCP clients under B4/B5.
