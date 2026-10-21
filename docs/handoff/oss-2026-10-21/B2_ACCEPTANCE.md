@@ -2,8 +2,8 @@
 
 Date: 2026-10-21. Package: B2 (+ B5 consistency for the touched surfaces). Implementer: Ubuntu
 Claude Code (Opus 5.5). Branch `feat/oss-b2-resident-20261021`, based on `1057bf2`
-(`integration/oss-b1-20261021`). Status: **implemented, Ubuntu-verified; independent Mac→Ubuntu
-acceptance by Mac Codex pending** (recipe below). No production resource, Modal account,
+(`integration/oss-b1-20261021`). Status: **independently accepted on Ubuntu and Mac→Ubuntu**.
+Mac Codex reviewed the implementation and ran the final checks below. No production resource, Modal account,
 model provider or subscription was used.
 
 ## Completed behaviour
@@ -43,7 +43,7 @@ daemon, PostgreSQL; Turn content from the **labelled fake** OpenCode CLI only):
 * Acceptance script self-test on Ubuntu (same script as Mac, private sshd alias, link forward):
   see the results file named in the coordinator handoff. **Not** cross-machine evidence.
 
-## Mac → Ubuntu acceptance (to be run by Mac Codex)
+## Mac → Ubuntu acceptance (independently completed by Mac Codex)
 
 `scripts/acceptance/b2_resident_mac.sh [--fake-turn]` from the Mac checkout at the B2 commit,
 with the Ubuntu worktree at the same commit. It builds an isolated control plane, registers
@@ -51,7 +51,24 @@ with the Ubuntu worktree at the same commit. It builds an isolated control plane
 Mac's known_hosts), a link-forwarded `ubuntu-link` for network cuts and a closed-port
 `ubuntu-offline`, and runs `b2_resident_driver.py`. A FAKE validation-only inference endpoint on
 127.0.0.1 (`fake_inference.py`) satisfies Session creation's Connection requirement; no model is
-called. Results: _pending Mac run_.
+called. At `cf87de00`, the Mac ran the default (no fake Turn) recipe against Ubuntu:
+**27/27 checks passed, exit 0**. It verified real file and terminal command execution, repeated
+create and activation returning the same identities, two isolated workspaces, control-plane
+stop/start while remote work continued, the same lease/runtime epoch after reconnect,
+cancellation of a confirmed-running command, a cut/restored SSH link with continued output,
+and a never-reachable machine whose Turn was cancelled without a success event. All created
+runtimes were released and the remote state was removed after confirming no process remained.
+
+The first Mac attempt exposed a timing-dependent fixture: asynchronous verification could mark
+the `.invalid` placeholder Connection unusable before Session creation. The recipe now starts
+an explicitly fake local validation endpoint, waits for the real Connection validator to report
+ready and pins its Connection ID. No production authorization rule was bypassed.
+
+Final independent Linux checks at `cf87de00`: `make lint`, `make test` (**656 passed, 1 skipped**,
+401.01 s) and `make docs-check` (128 pages, links checked) all exited 0. The developer's same-host
+recipe additionally passed **30/30**, including the labelled fake Turn leg. Independent combined
+B2/MCP API, CLI and stdio regressions passed **20 tests** on Linux. Raw acceptance evidence remains
+in the coordinator's private output directory; this record contains no credentials or SSH target.
 
 ## Boundaries
 
