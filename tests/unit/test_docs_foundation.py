@@ -37,6 +37,7 @@ REQUIRED_PAGES = [
     "sdk/python.md",
     "reference/cli.md",
     "reference/providers.md",
+    "self-hosting/local-server.md",
     "self-hosting/configuration.md",
     "self-hosting/security.md",
     "project/changelog.md",
@@ -167,7 +168,16 @@ def test_quick_start_covers_minimum_setup() -> None:
 
 def test_generated_cli_help() -> None:
     text = (PUBLIC / "cli-help.txt").read_text()
-    for command in ("auth", "connections", "sessions", "execute", "serve", "migrate"):
+    for command in (
+        "auth",
+        "connections",
+        "sessions",
+        "execute",
+        "serve",
+        "migrate",
+        "server",
+        "status",
+    ):
         assert f"===== sbx {command} =====" in text, command
     assert "sbx deploy" not in text
 

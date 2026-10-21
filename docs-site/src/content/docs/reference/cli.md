@@ -26,6 +26,8 @@ mode `0600`. Environment variables override the file.
 | Command | Purpose |
 | --- | --- |
 | `auth login` | Sign in and store an API key. |
+| `auth register --email E`, `auth verify [--token-file F]` | Create an account (password from stdin or a prompt) and confirm its email with the token of the verification link (stdin, prompt or file; never argv). |
+| `status` | Read-only diagnosis of the configured control plane: reachability, readiness, API key, executor backends. Exit `0` ok, `4` unreachable or not ready, `5` authentication, `6` no usable executor. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
 | `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
 | `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
@@ -35,13 +37,17 @@ mode `0600`. Environment variables override the file.
 | `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
 | `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
 | `operations show ID` | Long-operation status. |
-| `serve [--host H] [--port P]` | Run the control plane and workers (operator). |
-| `migrate` | Apply database migrations (operator). |
+| `serve [--host H] [--port P] [--config F]` | Run the control plane and workers in the foreground (operator). |
+| `migrate [--config F]` | Apply database migrations (operator). |
+| `server init`, `check`, `start`, `stop`, `restart`, `status`, `logs`, `outbox` | Set up and run a control plane in the background (operator). Exit `3` configuration, `4` unreachable or not running, `5` database authentication, `6` no usable executor. See [Run a local control plane](/self-hosting/local-server/). |
 
 Output is JSON. Errors print a JSON object with `code`, `message` and `action`
-to stderr and exit with status 1.
+to stderr and exit with status 1. When the control plane cannot be reached at all
+the code is `transport_error`, the message names the base URL and the action
+points at `sbx server start` and `sbx status`.
 
-`serve` and `migrate` read the control-plane variables described in
+`serve` and `migrate` read the server config file (if one exists) under the
+control-plane variables described in
 [Configuration](/self-hosting/configuration/); they are equivalent to
 `python -m control.composition serve` and `migrate`.
 

@@ -50,11 +50,21 @@ implemented contract lives in [`docs/specs/unified/`](docs/specs/unified/README.
 
 ## Run your own control plane
 
-Requirements: Python 3.12+ ([uv](https://docs.astral.sh/uv/)), Node 22+, and a
-reachable PostgreSQL database.
+Requirements: Python 3.12+ ([uv](https://docs.astral.sh/uv/)), Node 22+ for the
+Console, and PostgreSQL 15+ (server binaries for a private cluster, or a reachable
+database).
 
 ```bash
 uv sync
+uv run sbx server init        # private 0600 config, fresh keys, private PostgreSQL
+uv run sbx server start       # /api + Job workers on 127.0.0.1:8800, in the background
+uv run sbx server status      # also: check, stop, restart, logs, outbox
+```
+
+See [Run a local control plane](https://docs.sbx-agent.com/self-hosting/local-server/).
+To configure the environment yourself and run in the foreground:
+
+```bash
 export SBX_DATABASE_URL=postgresql://...          # PostgreSQL 15+
 export SBX_VAULT_KEYS="k1:$(openssl rand -base64 32)"
 export SBX_RUNTIME_MASTER_KEY="$(openssl rand -hex 32)"

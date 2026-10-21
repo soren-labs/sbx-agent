@@ -7,6 +7,12 @@ source for release notes.
 ## [Unreleased]
 
 ### Added
+- Self-hosted control plane lifecycle: `sbx server init|check|start|stop|restart|status|logs|outbox`
+  with a private `0600` server config, generated vault/master keys, an optional private
+  PostgreSQL cluster (Unix socket, peer authentication) and categorised diagnostics
+  (`config`, `reachability`, `authentication`, `executor`; exit codes 3–6). `sbx status` and
+  `SBXClient.diagnose()` diagnose a control plane from the client side; `sbx auth register` and
+  `sbx auth verify` create the first account from the CLI (B1).
 - Machine Slots: one independent official Codex login per Slot, each with its own private Modal
   Volume. The device login runs in a temporary Setup VM in your Modal workspace; SBX shows the
   real verification URL and code, verifies the login with a real CLI call, and marks the Slot
@@ -32,6 +38,10 @@ source for release notes.
   effort setting, because the CLI refuses `--effort` next to them (#205).
 
 ### Changed
+- The control plane refuses malformed `SBX_VAULT_KEYS` (each key must decode to 32 bytes),
+  `SBX_RUNTIME_MASTER_KEY` (32+ bytes of hex) and unknown `SBX_EXECUTORS` names at start-up with
+  the fix; previously they failed later or were ignored. `transport_error` now names the base URL
+  and carries an `action` (B1).
 - Antigravity's Harness is supported for subscription machines only (it has no API-key mode).
   `sbx sessions create --slot` now defaults the Harness to the Slot's provider; it was always
   Codex before (#205).

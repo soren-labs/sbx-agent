@@ -79,7 +79,7 @@ export default defineConfig({
 				},
 				{
 					label: 'Self-hosting',
-					items: ['self-hosting/configuration', 'self-hosting/security'],
+					items: ['self-hosting/local-server', 'self-hosting/configuration', 'self-hosting/security'],
 				},
 				{
 					label: 'Troubleshooting',

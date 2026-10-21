@@ -34,7 +34,14 @@
   `inference_api` settings are flags (`--endpoint PROTOCOL=BASE_URL`, `--model`). `sessions create
   --harness` selects the CLI and `harnesses` lists manifests. Also
   provides `sessions …`, `execute`, `changesets`, `deliveries`, `delegations`, `operations`, and the
-  operator commands `serve` and `migrate`.
+  operator commands `serve`, `migrate` and `server …` (see self-hosting.md). `auth register` and
+  `auth verify` read the password / verification token from stdin, a prompt or a file, never argv.
+* **Diagnosis**: `SBXClient.diagnose()` / `sbx status` read `/healthz`, `/readyz`, `/api/me`,
+  `/api/executor-backends` and (when Modal is enabled) the workspace Connections, and report
+  checks with one category each (`reachability`, `authentication`, `executor`); `problem` is the
+  first failure by category order and the exit status is 4 / 5 / 6 respectively (0 when ok).
+  An unreachable control plane raises `transport_error` whose message names the base URL and
+  whose `action` points at `sbx server start` / `sbx status`.
 
 ## Console presentation
 

@@ -49,6 +49,16 @@ _CLOUD_KEYS = frozenset(
         # Ambient CLI pointers must never steer tests at a real deployment.
         "SBX_BASE_URL",
         "SBX_API_KEY",
+        # Self-hosted operator settings (`sbx server`): a developer's own server config
+        # must never be read or started by tests.
+        "SBX_SERVER_CONFIG",
+        "SBX_LISTEN_HOST",
+        "SBX_LISTEN_PORT",
+        "SBX_MANAGED_POSTGRES",
+        "SBX_ALLOWED_ORIGINS",
+        "SBX_COOKIE_SECURE",
+        "SBX_WORKER_THREADS",
+        "SBX_MAIL_FROM",
     }
 )
 

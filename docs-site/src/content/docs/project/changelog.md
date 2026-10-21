@@ -5,6 +5,15 @@ description: Release notes for the unified SBX architecture.
 
 ## Unreleased
 
+- **Run your own control plane**: `sbx server init` writes a private config
+  (`0600`) with fresh keys and creates a private PostgreSQL cluster (Unix socket
+  only), or takes your own database URL from stdin. `sbx server check`, `start`,
+  `stop`, `restart`, `status`, `logs` and `outbox` run it in the background; state
+  survives stop and restart. `sbx status` (and `client.diagnose()`) tells apart an
+  unreachable server, a missing or rejected API key and a missing executor, each
+  with its own exit code. `sbx auth register` and `sbx auth verify` create the first
+  account without the Console. The control plane now refuses malformed vault keys,
+  master keys and executor names at start-up, and `transport_error` names the URL.
 - **API keys**: creating a key is safe to retry. A lost response returns the
   same key on retry instead of a second live key. After 10 minutes a retry
   returns `secret_unavailable` instead of a new key. The Console asks for an
