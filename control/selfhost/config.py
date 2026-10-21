@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_ENV = "SBX_SERVER_CONFIG"
-EXECUTOR_NAMES = ("local", "modal")
+EXECUTOR_NAMES = ("local", "modal", "resident")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8800
 

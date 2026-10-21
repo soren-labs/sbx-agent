@@ -14,6 +14,7 @@ They replace the retired pre-unification contracts, which are archived read-only
 | [machine-slots.md](machine-slots.md) | Subscription Machine Slots, Setup VMs and the official login flow |
 | [changes-delivery.md](changes-delivery.md) | ChangeSets, Delivery gates and Delegation |
 | [console-sdk.md](console-sdk.md) | One API, Console state model and SDK/CLI |
+| [resident-machines.md](resident-machines.md) | Resident Linux machines over SSH: registration, agent, executor semantics, API |
 | [self-hosting.md](self-hosting.md) | Operator config file, private PostgreSQL, `sbx server` lifecycle and diagnostics |
 | [openapi.yaml](openapi.yaml) | Generated `/api` contract (`make openapi`; drift-checked) |
 | [harnesses/manifests.json](harnesses/manifests.json) | Pinned Harness manifests |
