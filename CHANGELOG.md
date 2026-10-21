@@ -7,6 +7,17 @@ source for release notes.
 ## [Unreleased]
 
 ### Added
+- External MCP entry point: `sbx mcp serve` runs a stdio MCP server for Codex and Claude Code
+  with the same ClientConfig and public SDK as the CLI. Eleven tools cover resource discovery,
+  task creation with explicit billing and resource choices, bounded events and results,
+  follow-ups, cancellation, retry and acknowledgement. Idempotency keys are caller-supplied and
+  sent only in the header; results are structured and capped at 64 KiB. Dual-era MCP
+  (`2026-07-28` and the `2025-11-25` handshake) is covered by tests (B4).
+- SDK: `sessions.create`, `turns.cancel` and `turns.retry` accept `idempotency_key`;
+  `sessions.events_page` reads one bounded page; `sbx.sdk` gains `executor_backends()` and
+  `messages.list(turn_id=...)`.
+- API: `GET /api/sessions/{id}/messages` accepts an optional `turn_id` filter (additive; without
+  it the response is unchanged).
 - Self-hosted control plane lifecycle: `sbx server init|check|start|stop|restart|status|logs|outbox`
   with a private `0600` server config, generated vault/master keys, an optional private
   PostgreSQL cluster (Unix socket, peer authentication) and categorised diagnostics

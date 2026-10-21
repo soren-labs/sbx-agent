@@ -213,6 +213,10 @@ class SBXClient:
         """Harness manifests: support tier, capabilities and accepted inference protocols."""
         return self.get("/api/harnesses")["items"]
 
+    def executor_backends(self) -> list[dict[str, Any]]:
+        """Executor backends this deployment enables, with their declared capabilities."""
+        return self.get("/api/executor-backends")["items"]
+
     # -------------------------------------------------------------------- execute
     def execute(
         self,
@@ -548,7 +552,11 @@ class Terminals(_Namespace):
 
 class Sessions(_Namespace):
     def create(self, *, idempotency_key: str | None = None, **body: Any) -> dict[str, Any]:
-        """``idempotency_key``: reuse it to retry a create without a second Session."""
+        """Create a Session (and its first Turn when a message is given).
+
+        ``idempotency_key`` travels only in the Idempotency-Key header; a caller retry after a
+        lost response must pass the same key to get the same Session back.
+        """
         return self.c.post(
             f"/api/workspaces/{self.c.workspace_id}/sessions",
             body,
@@ -627,6 +635,30 @@ class Sessions(_Namespace):
                     )
                 time.sleep(poll)
 
+    def events_page(
+        self,
+        session_id: str,
+        *,
+        after: int | None = None,
+        before: int | None = None,
+        limit: int = 100,
+        types: list[str] | None = None,
+        turn_id: str | None = None,
+    ) -> dict[str, Any]:
+        """One bounded page of committed events (no following, no draining).
+
+        Forward pages use ``after`` (``next_after`` continues); history pages use ``before``
+        (``next_before`` goes further back). ``limit`` is 1..1000 as the API enforces it.
+        """
+        return self.c.get(
+            f"/api/sessions/{session_id}/events",
+            after=after,
+            before=before,
+            limit=limit,
+            types=",".join(types) if types else None,
+            turn_id=turn_id,
+        )
+
     def stream(
         self, session_id: str, *, after: int = 0, max_seconds: float = 60
     ) -> Iterator[dict[str, Any]]:
@@ -640,8 +672,9 @@ class Sessions(_Namespace):
 
 
 class Messages(_Namespace):
-    def list(self, session_id: str) -> list[dict[str, Any]]:
-        return self.c.get(f"/api/sessions/{session_id}/messages")["items"]
+    def list(self, session_id: str, *, turn_id: str | None = None) -> list[dict[str, Any]]:
+        """Messages of the Session; ``turn_id`` narrows the read to one Turn's messages."""
+        return self.c.get(f"/api/sessions/{session_id}/messages", turn_id=turn_id)["items"]
 
 
 class Turns(_Namespace):
@@ -651,11 +684,13 @@ class Turns(_Namespace):
     def get(self, turn_id: str) -> dict[str, Any]:
         return self.c.get(f"/api/turns/{turn_id}")["turn"]
 
-    def cancel(self, turn_id: str) -> dict[str, Any]:
-        return self.c.post(f"/api/turns/{turn_id}/cancellations")
+    def cancel(self, turn_id: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        """Request cancellation. The response is the Turn as it is now: ``cancel_requested`` is
+        not terminal evidence; only a terminal ``state`` means the Turn has stopped."""
+        return self.c.post(f"/api/turns/{turn_id}/cancellations", idempotency_key=idempotency_key)
 
-    def retry(self, turn_id: str) -> dict[str, Any]:
-        return self.c.post(f"/api/turns/{turn_id}/retries")
+    def retry(self, turn_id: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.c.post(f"/api/turns/{turn_id}/retries", idempotency_key=idempotency_key)
 
     def acknowledge(self, turn_id: str) -> dict[str, Any]:
         return self.c.post(f"/api/turns/{turn_id}/acknowledgements")

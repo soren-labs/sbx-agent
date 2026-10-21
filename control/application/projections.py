@@ -7,7 +7,7 @@ from typing import Any
 
 from control.application import access
 from control.domain import sessions as rules
-from control.domain.errors import DomainError
+from control.domain.errors import DomainError, not_found
 from control.domain.identity import Principal
 
 
@@ -255,12 +255,30 @@ class Queries:
 
         return self.tx.read(fn)
 
-    def messages(self, principal: Principal, session_id: str) -> dict[str, Any]:
+    def messages(
+        self, principal: Principal, session_id: str, *, turn_id: str | None = None
+    ) -> dict[str, Any]:
         def fn(uow: Any) -> dict[str, Any]:
             access.owned(uow, principal, "sessions", session_id, what="session")
-            messages = uow.find("messages", {"session_id": session_id}, order="ordinal")
+            criteria: dict[str, Any] = {"session_id": session_id}
+            if turn_id is not None:
+                turn = access.owned(uow, principal, "turns", turn_id, what="turn")
+                if turn["session_id"] != session_id:
+                    raise not_found("turn")
+                criteria["turn_id"] = turn_id
+            messages = uow.find("messages", criteria, order="ordinal")
             parts: dict[str, list[dict[str, Any]]] = {}
-            for part in uow.query("parts.for_session", session_id=session_id):
+            if turn_id is None:
+                rows = uow.query("parts.for_session", session_id=session_id)
+            else:
+                # A Turn read touches only that Turn's parts, not the whole Session's history.
+                ids = [m["id"] for m in messages]
+                rows = (
+                    uow.query("parts.for_messages", session_id=session_id, message_ids=ids)
+                    if ids
+                    else []
+                )
+            for part in rows:
                 parts.setdefault(part["message_id"], []).append(part)
             return {
                 "items": [message_resource(m, parts.get(m["id"], [])) for m in messages],

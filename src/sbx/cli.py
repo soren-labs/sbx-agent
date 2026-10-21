@@ -243,6 +243,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "migrate", parents=[config_flag], help="apply database migrations (operator tool)"
     )
+    mcp = sub.add_parser(
+        "mcp", help="external MCP server for Codex and Claude Code (stdio)"
+    ).add_subparsers(dest="action", required=True)
+    mcp.add_parser(
+        "serve",
+        help="serve SBX tools over stdio; configure the client to run this command",
+    )
 
     server = sub.add_parser(
         "server",
@@ -659,6 +666,10 @@ def main(
         from sbx.server_cli import run_operator
 
         return run_operator(args)
+    if args.command == "mcp":
+        from sbx.mcp_server import serve
+
+        return serve()
     cfg = ClientConfig.load()
     client = client or SBXClient(
         args.base_url or cfg.base_url, cfg.api_key, workspace_id=cfg.workspace_id

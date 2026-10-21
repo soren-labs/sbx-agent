@@ -3,13 +3,13 @@ Generated from the unified argparse command model.
 
 ===== sbx =====
 usage: sbx [-h] [--base-url BASE_URL]
-           {auth,status,harnesses,projects,connections,slots,machines,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,server}
+           {auth,status,harnesses,projects,connections,slots,machines,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,mcp,server}
            ...
 
 SBX: durable Sessions running official provider CLIs.
 
 positional arguments:
-  {auth,status,harnesses,projects,connections,slots,machines,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,server}
+  {auth,status,harnesses,projects,connections,slots,machines,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,mcp,server}
     auth                sign in and store an API key
     status              diagnose the connection: reachability, readiness, API
                         key, executors
@@ -22,6 +22,7 @@ positional arguments:
     execute             create/continue a Session and follow the Turn
     serve               run a local control plane in the foreground (operator)
     migrate             apply database migrations (operator tool)
+    mcp                 external MCP server for Codex and Claude Code (stdio)
     server              set up and run a self-hosted control plane in the
                         background (operator)
 
@@ -192,6 +193,17 @@ options:
   -h, --help       show this help message and exit
   --config CONFIG  server config file (env SBX_SERVER_CONFIG; default
                    $XDG_CONFIG_HOME/sbx/server.env)
+
+===== sbx mcp =====
+usage: sbx mcp [-h] {serve} ...
+
+positional arguments:
+  {serve}
+    serve     serve SBX tools over stdio; configure the client to run this
+              command
+
+options:
+  -h, --help  show this help message and exit
 
 ===== sbx server =====
 usage: sbx server [-h]

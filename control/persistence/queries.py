@@ -76,6 +76,11 @@ NAMED: dict[str, str] = {
         SELECT p.* FROM message_parts p WHERE p.session_id = %(session_id)s
         ORDER BY p.message_id, p.ordinal
     """,
+    "parts.for_messages": """
+        SELECT p.* FROM message_parts p
+        WHERE p.session_id = %(session_id)s AND p.message_id = ANY(%(message_ids)s)
+        ORDER BY p.message_id, p.ordinal
+    """,
     "memberships.for_user": """
         SELECT w.* FROM workspaces w JOIN workspace_memberships m ON m.workspace_id = w.id
         WHERE m.user_id = %(user_id)s AND m.status = 'active' ORDER BY w.created_at

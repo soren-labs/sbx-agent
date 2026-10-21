@@ -10,6 +10,8 @@ dependencies = [
     "cryptography>=43",
     "fastapi>=0.115.0",
     "httpx>=0.27.0",
+    # External MCP entry point (sbx mcp serve); stdio server only, no HTTP transport.
+    "mcp>=2.3,<3",
     # Modal Executor (owner-bound clients); imported only in control/executors/modal.py.
     "modal>=1.6.1,<2",
     "pydantic>=2.10.0",

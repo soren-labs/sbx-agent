@@ -1737,6 +1737,8 @@ paths:
       summary: Read File
   /api/sessions/{session_id}/messages:
     get:
+      description: All Messages of the Session; ``turn_id`` narrows the read to that
+        Turn's Messages.
       operationId: list_messages_api_sessions__session_id__messages_get
       parameters:
       - in: path
@@ -1745,6 +1747,14 @@ paths:
         schema:
           title: Session Id
           type: string
+      - in: query
+        name: turn_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Turn Id
       responses:
         '200':
           content:
