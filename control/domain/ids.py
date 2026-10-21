@@ -46,6 +46,7 @@ PREFIXES: dict[str, str] = {
     "operation": "op",
     "machine_slot": "slot",
     "slot_login": "slogin",
+    "resident_machine": "rmach",
 }
 
 

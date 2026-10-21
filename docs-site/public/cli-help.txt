@@ -3,13 +3,13 @@ Generated from the unified argparse command model.
 
 ===== sbx =====
 usage: sbx [-h] [--base-url BASE_URL]
-           {auth,status,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,mcp,server}
+           {auth,status,harnesses,projects,connections,slots,machines,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,mcp,server}
            ...
 
 SBX: durable Sessions running official provider CLIs.
 
 positional arguments:
-  {auth,status,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,mcp,server}
+  {auth,status,harnesses,projects,connections,slots,machines,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,mcp,server}
     auth                sign in and store an API key
     status              diagnose the connection: reachability, readiness, API
                         key, executors
@@ -17,6 +17,7 @@ positional arguments:
     projects            Projects and versions
     connections         manual Connections (secrets via stdin)
     slots               subscription Machine Slots (one official login each)
+    machines            resident machines registered for this workspace
     sessions            durable Sessions
     execute             create/continue a Session and follow the Turn
     serve               run a local control plane in the foreground (operator)
@@ -106,13 +107,23 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
 
+===== sbx machines =====
+usage: sbx machines [-h] {list,show} ...
+
+positional arguments:
+  {list,show}
+    list       machines with live reachability
+
+options:
+  -h, --help   show this help message and exit
+
 ===== sbx sessions =====
 usage: sbx sessions [-h]
-                    {create,list,show,close,export,send,events,cancel,continue}
+                    {create,list,show,close,export,executor,activate,release,send,events,cancel,continue}
                     ...
 
 positional arguments:
-  {create,list,show,close,export,send,events,cancel,continue}
+  {create,list,show,close,export,executor,activate,release,send,events,cancel,continue}
 
 options:
   -h, --help            show this help message and exit
@@ -195,14 +206,16 @@ options:
   -h, --help  show this help message and exit
 
 ===== sbx server =====
-usage: sbx server [-h] {init,check,start,restart,stop,status,logs,outbox} ...
+usage: sbx server [-h]
+                  {init,check,start,restart,stop,status,logs,outbox,machine}
+                  ...
 
 Self-hosted control plane lifecycle. Output is JSON. Exit codes: 0 ok, 3
 configuration, 4 unreachable/not running, 5 database authentication, 6 no
 usable executor (check only).
 
 positional arguments:
-  {init,check,start,restart,stop,status,logs,outbox}
+  {init,check,start,restart,stop,status,logs,outbox,machine}
     init                create a private server config with fresh keys and a
                         private PostgreSQL
     check               check configuration, PostgreSQL and executors
@@ -214,6 +227,8 @@ positional arguments:
     logs                last lines of the server log
     outbox              latest email in the local outbox (verification links
                         without Resend)
+    machine             resident Linux machines a workspace may run Sessions
+                        on (operator)
 
 options:
   -h, --help            show this help message and exit

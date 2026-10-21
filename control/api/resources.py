@@ -135,6 +135,20 @@ def logout_machine_slot(request: Request, slot_id: str) -> JSONResponse:
     return accepted(services(request).slots.logout(mutating_principal(request), slot_id))
 
 
+# -- Resident machines (operator-registered Linux hosts; SSH target never exposed) ------
+@router.get("/api/workspaces/{workspace_id}/resident-machines")
+def list_resident_machines(
+    request: Request, workspace_id: str, probe: bool = True
+) -> dict[str, Any]:
+    """``probe`` runs a bounded, read-only SSH check per machine (cached ~15 s)."""
+    return services(request).resident.list(principal(request), workspace_id, probe=probe)
+
+
+@router.get("/api/resident-machines/{machine_id}")
+def get_resident_machine(request: Request, machine_id: str, probe: bool = True) -> dict[str, Any]:
+    return services(request).resident.get(principal(request), machine_id, probe=probe)
+
+
 # -- Connections ------------------------------------------------------------------------
 @router.get("/api/workspaces/{workspace_id}/connections")
 def list_connections(

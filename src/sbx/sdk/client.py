@@ -44,6 +44,9 @@ class SBXClient:
         self.projects = Projects(self)
         self.connections = Connections(self)
         self.slots = MachineSlots(self)
+        self.resident_machines = ResidentMachines(self)
+        self.files = Files(self)
+        self.terminals = Terminals(self)
         self.sessions = Sessions(self)
         self.messages = Messages(self)
         self.turns = Turns(self)
@@ -468,6 +471,85 @@ class MachineSlots(_Namespace):
             time.sleep(poll)
 
 
+class ResidentMachines(_Namespace):
+    """Linux machines the operator registered for this workspace (``executor.backend``
+    ``resident``). The SSH target is never exposed; ``probe`` runs a live read-only check."""
+
+    def list(self, *, probe: bool = True) -> list[dict[str, Any]]:
+        return self.c.get(
+            f"/api/workspaces/{self.c.workspace_id}/resident-machines",
+            probe=str(probe).lower(),
+        )["items"]
+
+    def get(self, machine_id: str, *, probe: bool = True) -> dict[str, Any]:
+        return self.c.get(f"/api/resident-machines/{machine_id}", probe=str(probe).lower())
+
+
+class Files(_Namespace):
+    """Live Worktree files of a Session's active runtime (never wakes compute)."""
+
+    def list(self, session_id: str, path: str = "") -> dict[str, Any]:
+        return self.c.request("GET", f"/api/sessions/{session_id}/files", params={"path": path})
+
+    def read(self, session_id: str, path: str) -> dict[str, Any]:
+        return self.c.request(
+            "GET", f"/api/sessions/{session_id}/files/content", params={"path": path}
+        )
+
+    def write(
+        self,
+        session_id: str,
+        path: str,
+        content: str,
+        *,
+        expected_digest: str = "absent",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """``expected_digest`` is ``absent`` for a new file or the digest of a full read."""
+        return self.c.request(
+            "PUT",
+            f"/api/sessions/{session_id}/files",
+            json={"path": path, "content": content, "expected_digest": expected_digest},
+            idempotency_key=idempotency_key,
+        )
+
+
+class Terminals(_Namespace):
+    """Interactive terminals in a Session's live Worktree."""
+
+    def list(self, session_id: str) -> list[dict[str, Any]]:
+        return self.c.get(f"/api/sessions/{session_id}/terminals")["items"]
+
+    def create(self, session_id: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.c.post(f"/api/sessions/{session_id}/terminals", idempotency_key=idempotency_key)
+
+    def input(
+        self,
+        session_id: str,
+        terminal_id: str,
+        data: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self.c.post(
+            f"/api/sessions/{session_id}/terminals/{terminal_id}/input",
+            {"data": data},
+            idempotency_key=idempotency_key,
+        )
+
+    def output(self, session_id: str, terminal_id: str, after: int = 0) -> dict[str, Any]:
+        return self.c.get(f"/api/sessions/{session_id}/terminals/{terminal_id}/output", after=after)
+
+    def close(
+        self, session_id: str, terminal_id: str, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        return self.c.request(
+            "DELETE",
+            f"/api/sessions/{session_id}/terminals/{terminal_id}",
+            idempotency_key=idempotency_key,
+        )
+
+
 class Sessions(_Namespace):
     def create(self, *, idempotency_key: str | None = None, **body: Any) -> dict[str, Any]:
         """Create a Session (and its first Turn when a message is given).
@@ -476,7 +558,9 @@ class Sessions(_Namespace):
         lost response must pass the same key to get the same Session back.
         """
         return self.c.post(
-            f"/api/workspaces/{self.c.workspace_id}/sessions", body, idempotency_key=idempotency_key
+            f"/api/workspaces/{self.c.workspace_id}/sessions",
+            body,
+            idempotency_key=idempotency_key,
         )
 
     def list(self, **filters: Any) -> dict[str, Any]:
@@ -511,8 +595,10 @@ class Sessions(_Namespace):
     def release(self, session_id: str) -> dict[str, Any]:
         return self.c.post(f"/api/sessions/{session_id}/executor/releases")
 
-    def activate(self, session_id: str) -> dict[str, Any]:
-        return self.c.post(f"/api/sessions/{session_id}/executor/activations")
+    def activate(self, session_id: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.c.post(
+            f"/api/sessions/{session_id}/executor/activations", idempotency_key=idempotency_key
+        )
 
     def export(self, session_id: str) -> dict[str, Any]:
         return {

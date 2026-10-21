@@ -78,6 +78,7 @@ def test_runtime_never_imports_control() -> None:
     for package in (
         "runtime/daemon",
         "runtime/harnesses",
+        "runtime/resident",
         "runtime/security",
         "runtime/subscriptions",
     ):

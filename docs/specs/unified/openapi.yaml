@@ -1211,6 +1211,40 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Publish Version
+  /api/resident-machines/{machine_id}:
+    get:
+      operationId: get_resident_machine_api_resident_machines__machine_id__get
+      parameters:
+      - in: path
+        name: machine_id
+        required: true
+        schema:
+          title: Machine Id
+          type: string
+      - in: query
+        name: probe
+        required: false
+        schema:
+          default: true
+          title: Probe
+          type: boolean
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Resident Machine Api Resident Machines  Machine
+                  Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Resident Machine
   /api/sessions/{session_id}:
     get:
       operationId: get_session_api_sessions__session_id__get
@@ -2467,6 +2501,42 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Create Project
+  /api/workspaces/{workspace_id}/resident-machines:
+    get:
+      description: '``probe`` runs a bounded, read-only SSH check per machine (cached
+        ~15 s).'
+      operationId: list_resident_machines_api_workspaces__workspace_id__resident_machines_get
+      parameters:
+      - in: path
+        name: workspace_id
+        required: true
+        schema:
+          title: Workspace Id
+          type: string
+      - in: query
+        name: probe
+        required: false
+        schema:
+          default: true
+          title: Probe
+          type: boolean
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response List Resident Machines Api Workspaces  Workspace Id  Resident
+                  Machines Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Resident Machines
   /api/workspaces/{workspace_id}/sessions:
     get:
       description: '``lifecycle`` takes one state or a comma list (``open,archived``).'

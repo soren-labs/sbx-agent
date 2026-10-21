@@ -100,8 +100,10 @@ def session_resource(
         "executor": {
             "backend": session["executor_backend"],
             "resource_class": session["resource_class"],
+            "resident_machine_id": session["resident_machine_id"],
             "lease_id": lease["id"] if lease else None,
             "lease_state": lease["state"] if lease else None,
+            "lease_observed_status": lease["observed_status"] if lease else None,
         },
         "connections": {
             "compute": session["compute_connection_id"],

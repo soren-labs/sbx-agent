@@ -146,12 +146,21 @@ def build_parser() -> argparse.ArgumentParser:
     sd.add_argument("slot_id")
     sd.add_argument("--confirm", required=True, help="the slot label, to confirm")
 
+    machines = sub.add_parser(
+        "machines", help="resident machines registered for this workspace"
+    ).add_subparsers(dest="action", required=True)
+    ml = machines.add_parser("list", help="machines with live reachability")
+    ml.add_argument("--no-probe", action="store_true", help="skip the live SSH check")
+    ms = machines.add_parser("show")
+    ms.add_argument("machine", help="machine id or name")
+    ms.add_argument("--no-probe", action="store_true")
     sessions = sub.add_parser("sessions", help="durable Sessions").add_subparsers(
         dest="action", required=True
     )
     sc = sessions.add_parser("create")
     sc.add_argument("--project")
-    sc.add_argument("--backend", default=None, choices=["modal", "local"])
+    sc.add_argument("--backend", default=None, choices=["modal", "local", "resident"])
+    sc.add_argument("--machine", help="resident machine id or name (implies --backend resident)")
     sc.add_argument(
         "--harness",
         default=None,
@@ -164,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--repo", help="owner/name for projectless Sessions")
     sc.add_argument("--message")
     sessions.add_parser("list")
-    for name in ("show", "close", "export"):
+    for name in ("show", "close", "export", "executor", "activate", "release"):
         sessions.add_parser(name).add_argument("session_id")
     ss = sessions.add_parser("send")
     ss.add_argument("session_id")
@@ -292,6 +301,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="latest email in the local outbox (verification links without Resend)",
     )
     outbox.add_argument("--to", help="recipient (default: newest message)")
+    machine = server.add_parser(
+        "machine",
+        help="resident Linux machines a workspace may run Sessions on (operator)",
+        description="Register, probe and remove resident machines. SSH parameters are fixed "
+        "here by the operator and never exposed through the API. Output is JSON.",
+    ).add_subparsers(dest="machine_action", required=True)
+    madd = machine.add_parser(
+        "add", parents=[config_flag], help="register a machine for one workspace"
+    )
+    madd.add_argument("name", help="lowercase name shown to the workspace, e.g. ubuntu-dev")
+    owner = madd.add_mutually_exclusive_group(required=True)
+    owner.add_argument("--workspace", help="workspace id")
+    owner.add_argument("--owner-email", help="the personal workspace of this user")
+    madd.add_argument("--host", required=True, help="host name or address (no ssh alias)")
+    madd.add_argument("--port", type=int, default=22)
+    madd.add_argument("--user", required=True, help="Unix account the runtimes run as")
+    madd.add_argument("--identity-file", required=True, help="private key file (mode 600)")
+    madd.add_argument(
+        "--known-hosts-file",
+        required=True,
+        help="known_hosts file that already holds the machine's verified host key",
+    )
+    madd.add_argument(
+        "--remote-python", required=True, help="absolute Python 3.12 path on the machine"
+    )
+    madd.add_argument(
+        "--remote-root", required=True, help="absolute SBX checkout on the machine (same version)"
+    )
+    madd.add_argument(
+        "--state-root",
+        help="runtime state dir on the machine (default ~/.local/state/sbx-resident)",
+    )
+    madd.add_argument(
+        "--remote-path", help="PATH for runtimes, e.g. /home/u/.local/bin:/usr/bin:/bin"
+    )
+    madd.add_argument(
+        "--cli-override",
+        action="append",
+        help="NAME=/abs/path for an official CLI (OPENCODE_BIN, CODEX_BIN, CLAUDE_BIN, ...)",
+    )
+    madd.add_argument("--max-leases", type=int, default=4, help="concurrent runtimes (default 4)")
+    madd.add_argument("--connect-timeout", type=int, default=10)
+    madd.add_argument("--no-probe", action="store_true", help="register without probing")
+    machine.add_parser("list", parents=[config_flag], help="registered machines (all workspaces)")
+    for name, text in (
+        ("probe", "check SSH, host key, the remote checkout and its runtime version"),
+        ("remove", "unregister a machine (refused while a Session runtime is live on it)"),
+    ):
+        command = machine.add_parser(name, parents=[config_flag], help=text)
+        command.add_argument("machine", help="machine id or name")
+        command.add_argument("--workspace", help="workspace id, when the name is ambiguous")
     return parser
 
 
@@ -418,6 +478,16 @@ def _slots(args: argparse.Namespace, client: SBXClient) -> Any:
     }[action](args.slot_id)
 
 
+def _machine_id(client: SBXClient, ref: str) -> str:
+    """A resident machine id, or the id of the one machine with that name."""
+    if ref.startswith("rmach_"):
+        return ref
+    for machine in client.resident_machines.list(probe=False):
+        if machine["name"] == ref:
+            return machine["id"]
+    raise SBXError("not_found", f"no resident machine named {ref} in this workspace")
+
+
 def _out(value: Any) -> None:
     print(json.dumps(value, indent=2, default=str))
 
@@ -489,6 +559,12 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
         }[action](args.connection_id)
     if cmd == "slots":
         return _slots(args, client)
+    if cmd == "machines":
+        if action == "list":
+            return client.resident_machines.list(probe=not args.no_probe)
+        return client.resident_machines.get(
+            _machine_id(client, args.machine), probe=not args.no_probe
+        )
     if cmd == "sessions":
         if action == "create":
             body: dict[str, Any] = {}
@@ -496,6 +572,11 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
                 body["project_id"] = args.project
             if args.backend:
                 body["executor"] = {"backend": args.backend}
+            if args.machine:
+                body["executor"] = {
+                    "backend": "resident",
+                    "resident_machine_id": _machine_id(client, args.machine),
+                }
             harness = args.harness
             if harness is None and args.slot:
                 harness = client.slots.get(args.slot)["provider"]
@@ -526,6 +607,9 @@ def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> 
             "show": client.sessions.get,
             "close": client.sessions.close,
             "export": client.sessions.export,
+            "executor": client.sessions.executor,
+            "activate": client.sessions.activate,
+            "release": client.sessions.release,
         }[action](args.session_id)
     if cmd == "execute":
         return client.execute(args.prompt, session_id=args.session, project_id=args.project)

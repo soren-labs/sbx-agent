@@ -25,6 +25,7 @@ from control.application.live import LiveWorkspace
 from control.application.project_resolution import ProjectResolver
 from control.application.projections import Queries
 from control.application.projects import Projects
+from control.application.resident import ResidentMachines
 from control.application.services import Services as ServiceDesires
 from control.application.sessions import Sessions
 from control.application.slots import MachineSlots
@@ -32,6 +33,7 @@ from control.application.tools import ToolGateway
 from control.catalog import load_catalog
 from control.executors.local import LocalExecutor
 from control.executors.modal import ModalExecutor
+from control.executors.resident import ResidentExecutor
 from control.integrations.connectors.registry import CONNECTORS
 from control.integrations.email import FileMailSink, ResendMailer
 from control.integrations.git import GitTransport
@@ -130,6 +132,7 @@ class Services:
     tools: ToolGateway
     live: LiveWorkspace
     services: ServiceDesires
+    resident: ResidentMachines | None = None
     handlers: dict[str, Any] = field(default_factory=dict)
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -160,7 +163,22 @@ def build_services(
             )
         if "modal" in config.executors:
             executors["modal"] = ModalExecutor()
+        if "resident" in config.executors:
+            executors["resident"] = ResidentExecutor()
     connector = HttpRuntimeConnector(config.runtime_master_key)
+    resident_executor = executors.get("resident")
+    if hasattr(resident_executor, "endpoint"):
+
+        def resident_endpoint(lease: dict[str, Any]) -> str:
+            def target() -> dict[str, Any]:
+                machine = db.read(
+                    lambda uow: uow.get("resident_machines", lease["resident_machine_id"])
+                )
+                return machine["target"]
+
+            return resident_executor.endpoint(lease, target)
+
+        connector.resolvers["resident"] = resident_endpoint
     blobs = LocalBlobStore(config.data_dir / "blobs")
     execution = ExecutionService(
         db,
@@ -187,6 +205,7 @@ def build_services(
     )
     connections.dependency_hooks.append(slots.dependents)
     execution.slots = slots
+    execution.resident_probe = getattr(resident_executor, "probe", None)
     resolver.slots = slots
     sessions.slots = slots
     queries = Queries(db)
@@ -225,6 +244,9 @@ def build_services(
         tools=tools,
         live=live,
         services=service_desires,
+        resident=ResidentMachines(
+            db, prober=getattr(resident_executor, "probe", None) if resident_executor else None
+        ),
     )
     services.handlers = {
         **execution_handlers(execution),

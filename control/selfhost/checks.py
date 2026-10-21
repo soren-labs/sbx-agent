@@ -326,6 +326,19 @@ def executor_checks(settings: cfg.ServerSettings) -> list[Check]:
                         "available; each workspace needs a verified Modal Connection",
                     )
                 )
+        elif name == "resident":
+            ssh = shutil.which("ssh")
+            out.append(
+                Check(
+                    "executor_resident",
+                    "executor",
+                    "ok" if ssh else "fail",
+                    "available; register machines with `sbx server machine add`"
+                    if ssh
+                    else "the OpenSSH client (ssh) is not on PATH",
+                    None if ssh else "install OpenSSH's client",
+                )
+            )
     usable = [c for c in out if c.name.startswith("executor_") and c.status == "ok"]
     if out and not usable:
         out.append(

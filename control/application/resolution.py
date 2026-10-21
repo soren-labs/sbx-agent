@@ -9,10 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 from control.application.ports import HarnessCatalog
-from control.domain.errors import DomainError
+from control.domain.errors import DomainError, not_found
 from control.domain.identity import Principal
 
-EXECUTOR_BACKENDS = frozenset({"local", "modal"})
+EXECUTOR_BACKENDS = frozenset({"local", "modal", "resident"})
 INFERENCE_MODES = frozenset({"custom_api", "subscription"})
 
 
@@ -31,6 +31,40 @@ def _require_enabled(catalog: HarnessCatalog, provider_id: str) -> dict[str, Any
             details={"provider_id": provider_id, "support_tier": "disabled"},
         )
     return manifest
+
+
+def _resident_executor(uow: Any, workspace_id: str, executor: dict[str, Any]) -> dict[str, Any]:
+    """A resident Session pins one active machine of its own workspace, chosen explicitly."""
+    machine_id = executor.get("resident_machine_id")
+    if executor["backend"] != "resident":
+        if machine_id:
+            raise DomainError(
+                "validation_failed",
+                "resident_machine_id is only valid with executor.backend=resident",
+                details={"field": "executor.resident_machine_id"},
+            )
+        executor.pop("resident_machine_id", None)
+        return executor
+    if not isinstance(machine_id, str) or not machine_id:
+        raise DomainError(
+            "validation_failed",
+            "executor.resident_machine_id is required for the resident executor",
+            details={"field": "executor.resident_machine_id"},
+        )
+    machine = uow.get("resident_machines", machine_id, workspace_ids=[workspace_id])
+    if machine is None or machine["state"] == "removed":
+        raise not_found("resident machine")
+    if machine["state"] != "active":
+        raise DomainError(
+            "executor_unavailable",
+            f"resident machine {machine['name']} is {machine['state']}",
+            details={"resident_machine_id": machine_id, "state": machine["state"]},
+        )
+    return {
+        "backend": "resident",
+        "resource_class": executor.get("resource_class") or "standard",
+        "resident_machine_id": machine_id,
+    }
 
 
 class ExplicitResolver:
@@ -74,6 +108,7 @@ class ExplicitResolver:
                 "unknown executor backend",
                 details={"field": "executor.backend"},
             )
+        executor = _resident_executor(uow, workspace_id, executor)
         connections = {**(defaults.get("connections") or {}), **(body.get("connections") or {})}
         repository = body.get("repository") if "repository" in body else defaults.get("repository")
         inference = body.get("inference") or {}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -99,6 +100,9 @@ class HttpRuntimeConnector:
         self.http = httpx.Client(
             limits=httpx.Limits(max_keepalive_connections=64, keepalive_expiry=30.0)
         )
+        # ``scheme://`` endpoints a backend resolves per call (``resident://`` -> the local
+        # end of an SSH forward it re-creates when the link or the control plane restarted).
+        self.resolvers: dict[str, Callable[[dict[str, Any]], str]] = {}
 
     def enrollment_key(self, lease: dict[str, Any]) -> str:
         return lease_key(self.master_key, lease["id"], lease["generation"]).hex()
@@ -107,6 +111,11 @@ class HttpRuntimeConnector:
         endpoint = (lease.get("handle") or {}).get("endpoint")
         if not endpoint:
             raise RuntimeUnavailable("lease has no runtime endpoint")
+        scheme = endpoint.split("://", 1)[0] if "://" in endpoint else ""
+        if scheme in self.resolvers:
+            endpoint = self.resolvers[scheme](lease)
+        elif scheme not in ("http", "https"):
+            raise RuntimeUnavailable(f"no resolver for {scheme} runtime endpoints")
         return RuntimeClient(
             endpoint,
             lease_key(self.master_key, lease["id"], lease["generation"]),

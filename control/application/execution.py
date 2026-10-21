@@ -27,6 +27,7 @@ from control.application.ports import (
     RuntimeUnavailable,
     Transactions,
 )
+from control.application.resident import occupying_leases
 from control.application.sessions import finish_turn, unacknowledged_unknown
 from control.domain.digests import sha256_hex
 from control.domain.errors import DomainError
@@ -108,6 +109,8 @@ class ExecutionService:
         self.post_restore_hooks: list[Any] = []
         # Machine Slot service (set by composition) for subscription Sessions.
         self.slots: Any = None
+        # Live read-only reachability check of a resident machine's target (composition).
+        self.resident_probe: Any = None
 
     # ======================================================================== commands
     def activate(self, principal: Principal, session_id: str) -> dict[str, Any]:
@@ -156,50 +159,74 @@ class ExecutionService:
         return self.tx.run(fn)
 
     def executor_view(self, principal: Principal, session_id: str) -> dict[str, Any]:
-        def fn(uow: Any) -> dict[str, Any]:
-            session = access.owned(uow, principal, "sessions", session_id, what="session")
-            leases = uow.find(
-                "executor_leases", {"session_id": session_id}, order="generation DESC", limit=5
+        view = self.tx.read(lambda uow: self._executor_view(uow, principal, session_id))
+        machine = view["resident_machine"]
+        if machine is not None:
+            # An idle resident lease is polled by nobody: show the machine's live state too.
+            target = self.tx.read(lambda uow: uow.get("resident_machines", machine["id"]))
+            machine["reachability"] = (
+                self.resident_probe(target["target"])
+                if self.resident_probe is not None and machine["state"] == "active"
+                else {"status": "unchecked", "reason": None, "runtime": None, "checked_at": None}
             )
-            worktree = uow.find_one("worktrees", {"session_id": session_id})
-            snap = (
-                uow.get("snapshots", worktree["last_snapshot_id"])
-                if worktree["last_snapshot_id"]
-                else None
-            )
-            return {
-                "backend": session["executor_backend"],
-                "leases": [
-                    {
-                        "id": lease["id"],
-                        "generation": lease["generation"],
-                        "state": lease["state"],
-                        "reason": lease["state_reason"],
-                        "quarantined": lease["quarantined"],
-                        "image_digest": lease["image_digest"],
-                        "protocol_version": lease["protocol_version"],
-                        "created_at": lease["created_at"].isoformat(),
-                        "stage": _lease_stage(lease),
-                    }
-                    for lease in leases
-                ],
-                "worktree": {
-                    "id": worktree["id"],
-                    "availability": worktree["availability"],
-                    "generation": worktree["generation"],
-                    "base_sha": worktree["base_sha"],
-                },
-                "recovery_point": {
-                    "snapshot_id": snap["id"],
-                    "generation": snap["worktree_generation"],
-                    "created_at": snap["created_at"].isoformat(),
-                }
-                if snap
-                else None,
-                "event_watermark": uow.watermark(session_id),
-            }
+        return view
 
-        return self.tx.read(fn)
+    def _executor_view(self, uow: Any, principal: Principal, session_id: str) -> dict[str, Any]:
+        session = access.owned(uow, principal, "sessions", session_id, what="session")
+        leases = uow.find(
+            "executor_leases", {"session_id": session_id}, order="generation DESC", limit=5
+        )
+        worktree = uow.find_one("worktrees", {"session_id": session_id})
+        snap = (
+            uow.get("snapshots", worktree["last_snapshot_id"])
+            if worktree["last_snapshot_id"]
+            else None
+        )
+        machine = (
+            uow.get("resident_machines", session["resident_machine_id"])
+            if session["resident_machine_id"]
+            else None
+        )
+        return {
+            "backend": session["executor_backend"],
+            "resident_machine": {
+                "id": machine["id"],
+                "name": machine["name"],
+                "state": machine["state"],
+            }
+            if machine
+            else None,
+            "leases": [
+                {
+                    "id": lease["id"],
+                    "generation": lease["generation"],
+                    "state": lease["state"],
+                    "reason": lease["state_reason"],
+                    "observed_status": lease["observed_status"],
+                    "quarantined": lease["quarantined"],
+                    "image_digest": lease["image_digest"],
+                    "protocol_version": lease["protocol_version"],
+                    "runtime_epoch": lease["runtime_epoch"],
+                    "created_at": lease["created_at"].isoformat(),
+                    "stage": _lease_stage(lease),
+                }
+                for lease in leases
+            ],
+            "worktree": {
+                "id": worktree["id"],
+                "availability": worktree["availability"],
+                "generation": worktree["generation"],
+                "base_sha": worktree["base_sha"],
+            },
+            "recovery_point": {
+                "snapshot_id": snap["id"],
+                "generation": snap["worktree_generation"],
+                "created_at": snap["created_at"].isoformat(),
+            }
+            if snap
+            else None,
+            "event_watermark": uow.watermark(session_id),
+        }
 
     # ========================================================================= helpers
     def _live_lease(self, uow: Any, session: dict[str, Any]) -> dict[str, Any] | None:
@@ -224,6 +251,18 @@ class ExecutionService:
                 details={"machine_slot_id": session["machine_slot_id"]},
                 retryable=True,
             )
+        if session["resident_machine_id"]:
+            machine = self._require_machine(uow, session, lock=True)
+            # A quarantined (unconfirmed-stopped) runtime still occupies its slot.
+            live = len(occupying_leases(uow, machine["id"]))
+            if live >= machine["max_leases"]:
+                raise DomainError(
+                    "waiting_capacity",
+                    f"resident machine {machine['name']} runs {live} of {machine['max_leases']}"
+                    " allowed runtimes",
+                    details={"resident_machine_id": machine["id"]},
+                    retryable=True,
+                )
         generation = uow.count("executor_leases", {"session_id": session["id"]}) + 1
         lease = uow.insert(
             "executor_leases",
@@ -237,6 +276,7 @@ class ExecutionService:
                 "compute_connection_id": session["compute_connection_id"],
                 "image_digest": "pending",
                 "resource_class": session["resource_class"],
+                "resident_machine_id": session["resident_machine_id"],
             },
         )
         uow.update("sessions", session["id"], {"active_lease_id": lease["id"]})
@@ -261,7 +301,39 @@ class ExecutionService:
         return backend
 
     def _compute(self, session: dict[str, Any]) -> dict[str, Any] | None:
-        return self.credentials.compute(session) if session["executor_backend"] != "local" else None
+        backend = session["executor_backend"]
+        if backend == "local":
+            return None
+        if backend == "resident":
+            return self._resident_target(session["resident_machine_id"])
+        return self.credentials.compute(session)
+
+    def _resident_target(self, machine_id: str | None) -> dict[str, Any]:
+        """Operator-fixed SSH target of a resident machine (also for a disabled one, so
+        cleanup of its leases still works); never leaves the worker."""
+        machine = (
+            self.tx.read(lambda uow: uow.get("resident_machines", machine_id))
+            if machine_id
+            else None
+        )
+        if machine is None:
+            raise DomainError("executor_unavailable", "resident machine not found")
+        return {
+            "resident_machine_id": machine["id"],
+            "name": machine["name"],
+            "target": machine["target"],
+        }
+
+    @staticmethod
+    def _require_machine(uow: Any, session: dict[str, Any], *, lock: bool = False) -> Any:
+        machine = uow.get("resident_machines", session["resident_machine_id"], lock=lock)
+        if machine is None or machine["state"] != "active":
+            raise DomainError(
+                "executor_unavailable",
+                "the resident machine of this Session is no longer active",
+                details={"resident_machine_id": session["resident_machine_id"]},
+            )
+        return machine
 
     def _credential_health(
         self, uow: Any, session: dict[str, Any], execution: dict[str, Any], health: str
@@ -382,6 +454,8 @@ class ExecutionService:
                 self._slots().worker_admit(uow, session)
             else:
                 self.credentials.check_inference(uow, session)
+            if session["executor_backend"] == "resident":
+                self._require_machine(uow, session)
             if session["executor_backend"] == "modal" and not session["compute_connection_id"]:
                 raise DomainError(
                     "connection_required",
@@ -961,9 +1035,10 @@ class ExecutionService:
                 )
             )
             return Succeeded({"lost": True})
-        channel = self.connector.channel(lease)
         unreachable = int(ctx.input.get("unreachable") or 0)
+        reachable = {"unreachable": 0, "unreachable_since": None, "announced": False}
         try:
+            channel = self.connector.channel(lease)
             if turn["state"] == "cancelling" or ctx.input.get("intent") == "cancel":
                 self._request_stop(ctx, channel, execution)
             if execution["launch_evidence"] == "none":
@@ -974,9 +1049,11 @@ class ExecutionService:
                         return Succeeded({"cancelled_before_launch": True})
                     # Never accepted by the runtime, so it never launched: safe to resend.
                     self._start(ctx, execution_id)
-                    return Continue(delay=self.settings.poll_busy, input={"unreachable": 0})
+                    return Continue(delay=self.settings.poll_busy, input=reachable)
             acked = ctx.db.read(lambda uow: self._acked(uow, lease))
             batch = channel.events(acked)
+            if ctx.input.get("announced"):
+                ctx.commit(lambda uow: self._observe_reachability(uow, lease["id"], None))
             if batch["runtime_epoch"] != lease["runtime_epoch"]:
                 # A new empty incarnation: evidence after our watermark is lost.
                 ctx.commit(
@@ -990,9 +1067,7 @@ class ExecutionService:
                 # to acknowledge what was ingested while evidence was flowing.
                 if acked > int(batch.get("acked") or 0):
                     channel.ack(batch["runtime_epoch"], acked)
-                return Continue(
-                    delay=self.settings.poll_idle, input={"unreachable": 0, "intent": None}
-                )
+                return Continue(delay=self.settings.poll_idle, input={**reachable, "intent": None})
             result = ctx.commit(
                 lambda uow: ingest(uow, lease, batch["runtime_epoch"], batch["items"], self.hooks)
             )
@@ -1014,10 +1089,28 @@ class ExecutionService:
                 if more
                 else (self.settings.poll_busy if batch["items"] else self.settings.poll_idle)
             )
-            return Continue(delay=delay, input={"unreachable": 0, "intent": None})
+            return Continue(delay=delay, input={**reachable, "intent": None})
         except RuntimeUnavailable:
             unreachable += 1
-            if unreachable < self.settings.unreachable_threshold:
+            since = float(ctx.input.get("unreachable_since") or time.time())
+            grace = float(self._backend(lease).capabilities().get("unreachable_grace_seconds") or 0)
+            if grace > 0:
+                # A resident machine keeps running while its link is down: report the
+                # lease unreachable (never finished) and wait for it within the grace window.
+                announced = bool(ctx.input.get("announced"))
+                if unreachable >= self.settings.unreachable_threshold and not announced:
+                    ctx.commit(lambda uow: self._observe_reachability(uow, lease["id"], since))
+                    announced = True
+                if time.time() - since < grace:
+                    return Continue(
+                        delay=min(10.0, 0.5 * unreachable),
+                        input={
+                            "unreachable": unreachable,
+                            "unreachable_since": since,
+                            "announced": announced,
+                        },
+                    )
+            elif unreachable < self.settings.unreachable_threshold:
                 return Continue(
                     delay=min(5.0, 0.2 * unreachable), input={"unreachable": unreachable}
                 )
@@ -1033,6 +1126,27 @@ class ExecutionService:
             confirmed = status == "terminated"
             ctx.commit(lambda uow: self._runtime_lost(uow, execution_id, confirmed=confirmed))
             return Succeeded({"lost": True, "isolation_confirmed": confirmed})
+
+    def _observe_reachability(self, uow: Any, lease_id: str, since: float | None) -> None:
+        """Record a lease turning unreachable (``since``) or reachable again (``None``)."""
+        lease = uow.get("executor_leases", lease_id, lock=True)
+        if lease["state"] not in LIVE_LEASE_STATES:
+            return
+        status = "unreachable" if since is not None else "ready"
+        if lease["observed_status"] == status:
+            return
+        uow.update(
+            "executor_leases", lease_id, {"observed_status": status, "observed_at": uow.now()}
+        )
+        session = uow.get("sessions", lease["session_id"], lock=True)
+        uow.append_event(
+            session,
+            "executor.unreachable" if since is not None else "executor.reachable",
+            {"lease_id": lease_id, "since": since} if since is not None else {"lease_id": lease_id},
+            actor="application",
+            executor_lease_id=lease_id,
+            lease_generation=lease["generation"],
+        )
 
     def _acked(self, uow: Any, lease: dict[str, Any]) -> int:
         row = uow.find_one(

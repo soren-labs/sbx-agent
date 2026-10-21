@@ -77,6 +77,7 @@ TABLES = frozenset(
         "tool_grants",
         "machine_slots",
         "slot_login_attempts",
+        "resident_machines",
     }
 )
 

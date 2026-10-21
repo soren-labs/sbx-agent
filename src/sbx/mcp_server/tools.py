@@ -301,13 +301,9 @@ def advertised_backends(backends: list[dict[str, Any]]) -> set[str]:
 def resident_machines(c: SBXClient, *, probe: bool) -> list[dict[str, Any]]:
     """Resident machines of the workspace, projected to what a caller may act on.
 
-    B2 owns these routes. Until its SDK namespace lands, this is the one direct GET in MCP; it is
-    only reached after the deployment advertised the resident backend.
+    Called only after the deployment advertises the resident backend.
     """
-    page = c.get(
-        f"/api/workspaces/{c.workspace_id}/resident-machines",
-        probe="true" if probe else "false",
-    )
+    page = c.resident_machines.list(probe=probe)
     items = []
     for machine in page["items"]:
         reach = machine.get("reachability") or {}

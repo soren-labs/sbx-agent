@@ -65,6 +65,9 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "executor.quiescing",
         "executor.released",
         "executor.unavailable",
+        # Resident machines: the lease's runtime is unreachable / reachable again.
+        "executor.unreachable",
+        "executor.reachable",
         "worktree.restored",
         "worktree.changed",
         "worktree.apply_requested",
