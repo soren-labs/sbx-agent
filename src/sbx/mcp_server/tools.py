@@ -303,9 +303,9 @@ def resident_machines(c: SBXClient, *, probe: bool) -> list[dict[str, Any]]:
 
     Called only after the deployment advertises the resident backend.
     """
-    page = c.resident_machines.list(probe=probe)
+    machines = c.resident_machines.list(probe=probe)
     items = []
-    for machine in page["items"]:
+    for machine in machines:
         reach = machine.get("reachability") or {}
         items.append(
             {

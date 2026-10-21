@@ -460,3 +460,26 @@ async def test_resident_executor_is_gated_until_the_deployment_advertises_it(env
         assert failed and body["code"] == "validation_failed"
         assert "not enabled" in body["message"]
         assert env.sdk.sessions.list(limit=50)["items"] == []
+
+
+async def test_enabled_resident_discovery_uses_the_sdk_list_contract(db, tmp_path) -> None:
+    """The resident SDK returns a list, while the HTTP response wraps it in items."""
+    from control.executors.resident import ResidentExecutor
+
+    executor = ResidentExecutor()
+    stack = ApiStack(db, tmp_path, executors={"resident": executor})
+    try:
+        with LiveApi(stack) as live:
+            sdk = SBXClient(live.base_url)
+            email = "resident-mcp@example.test"
+            sdk.register(email, "REDACTED-test-password")
+            sdk.verify_email(stack.services.mailer.latest(email)["body"].split("token=")[1].strip())
+            sdk.login(email, "REDACTED-test-password")
+            key = sdk.create_api_key("resident-discovery", ["write"])
+            target = Env(live, sdk, key["key"], key["id"], "unused", tmp_path)
+            async with mcp(target) as client:
+                resources = await ok(client, "sbx_list_resources", probe=False)
+                assert resources["resident_executor"] == "advertised"
+                assert resources["resident_machines"] == []
+    finally:
+        executor.tunnels.close_all()
