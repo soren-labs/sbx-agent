@@ -158,7 +158,7 @@ Mac 上已安装的 Codex CLI 已独立只读检查根目录两份入口与三�
 - Claude Code 2.1.306：`claude auth status` 显示 claude.ai 登录、firstParty、订阅类型 pro。当前环境未设置 `ANTHROPIC_API_KEY` 与 `OPENAI_API_KEY`。
 - 模型探测（先前完成，证据在 `~/.cache/sbx-setup/`，不入 Git）：Opus 5.5 high 通过。Haiku 5.5 带 Opus 5.5 advisor 的探测中，transcript 出现 `advisor_message`，模型为 `claude-opus-5-5`。探测输出中的费用字段是按标价计算，不作为计费依据，因此不在此记录。
 - 用户级 Claude settings（只记录键名与取值）：`model` 为 `claude-opus-5-5`；`modelSettings.claude-opus-5-5.effortLevel` 为 `high`；`autoCompactWindow` 为 550000；`permissions.defaultMode` 为 `bypassPermissions`；`skipDangerousModePermissionPrompt` 为 true。改动前备份位于 `~/.cache/sbx-setup/claude-settings-before-oss-20261021T102251Z.json`。
-- 运行时读回：没有非交互的官方读回命令（`claude config` 不是子命令），也未执行会话内 `/autocompact`。可见的运行时证据是 B1 会话进程参数包含 `--model claude-opus-5-5 --effort high --autocompact 550k`。
+- 运行时读回：Mac Codex 执行 `claude -p --model claude-opus-5-5 --tools "" --output-format text -- /autocompact`，返回 `Auto-compact window for Opus 5.5: 550k tokens (from settings)`。B1 启动界面显示 Opus 5.5 with high effort，并确认 bypass permissions on。
 - 后台会话：帮助中存在 `--bg`、`agents`、`logs`、`attach`、`stop`、`respawn`、`rm`。`claude agents --json` 当前列出运行中的 `sbx-b1-opus55`（ID 64dbd49c）以及本 ENV 会话。
 - SSH 断线重连：Mac Codex 在本次协调中反复新建 `ssh ubuntu-dev` 会话，独立启动、查询并附着两个后台会话（`64dbd49c`、`dc1003f3`）；原启动连接退出后任务仍继续。此证据覆盖 SSH 断开，不代表重启或跨天恢复验收。
 
