@@ -171,3 +171,15 @@ The Session view is a two-pane workbench, not a tab that replaces the conversati
 
 Current browser evidence is documented in
 [Console UI restoration notes](../../../console/docs/ui-restoration/notes.md).
+
+## External MCP and idempotent SDK calls (B4)
+
+- `sbx mcp serve` starts the stdio MCP server described in [mcp.md](mcp.md). It uses the same
+  `ClientConfig` and this SDK; it adds no business logic.
+- `Sessions.create(..., idempotency_key=...)`, `Turns.cancel(turn_id, idempotency_key=...)` and
+  `Turns.retry(turn_id, idempotency_key=...)` send the key only in the `Idempotency-Key` header.
+  Transport retries reuse one key.
+- `Sessions.events_page(session_id, after=|before=, limit=, types=, turn_id=)` returns one bounded
+  page; `Sessions.events()` keeps its draining behaviour.
+- `Messages.list(session_id, turn_id=...)` narrows the read to one Turn (additive API filter).
+- `SBXClient.executor_backends()` lists the executor backends the deployment enables.

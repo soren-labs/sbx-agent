@@ -67,6 +67,7 @@ export default defineConfig({
 						'guides/changes-and-delivery',
 						'guides/child-sessions',
 						'guides/console',
+						'guides/mcp',
 					],
 				},
 				{
