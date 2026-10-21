@@ -190,8 +190,18 @@ subclass it.
 
 Network failures are retried with the same `Idempotency-Key` (3 retries with
 backoff), and 5xx responses to mutations are retried the same way. After the
-last attempt the client raises `SBXError` with code `transport_error`. Pass
-`idempotency_key=` to `sessions.send` to control the key yourself.
+last attempt the client raises `SBXError` with code `transport_error`, a message
+naming the base URL and an `action`. Pass `idempotency_key=` to `sessions.send` to
+control the key yourself.
+
+## Diagnosis
+
+`client.diagnose()` reads `/healthz`, `/readyz`, `/api/me`, the executor backends
+and (when Modal is enabled) the workspace's Connections, and returns
+`{"ok", "base_url", "problem", "checks", ...}`. Every check has a `category`:
+`reachability`, `authentication` or `executor`; `problem` is the first failure.
+`sbx.sdk.diagnostics.exit_code(report)` maps it to the exit status of `sbx status`.
+It never creates or starts anything.
 
 ## Example
 

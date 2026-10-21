@@ -41,6 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="write",
         help="scope of the stored API key (default write: everything but API keys/password)",
     )
+    register = auth.add_parser(
+        "register",
+        help="create an account; password read from stdin or prompt; verification email follows",
+    )
+    register.add_argument("--email", required=True)
+    verify = auth.add_parser(
+        "verify",
+        help="confirm the email with the token from the verification link (stdin or prompt)",
+    )
+    verify.add_argument("--token-file", help="file holding the token (default: stdin or prompt)")
+
+    sub.add_parser(
+        "status",
+        help="diagnose the connection: reachability, readiness, API key, executors",
+        description="Read-only diagnosis of the configured control plane. Exit codes: 0 ok, "
+        "4 unreachable or not ready, 5 authentication, 6 no usable executor.",
+    )
 
     sub.add_parser("harnesses", help="official CLI Harnesses and the protocols they accept")
 
@@ -202,10 +219,72 @@ def build_parser() -> argparse.ArgumentParser:
     ops = sub.add_parser("operations").add_subparsers(dest="action", required=True)
     ops.add_parser("show").add_argument("operation_id")
 
-    serve = sub.add_parser("serve", help="run a local control plane (operator tool)")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8800)
-    sub.add_parser("migrate", help="apply database migrations (operator tool)")
+    config_flag = argparse.ArgumentParser(add_help=False)
+    config_flag.add_argument(
+        "--config",
+        help="server config file (env SBX_SERVER_CONFIG; default $XDG_CONFIG_HOME/sbx/server.env)",
+    )
+    serve = sub.add_parser(
+        "serve",
+        parents=[config_flag],
+        help="run a local control plane in the foreground (operator)",
+    )
+    serve.add_argument("--host", help="listen address (default SBX_LISTEN_HOST or 127.0.0.1)")
+    serve.add_argument("--port", type=int, help="listen port (default SBX_LISTEN_PORT or 8800)")
+    sub.add_parser(
+        "migrate", parents=[config_flag], help="apply database migrations (operator tool)"
+    )
+
+    server = sub.add_parser(
+        "server",
+        help="set up and run a self-hosted control plane in the background (operator)",
+        description="Self-hosted control plane lifecycle. Output is JSON. Exit codes: 0 ok, "
+        "3 configuration, 4 unreachable/not running, 5 database authentication, "
+        "6 no usable executor (check only).",
+    ).add_subparsers(dest="action", required=True)
+    init = server.add_parser(
+        "init",
+        parents=[config_flag],
+        help="create a private server config with fresh keys and a private PostgreSQL",
+    )
+    init.add_argument("--data-dir", help="instance data (default $XDG_DATA_HOME/sbx)")
+    init.add_argument(
+        "--external-database",
+        action="store_true",
+        help="use an existing PostgreSQL: its connection URL is read from stdin, never argv",
+    )
+    init.add_argument("--host", default="127.0.0.1", help="listen address (default 127.0.0.1)")
+    init.add_argument("--port", type=int, default=8800)
+    init.add_argument("--public-url", help="base URL for email links (default: the API URL)")
+    init.add_argument(
+        "--executors", default="local,modal", help="executor backends (default local,modal)"
+    )
+    server.add_parser(
+        "check", parents=[config_flag], help="check configuration, PostgreSQL and executors"
+    )
+    for name, text in (
+        ("start", "start the control plane in the background and wait until ready"),
+        ("restart", "stop, then start; durable state is kept in PostgreSQL"),
+    ):
+        command = server.add_parser(name, parents=[config_flag], help=text)
+        command.add_argument("--timeout", type=float, default=90.0)
+    stop = server.add_parser(
+        "stop", parents=[config_flag], help="stop the control plane (and the managed PostgreSQL)"
+    )
+    stop.add_argument(
+        "--keep-postgres", action="store_true", help="leave the managed PostgreSQL running"
+    )
+    server.add_parser(
+        "status", parents=[config_flag], help="process, health and readiness of this instance"
+    )
+    logs = server.add_parser("logs", parents=[config_flag], help="last lines of the server log")
+    logs.add_argument("--lines", type=int, default=50)
+    outbox = server.add_parser(
+        "outbox",
+        parents=[config_flag],
+        help="latest email in the local outbox (verification links without Resend)",
+    )
+    outbox.add_argument("--to", help="recipient (default: newest message)")
     return parser
 
 
@@ -338,6 +417,26 @@ def _out(value: Any) -> None:
 
 def run(args: argparse.Namespace, client: SBXClient, stdin: Any = sys.stdin) -> Any:
     cmd, action = args.command, getattr(args, "action", None)
+    if cmd == "auth" and action == "verify":
+        if args.token_file:
+            token = Path(args.token_file).read_text().strip()
+        elif stdin.isatty():
+            token = getpass.getpass("Verification token (the token= value of the link): ").strip()
+        else:
+            token = stdin.readline().strip()
+        if not token:
+            raise SystemExit("no verification token was given")
+        return client.verify_email(token)
+    if cmd == "auth" and action == "register":
+        password = (
+            stdin.readline().rstrip("\n") if not stdin.isatty() else getpass.getpass("Password: ")
+        )
+        result = client.register(args.email, password)
+        return {
+            **(result or {}),
+            "next": "open the link in the verification email, or run `sbx server outbox` on a "
+            "control plane without Resend; then `sbx auth verify` and `sbx auth login`",
+        }
     if cmd == "auth":
         password = (
             stdin.readline().rstrip("\n") if not stdin.isatty() else getpass.getpass("Password: ")
@@ -472,17 +571,20 @@ def main(
     argv: list[str] | None = None, *, client: SBXClient | None = None, stdin: Any = None
 ) -> int:
     args = build_parser().parse_args(argv)
-    if args.command in ("serve", "migrate"):
-        from control.composition import main as control_main
+    if args.command in ("serve", "migrate", "server"):
+        from sbx.server_cli import run_operator
 
-        return control_main(
-            [args.command]
-            + (["--host", args.host, "--port", str(args.port)] if args.command == "serve" else [])
-        )
+        return run_operator(args)
     cfg = ClientConfig.load()
     client = client or SBXClient(
         args.base_url or cfg.base_url, cfg.api_key, workspace_id=cfg.workspace_id
     )
+    if args.command == "status":
+        from sbx.sdk.diagnostics import exit_code
+
+        report = client.diagnose()
+        _out(report)
+        return exit_code(report)
     try:
         _out(run(args, client, stdin or sys.stdin))
     except SlotNotReady as exc:

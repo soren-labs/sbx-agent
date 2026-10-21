@@ -83,7 +83,7 @@ class SBXClient:
             except httpx.TransportError as exc:
                 # Network uncertainty: retry with the SAME Idempotency-Key.
                 if attempt == retries:
-                    raise SBXError("transport_error", type(exc).__name__, retryable=True) from None
+                    raise self._unreachable(exc) from None
                 time.sleep(0.2 * (2**attempt))
                 continue
             if response.status_code == 204:
@@ -115,7 +115,7 @@ class SBXClient:
         try:
             response = self.http.get(path, headers=self._headers(False, None))
         except httpx.TransportError as exc:
-            raise SBXError("transport_error", type(exc).__name__, retryable=True) from None
+            raise self._unreachable(exc) from None
         if response.status_code >= 400:
             try:
                 err = response.json().get("error") or {}
@@ -129,6 +129,17 @@ class SBXClient:
                 request_id=err.get("request_id"),
             )
         return response.content
+
+    def _unreachable(self, exc: Exception) -> SBXError:
+        """The control plane could not be reached at all (no HTTP response)."""
+        return SBXError(
+            "transport_error",
+            f"cannot reach SBX at {self.base_url} ({type(exc).__name__})",
+            retryable=True,
+            details={"base_url": self.base_url, "cause": type(exc).__name__},
+            action="start the control plane (`sbx server start`) or check --base-url / "
+            "SBX_BASE_URL; `sbx status` diagnoses the connection",
+        )
 
     def get(self, path: str, **params: Any) -> Any:
         return self.request(
@@ -186,6 +197,14 @@ class SBXClient:
         """Models offered by the workspace's inference Connections, and whether each
         Connection speaks a protocol the given Harness accepts."""
         return self.get("/api/models", workspace_id=self.workspace_id, provider_id=provider_id)
+
+    def diagnose(self) -> dict[str, Any]:
+        """Read-only connection diagnosis: reachability, readiness, authentication and
+        executor availability, each failure with one category and an action. See
+        ``sbx.sdk.diagnostics``; ``sbx status`` prints it."""
+        from sbx.sdk.diagnostics import diagnose
+
+        return diagnose(self)
 
     def harnesses(self) -> list[dict[str, Any]]:
         """Harness manifests: support tier, capabilities and accepted inference protocols."""

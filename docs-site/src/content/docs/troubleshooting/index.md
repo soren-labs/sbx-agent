@@ -5,7 +5,15 @@ description: Common first-run failures and what to do about them.
 
 | Symptom | Cause and action |
 | --- | --- |
-| Process exits: `SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required` | Export all three before `serve`, `worker` or `migrate`. |
+| Process exits: `SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required` | Run `sbx server init` once, or export all three before `serve`, `worker` or `migrate`. |
+| Process exits naming `SBX_VAULT_KEYS`, `SBX_RUNTIME_MASTER_KEY` or `SBX_EXECUTORS` | The value is malformed: vault keys must decode to 32 bytes, the master key must be 32+ bytes of hex, executors are `local` and `modal`. Keep existing vault keys: they decrypt stored credentials. |
+| `sbx status` or `sbx server …` exits `3` (`config`) | Read `problem.action`. Typical: no config file (`sbx server init`), config file readable by others (`chmod 600`), port in use, or a data directory used by another config. |
+| Exit `4` (`reachability`) | The control plane is not running (`sbx server start`), the base URL is wrong, PostgreSQL is down, or `/readyz` fails (`sbx server check` on the server host). |
+| Exit `5` (`authentication`) | From `sbx status`: no API key or a revoked one (`sbx auth login`). From `sbx server check`: PostgreSQL rejected the user in `SBX_DATABASE_URL`. |
+| Exit `6` (`executor`) | No executor can run Turns: add a Modal Connection, or enable `local` on a Linux host. |
+| `transport_error`: "cannot reach SBX at …" | Nothing answers at that URL. Start the control plane or fix `--base-url` / `SBX_BASE_URL`. |
+| `sbx server init` refuses: "already holds SBX data" | That data directory or database was created with other keys. Use its original config (`--config`), or choose an empty location. |
+| Local Turn fails with `spawn_failed` | The Harness CLI is not installed on the control plane host. `sbx server check` lists the CLIs it finds. |
 | `GET /readyz` returns `503` | The control plane cannot read PostgreSQL; check `SBX_DATABASE_URL`. |
 | Cannot sign in after registering | Email verification is required. Without `SBX_RESEND_API_KEY` the link is in `$SBX_DATA_DIR/mail/*.json`. Tokens expire after 24 hours. |
 | `429 rate_limited` on login | 10 failures per email in 15 minutes. Wait and retry. |

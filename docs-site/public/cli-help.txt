@@ -3,33 +3,51 @@ Generated from the unified argparse command model.
 
 ===== sbx =====
 usage: sbx [-h] [--base-url BASE_URL]
-           {auth,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
+           {auth,status,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,server}
            ...
 
 SBX: durable Sessions running official provider CLIs.
 
 positional arguments:
-  {auth,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate}
+  {auth,status,harnesses,projects,connections,slots,sessions,execute,changesets,deliveries,delegations,operations,serve,migrate,server}
     auth                sign in and store an API key
+    status              diagnose the connection: reachability, readiness, API
+                        key, executors
     harnesses           official CLI Harnesses and the protocols they accept
     projects            Projects and versions
     connections         manual Connections (secrets via stdin)
     slots               subscription Machine Slots (one official login each)
     sessions            durable Sessions
     execute             create/continue a Session and follow the Turn
-    serve               run a local control plane (operator tool)
+    serve               run a local control plane in the foreground (operator)
     migrate             apply database migrations (operator tool)
+    server              set up and run a self-hosted control plane in the
+                        background (operator)
 
 options:
   -h, --help            show this help message and exit
   --base-url BASE_URL   API base URL (env SBX_BASE_URL)
 
 ===== sbx auth =====
-usage: sbx auth [-h] {login} ...
+usage: sbx auth [-h] {login,register,verify} ...
 
 positional arguments:
-  {login}
-    login     email/password sign-in; password read from stdin or prompt
+  {login,register,verify}
+    login               email/password sign-in; password read from stdin or
+                        prompt
+    register            create an account; password read from stdin or prompt;
+                        verification email follows
+    verify              confirm the email with the token from the verification
+                        link (stdin or prompt)
+
+options:
+  -h, --help            show this help message and exit
+
+===== sbx status =====
+usage: sbx status [-h]
+
+Read-only diagnosis of the configured control plane. Exit codes: 0 ok, 4
+unreachable or not ready, 5 authentication, 6 no usable executor.
 
 options:
   -h, --help  show this help message and exit
@@ -147,15 +165,43 @@ options:
   -h, --help  show this help message and exit
 
 ===== sbx serve =====
-usage: sbx serve [-h] [--host HOST] [--port PORT]
+usage: sbx serve [-h] [--config CONFIG] [--host HOST] [--port PORT]
 
 options:
-  -h, --help   show this help message and exit
-  --host HOST
-  --port PORT
+  -h, --help       show this help message and exit
+  --config CONFIG  server config file (env SBX_SERVER_CONFIG; default
+                   $XDG_CONFIG_HOME/sbx/server.env)
+  --host HOST      listen address (default SBX_LISTEN_HOST or 127.0.0.1)
+  --port PORT      listen port (default SBX_LISTEN_PORT or 8800)
 
 ===== sbx migrate =====
-usage: sbx migrate [-h]
+usage: sbx migrate [-h] [--config CONFIG]
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help       show this help message and exit
+  --config CONFIG  server config file (env SBX_SERVER_CONFIG; default
+                   $XDG_CONFIG_HOME/sbx/server.env)
+
+===== sbx server =====
+usage: sbx server [-h] {init,check,start,restart,stop,status,logs,outbox} ...
+
+Self-hosted control plane lifecycle. Output is JSON. Exit codes: 0 ok, 3
+configuration, 4 unreachable/not running, 5 database authentication, 6 no
+usable executor (check only).
+
+positional arguments:
+  {init,check,start,restart,stop,status,logs,outbox}
+    init                create a private server config with fresh keys and a
+                        private PostgreSQL
+    check               check configuration, PostgreSQL and executors
+    start               start the control plane in the background and wait
+                        until ready
+    restart             stop, then start; durable state is kept in PostgreSQL
+    stop                stop the control plane (and the managed PostgreSQL)
+    status              process, health and readiness of this instance
+    logs                last lines of the server log
+    outbox              latest email in the local outbox (verification links
+                        without Resend)
+
+options:
+  -h, --help            show this help message and exit

@@ -9,7 +9,8 @@ Modal.
 ## Prerequisites
 
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/), and Node 22+ for the Console.
-- A reachable PostgreSQL database.
+- PostgreSQL 15+: either the server binaries (`initdb`, `pg_ctl`), from which SBX
+  creates a private cluster, or a reachable database.
 - The repository checked out (`uv sync`).
 
 ## Minimum accounts and credentials
@@ -22,6 +23,19 @@ Modal.
 | Inference API key | Your own model provider: API key, base URL and model (for example DeepSeek, or any OpenAI- or Anthropic-compatible endpoint). One key serves every coding CLI that speaks its protocol; a second key is optional. |
 
 ## 1. Configure and start the control plane
+
+The shortest path creates a private config, keys and PostgreSQL cluster, then starts
+the control plane in the background:
+
+```bash
+uv run sbx server init      # writes ~/.config/sbx/server.env (0600)
+uv run sbx server check
+uv run sbx server start     # API + workers on 127.0.0.1:8800
+```
+
+`sbx server stop`, `restart` and `status` manage it later; see
+[Run a local control plane](/self-hosting/local-server/). To configure the
+environment yourself instead and run in the foreground:
 
 ```bash
 export SBX_DATABASE_URL=postgresql://sbx:YOUR_PASSWORD@127.0.0.1:5432/sbx
@@ -57,6 +71,10 @@ email exists. Without `SBX_RESEND_API_KEY` the verification email is written as
 a JSON file under `$SBX_DATA_DIR/mail/`; open the link it contains
 (`/verify-email?token=VERIFICATION_TOKEN`, valid 24 hours), then sign in.
 
+From the CLI: `sbx auth register --email you@example.com`, then
+`sbx server outbox --to you@example.com` shows the link, and `sbx auth verify`
+takes its token from a prompt or stdin.
+
 ## 4. Add Connections
 
 The Console's setup checklist (home page) lists what is missing. Open
@@ -69,6 +87,7 @@ From the CLI the same inputs are read from stdin or a file, never argv:
 
 ```bash
 uv run sbx auth login --email you@example.com          # password via stdin or prompt
+uv run sbx status                                      # reachability, key, executors
 printf '%s' "$GITHUB_TOKEN" | uv run sbx connections add github
 echo '{"token_id":"MODAL_TOKEN_ID","token_secret":"MODAL_TOKEN_SECRET"}' | uv run sbx connections add modal
 ```
@@ -89,5 +108,6 @@ is `examples/unified_mvp.py`; see the [Python SDK](/sdk/python/).
 
 ## Troubleshooting
 
-See [Troubleshooting](/troubleshooting/) for the most common first-run
-failures.
+`sbx status` and `sbx server check` name the failing category (configuration,
+reachability, authentication or executor) and the fix. See
+[Troubleshooting](/troubleshooting/) for the most common first-run failures.

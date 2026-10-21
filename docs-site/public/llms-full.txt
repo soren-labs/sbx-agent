@@ -59,7 +59,8 @@ Modal.
 ## Prerequisites
 
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/), and Node 22+ for the Console.
-- A reachable PostgreSQL database.
+- PostgreSQL 15+: either the server binaries (`initdb`, `pg_ctl`), from which SBX
+  creates a private cluster, or a reachable database.
 - The repository checked out (`uv sync`).
 
 ## Minimum accounts and credentials
@@ -72,6 +73,19 @@ Modal.
 | Inference API key | Your own model provider: API key, base URL and model (for example DeepSeek, or any OpenAI- or Anthropic-compatible endpoint). One key serves every coding CLI that speaks its protocol; a second key is optional. |
 
 ## 1. Configure and start the control plane
+
+The shortest path creates a private config, keys and PostgreSQL cluster, then starts
+the control plane in the background:
+
+```bash
+uv run sbx server init      # writes ~/.config/sbx/server.env (0600)
+uv run sbx server check
+uv run sbx server start     # API + workers on 127.0.0.1:8800
+```
+
+`sbx server stop`, `restart` and `status` manage it later; see
+[Run a local control plane](/self-hosting/local-server/). To configure the
+environment yourself instead and run in the foreground:
 
 ```bash
 export SBX_DATABASE_URL=postgresql://sbx:YOUR_PASSWORD@127.0.0.1:5432/sbx
@@ -107,6 +121,10 @@ email exists. Without `SBX_RESEND_API_KEY` the verification email is written as
 a JSON file under `$SBX_DATA_DIR/mail/`; open the link it contains
 (`/verify-email?token=VERIFICATION_TOKEN`, valid 24 hours), then sign in.
 
+From the CLI: `sbx auth register --email you@example.com`, then
+`sbx server outbox --to you@example.com` shows the link, and `sbx auth verify`
+takes its token from a prompt or stdin.
+
 ## 4. Add Connections
 
 The Console's setup checklist (home page) lists what is missing. Open
@@ -119,6 +137,7 @@ From the CLI the same inputs are read from stdin or a file, never argv:
 
 ```bash
 uv run sbx auth login --email you@example.com          # password via stdin or prompt
+uv run sbx status                                      # reachability, key, executors
 printf '%s' "$GITHUB_TOKEN" | uv run sbx connections add github
 echo '{"token_id":"MODAL_TOKEN_ID","token_secret":"MODAL_TOKEN_SECRET"}' | uv run sbx connections add modal
 ```
@@ -139,8 +158,9 @@ is `examples/unified_mvp.py`; see the [Python SDK](/sdk/python/).
 
 ## Troubleshooting
 
-See [Troubleshooting](/troubleshooting/) for the most common first-run
-failures.
+`sbx status` and `sbx server check` name the failing category (configuration,
+reachability, authentication or executor) and the fix. See
+[Troubleshooting](/troubleshooting/) for the most common first-run failures.
 
 # Concepts
 
@@ -1173,8 +1193,18 @@ subclass it.
 
 Network failures are retried with the same `Idempotency-Key` (3 retries with
 backoff), and 5xx responses to mutations are retried the same way. After the
-last attempt the client raises `SBXError` with code `transport_error`. Pass
-`idempotency_key=` to `sessions.send` to control the key yourself.
+last attempt the client raises `SBXError` with code `transport_error`, a message
+naming the base URL and an `action`. Pass `idempotency_key=` to `sessions.send` to
+control the key yourself.
+
+## Diagnosis
+
+`client.diagnose()` reads `/healthz`, `/readyz`, `/api/me`, the executor backends
+and (when Modal is enabled) the workspace's Connections, and returns
+`{"ok", "base_url", "problem", "checks", ...}`. Every check has a `category`:
+`reachability`, `authentication` or `executor`; `problem` is the first failure.
+`sbx.sdk.diagnostics.exit_code(report)` maps it to the exit status of `sbx status`.
+It never creates or starts anything.
 
 ## Example
 
@@ -1222,6 +1252,8 @@ mode `0600`. Environment variables override the file.
 | Command | Purpose |
 | --- | --- |
 | `auth login` | Sign in and store an API key. |
+| `auth register --email E`, `auth verify [--token-file F]` | Create an account (password from stdin or a prompt) and confirm its email with the token of the verification link (stdin, prompt or file; never argv). |
+| `status` | Read-only diagnosis of the configured control plane: reachability, readiness, API key, executor backends. Exit `0` ok, `4` unreachable or not ready, `5` authentication, `6` no usable executor. |
 | `projects list`, `projects create SLUG --spec-file F` | Projects and ProjectVersions. |
 | `connections list`, `add KIND`, `replace ID`, `validate ID`, `disconnect ID`, `show ID` | Connections. Kinds: `modal`, `github`, `inference_api`. Secrets come from stdin or `--credential-file`, never argv; `inference_api` takes `--endpoint PROTOCOL=BASE_URL` (repeatable) and `--model`. |
 | `slots list`, `providers`, `add`, `login`, `verify`, `wait`, `code`, `show`, `models`, `cancel-login`, `logout`, `rename`, `delete` | Machine Slots: subscription logins for Codex, Grok Build and Antigravity. See [Machine Slots](#machine-slots). |
@@ -1231,13 +1263,17 @@ mode `0600`. Environment variables override the file.
 | `deliveries request`, `retry`, `show`, `merge` | Deliveries and gated merge. |
 | `delegations spawn`, `wait`, `result`, `cancel` | Child Sessions. Roles: `review`, `test`, `research`, `security`, `integration`. |
 | `operations show ID` | Long-operation status. |
-| `serve [--host H] [--port P]` | Run the control plane and workers (operator). |
-| `migrate` | Apply database migrations (operator). |
+| `serve [--host H] [--port P] [--config F]` | Run the control plane and workers in the foreground (operator). |
+| `migrate [--config F]` | Apply database migrations (operator). |
+| `server init`, `check`, `start`, `stop`, `restart`, `status`, `logs`, `outbox` | Set up and run a control plane in the background (operator). Exit `3` configuration, `4` unreachable or not running, `5` database authentication, `6` no usable executor. See [Run a local control plane](/self-hosting/local-server/). |
 
 Output is JSON. Errors print a JSON object with `code`, `message` and `action`
-to stderr and exit with status 1.
+to stderr and exit with status 1. When the control plane cannot be reached at all
+the code is `transport_error`, the message names the base URL and the action
+points at `sbx server start` and `sbx status`.
 
-`serve` and `migrate` read the control-plane variables described in
+`serve` and `migrate` read the server config file (if one exists) under the
+control-plane variables described in
 [Configuration](/self-hosting/configuration/); they are equivalent to
 `python -m control.composition serve` and `migrate`.
 
@@ -1424,10 +1460,14 @@ SBX never silently translates hidden context between CLIs.
 Source: /self-hosting/configuration/
 
 The control plane reads its configuration from the environment at start-up.
+`sbx server init` writes the same variables to a private config file that every
+`sbx server` command, `sbx serve` and `sbx migrate` read; environment variables
+override it. See [Run a local control plane](/self-hosting/local-server/).
 
 ```bash
-sbx serve --host 127.0.0.1 --port 8800        # API + workers in one process
-python -m control.composition serve            # same thing
+sbx server start                               # background, from the config file
+sbx serve --host 127.0.0.1 --port 8800        # API + workers in one process (foreground)
+python -m control.composition serve            # same thing, environment only
 python -m control.composition worker           # workers only
 python -m control.composition migrate          # apply migrations and exit
 ```
@@ -1444,7 +1484,10 @@ executors.
 | `SBX_VAULT_KEYS` | Credential keyring, `KID:BASE64KEY,KID2:BASE64KEY2`. The first key encrypts; older keys still decrypt after rotation. Keep it outside the database and backups. |
 | `SBX_RUNTIME_MASTER_KEY` | Hex-encoded master key from which per-lease runtime keys are derived. Not stored in the database. |
 
-The process exits at start-up if any of these is missing.
+The process exits at start-up if any of these is missing or malformed: each vault
+key must decode to 32 bytes, the master key must be at least 32 bytes of hex, and
+`SBX_EXECUTORS` may name only `local` and `modal`. The message names the variable
+and the fix, never its value.
 
 ## Optional
 
@@ -1459,6 +1502,22 @@ The process exits at start-up if any of these is missing.
 | `SBX_RESEND_API_KEY` | unset | Send email through Resend. Without it, mail is written to `$SBX_DATA_DIR/mail/` (directory `0700`, files `0600`). |
 | `SBX_MAIL_FROM` | unset | Sender address for Resend email, on a domain verified in Resend. Required when `SBX_RESEND_API_KEY` is set; startup fails without it. |
 | `SBX_WORKER_THREADS` | `4` | In-process job worker threads. |
+
+## Server config file
+
+These variables are read by the `sbx server` commands (and `sbx serve`), not by
+`python -m control.composition`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SBX_SERVER_CONFIG` | `$XDG_CONFIG_HOME/sbx/server.env` | The config file to use (same as `--config`). The started process receives it too. |
+| `SBX_LISTEN_HOST` | `127.0.0.1` | Listen address for `sbx server start` and `sbx serve`. |
+| `SBX_LISTEN_PORT` | `8800` | Listen port. |
+| `SBX_MANAGED_POSTGRES` | unset | `1` when `SBX_DATABASE_URL` is the private cluster in `$SBX_DATA_DIR/postgres`; `start` and `stop` manage it. |
+
+With a config file, `SBX_DATA_DIR` defaults to `$XDG_DATA_HOME/sbx`. The file holds
+`KEY=VALUE` lines of the variables above (all except `SBX_SERVER_CONFIG` and
+`SBX_GIT_SHA`); it must stay `0600` (`sbx server check` fails otherwise).
 
 Generate keys with `openssl rand -base64 32` for a vault key and
 `openssl rand -hex 32` for the master key.
@@ -1563,7 +1622,15 @@ Source: /troubleshooting/
 
 | Symptom | Cause and action |
 | --- | --- |
-| Process exits: `SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required` | Export all three before `serve`, `worker` or `migrate`. |
+| Process exits: `SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required` | Run `sbx server init` once, or export all three before `serve`, `worker` or `migrate`. |
+| Process exits naming `SBX_VAULT_KEYS`, `SBX_RUNTIME_MASTER_KEY` or `SBX_EXECUTORS` | The value is malformed: vault keys must decode to 32 bytes, the master key must be 32+ bytes of hex, executors are `local` and `modal`. Keep existing vault keys: they decrypt stored credentials. |
+| `sbx status` or `sbx server …` exits `3` (`config`) | Read `problem.action`. Typical: no config file (`sbx server init`), config file readable by others (`chmod 600`), port in use, or a data directory used by another config. |
+| Exit `4` (`reachability`) | The control plane is not running (`sbx server start`), the base URL is wrong, PostgreSQL is down, or `/readyz` fails (`sbx server check` on the server host). |
+| Exit `5` (`authentication`) | From `sbx status`: no API key or a revoked one (`sbx auth login`). From `sbx server check`: PostgreSQL rejected the user in `SBX_DATABASE_URL`. |
+| Exit `6` (`executor`) | No executor can run Turns: add a Modal Connection, or enable `local` on a Linux host. |
+| `transport_error`: "cannot reach SBX at …" | Nothing answers at that URL. Start the control plane or fix `--base-url` / `SBX_BASE_URL`. |
+| `sbx server init` refuses: "already holds SBX data" | That data directory or database was created with other keys. Use its original config (`--config`), or choose an empty location. |
+| Local Turn fails with `spawn_failed` | The Harness CLI is not installed on the control plane host. `sbx server check` lists the CLIs it finds. |
 | `GET /readyz` returns `503` | The control plane cannot read PostgreSQL; check `SBX_DATABASE_URL`. |
 | Cannot sign in after registering | Email verification is required. Without `SBX_RESEND_API_KEY` the link is in `$SBX_DATA_DIR/mail/*.json`. Tokens expire after 24 hours. |
 | `429 rate_limited` on login | 10 failures per email in 15 minutes. Wait and retry. |

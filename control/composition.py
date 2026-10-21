@@ -45,6 +45,8 @@ from control.runtime_client.client import HttpRuntimeConnector
 from control.security.credential_leases import VaultCredentialBroker
 from control.security.redaction import install_log_redaction
 from control.security.vault import Vault
+from control.selfhost.config import REQUIRED_KEYS
+from control.selfhost.config import problems as config_problems
 from control.storage.local import LocalBlobStore
 
 log = logging.getLogger("sbx")
@@ -70,18 +72,29 @@ class UnifiedConfig:
     @classmethod
     def from_env(cls) -> UnifiedConfig:
         env = os.environ
-        master = env.get("SBX_RUNTIME_MASTER_KEY")
-        if not env.get("SBX_DATABASE_URL") or not env.get("SBX_VAULT_KEYS") or not master:
-            raise SystemExit(
-                "SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required"
-            )
+        found = config_problems(env)
+        if found:
+            # Refuse at start-up with the fix, instead of failing later inside the vault,
+            # the runtime connector or the first email (Resend rejects unverified senders).
+            missing = [key for key, _, _ in found if key in REQUIRED_KEYS and not env.get(key)]
+            lines = []
+            if missing:
+                lines.append(
+                    "SBX_DATABASE_URL, SBX_VAULT_KEYS and SBX_RUNTIME_MASTER_KEY are required "
+                    f"(missing: {', '.join(missing)}); run `sbx server init` to create a "
+                    "private server config, or export them"
+                )
+            lines += [
+                f"{message}: {action}" if action else message
+                for key, message, action in found
+                if key not in missing
+            ]
+            raise SystemExit("\n".join(lines))
+        master = env["SBX_RUNTIME_MASTER_KEY"]
         public = env.get("SBX_PUBLIC_URL", "http://localhost:8800")
         origins = tuple(o for o in env.get("SBX_ALLOWED_ORIGINS", public).split(",") if o)
         resend_api_key = env.get("SBX_RESEND_API_KEY")
         mail_from = env.get("SBX_MAIL_FROM")
-        if resend_api_key and not mail_from:
-            # Resend rejects senders outside a verified domain; fail at startup, not per email.
-            raise SystemExit("SBX_MAIL_FROM is required when SBX_RESEND_API_KEY is set")
         return cls(
             database_url=env["SBX_DATABASE_URL"],
             vault_keys=env["SBX_VAULT_KEYS"],
@@ -90,7 +103,7 @@ class UnifiedConfig:
             public_url=public,
             allowed_origins=origins,
             cookie_secure=env.get("SBX_COOKIE_SECURE", "0") == "1",
-            executors=tuple(env.get("SBX_EXECUTORS", "local,modal").split(",")),
+            executors=tuple(e for e in env.get("SBX_EXECUTORS", "local,modal").split(",") if e),
             resend_api_key=resend_api_key,
             mail_from=mail_from or cls.mail_from,
             worker_threads=int(env.get("SBX_WORKER_THREADS", "4")),

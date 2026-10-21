@@ -28,6 +28,9 @@ REPO = Path(__file__).resolve().parents[2]
         "SBX_DATABASE_URL",
         "DATABASE_URL",
         "SBX_VAULT_KEYS",
+        "SBX_SERVER_CONFIG",
+        "SBX_LISTEN_PORT",
+        "SBX_MANAGED_POSTGRES",
     ],
 )
 def test_cloud_and_control_plane_inputs_are_stripped(key) -> None:
