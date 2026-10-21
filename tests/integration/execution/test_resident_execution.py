@@ -12,6 +12,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -425,3 +426,35 @@ def test_unconfirmed_lost_runtime_keeps_its_capacity_until_termination_is_confir
         assert second["handle"]["remote_pid"] != first["handle"]["remote_pid"]
     finally:
         stack.shutdown()
+
+
+def test_ssh_forwards_never_outlive_the_control_plane_process(sshd, tmp_path) -> None:
+    """Regression: uvicorn re-raises SIGTERM (no atexit) and SIGKILL skips cleanup; the
+    forward's watchdog still stops ssh when the owning process dies."""
+    target = json.dumps(sshd.target(tmp_path / "remote"))
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import json,sys,time\n"
+            "from control.executors.resident import Target, Tunnels\n"
+            "t = Target.from_dict(json.loads(sys.argv[1]))\n"
+            "print(Tunnels().ensure('lease_x', t.port, lambda: t), flush=True)\n"
+            "time.sleep(600)\n",
+            target,
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        cwd=str(sshd_support.REPO_ROOT),
+    )
+    port = int(owner.stdout.readline())
+    pattern = f"127.0.0.1:{port}:127.0.0.1:{sshd.port}"
+    assert subprocess.run(["pgrep", "-f", pattern], capture_output=True).stdout
+    owner.kill()
+    owner.wait()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not subprocess.run(["pgrep", "-f", pattern], capture_output=True).stdout:
+            break
+        time.sleep(0.1)
+    assert not subprocess.run(["pgrep", "-f", pattern], capture_output=True).stdout

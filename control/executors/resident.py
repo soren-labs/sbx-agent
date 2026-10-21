@@ -27,6 +27,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -334,10 +335,43 @@ class SshTransport:
 
 
 # ------------------------------------------------------------------------------ tunnels
+def _halt(proc: subprocess.Popen[bytes]) -> None:
+    """Stop a watchdog and its ssh: closing the pipe asks it; SIGTERM is the fallback."""
+    if proc.stdin is not None and not proc.stdin.closed:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.terminate()  # the watchdog forwards it to ssh
+        proc.wait()
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+# Each forward runs under this watchdog, which holds a pipe from the control plane: when the
+# control plane exits for any reason (SIGTERM re-raised by uvicorn, SIGKILL, crash) the pipe
+# closes and the watchdog stops ssh, so no forward outlives the process that owns it.
+_WATCHDOG = """
+import signal, subprocess, sys, threading
+child = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+def stop(*_):
+    if child.poll() is None:
+        child.terminate()
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+def owner_gone():
+    sys.stdin.buffer.read()
+    stop()
+threading.Thread(target=owner_gone, daemon=True).start()
+sys.exit(child.wait())
+"""
 
 
 @dataclass
@@ -387,8 +421,8 @@ class Tunnels:
                     f"127.0.0.1:{port}:127.0.0.1:{int(remote_port)}",
                 ]
                 proc = subprocess.Popen(
-                    argv,
-                    stdin=subprocess.DEVNULL,
+                    [sys.executable, "-I", "-c", _WATCHDOG, *argv],
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=log,
                     env=ssh_env(),
@@ -406,9 +440,7 @@ class Tunnels:
                             proc, port, int(remote_port), resolved.fingerprint(), log
                         )
                         return port
-                if proc.poll() is None:
-                    proc.kill()
-                proc.wait()
+                _halt(proc)
                 log.seek(0)
                 stderr = log.read().decode("utf-8", "replace")
                 log.close()
@@ -421,13 +453,7 @@ class Tunnels:
         tunnel = self._live.pop(key, None)
         if tunnel is None:
             return
-        if tunnel.proc.poll() is None:
-            tunnel.proc.terminate()
-            try:
-                tunnel.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                tunnel.proc.kill()
-                tunnel.proc.wait()
+        _halt(tunnel.proc)
         tunnel.log.close()
 
     def close(self, key: str) -> None:

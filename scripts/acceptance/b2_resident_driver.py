@@ -91,6 +91,7 @@ class Harness:
             idempotency_key=key,
             harness={"provider_id": "opencode"},
             executor={"backend": "resident", "resident_machine_id": machine_id},
+            connections={"inference": self.args.inference_connection},
             title="b2 acceptance",
             **extra,
         )
@@ -402,7 +403,27 @@ class Harness:
                     break
                 time.sleep(1)
 
+    def fixture(self) -> bool:
+        """The FAKE validation-only inference Connection must be ready, by SBX's own check."""
+        view = self.client.connections.wait_health(self.args.inference_connection)
+        validation = view.get("validation") or {}
+        self.c.evidence["fixture_connection"] = {
+            "id": view["id"],
+            "health": view["health"],
+            "health_reason": view.get("health_reason"),
+            "validation": validation.get("status"),
+            "base_url_kind": "FAKE validation-only endpoint on 127.0.0.1",
+        }
+        return self.c.check(
+            "fixture: FAKE inference Connection validated ready by SBX (no model is called)",
+            view["health"] == "ready",
+            self.c.evidence["fixture_connection"],
+        )
+
     def _run(self) -> int:
+        if not self.fixture():
+            print("SUMMARY fixture not ready; scenario not run", flush=True)
+            return 1
         self.discovery()
         first = self.task()
         self.disconnect(first)
@@ -430,6 +451,7 @@ def main() -> int:
     parser.add_argument("--link", required=True, help="script taking up|down")
     parser.add_argument("--sbx", nargs="+", required=True, help="argv prefix of the sbx CLI")
     parser.add_argument("--evidence", required=True)
+    parser.add_argument("--inference-connection", required=True)
     parser.add_argument("--secret-shaped", nargs="*", default=[])
     parser.add_argument("--fake-turn", action="store_true")
     return Harness(parser.parse_args()).run()

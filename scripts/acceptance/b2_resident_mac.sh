@@ -148,6 +148,9 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CAC
 for v in $(env | awk -F= '/^SBX_/ && !/^SBX_B2_/ {print $1}'); do unset "$v"; done
 PORT="$(free_port)"
 export SBX_BASE_URL="http://127.0.0.1:$PORT"
+# The FAKE validation-only inference endpoint is on 127.0.0.1 over http, which SBX accepts only
+# with this documented operator setting (this isolated instance only).
+export SBX_INFERENCE_ALLOW_PRIVATE_URLS=1
 
 cleanup() {
   set +e
@@ -158,6 +161,10 @@ cleanup() {
   done
   "$SBX" server stop > /dev/null 2>&1
   "$WORK/link.sh" down
+  if [ -f "$WORK/fake-inference.pid" ]; then
+    kill "$(cat "$WORK/fake-inference.pid")" 2>/dev/null
+    cp "$WORK/fake-inference.requests" "$OUT/fake-inference-requests.txt" 2>/dev/null
+  fi
   if [ "$KEEP" = 0 ]; then
     if left="$(hssh "$ALIAS" "pgrep -af '[$(printf %s "$REMOTE_STATE" | cut -c1)]$(printf %s "$REMOTE_STATE" | cut -c2-)'; [ \$? -le 1 ]")"; then
       if [ -z "$left" ]; then
@@ -175,6 +182,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# FAKE inference endpoint (validation only, see fake_inference.py); stopped in cleanup.
+"$PY" "$REPO/scripts/acceptance/fake_inference.py" "$WORK/fake-inference.port" \
+  "$WORK/fake-inference.requests" < /dev/null > /dev/null 2>> "$WORK/fake-inference.err" &
+echo $! > "$WORK/fake-inference.pid"
+for _ in $(seq 1 50); do [ -s "$WORK/fake-inference.port" ] && break; sleep 0.1; done
+[ -s "$WORK/fake-inference.port" ] || die "the fake inference endpoint did not start"
+FAKE_INFERENCE="http://127.0.0.1:$(cat "$WORK/fake-inference.port")/v1"
+
 "$SBX" server init --executors resident --port "$PORT" > "$OUT/server-init.json"
 "$SBX" server start > "$OUT/server-start.json"
 EMAIL="b2-acceptance@example.test"
@@ -183,10 +198,13 @@ printf '%s\n' "$PASSWORD" | "$SBX" auth register --email "$EMAIL" > /dev/null
 TOKEN="$("$SBX" server outbox --to "$EMAIL" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["body"].split("token=")[1].split()[0])')"
 printf '%s\n' "$TOKEN" | "$SBX" auth verify > /dev/null
 printf '%s\n' "$PASSWORD" | "$SBX" auth login --email "$EMAIL" > /dev/null
-# The resolver needs some inference Connection to create a Session. This placeholder has a
-# REDACTED key and an .invalid host; no model call is ever made with it in B2.
-printf 'REDACTED-placeholder-key\n' | "$SBX" connections add inference_api \
-  --endpoint openai_chat=https://inference.invalid/v1 --model placeholder > /dev/null
+# The resolver needs one inference Connection to create a Session. It points at the FAKE
+# validation-only endpoint above with a REDACTED key; the driver waits until SBX's own
+# validation reports it ready and pins it explicitly. No model call is made in B2.
+printf 'REDACTED-fake-key\n' | "$SBX" connections add inference_api \
+  --endpoint "openai_chat=$FAKE_INFERENCE" --model fake-validation-only > "$OUT/connection.json" \
+  || die "adding the fake inference Connection failed: $(cat "$OUT/connection.json")"
+CONNECTION_ID="$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$OUT/connection.json")"
 log "control plane at $SBX_BASE_URL (isolated in $WORK)"
 
 add() {
@@ -211,7 +229,7 @@ fi
 log "machines registered; running the scenario"
 
 DRIVER_ARGS=(--alias "$ALIAS" --remote-state "$REMOTE_STATE" --link "$WORK/link.sh"
-  --sbx "$SBX" --evidence "$OUT/b2-evidence.json"
+  --sbx "$SBX" --evidence "$OUT/b2-evidence.json" --inference-connection "$CONNECTION_ID"
   --secret-shaped "$IDENTITY" "$KH" "$SSH_HOST" "$REMOTE_PYTHON" "$REMOTE_ROOT")
 [ "$FAKE" = 1 ] && DRIVER_ARGS+=(--fake-turn)
 set +e
