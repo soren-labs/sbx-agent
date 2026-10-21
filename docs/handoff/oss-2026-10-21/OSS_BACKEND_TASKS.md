@@ -18,7 +18,7 @@
 - Ubuntu 计划仓库：`/home/dev/Developer/sbx-agent`；已 clone 并创建 `setup/oss-environment-20261021`（基线 `aa532f2a`，含 Mac 交接分支）；工作区干净。
 - 两台机器的 Codex（ChatGPT）和 Claude Code（Claude Pro）认证及真实最小调用全部通过；这只是开发环境验证。
 - Mac 锁定依赖、lint、Console 类型检查与构建通过；完整 runtime 测试需要 Linux，旧 Console 测试有不稳定失败。准确记录见 `CODEX_HANDOFF.md`。
-- 当前只剩 Ubuntu sudo 系统包安装需要人工。随后由代理运行已准备的续办脚本，完成 clone、依赖及 Linux 验证；不能把 sudo 完成等同于 ENV 已验收。
+- Ubuntu sudo 系统包、clone 和锁定依赖安装已完成；ENV 分支修复时区相关测试后，Linux 全套测试通过。Docker daemon 普通用户访问仍受限，不影响本批次的非 Docker 路线。
 
 完整主线：外部 Codex／Claude 经由 SBX 的 API／MCP，查看自己的可用 harness、授权与资源，派发多项长期开发工作，获取状态、补充指令、处理失败、取回结果，并在之后的会话中接续管理。
 

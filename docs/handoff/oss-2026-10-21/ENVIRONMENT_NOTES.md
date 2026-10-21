@@ -83,7 +83,7 @@ claude stop <会话 ID>
 
 ## Ubuntu 系统包后的接续顺序（历史记录，已执行）
 
-唯一仍需用户的操作是 sudo 系统安装。两家订阅不需要重复登录。
+以下 sudo 和续办操作已经执行，命令保留供审计；两家订阅不需要重复登录。
 
 ```bash
 # 在 Mac 终端，由用户输入 Ubuntu sudo 密码
@@ -160,7 +160,7 @@ Mac 上已安装的 Codex CLI 已独立只读检查根目录两份入口与三�
 - 用户级 Claude settings（只记录键名与取值）：`model` 为 `claude-opus-5-5`；`modelSettings.claude-opus-5-5.effortLevel` 为 `high`；`autoCompactWindow` 为 550000；`permissions.defaultMode` 为 `bypassPermissions`；`skipDangerousModePermissionPrompt` 为 true。改动前备份位于 `~/.cache/sbx-setup/claude-settings-before-oss-20261021T102251Z.json`。
 - 运行时读回：没有非交互的官方读回命令（`claude config` 不是子命令），也未执行会话内 `/autocompact`。可见的运行时证据是 B1 会话进程参数包含 `--model claude-opus-5-5 --effort high --autocompact 550k`。
 - 后台会话：帮助中存在 `--bg`、`agents`、`logs`、`attach`、`stop`、`respawn`、`rm`。`claude agents --json` 当前列出运行中的 `sbx-b1-opus55`（ID 64dbd49c）以及本 ENV 会话。
-- SSH 断线重连：本次在 Ubuntu 端执行，无法从 Mac 发起重连测试。沿用此前 Mac 的记录（`ubuntu-dev` SSH 与后台会话已验证），本次未重新验证。
+- SSH 断线重连：Mac Codex 在本次协调中反复新建 `ssh ubuntu-dev` 会话，独立启动、查询并附着两个后台会话（`64dbd49c`、`dc1003f3`）；原启动连接退出后任务仍继续。此证据覆盖 SSH 断开，不代表重启或跨天恢复验收。
 
 ### 时区观察（产品侧，未改动）
 
@@ -172,10 +172,14 @@ Mac 上已安装的 Codex CLI 已独立只读检查根目录两份入口与三�
 - Docker daemon 访问未通过。这是用户决定事项，本批次不处理。
 - 完整后端测试仍需在 Linux 上运行。Mac 上的既有限制与 Console 测试的既有不稳定性未改动，记录见上文。
 - 本 ENV 分支未推送、未建 PR，由 Mac 完成。
-- `CODEX_HANDOFF.md` 基线段落中"当前只剩 Ubuntu sudo 系统包安装需要人工"一条仍是历史内容，本次未改，留给 Mac 合并时统一整理。
+- Mac Codex 已核对 ENV 分支的完整测试结果、时区断言修复和最终差异，并清理当前状态段落中残留的 sudo 待办。
 
 ### 下一步
 
 - Mac 从 `ubuntu` remote 取回 `chore/oss-env-validation-20261021`，审查、推送并开 PR。
 - B1 由 Ubuntu Claude 会话 `sbx-b1-opus55` 在 `/home/dev/Developer/sbx-b1-20261021` 负责，本 ENV 分支不包含其实现。
 - B4 等待协调者依据 B1 的共享契约派发。
+
+### 用户后续授权与交付范围
+
+用户于本轮明确要求完成 ENV、B1、B2、B3、B4、B5，并通过多个 GitHub PR 交付。这扩展了原交接中的首批工作范围，依赖与独立验收要求继续有效。Ubuntu 主实现会话固定使用 Opus 5.5 high；另一会话使用 Haiku 与 Opus advisor。用户已授权默认 bypassPermissions 和 550000 token 自动压缩窗口；个人 CLI 配置不进入仓库，也不改变产品内的执行权限或 harness 版本。正式生产发布、客户端和 SaaS 不在此批范围。
