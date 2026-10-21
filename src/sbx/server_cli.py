@@ -52,6 +52,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     if action == "init":
         return _init(args)
     settings = _settings(args)
+    if action == "machine":
+        return _machine(args, settings)
     if action == "check":
         found = chk.run_all(settings, include_port=ServerProcess(settings).pid() is None)
         _print(chk.report(found, **settings.describe()))
@@ -139,3 +141,17 @@ def _outbox(directory: Path, to: str | None) -> int:
         )
     )
     return EXIT_CODES["config"]
+
+
+def _machine(args: argparse.Namespace, settings: Any) -> int:
+    from control.selfhost.checks import EXIT_CODES
+    from control.selfhost.machines import MachineError, run
+
+    try:
+        _print(run(args, settings))
+        return 0
+    except MachineError as exc:
+        out = _problem(exc.category, exc.message, exc.action)
+        out.update(exc.extra)
+        _print(out)
+        return EXIT_CODES.get(exc.category, 3)

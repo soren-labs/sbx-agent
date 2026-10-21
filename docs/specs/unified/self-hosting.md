@@ -19,7 +19,7 @@ it. PostgreSQL stays the business authority; identity, API keys and the vault ar
   `SBX_SERVER_CONFIG=<selected file>`. A `--config` instance never inherits another config's
   optional settings.
 * **Validation** (`config.problems`, shared with `UnifiedConfig.from_env`): required keys present;
-  each vault key base64 of 32 bytes; master key hex ≥ 32 bytes; executors ⊆ {`local`, `modal`};
+  each vault key base64 of 32 bytes; master key hex ≥ 32 bytes; executors ⊆ {`local`, `modal`, `resident`};
   positive worker threads; valid port; `SBX_MAIL_FROM` with `SBX_RESEND_API_KEY`. `from_env`
   exits with the key name and fix, never the value.
 
@@ -78,7 +78,13 @@ codes for client-side `sbx status`.
 | PostgreSQL < 15, unknown applied migrations | reachability / config |
 | local executor: non-Linux, runtime not importable, no git (warn); missing Harness CLIs (warn) | executor |
 | modal executor: `modal` package missing | executor |
+| resident executor: `ssh` client missing | executor |
 | no usable executor | executor |
 
 Database error messages keep only the first libpq line with the DSN replaced; DSNs and secrets
 are never printed.
+
+## Resident machines
+
+`sbx server machine add|list|probe|remove` registers Linux machines a workspace may run Sessions
+on (executor `resident`); see [resident-machines.md](resident-machines.md).

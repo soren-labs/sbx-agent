@@ -323,6 +323,7 @@ class Sessions:
                 "harness_effort": spec["harness"].get("effort"),
                 "machine_slot_id": (spec.get("inference") or {}).get("machine_slot_id"),
                 "executor_backend": spec["executor"]["backend"],
+                "resident_machine_id": spec["executor"].get("resident_machine_id"),
                 "resource_class": spec["executor"].get("resource_class", "standard"),
                 "compute_connection_id": spec["connections"].get("compute"),
                 "inference_connection_id": spec["connections"].get("inference"),
