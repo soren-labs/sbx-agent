@@ -273,8 +273,9 @@ async def patch_session(request: Request, session_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/sessions/{session_id}/messages")
-def list_messages(request: Request, session_id: str) -> dict[str, Any]:
-    return services(request).queries.messages(principal(request), session_id)
+def list_messages(request: Request, session_id: str, turn_id: str | None = None) -> dict[str, Any]:
+    """All Messages of the Session; ``turn_id`` narrows the read to that Turn's Messages."""
+    return services(request).queries.messages(principal(request), session_id, turn_id=turn_id)
 
 
 @router.post("/api/sessions/{session_id}/messages")
