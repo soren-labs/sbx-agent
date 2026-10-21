@@ -205,3 +205,13 @@ account. Live checks such as `make smoke-modal`, `make check-connectors`, and
 - User credentials are stored as encrypted CredentialVersions and delivered to runtimes only through scoped grants; plaintext credentials must not be returned by the API or written to logs/events.
 - Ordinary coding and review agents must not be given production mutation credentials.
 - Production deployment, DNS changes, production database mutation, secret rotation, and similar privileged actions should occur through the protected release/operations path rather than as an incidental step of feature development.
+
+## Current work routing — open-source backend, 2026-10-21
+
+For the current environment handoff and open-source backend work, read `docs/handoff/oss-2026-10-21/CODEX_HANDOFF.md` and `docs/handoff/oss-2026-10-21/OSS_BACKEND_TASKS.md` before choosing a task. This section adds work routing only; all existing engineering, testing, independent review and production requirements above remain unchanged.
+
+- Mac Codex coordinates, integrates and independently verifies. Feature implementation is preferentially assigned to Claude Code on Ubuntu; the user's “Cloud” wording in this handoff refers to Claude Code.
+- Finish the recorded environment checks and manual login/install steps before claiming readiness. Then start only dependency-ready work in the initial B1/B2/B4 batch, applying B5 API consistency; do not automatically launch the entire roadmap. Parallel subtasks must remain within their assigned package; coordinate cross-package scheduling.
+- Pause client implementation pending the owner's redesign with Claude Design or other tools. Preserve the current SwiftUI prototype. SaaS remains paused; shared persistence, recovery, access control and credential isolation remain part of the open-source core.
+- Keep developer-tool authentication separate from SBX subscription capability claims. Record installed, authenticated, actually exercised and unverified states accurately.
+- Latest user instructions remain the source of scope. Preserve unrelated and uncommitted work, and route required scope adjustments through the coordinator.
